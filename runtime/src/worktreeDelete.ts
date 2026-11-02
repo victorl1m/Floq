@@ -238,7 +238,15 @@ export async function deleteWorktree(ctx: WorktreeContext, inspection: WorktreeI
     const args = ["worktree", "remove"];
     if (force) args.push("--force");
     args.push("--", inspection.removeArg);
-    const removed = await ctx.run(projectCwd, args);
+    let removed = await ctx.run(projectCwd, args);
+    // Bind mounts can leave the worktree's .git file pointing at the same repository
+    // through a different absolute path. Git status works, but remove requires the
+    // backlink to match exactly. Let Git repair this verified worktree, then retry
+    // with the original safety flags (never force deletion to bypass validation).
+    if (removed.exitCode !== 0 && /validation failed, cannot remove working tree:[\s\S]*does not point back to/i.test(removed.stdout)) {
+      const repaired = await ctx.run(projectCwd, ["worktree", "repair", "--", inspection.removeArg]);
+      if (repaired.exitCode === 0) removed = await ctx.run(projectCwd, args);
+    }
     if (removed.exitCode !== 0) {
       throw conflict("Git could not remove the worktree: " + removed.stdout.replace(/\s+/g, " ").trim().slice(0, 300), "worktree_remove_failed");
     }

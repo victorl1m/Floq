@@ -95,6 +95,35 @@ test("removal uses the absolute worktree path Git recorded, not one recomputed f
   assert.equal(existsSync(w.abs), false);
 });
 
+test("deletion repairs a mismatched Git backlink before retrying safely", async (t) => {
+  const f = await fixture(t);
+  const w = await f.addWorktree();
+  // Reproduce the sandbox's validation error; repair and the retry run real Git.
+  // This also runs on Windows, where the production bind mounts are unavailable.
+  const calls = [];
+  let failed = false;
+  const ctx = { ...w.ctx, run: async (cwd, args) => {
+    let result;
+    if (!failed && args[0] === "worktree" && args[1] === "remove") {
+      failed = true;
+      result = { exitCode: 128, stdout: `fatal: validation failed, cannot remove working tree: '${w.abs}' does not point back to '.git/worktrees/${w.id}'` };
+    } else result = await f.run(cwd, args);
+    calls.push({ args, result });
+    return result;
+  } };
+  const status = await inspectWorktree(ctx);
+  const result = await deleteWorktree(ctx, status, false);
+  const removals = calls.filter(({ args }) => args[0] === "worktree" && args[1] === "remove");
+  assert.equal(removals.length, 2);
+  assert.match(removals[0].result.stdout, /does not point back to/);
+  assert.deepEqual(removals[0].args, removals[1].args);
+  assert.equal(removals[1].result.exitCode, 0);
+  assert.ok(calls.some(({ args }) => args[1] === "repair" && args.at(-1) === status.removeArg));
+  assert.equal(result.branchDeleted, `floq/${w.id}`);
+  assert.equal(existsSync(w.abs), false);
+  assert.ok(existsSync(join(f.repo, "tracked.txt")));
+});
+
 test("the primary checkout and non-Floq paths are refused", async (t) => {
   const f = await fixture(t);
   await assert.rejects(inspectWorktree({ home: f.home, projectCwd: "repo", cwd: "repo", run: f.run }), { code: "primary_workspace" });
