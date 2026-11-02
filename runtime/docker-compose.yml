@@ -12,7 +12,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy Environment}
       POSTGRES_DB: floq
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata3:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U floq -d floq"]
       interval: 10s
@@ -61,7 +61,7 @@ services:
       FLOQ_SESSION_MAX_LIFETIME_MS: ${FLOQ_SESSION_MAX_LIFETIME_MS:-3600000}
       FLOQ_LOG_LEVEL: ${FLOQ_LOG_LEVEL:-info}
     volumes:
-      - shards:/var/lib/floq/shards
+      - shards3:/var/lib/floq/shards
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
       interval: 30s
@@ -98,5 +98,5 @@ services:
         max-file: "3"
 
 volumes:
-  pgdata:
-  shards:
+  pgdata3:
+  shards3:
