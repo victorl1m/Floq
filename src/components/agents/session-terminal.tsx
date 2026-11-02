@@ -1,0 +1,688 @@
+import { useEffect, useRef, useState } from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
+import "@xterm/xterm/css/xterm.css";
+import { IconPlayerPlay, IconPlayerStop, IconMoon, IconSearch, IconChevronUp, IconChevronDown, IconX, IconGitCompare } from "@tabler/icons-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { createPortal } from "react-dom";
+import { cn } from "cn";
+import { useTitlebarSlot } from "@/lib/titlebar-slot";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { canReadClipboard, copyText, readClipboardText } from "@/lib/clipboard";
+import { parseOsc52 } from "@/lib/osc52";
+
+const MAX_INPUT_CHARS = 20_000;
+
+export const STATE_DOT: Record<SessionState, string> = {
+    running: "bg-emerald-500",
+    starting: "bg-amber-400 animate-pulse",
+    sleeping: "bg-muted-foreground/40",
+    exited: "bg-muted-foreground/40",
+    failed: "bg-destructive",
+};
+import { openExternal } from "@/lib/open-external";
+import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
+import { loadTerminalPrefs, useTerminalPrefs } from "@/lib/prefs";
+import { errorMessage, useRuntime } from "@/lib/runtime/store";
+import type { ClientFrame, ServerFrame, SessionState, SessionSummary } from "@/lib/runtime/types";
+import { ProviderIcon, isLive } from "./provider";
+import { resumeHint, sleepReasonText } from "./sleep-copy";
+import { formatDistanceToNowStrict } from "date-fns";
+import ProjectChangesDialog from "./project-changes-dialog";
+
+const THEME = {
+    background: "#0c0c0e",
+    foreground: "#e4e4e7",
+    cursor: "#e4e4e7",
+    cursorAccent: "#0c0c0e",
+    selectionBackground: "#3f3f46",
+    black: "#18181b",
+    red: "#f87171",
+    green: "#4ade80",
+    yellow: "#facc15",
+    blue: "#60a5fa",
+    magenta: "#c084fc",
+    cyan: "#22d3ee",
+    white: "#e4e4e7",
+    brightBlack: "#52525b",
+    brightRed: "#fca5a5",
+    brightGreen: "#86efac",
+    brightYellow: "#fde047",
+    brightBlue: "#93c5fd",
+    brightMagenta: "#d8b4fe",
+    brightCyan: "#67e8f9",
+    brightWhite: "#fafafa",
+};
+
+interface Props {
+    sessionId: string;
+    active: boolean;
+    /** Keep titlebar actions on the focused split pane only. Defaults on for normal tabs. */
+    titlebarActions?: boolean;
+    /** Hide the session identity when its owning tab/pane already displays it. */
+    titlebarTitle?: boolean;
+    /** Split siblings stay visible without repeatedly stealing keyboard focus. */
+    focusOnActive?: boolean;
+    /** For hidden sessions that are not in the store (e.g. provider login): no toolbar or overlay. */
+    embedded?: { session: SessionSummary; onSession: (session: SessionSummary) => void };
+    /** Called with every chunk of terminal output. */
+    onOutput?: (data: string) => void;
+}
+
+/** One xterm instance + stream socket per session. Stays mounted while the session is open. */
+export default function SessionTerminal({ sessionId, active, titlebarActions = true, titlebarTitle = true, focusOnActive = true, embedded, onOutput }: Props) {
+    const { client, sessions, upsertSession, resumeRequest, consumeResumeRequest } = useRuntime();
+    const session = embedded?.session ?? sessions.find((s) => s.id === sessionId);
+    const live = session ? isLive(session.state) : false;
+    const canReplayTerminal = session?.state === "failed" || session?.state === "exited";
+
+    const hostRef = useRef<HTMLDivElement>(null);
+    const termRef = useRef<Terminal | null>(null);
+    const fitRef = useRef<FitAddon | null>(null);
+    const searchAddonRef = useRef<SearchAddon | null>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const wsRef = useRef<WebSocket | null>(null);
+    const lastSeqRef = useRef(0);
+    // True while replayed (buffered) output is being parsed; OSC 52 clipboard writes are ignored then.
+    const replayingRef = useRef(false);
+    const replayUntilRef = useRef(0);
+    const runRef = useRef<string | null>(null);
+    const upsertRef = useRef(upsertSession);
+    upsertRef.current = embedded ? embedded.onSession : upsertSession;
+    const outputRef = useRef(onOutput);
+    outputRef.current = onOutput;
+    const activeRef = useRef(active);
+    activeRef.current = active;
+
+    const slot = useTitlebarSlot();
+    const [termPrefs] = useTerminalPrefs();
+    const [termReady, setTermReady] = useState(false);
+    const [busy, setBusy] = useState<"resume" | "sleep" | "interrupt" | null>(null);
+    const [resumeError, setResumeError] = useState<string | null>(null);
+    const resumingRef = useRef(false);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchText, setSearchText] = useState("");
+    const [searchMessage, setSearchMessage] = useState("");
+    const [changesOpen, setChangesOpen] = useState(false);
+
+    useEffect(() => {
+        if (!active) setChangesOpen(false);
+    }, [active]);
+
+    function openSearch() {
+        setSearchOpen(true);
+        setSearchMessage("");
+    }
+
+    function closeSearch() {
+        setSearchOpen(false);
+        setSearchText("");
+        setSearchMessage("");
+        searchAddonRef.current?.clearDecorations();
+        termRef.current?.focus();
+    }
+
+    function findInTerminal(direction: "next" | "previous", text = searchText, incremental = false) {
+        const query = text;
+        if (!query) {
+            searchAddonRef.current?.clearDecorations();
+            setSearchMessage("");
+            return;
+        }
+        const found = direction === "next"
+            ? searchAddonRef.current?.findNext(query, incremental ? { incremental: true } : undefined)
+            : searchAddonRef.current?.findPrevious(query);
+        setSearchMessage(found ? "" : "No matches");
+    }
+
+    useEffect(() => {
+        if (!searchOpen) return;
+        const frame = requestAnimationFrame(() => searchInputRef.current?.focus());
+        return () => cancelAnimationFrame(frame);
+    }, [searchOpen]);
+
+    useEffect(() => {
+        const onShortcut = (event: KeyboardEvent) => {
+            const target = event.target;
+            const terminalFocused = target instanceof Node && hostRef.current?.contains(target);
+            const xtermInput = target instanceof HTMLElement && target.classList.contains("xterm-helper-textarea");
+            const typing = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+            if (!activeRef.current || !terminalFocused || (typing && !xtermInput) || !(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
+            event.preventDefault();
+            openSearch();
+        };
+        window.addEventListener("keydown", onShortcut);
+        return () => window.removeEventListener("keydown", onShortcut);
+    }, [active]);
+
+    // Terminal lifecycle: created once, kept for the lifetime of the open tab.
+    useEffect(() => {
+        const host = hostRef.current;
+        if (!host) return;
+        let disposed = false;
+        let cleanup: (() => void) | undefined;
+
+        // xterm measures glyphs on open, so wait for the mono font first.
+        void loadMonoFont().then(() => {
+            if (disposed) return;
+            cleanup = setup(host);
+            setTermReady(true);
+        });
+
+        return () => {
+            disposed = true;
+            cleanup?.();
+            setTermReady(false);
+        };
+
+        function setup(host: HTMLDivElement) {
+        const term = new Terminal({
+            fontFamily: MONO_FONT_FAMILY,
+            fontSize: loadTerminalPrefs().fontSize,
+            cursorStyle: loadTerminalPrefs().cursorStyle,
+            cursorBlink: loadTerminalPrefs().cursorBlink,
+            scrollback: 10000,
+            allowProposedApi: true,
+            theme: THEME,
+            // Clicking a link opens it directly (no native confirm dialog).
+            linkHandler: { activate: (_event, uri) => void openExternal(uri), allowNonHttpProtocols: false },
+        });
+        const fit = new FitAddon();
+        const search = new SearchAddon();
+        term.loadAddon(fit);
+        term.loadAddon(search);
+        term.loadAddon(new WebLinksAddon((_event, uri) => void openExternal(uri)));
+        term.open(host);
+        termRef.current = term;
+        fitRef.current = fit;
+        searchAddonRef.current = search;
+
+        const send = (frame: ClientFrame) => {
+            const ws = wsRef.current;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            // Keep each frame well under the server's 256 KB cap (UTF-8 can be 3 bytes per char).
+            if (frame.type === "input" && frame.data.length > MAX_INPUT_CHARS) {
+                for (let i = 0; i < frame.data.length; i += MAX_INPUT_CHARS) {
+                    ws.send(JSON.stringify({ type: "input", data: frame.data.slice(i, i + MAX_INPUT_CHARS) }));
+                }
+                return;
+            }
+            ws.send(JSON.stringify(frame));
+        };
+
+        // Clipboard: Tauri reads/writes without a prompt. In a browser a read would prompt, so paste keys
+        // are left alone and the native paste event reaches xterm's textarea.
+        const isMac = /Mac|iPhone|iPad/i.test(navigator.platform);
+        const pasteFromClipboard = async () => {
+            try {
+                const text = await readClipboardText();
+                if (text) term.paste(text);
+            } catch {
+                /* denied */
+            }
+        };
+        const copySelection = async (text: string): Promise<boolean> => {
+            try {
+                await copyText(text);
+                return true;
+            } catch (e) {
+                toast.error("Could not copy to the clipboard", { id: "terminal-copy", description: errorMessage(e) });
+                return false;
+            }
+        };
+        // Copy on select: wait for the mouse button to be released (a user gesture, and one write per
+        // drag) instead of copying on every selection change. The selection stays highlighted.
+        let mouseDown = false;
+        let pendingSelectionCopy = false;
+        const onMouseDown = () => {
+            mouseDown = true;
+        };
+        const onMouseUp = () => {
+            mouseDown = false;
+            if (!pendingSelectionCopy) return;
+            pendingSelectionCopy = false;
+            const selection = term.getSelection();
+            if (selection) void copySelection(selection);
+        };
+        host.addEventListener("mousedown", onMouseDown);
+        document.addEventListener("mouseup", onMouseUp);
+        const selectionChange = term.onSelectionChange(() => {
+            if (!term.hasSelection()) return;
+            if (mouseDown) pendingSelectionCopy = true;
+            else {
+                const selection = term.getSelection();
+                if (selection) void copySelection(selection);
+            }
+        });
+        term.attachCustomKeyEventHandler((event) => {
+            if (event.type !== "keydown") return true;
+            const key = event.key.toLowerCase();
+            if (!embedded && activeRef.current && key === "f" && (event.ctrlKey || event.metaKey) && !event.altKey) {
+                event.preventDefault();
+                openSearch();
+                return false;
+            }
+            const mod = isMac ? event.metaKey : event.ctrlKey;
+            if (!mod || event.altKey) return true;
+            if (key === "v") {
+                if (!canReadClipboard()) return true;
+                event.preventDefault();
+                void pasteFromClipboard();
+                return false;
+            }
+            if (key === "c") {
+                const selection = term.getSelection();
+                if (isMac || event.shiftKey || selection) {
+                    if (selection) {
+                        event.preventDefault();
+                        // Clear after a plain Ctrl+C so the next one interrupts.
+                        void copySelection(selection).then((ok) => {
+                            if (ok && !isMac && !event.shiftKey) term.clearSelection();
+                        });
+                    }
+                    return false;
+                }
+                return true; // Ctrl+C without a selection is ^C for the PTY
+            }
+            return true;
+        });
+        // OSC 52: TUIs with mouse reporting (Claude Code) select text themselves and send it as
+        // ESC ] 52 ; c ; <base64> ST. Only live output may write the clipboard: replayed scrollback is
+        // old, so `replaying` is true while it is parsed. Read queries (`?`) are never answered.
+        const osc52 = term.parser.registerOscHandler(52, (payload) => {
+            if (replayingRef.current) return true;
+            const text = parseOsc52(payload);
+            if (text) void copySelection(text);
+            return true;
+        });
+        const onContextMenu = (event: MouseEvent) => {
+            const selection = term.getSelection();
+            if (selection) {
+                event.preventDefault();
+                void copySelection(selection);
+            } else if (canReadClipboard()) {
+                event.preventDefault();
+                void pasteFromClipboard();
+            }
+        };
+        host.addEventListener("contextmenu", onContextMenu);
+        const refit = () => {
+            // Hidden tabs (display: none) have no size; fitting would collapse the terminal.
+            if (host.clientWidth === 0 || host.clientHeight === 0) return;
+            try {
+                fit.fit();
+            } catch {
+                /* not laid out yet */
+            }
+        };
+
+        const data = term.onData((d) => send({ type: "input", data: d }));
+        const resize = term.onResize(({ cols, rows }) => send({ type: "resize", cols, rows }));
+        const observer = new ResizeObserver(refit);
+        observer.observe(host);
+        refit();
+
+        return () => {
+            observer.disconnect();
+            host.removeEventListener("contextmenu", onContextMenu);
+            host.removeEventListener("mousedown", onMouseDown);
+            document.removeEventListener("mouseup", onMouseUp);
+            selectionChange.dispose();
+            osc52.dispose();
+            data.dispose();
+            resize.dispose();
+            term.dispose();
+            termRef.current = null;
+            fitRef.current = null;
+            searchAddonRef.current = null;
+        };
+        }
+    }, []);
+
+    // Apply appearance changes live.
+    useEffect(() => {
+        const term = termRef.current;
+        if (!term) return;
+        term.options.fontSize = termPrefs.fontSize;
+        term.options.cursorStyle = termPrefs.cursorStyle;
+        term.options.cursorBlink = termPrefs.cursorBlink;
+        try {
+            fitRef.current?.fit();
+        } catch {
+            /* hidden */
+        }
+    }, [termPrefs, termReady]);
+
+    // Stream connection: only while the session is live; reconnects with backoff from the last seq.
+    useEffect(() => {
+        if (!client || (!live && !canReplayTerminal) || !termReady) return;
+        let stopped = false;
+        let attempt = 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const connect = () => {
+            const term = termRef.current;
+            if (stopped || !term) return;
+            const ws = new WebSocket(client.streamUrl(sessionId, lastSeqRef.current));
+            wsRef.current = ws;
+
+            ws.onopen = () => {
+                attempt = 0;
+                ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows } satisfies ClientFrame));
+            };
+            ws.onmessage = (event) => {
+                let frame: ServerFrame;
+                try {
+                    frame = JSON.parse(String(event.data)) as ServerFrame;
+                } catch {
+                    return;
+                }
+                switch (frame.type) {
+                    case "hello": {
+                        const run = String(frame.session.startedAt);
+                        const restarted =
+                            (runRef.current !== null && runRef.current !== run) || lastSeqRef.current > frame.session.seq;
+                        runRef.current = run;
+                        // Every output frame with seq <= hello.session.seq is buffered replay; the server
+                        // builds hello and the replay in one tick, so later frames are live.
+                        replayUntilRef.current = frame.session.seq;
+                        replayingRef.current = true;
+                        upsertRef.current(frame.session);
+                        if (restarted) {
+                            // A resumed session starts a new PTY with seq back at 0: start over.
+                            term.reset();
+                            lastSeqRef.current = 0;
+                            ws.close();
+                        }
+                        break;
+                    }
+                    case "output":
+                        if (frame.seq > lastSeqRef.current) {
+                            lastSeqRef.current = frame.seq;
+                            if (replayingRef.current && frame.seq > replayUntilRef.current) {
+                                // First live frame: xterm parses writes in order, so this empty write's
+                                // callback runs once all replay is parsed and before this frame is.
+                                term.write("", () => {
+                                    replayingRef.current = false;
+                                });
+                            }
+                            term.write(frame.data);
+                            outputRef.current?.(frame.data);
+                        }
+                        break;
+                    case "state":
+                    case "exit":
+                        upsertRef.current(frame.session);
+                        break;
+                    case "error":
+                        term.write(`\r\n\x1b[31m[floq] ${frame.message}\x1b[0m\r\n`);
+                        break;
+                    default:
+                        break;
+                }
+            };
+            ws.onclose = () => {
+                if (wsRef.current === ws) wsRef.current = null;
+                if (stopped || !live) return;
+                const delay = Math.min(10_000, 300 * 2 ** attempt++);
+                timer = setTimeout(connect, delay);
+            };
+        };
+        connect();
+
+        return () => {
+            stopped = true;
+            clearTimeout(timer);
+            const ws = wsRef.current;
+            wsRef.current = null;
+            ws?.close();
+        };
+    }, [client, live, canReplayTerminal, sessionId, termReady]);
+
+    // Refit and focus when the tab becomes visible.
+    useEffect(() => {
+        if (!active) return;
+        const frame = requestAnimationFrame(() => {
+            const host = hostRef.current;
+            if (host && host.clientWidth > 0) {
+                try {
+                    fitRef.current?.fit();
+                } catch {
+                    /* ignore */
+                }
+                if (focusOnActive) termRef.current?.focus();
+            }
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [active]);
+
+    async function resume() {
+        if (!client || resumingRef.current) return;
+        resumingRef.current = true;
+        setResumeError(null);
+        setBusy("resume");
+        try {
+            upsertSession(await client.resumeSession(sessionId));
+        } catch (e) {
+            setResumeError(errorMessage(e));
+        } finally {
+            resumingRef.current = false;
+            setBusy(null);
+        }
+    }
+
+    // A deliberate click on this (sleeping) session asked for an immediate resume. The request is
+    // one-shot: consumed here whatever happens, so a failure leaves the asleep screen and Resume button.
+    useEffect(() => {
+        if (!resumeRequest || resumeRequest.id !== sessionId || embedded) return;
+        consumeResumeRequest(resumeRequest.seq);
+        if (session?.state === "sleeping") void resume();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [resumeRequest]);
+
+    async function sleep() {
+        if (!client) return;
+        setBusy("sleep");
+        try {
+            upsertSession(await client.sleepSession(sessionId));
+        } catch (e) {
+            toast.error("Could not sleep", { description: errorMessage(e) });
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    async function interrupt() {
+        if (!client) return;
+        setBusy("interrupt");
+        try {
+            await client.interrupt(sessionId);
+        } catch (e) {
+            toast.error("Could not interrupt", { description: errorMessage(e) });
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    if (!session) return null;
+
+    const stoppedAgo = session.endedAt && !Number.isNaN(Date.parse(session.endedAt))
+        ? formatDistanceToNowStrict(new Date(session.endedAt), { addSuffix: true })
+        : null;
+    const overlayTitle =
+        session.state === "failed" ? "This agent failed" : session.state === "exited" ? "This agent exited" : "This agent is asleep";
+
+    return (
+        <div className={cn("absolute inset-0 flex-col", active ? "flex" : "hidden")}>
+            {!embedded && titlebarActions && active && session.provider !== "shell" && slot &&
+                createPortal(
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                        {titlebarTitle && <>
+                            <ProviderIcon provider={session.provider} />
+                            <span className="truncate text-sm font-medium">{session.title}</span>
+                            <span
+                                title={session.state}
+                                aria-label={session.state}
+                                className={cn("size-2 shrink-0 rounded-full", STATE_DOT[session.state])}
+                            />
+                        </>}
+                        <div className="ml-auto flex shrink-0 items-center">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        aria-label="Review project changes"
+                                        onClick={() => setChangesOpen(true)}
+                                    >
+                                        <IconGitCompare />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Review project changes</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        aria-label="Interrupt"
+                                        disabled={!live || busy !== null}
+                                        onClick={() => void interrupt()}
+                                    >
+                                        <IconPlayerStop />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Interrupt (Ctrl+C)</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        aria-label="Sleep"
+                                        disabled={!live || busy !== null}
+                                        onClick={() => void sleep()}
+                                    >
+                                        <IconMoon />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Sleep</TooltipContent>
+                            </Tooltip>
+                        </div>
+                    </div>,
+                    slot,
+                )}
+            <div className="relative min-h-0 flex-1" style={{ backgroundColor: THEME.background }}>
+                <div ref={hostRef} className="absolute inset-2" />
+                {!embedded && active && !searchOpen && (
+                    <div className="absolute top-2 right-2 z-10">
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button variant="ghost" size="icon-sm" aria-label="Search terminal output" onClick={openSearch}>
+                                    <IconSearch />
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Search terminal output (Ctrl+F)</TooltipContent>
+                        </Tooltip>
+                    </div>
+                )}
+                {!embedded && active && searchOpen && (
+                    <div role="search" aria-label="Terminal scrollback search" className="absolute top-2 right-2 z-20 flex w-[min(28rem,calc(100%-1rem))] items-center gap-1 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-lg">
+                        <Input
+                            ref={searchInputRef}
+                            value={searchText}
+                            onChange={(event) => {
+                                setSearchText(event.target.value);
+                                findInTerminal("next", event.target.value, true);
+                            }}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    findInTerminal(event.shiftKey ? "previous" : "next");
+                                } else if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    closeSearch();
+                                }
+                            }}
+                            aria-label="Search terminal output"
+                            placeholder="Find in terminal…"
+                            className="h-7 min-w-0 flex-1 border-0 bg-transparent px-2 shadow-none focus-visible:ring-0"
+                        />
+                        <span aria-live="polite" className="min-w-0 truncate px-1 text-xs text-muted-foreground">{searchMessage}</span>
+                        {searchText && (
+                            <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                aria-label="Clear terminal search"
+                                onClick={() => {
+                                    setSearchText("");
+                                    setSearchMessage("");
+                                    searchAddonRef.current?.clearDecorations();
+                                    searchInputRef.current?.focus();
+                                }}
+                            >
+                                <IconX />
+                            </Button>
+                        )}
+                        <Button variant="ghost" size="icon-xs" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled={!searchText} onClick={() => findInTerminal("previous")}>
+                            <IconChevronUp />
+                        </Button>
+                        <Button variant="ghost" size="icon-xs" aria-label="Next match" title="Next match (Enter)" disabled={!searchText} onClick={() => findInTerminal("next")}>
+                            <IconChevronDown />
+                        </Button>
+                        <Button variant="ghost" size="icon-xs" aria-label="Close terminal search" onClick={closeSearch}>
+                            <IconX />
+                        </Button>
+                    </div>
+                )}
+                {!live && !embedded && (
+                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/45 p-4 text-center backdrop-blur-[1px]">
+                        <div className="flex max-h-full w-full max-w-sm flex-col items-center gap-3 overflow-y-auto py-2">
+                            <div className="flex max-w-full items-center gap-2 text-zinc-400">
+                                <ProviderIcon provider={session.provider} />
+                                <span className="truncate text-xs">{session.title}</span>
+                            </div>
+                            <p className="text-sm font-medium text-zinc-100">{overlayTitle}</p>
+                            <div className="flex flex-col gap-1 text-xs text-zinc-400">
+                                {session.state === "failed" ? (
+                                    <p className="text-zinc-300">
+                                        {session.exitCode !== null ? `Process exited with code ${session.exitCode}. ` : "The process stopped unexpectedly. "}
+                                        Review the terminal output for details, then resume to try again.
+                                    </p>
+                                ) : session.state === "sleeping" ? (
+                                    <p>
+                                        {sleepReasonText(session.sleepReason)}
+                                        {stoppedAgo && <> Stopped {stoppedAgo}.</>}
+                                    </p>
+                                ) : (
+                                    stoppedAgo && <p>Stopped {stoppedAgo}.</p>
+                                )}
+                                <p>{resumeHint(session.provider)}</p>
+                            </div>
+                            <Button
+                                autoFocus={active && focusOnActive}
+                                disabled={busy !== null}
+                                aria-busy={busy === "resume"}
+                                onClick={() => void resume()}
+                                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-300 focus-visible:ring-zinc-300/50"
+                            >
+                                {busy === "resume" ? <Spinner /> : <IconPlayerPlay />}
+                                {busy === "resume" ? "Resuming" : "Resume"}
+                            </Button>
+                            <div role="status" aria-live="polite" className="text-xs">
+                                {busy === "resume" && <span className="sr-only">Resuming</span>}
+                                {resumeError && <p className="text-red-300">Could not resume: {resumeError}</p>}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+            {!embedded && <ProjectChangesDialog open={changesOpen} onOpenChange={setChangesOpen} client={client} sessionId={sessionId} sessionTitle={session.title} />}
+        </div>
+    );
+}

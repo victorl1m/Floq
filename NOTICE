@@ -1,0 +1,11 @@
+Floq is licensed under the MIT License (see LICENSE), except as noted below.
+
+runtime/seccomp-floq.json is derived from the default seccomp profile of the
+Moby project (docker-v29.8.2, vendor/github.com/moby/profiles/seccomp/default.json),
+with pivot_root added for CAP_SYS_ADMIN. Moby is licensed under the Apache
+License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+The image bundles the skill-creator skill from https://github.com/anthropics/skills
+(skills/skill-creator, pinned commit ca45fc496a3436251f191354091d557da31c15b5) for Claude Code. It is licensed under the
+Apache License, Version 2.0; its LICENSE.txt is kept in the skill's folder inside the image.
+Other skills fetched when the image is built (obra/superpowers, blader/humanizer) keep their own licenses.

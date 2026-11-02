@@ -1,0 +1,398 @@
+import type {
+  AgentLink,
+  AuthUser,
+  CreateSessionInput,
+  DeviceFlow,
+  ClaudeOAuthResult,
+  ClaudeOAuthStart,
+  DevicePoll,
+  GithubRepoPage,
+  Exposure,
+  RuntimeInfo,
+  RuntimeProject,
+  WorktreeDeleteResult,
+  WorktreeDeleteStatus,
+  RuntimeSkill,
+  McpProviderChoice,
+  McpNewSecret,
+  McpServerDraft,
+  RuntimeMcpServer,
+  RuntimeSkillCatalogItem,
+  RuntimeSkillFile,
+  RuntimeSkillCatalogPreview,
+  SecretInfo,
+  LoginProviderId,
+  ProvidersStatus,
+  ProvidersUsage,
+  SessionSummary,
+  SettingsPatch,
+  UserSettings,
+} from "./types";
+import type { GitChanges, GitFileDiff } from "./git-review";
+
+function skillFileParams(skill: { scope: string; projectId?: string | null; provider: string; source: string; location: string }, path?: string): URLSearchParams {
+  const params = new URLSearchParams({ scope: skill.scope, provider: skill.provider, source: skill.source, location: skill.location });
+  if (skill.projectId) params.set("projectId", skill.projectId);
+  if (path !== undefined) params.set("path", path);
+  return params;
+}
+
+export class RuntimeError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export function normalizeBaseUrl(raw: string): string {
+  let value = raw.trim().replace(/\/+$/, "");
+  if (value && !/^https?:\/\//i.test(value)) value = "https://" + value;
+  return value;
+}
+
+/** Thin REST client for floq-runtime. Auth is a better-auth bearer token. */
+export class RuntimeClient {
+  private readonly createSessionKeys = new Map<string, string>();
+
+  constructor(
+    readonly baseUrl: string,
+    readonly token: string | null = null,
+    /** Called when an authenticated request comes back 401 (token expired/revoked). */
+    readonly onUnauthorized?: () => void,
+  ) {}
+
+  withToken(token: string | null): RuntimeClient {
+    return new RuntimeClient(this.baseUrl, token, this.onUnauthorized);
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+  ): Promise<{ data: T; headers: Headers }> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    Object.assign(headers, options.headers);
+    let response: Response;
+    let text: string;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 90_000);
+    try {
+      response = await fetch(this.baseUrl + path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      text = await response.text();
+    } catch {
+      if (controller.signal.aborted) {
+        throw new RuntimeError(408, "timeout", "The runtime took too long to respond. Retry the same action to check whether it completed.");
+      }
+      throw new RuntimeError(0, "network", "Runtime unreachable");
+    } finally {
+      clearTimeout(timeout);
+    }
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+    }
+    if (!response.ok) {
+      if (response.status === 401 && this.token) this.onUnauthorized?.();
+      const payload = data as { error?: { code?: string; message?: string } | string; message?: string; code?: string } | null;
+      const error = typeof payload?.error === "object" ? payload.error : null;
+      throw new RuntimeError(
+        response.status,
+        error?.code ?? payload?.code ?? "http_" + response.status,
+        error?.message ?? payload?.message ?? (typeof payload?.error === "string" ? payload.error : response.statusText || "Request failed"),
+      );
+    }
+    return { data: data as T, headers: response.headers };
+  }
+
+  private async call<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options?: { timeoutMs?: number; headers?: Record<string, string> },
+  ): Promise<T> {
+    return (await this.request<T>(method, path, body, options)).data;
+  }
+
+  // --- auth (better-auth) ---
+
+  async signIn(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+    const { data, headers } = await this.request<{ token?: string; user: AuthUser }>("POST", "/api/auth/sign-in/email", {
+      email,
+      password,
+    });
+    const token = headers.get("set-auth-token") ?? data.token;
+    if (!token) throw new RuntimeError(500, "no_token", "The runtime did not return a session token");
+    return { token, user: data.user };
+  }
+
+  /** Unauthenticated: tells the login flow whether the account needs first-run setup. */
+  async setupLookup(email: string): Promise<{ step: "setup" | "password" }> {
+    return (await this.request<{ step: "setup" | "password" }>("POST", "/v1/setup/lookup", { email })).data;
+  }
+
+  /** Unauthenticated: creates the first administrator. 409 setup_unavailable if already done. */
+  async setupAdmin(email: string, password: string, name?: string): Promise<void> {
+    await this.request("POST", "/v1/setup/admin", { email, password, ...(name ? { name } : {}) });
+  }
+
+  async signUp(name: string, email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+    const { data, headers } = await this.request<{ token?: string; user: AuthUser }>("POST", "/api/auth/sign-up/email", {
+      name,
+      email,
+      password,
+    });
+    const token = headers.get("set-auth-token") ?? data.token;
+    if (!token) throw new RuntimeError(500, "no_token", "The runtime did not return a session token");
+    return { token, user: data.user };
+  }
+
+  async currentUser(): Promise<AuthUser | null> {
+    const data = await this.call<{ user: AuthUser } | null>("GET", "/api/auth/get-session");
+    return data?.user ?? null;
+  }
+
+  async updateName(name: string): Promise<void> {
+    await this.call("POST", "/api/auth/update-user", { name });
+  }
+
+  async changePassword(currentPassword: string, newPassword: string, revokeOtherSessions = false): Promise<void> {
+    await this.call("POST", "/api/auth/change-password", { currentPassword, newPassword, revokeOtherSessions });
+  }
+
+  async signOut(): Promise<void> {
+    await this.call("POST", "/api/auth/sign-out", {});
+  }
+
+  // --- runtime ---
+
+  health = () => this.call<{ ok: boolean }>("GET", "/healthz");
+  info = () => this.call<RuntimeInfo>("GET", "/v1/info");
+
+  async sessions(): Promise<SessionSummary[]> {
+    return (await this.call<{ sessions: SessionSummary[] }>("GET", "/v1/sessions")).sessions;
+  }
+
+  async projects(): Promise<RuntimeProject[]> {
+    return (await this.call<{ projects: RuntimeProject[] }>("GET", "/v1/projects")).projects;
+  }
+
+  async createProject(input: { gitUrl: string; name?: string }): Promise<RuntimeProject> {
+    return (await this.call<{ project: RuntimeProject }>("POST", "/v1/projects", input, { timeoutMs: 5 * 60_000 })).project;
+  }
+
+  async updateProject(id: string, patch: { displayName?: string | null; imageUrl?: string | null }): Promise<RuntimeProject> {
+    return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, patch)).project;
+  }
+
+  worktreeDeleteStatus(projectId: string, workspaceId: string): Promise<WorktreeDeleteStatus> {
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/delete-status`);
+  }
+
+  deleteWorktree(projectId: string, workspaceId: string, force: boolean): Promise<WorktreeDeleteResult> {
+    return this.call("DELETE", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}?force=${force ? 1 : 0}`, undefined, { timeoutMs: 2 * 60_000 });
+  }
+
+  async renameSession(id: string, title: string): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("PATCH", `/v1/sessions/${encodeURIComponent(id)}`, { title })).session;
+  }
+
+  async createSession(input: CreateSessionInput): Promise<SessionSummary> {
+    const fingerprint = JSON.stringify(input);
+    const key = this.createSessionKeys.get(fingerprint) ?? crypto.randomUUID();
+    this.createSessionKeys.set(fingerprint, key);
+    const result = await this.call<{ session: SessionSummary }>("POST", "/v1/sessions", input, {
+      timeoutMs: 5 * 60_000,
+      headers: { "Idempotency-Key": key },
+    });
+    if (this.createSessionKeys.get(fingerprint) === key) this.createSessionKeys.delete(fingerprint);
+    return result.session;
+  }
+
+  async resumeSession(id: string): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/resume`, {})).session;
+  }
+
+  async sleepSession(id: string): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/sleep`, {})).session;
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    await this.call("DELETE", `/v1/sessions/${id}`);
+  }
+
+  gitChanges = (sessionId: string) => this.call<GitChanges>("GET", `/v1/sessions/${sessionId}/changes`);
+
+  gitDiff = (sessionId: string, path: string) =>
+    this.call<GitFileDiff>("GET", `/v1/sessions/${sessionId}/diff?path=${encodeURIComponent(path)}`);
+
+  /** Plain input to the PTY (no bracketed paste). */
+  async sendInput(id: string, data: string): Promise<void> {
+    await this.call("POST", `/v1/sessions/${id}/input`, { data });
+  }
+
+  async interrupt(id: string): Promise<void> {
+    await this.call("POST", `/v1/sessions/${id}/interrupt`, {});
+  }
+
+  streamUrl(id: string, since: number): string {
+    const url = new URL(this.baseUrl + `/v1/sessions/${id}/stream`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (this.token) url.searchParams.set("token", this.token);
+    if (since > 0) url.searchParams.set("since", String(since));
+    return url.toString();
+  }
+
+  // --- subscription logins (Claude / ChatGPT) ---
+
+  providersStatus = () => this.call<ProvidersStatus>("GET", "/v1/providers/status");
+
+  async providerLogin(id: LoginProviderId): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/providers/${id}/login`, {})).session;
+  }
+
+  providersUsage = () => this.call<ProvidersUsage>("GET", "/v1/providers/usage");
+
+  claudeOAuthStart = () => this.call<ClaudeOAuthStart>("POST", "/v1/providers/claude/oauth/start", {});
+
+  claudeOAuthFinish = (flowId: string, code: string) =>
+    this.call<ClaudeOAuthResult>("POST", "/v1/providers/claude/oauth/finish", { flowId, code });
+
+  async providerLogout(id: LoginProviderId): Promise<void> {
+    await this.call("DELETE", `/v1/providers/${id}/login`);
+  }
+
+  // --- settings ---
+
+  async settings(): Promise<UserSettings> {
+    return (await this.call<{ settings: UserSettings }>("GET", "/v1/settings")).settings;
+  }
+
+  async updateSettings(patch: SettingsPatch): Promise<UserSettings> {
+    return (await this.call<{ settings: UserSettings }>("PATCH", "/v1/settings", patch)).settings;
+  }
+
+  async skills(): Promise<{ skills: Array<{ name: string; description: string; source: "home" | "bundled"; provider: "claude" | "codex"; location: string }>; homeScanned: boolean }> {
+    return this.call("GET", "/v1/skills");
+  }
+
+  async projectSkills(projectId: string | null, scope: "global" | "project", provider?: "claude" | "codex"): Promise<{ skills: RuntimeSkill[]; homeScanned?: boolean }> {
+    if (scope === "global") {
+      const result = await this.skills();
+      return { skills: result.skills.filter((skill) => !provider || skill.provider === provider).map((skill) => ({ ...skill, scope: "global" })), homeScanned: result.homeScanned };
+    }
+    if (!projectId) throw new Error("Choose a project to view its skills.");
+    const params = new URLSearchParams({ scope });
+    if (provider) params.set("provider", provider);
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/skills?${params}`);
+  }
+
+  /** Read-only file list (no path) or one text file of a discovered skill. */
+  async skillFiles(skill: { scope: "global" | "project"; projectId?: string | null; provider: "claude" | "codex"; source: string; location: string }): Promise<{ files: RuntimeSkillFile[] }> {
+    return this.call("GET", `/v1/skills/files?${skillFileParams(skill)}`);
+  }
+
+  async skillFile(skill: { scope: "global" | "project"; projectId?: string | null; provider: "claude" | "codex"; source: string; location: string }, path: string): Promise<{ path: string; size: number; content: string }> {
+    return this.call("GET", `/v1/skills/files?${skillFileParams(skill, path)}`);
+  }
+
+  /** Removes a global skill for this user (the runtime refuses the protected Floq skills). */
+  async deleteSkill(provider: "claude" | "codex", location: string): Promise<{ removed: number; hidden: boolean }> {
+    return this.call("DELETE", `/v1/skills?${new URLSearchParams({ provider, location })}`);
+  }
+
+  async createProjectSkill(projectId: string, input: { provider: "claude" | "codex"; name: string; description: string; instructions: string }): Promise<{ skill: RuntimeSkill }> {
+    return this.call("POST", `/v1/projects/${encodeURIComponent(projectId)}/skills`, input);
+  }
+
+  async searchSkillCatalog(query: string, limit = 20): Promise<{ skills: RuntimeSkillCatalogItem[] }> {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    return this.call("GET", `/v1/skills/catalog/search?${params}`);
+  }
+
+  async previewCatalogSkill(input: { source: string; skillId: string } | { url: string }): Promise<RuntimeSkillCatalogPreview> {
+    const params = new URLSearchParams(input);
+    return this.call("GET", `/v1/skills/catalog/preview?${params}`);
+  }
+
+  async importProjectSkill(projectId: string, input: { provider: "claude" | "codex"; source: string; skillId: string } | { provider: "claude" | "codex"; url: string }): Promise<{ skill: RuntimeSkill }> {
+    return this.call("POST", `/v1/projects/${encodeURIComponent(projectId)}/skills/import`, input);
+  }
+
+  async mcpServers(scope: "global" | "project", projectId?: string | null, provider?: "claude" | "codex"): Promise<{ servers: RuntimeMcpServer[]; homeScanned?: boolean; malformedConfigs?: number }> {
+    const params = new URLSearchParams({ scope });
+    if (projectId) params.set("projectId", projectId);
+    if (provider) params.set("provider", provider);
+    return this.call("GET", `/v1/mcp?${params}`);
+  }
+
+  /** Installs one MCP server. The runtime stores env/header values in the provider config and never returns them. */
+  async addMcpServer(input: { scope: "global" | "project"; projectId?: string | null; providers: McpProviderChoice; server: McpServerDraft; newSecrets?: McpNewSecret[]; allowPlaintext?: boolean }): Promise<{ servers: RuntimeMcpServer[]; restartRequired: boolean }> {
+    return this.call("POST", "/v1/mcp", { ...input, projectId: input.projectId ?? undefined });
+  }
+
+  /** Removes exactly one named entry from one provider's config. Bundled servers are refused. */
+  async removeMcpServer(input: { scope: "global" | "project"; projectId?: string | null; provider: "claude" | "codex"; name: string }): Promise<{ removed: number; restartRequired: boolean }> {
+    const params = new URLSearchParams({ scope: input.scope, provider: input.provider, name: input.name });
+    if (input.projectId) params.set("projectId", input.projectId);
+    return this.call("DELETE", `/v1/mcp?${params}`);
+  }
+
+  // --- vault ---
+
+  async secrets(): Promise<SecretInfo[]> {
+    return (await this.call<{ secrets: SecretInfo[] }>("GET", "/v1/vault")).secrets;
+  }
+
+  async putSecret(name: string, input: { value?: string; description?: string; expose?: Exposure }): Promise<SecretInfo[]> {
+    return (await this.call<{ secrets: SecretInfo[] }>("PUT", `/v1/vault/${name}`, input)).secrets;
+  }
+
+  async patchSecret(originalName: string, input: { name: string; description: string; expose?: Exposure; value?: string }): Promise<SecretInfo[]> {
+    return (await this.call<{ secrets: SecretInfo[] }>("PATCH", `/v1/vault/${encodeURIComponent(originalName)}`, input)).secrets;
+  }
+
+  async deleteSecret(name: string): Promise<SecretInfo[]> {
+    return (await this.call<{ secrets: SecretInfo[] }>("DELETE", `/v1/vault/${name}`)).secrets;
+  }
+
+  // --- agent links ---
+
+  async links(): Promise<AgentLink[]> {
+    return (await this.call<{ links: AgentLink[] }>("GET", "/v1/links")).links;
+  }
+
+  async link(a: string, b: string): Promise<AgentLink[]> {
+    return (await this.call<{ links: AgentLink[] }>("POST", "/v1/links", { a, b })).links;
+  }
+
+  async unlink(a: string, b: string): Promise<AgentLink[]> {
+    return (await this.call<{ links: AgentLink[] }>("DELETE", "/v1/links", { a, b })).links;
+  }
+
+  // --- GitHub device flow ---
+
+  githubStart = () => this.call<DeviceFlow>("POST", "/v1/github/device/start", {});
+  githubPoll = (flowId: string) => this.call<DevicePoll>("POST", "/v1/github/device/poll", { flowId });
+
+  githubRepos = (q: string, page: number) =>
+    this.call<GithubRepoPage>("GET", `/v1/github/repos?q=${encodeURIComponent(q)}&page=${page}`);
+
+  async githubDisconnect(): Promise<void> {
+    await this.call("DELETE", "/v1/github");
+  }
+}
