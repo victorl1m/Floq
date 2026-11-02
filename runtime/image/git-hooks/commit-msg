@@ -1,0 +1,21 @@
+#!/bin/sh
+# System-wide commit-msg hook (core.hooksPath in /etc/gitconfig).
+# 1. Removes the agents' own attribution (Claude Code, Codex).
+# 2. Adds Floq's co-author trailer from FLOQ_GIT_COAUTHOR ("Name <email>"); empty adds nothing.
+# Repositories that set their own core.hooksPath (e.g. husky) bypass this hook.
+msg="$1"
+[ -f "$msg" ] || exit 0
+
+tmp="$msg.floq.$$"
+sed \
+  -e '/^[Cc]o-[Aa]uthored-[Bb]y:.*[Cc]laude.*<noreply@anthropic\.com>/d' \
+  -e '/^[Cc]o-[Aa]uthored-[Bb]y:.*[Cc]odex.*<noreply@openai\.com>/d' \
+  -e '/Generated with \[Claude Code\]/d' \
+  -e '/Generated with \[Codex\]/d' \
+  "$msg" > "$tmp" && cat "$tmp" > "$msg"
+rm -f "$tmp"
+
+if [ -n "${FLOQ_GIT_COAUTHOR:-}" ]; then
+  git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Co-authored-by: $FLOQ_GIT_COAUTHOR" "$msg" || true
+fi
+exit 0

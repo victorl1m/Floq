@@ -1,0 +1,102 @@
+# Dokploy-ready: deploy as a "Docker Compose" service (build context = this folder).
+# Set the variables below in Dokploy > Environment. Do NOT publish host ports:
+# in Dokploy > Domains add a domain for service `runtime`, container port 8787,
+# HTTPS on (Let's Encrypt). Traefik proxies WebSocket upgrades automatically.
+# Set BETTER_AUTH_URL to that public https URL.
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: floq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy Environment}
+      POSTGRES_DB: floq
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U floq -d floq"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: floq-runtime:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8787"
+    environment:
+      DATABASE_URL: postgres://floq:${POSTGRES_PASSWORD}@db:5432/floq
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET (openssl rand -base64 48)}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set BETTER_AUTH_URL to the public https URL}
+      FLOQ_ENCRYPTION_KEY: ${FLOQ_ENCRYPTION_KEY:?set FLOQ_ENCRYPTION_KEY (openssl rand -hex 32)}
+      FLOQ_ALLOW_SIGNUP: ${FLOQ_ALLOW_SIGNUP:-0}
+      FLOQ_BOOTSTRAP_ADMIN_EMAIL: ${FLOQ_BOOTSTRAP_ADMIN_EMAIL:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      # Co-author added to commits made in sessions. Unset = default; set empty to disable for everyone.
+      FLOQ_GIT_COAUTHOR: ${FLOQ_GIT_COAUTHOR-floqless <floq@flowless.app>}
+      FLOQ_ALLOWED_ORIGINS: ${FLOQ_ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,http://localhost:1420}
+      FLOQ_CLAUDE_MODELS: ${FLOQ_CLAUDE_MODELS:-}
+      FLOQ_CODEX_MODELS: ${FLOQ_CODEX_MODELS:-}
+      # 1 = seed and list the third-party skills baked into the image. Floq skills are always kept. Default: off.
+      PREINSTALL_SKILLS: ${PREINSTALL_SKILLS:-0}
+      FLOQ_PORT: "8787"
+      FLOQ_HOST: "0.0.0.0"
+      FLOQ_SHARD_DRIVER: linux
+      FLOQ_SHARD_ROOT: /var/lib/floq/shards
+      FLOQ_SHARD_LOCK_DELAY_MS: ${FLOQ_SHARD_LOCK_DELAY_MS:-30000}
+      FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
+      FLOQ_SESSION_MAX_LIFETIME_MS: ${FLOQ_SESSION_MAX_LIFETIME_MS:-3600000}
+      FLOQ_LOG_LEVEL: ${FLOQ_LOG_LEVEL:-info}
+    volumes:
+      - shards:/var/lib/floq/shards
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Per-user shards need gocryptfs (FUSE) mounts and bubblewrap namespaces.
+    # Agent processes are started with no-new-privs under a per-user uid, never as root.
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+      - SETUID
+      - SETGID
+      - SETPCAP
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SYS_CHROOT
+    security_opt:
+      - apparmor:unconfined
+      - systempaths=unconfined
+      # Docker's default seccomp profile plus pivot_root (for CAP_SYS_ADMIN only), which bubblewrap needs.
+      # Generated from moby docker-v29.8.2 vendor/github.com/moby/profiles/seccomp/default.json.
+      - seccomp:./seccomp-floq.json
+    pids_limit: 4096
+    mem_limit: ${FLOQ_MEM_LIMIT:-8g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+  shards:
