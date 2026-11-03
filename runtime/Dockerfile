@@ -20,11 +20,31 @@ ENV NODE_ENV=production \
     FLOQ_PORT=8787
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates curl ripgrep tini bash procps \
-        bubblewrap gocryptfs fuse3 util-linux strace \
+        bubblewrap fuse3 util-linux strace \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code @openai/codex \
     && npm cache clean --force
+# gocryptfs from the pinned upstream static release, NOT Debian's 2.3 package. Debian bookworm builds 2.3 against a
+# newer golang.org/x/sys whose Setreuid/Setregid affect every thread, which breaks gocryptfs's per-request uid switch
+# when run as root with -allow_other: concurrent mkdir/open(O_CREAT) fail randomly with EPERM
+# (https://github.com/rfjakob/gocryptfs/issues/892, fixed upstream in v2.5.1). The build fails if the checksum differs.
+ARG GOCRYPTFS_VERSION=2.6.1
+ARG GOCRYPTFS_SHA256_AMD64=49b8c0eb0f6373b6ac99c394a52909d8478e74c08d0961527c1162967cc28c44
+ARG GOCRYPTFS_SHA256_ARM64=64576d550ab8af3f1dc729e93779540c5ecc00967d0185aae51a29a3755d86d0
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=amd64; sha="$GOCRYPTFS_SHA256_AMD64" ;; \
+      arm64) arch=arm64; sha="$GOCRYPTFS_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture for gocryptfs" >&2; exit 1 ;; \
+    esac; \
+    f="gocryptfs_v${GOCRYPTFS_VERSION}_linux-static_${arch}.tar.gz"; \
+    curl -fsSL -o "/tmp/$f" "https://github.com/rfjakob/gocryptfs/releases/download/v${GOCRYPTFS_VERSION}/$f"; \
+    echo "$sha  /tmp/$f" | sha256sum -c -; \
+    tar -xzf "/tmp/$f" -C /usr/local/bin gocryptfs; \
+    rm -f "/tmp/$f"; \
+    chmod 755 /usr/local/bin/gocryptfs; \
+    gocryptfs -version | grep -q "gocryptfs v${GOCRYPTFS_VERSION}"
 # Fail the image build if the utilities and Codex launch modes required at runtime are missing.
 RUN command -v ps \
     && codex --no-daemon --help >/dev/null \
