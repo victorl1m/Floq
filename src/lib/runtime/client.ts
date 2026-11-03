@@ -348,10 +348,12 @@ export class RuntimeClient {
     (await this.call<{ ports: SessionPort[] }>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/ports`)).ports;
 
   /** WebSocket URL for one TCP connection to a port the session listens on (one socket per connection). */
-  portTunnelUrl(sessionId: string, port: number): string {
+  /** `manual` asks the runtime to also allow a port it has not detected as listening (still loopback, unprivileged, non-internal). */
+  portTunnelUrl(sessionId: string, port: number, manual = false): string {
     const url = new URL(this.baseUrl + `/v1/sessions/${encodeURIComponent(sessionId)}/ports/${port}/tunnel`);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     if (this.token) url.searchParams.set("token", this.token);
+    if (manual) url.searchParams.set("manual", "1");
     return url.toString();
   }
 

@@ -32,10 +32,10 @@ export function setSessionPorts(sessionId: string, ports: SessionPort[]) {
 }
 
 /** Throws with a readable message when the local port cannot be bound. */
-export async function startForward(client: RuntimeClient, sessionId: string, port: number): Promise<void> {
+export async function startForward(client: RuntimeClient, sessionId: string, port: number, manual = false): Promise<void> {
   if (!portForwardingSupported) throw new Error("Port forwarding is only available in the Floq desktop app.");
   try {
-    await invoke("port_forward_start", { port, url: client.portTunnelUrl(sessionId, port) });
+    await invoke("port_forward_start", { port, url: client.portTunnelUrl(sessionId, port, manual) });
   } catch (error) {
     throw new Error(typeof error === "string" ? error : error instanceof Error ? error.message : "Could not start forwarding");
   }

@@ -8,6 +8,7 @@ import type { GitChange, GitChanges, GitFileDiff } from "@/lib/runtime/git-revie
 import { errorMessage } from "@/lib/runtime/store";
 import { FileDiffBody, useParsedDiff } from "../git-diff";
 import { GROUP_LABEL, GROUP_LETTER, GROUP_ORDER, changeGroup, parseDiff, type ChangeGroup } from "./diff-parse";
+import { publishGitChanges } from "./git-status";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 
 /** One folder / git worktree of the active project, reachable through a session that runs in it. */
@@ -136,6 +137,7 @@ export default function ChangesTab({ client, targets, onCount }: { client: Runti
     try {
       const result = await client.gitChanges(target.sessionId);
       if (gen !== generation.current) return;
+      publishGitChanges(target.id, result);
       setLists((current) => ({ ...current, [target.id]: { state: "ready", summary: result } }));
       setOpen((current) => ({ ...current, ...Object.fromEntries(result.changes.map((change, index) => [diffKey(target.id, change.path), index < INITIAL_OPEN])) }));
       const queue = result.changes.slice(0, PREFETCH_LIMIT).map((change) => change.path);

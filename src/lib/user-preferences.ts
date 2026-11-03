@@ -14,6 +14,8 @@ export interface UserPreferences {
     canvasSizes: Record<string, Record<string, { width: number; height: number }>>;
     /** Project whose Agent Canvas was open last; restored after a reload. */
     lastCanvasProjectId: string | null;
+    /** Ports last forwarded by hand, per session id (most recent first), offered as one-click chips. */
+    recentForwardPorts: Record<string, number[]>;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
@@ -30,7 +32,18 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     canvasPositions: {},
     canvasSizes: {},
     lastCanvasProjectId: null,
+    recentForwardPorts: {},
 };
+
+function portListMap(value: unknown): Record<string, number[]> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: Record<string, number[]> = {};
+    for (const [id, list] of Object.entries(value)) {
+        if (!Array.isArray(list)) continue;
+        result[id] = list.filter((port): port is number => Number.isInteger(port) && port >= 1024 && port <= 65535).slice(0, 5);
+    }
+    return result;
+}
 
 function positionMaps(value: unknown): UserPreferences["canvasPositions"] {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -97,6 +110,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             canvasPositions: positionMaps(parsed.canvasPositions),
             canvasSizes: sizeMaps(parsed.canvasSizes),
             lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
+            recentForwardPorts: portListMap(parsed.recentForwardPorts),
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
 }
