@@ -36,6 +36,8 @@ export interface SessionSummary {
   role?: string | null;
   /** Session that recruited this one via the floq CLI, or null. */
   parentSessionId?: string | null;
+  /** Number of per-agent secrets attached (never their values). Set on the session list. */
+  secretCount?: number;
   /** Turn status of a running agent; only set on the session list (polled), absent otherwise. */
   activity?: "working" | "idle" | "waiting-for-input";
 }

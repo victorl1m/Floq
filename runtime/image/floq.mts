@@ -6,13 +6,14 @@
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
 //   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
 //   floq note list | read N | write N TEXT | append N TEXT
-//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (lead agents only)
+//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
 //   floq skills list|search|preview|add|create|remove   find, install and author skills (add/create/remove: lead agents only)
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
+//   floq secret list|get NAME                    secrets available to this agent (linked keychains + global env vault); list prints names only; never print or commit values
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -30,7 +31,7 @@ Commands:
   floq ask <UUID|Name> "prompt" [--timeout SECONDS] [--no-wait] [--chars N | --full]
   floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
   floq check <UUID|Name> [--chars N | --full]
-  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]
+  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only; other agents ask the orchestrator with "floq ask")
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
@@ -45,6 +46,8 @@ Commands:
   floq mcp add --json FILE|- [--name NAME] [options]       (JSON from docs; "-" reads stdin; the only way to set env/headers; a value of "\${vault:NAME}" reads that vault secret)
       options: [--provider claude|codex|both] [--project [UUID] | --global] [--dry-run] [--allow-plaintext]
   floq mcp remove NAME [--provider claude|codex] [--project [UUID] | --global]
+  floq secret list                       names (and scope: keychain|global) of the secrets available to this agent
+  floq secret get NAME                   print one value (prefer the NAME environment variable; never echo or commit it)
   floq secrets list
   floq secrets add NAME [--description TEXT]     (value from stdin or a hidden prompt; create only)
 
@@ -52,7 +55,7 @@ Use immutable Floq UUIDs printed by list/recruit for agent references. Names are
 for compatibility, but duplicate names are ambiguous. --isolated recruits into a managed
 Git worktree in a registered Git project; --cwd selects an allowed directory in this project.
 Check models with "floq models" before recruiting with --model. The name/role do not select a model: read "floq roles" / "floq role ID", then choose a provider and a --model matching the role's capability. --role ID applies a preset prompt; other --role text is a free-form first message.
-Recruit/connect/dismiss require a lead session and user authorization.
+Only the orchestrator can recruit. Connect/dismiss require a lead session and user authorization. If you are not the orchestrator and need another agent, message the orchestrator ("floq ask <orchestrator> \"Please recruit a <role> agent to <task>\"") instead of recruiting.
 
 Skills, MCP servers and secrets: list/search/preview and "mcp add --dry-run" work in any agent session. Installing or removing
 skills and MCP servers, and creating secrets, require a lead session. ALWAYS show the user what you are about to install
@@ -166,6 +169,7 @@ const allowedOptions: Record<string, string[]> = {
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose"],
+  secret: [],
 };
 if (!allowedOptions[command]) usage();
 for (const option of Object.keys(named)) {
@@ -354,6 +358,28 @@ switch (command) {
       const r = await call<ScopeResponse>("mcp/remove", { ...scope, provider: providerOrExit(named.provider, false), name: args[0] });
       console.log("removed MCP server \"" + args[0] + "\" (" + scopeLabel(r) + ")");
       console.log("Run `floq session restart` after saving your work to reload this agent; authentication and tool availability must be checked separately.");
+    } else usage();
+    break;
+  }
+  case "secret": {
+    const globalSecrets = async (): Promise<Record<string, string>> => {
+      try { return (await call<{ secrets: Record<string, string> }>("secrets/global")).secrets; } catch { return {}; }
+    };
+    const [sub, secretName] = positional;
+    const dir = (process.env.HOME ?? "/home/agent") + "/.floq/secrets/" + (process.env.FLOQ_SESSION_ID ?? "");
+    if (sub === "list") {
+      let names: string[] = [];
+      try { names = readdirSync(dir).filter((n) => /^[A-Z_][A-Z0-9_]{0,63}$/.test(n)).sort(); } catch { /* no keychain linked */ }
+      const global = await globalSecrets();
+      for (const n of names) console.log(n + "\tkeychain");
+      for (const n of Object.keys(global).sort()) if (!names.includes(n)) console.log(n + "\tglobal");
+      if (!names.length && !Object.keys(global).length) console.log("no secrets");
+    } else if (sub === "get" && secretName && /^[A-Z_][A-Z0-9_]{0,63}$/.test(secretName) && positional.length === 2) {
+      // Keychain files (linked wallets) win over global vault entries.
+      try { process.stdout.write(readFileSync(dir + "/" + secretName, "utf8")); break; } catch { /* fall through to the global vault */ }
+      const global = await globalSecrets();
+      if (secretName in global) process.stdout.write(global[secretName]);
+      else { console.error("floq: no secret named " + secretName + " is available to this agent"); process.exit(1); }
     } else usage();
     break;
   }

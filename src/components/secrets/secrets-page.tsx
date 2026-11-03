@@ -21,6 +21,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { errorMessage, useClient } from "@/lib/runtime/store";
 import type { Exposure, SecretInfo } from "@/lib/runtime/types";
 import { SettingsGroup } from "../settings/ui";
+import KeychainsSection from "./keychains-section";
 
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
@@ -268,6 +269,8 @@ export default function SecretsPage() {
                 </div>
             </form>
             </SettingsGroup>}
+
+            <KeychainsSection />
 
             <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
                 <AlertDialogContent>

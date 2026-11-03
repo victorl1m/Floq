@@ -2,7 +2,7 @@
 // Contract-facing calls live here so a runtime-side rename is a one-line fix.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RuntimeClient } from "@/lib/runtime/client";
-import type { AgentLink, AgentMessageEvent } from "@/lib/runtime/types";
+import type { AgentLink, AgentMessageEvent, CanvasNote, CanvasNoteInput, NoteColor } from "@/lib/runtime/types";
 
 export type { AgentMessageEvent };
 export type LinkKind = AgentLink["kind"];
@@ -94,3 +94,55 @@ export function useAgentEvents(client: RuntimeClient | null, projectId: string |
   }, [client, projectId]);
   return events;
 }
+
+// ---- canvas notes and per-agent secrets (thin wrappers over the runtime client) ----
+export type { CanvasNote, NoteColor };
+export type NotePatch = CanvasNoteInput;
+
+export const fetchNotes = (client: RuntimeClient, projectId: string) => client.projectNotes(projectId);
+export const createNoteRequest = (client: RuntimeClient, projectId: string, input: CanvasNoteInput & { x: number; y: number }) => client.createNote(projectId, input);
+export const updateNoteRequest = (client: RuntimeClient, id: string, patch: NotePatch) => client.updateNote(id, patch);
+export const deleteNoteRequest = (client: RuntimeClient, id: string) => client.deleteNote(id);
+
+
+// ---- keychains: a wallet of secrets linked to agents (values are write-only) ----
+// Typed here and called through the generic request helper until the runtime client exposes methods.
+export interface Keychain {
+  id: string;
+  projectId: string | null;
+  name: string;
+  color: NoteColor;
+  secretNames: string[];
+  linkedSessionIds: string[];
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+}
+/** A keychain in the cross-project list on the Secrets screen. */
+export type KeychainSummary = Keychain & { projectName?: string | null; linkedCount?: number };
+export type KeychainPatch = Partial<Pick<Keychain, "name" | "color" | "x" | "y" | "w" | "h">>;
+type Rpc = { call: <T>(method: string, path: string, body?: unknown) => Promise<T> };
+const rpc = <T,>(client: RuntimeClient, method: string, path: string, body?: unknown) => (client as unknown as Rpc).call<T>(method, path, body);
+const enc = encodeURIComponent;
+const unwrap = <T,>(data: unknown, key: string): T => ((data as Record<string, unknown>)?.[key] ?? data) as T;
+
+export const fetchKeychains = async (client: RuntimeClient, projectId: string) => (await rpc<{ keychains: Keychain[] }>(client, "GET", `/v1/projects/${enc(projectId)}/keychains`)).keychains;
+export const fetchAllKeychains = async (client: RuntimeClient) => (await rpc<{ keychains: KeychainSummary[] }>(client, "GET", "/v1/keychains")).keychains;
+export const createKeychainRequest = async (client: RuntimeClient, projectId: string, input: KeychainPatch) => unwrap<Keychain>(await rpc(client, "POST", `/v1/projects/${enc(projectId)}/keychains`, input), "keychain");
+export const updateKeychainRequest = async (client: RuntimeClient, id: string, patch: KeychainPatch) => unwrap<Keychain>(await rpc(client, "PATCH", `/v1/keychains/${enc(id)}`, patch), "keychain");
+export const deleteKeychainRequest = (client: RuntimeClient, id: string) => rpc<unknown>(client, "DELETE", `/v1/keychains/${enc(id)}`);
+export const setKeychainSecret = (client: RuntimeClient, id: string, name: string, value: string) => rpc<{ appliesOnNextStart?: boolean }>(client, "PUT", `/v1/keychains/${enc(id)}/secrets/${enc(name)}`, { value });
+export const deleteKeychainSecret = (client: RuntimeClient, id: string, name: string) => rpc<unknown>(client, "DELETE", `/v1/keychains/${enc(id)}/secrets/${enc(name)}`);
+export const linkKeychain = (client: RuntimeClient, id: string, sessionId: string) => rpc<{ appliesOnNextStart?: boolean }>(client, "POST", `/v1/keychains/${enc(id)}/links`, { sessionId });
+export const unlinkKeychain = (client: RuntimeClient, id: string, sessionId: string) => rpc<unknown>(client, "DELETE", `/v1/keychains/${enc(id)}/links/${enc(sessionId)}`);
+
+// One-shot "select and centre this keychain" request, raised from the Secrets screen and consumed by the canvas.
+let pendingKeychainFocus: string | null = null;
+export const requestKeychainFocus = (id: string) => { pendingKeychainFocus = id; };
+export const takeKeychainFocus = (known: (id: string) => boolean) => {
+  if (!pendingKeychainFocus || !known(pendingKeychainFocus)) return null;
+  const id = pendingKeychainFocus;
+  pendingKeychainFocus = null;
+  return id;
+};

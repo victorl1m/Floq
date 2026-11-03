@@ -5,7 +5,7 @@ import { formatRoleLine as cliRoleLine } from "../dist/image/floq-args.mjs";
 
 test("role presets are well formed and chain spec -> plan -> implement -> review", () => {
   const ids = AGENT_ROLES.map((r) => r.id);
-  assert.deepEqual(ids, ["specifier", "planner", "implementer", "reviewer", "tester"]);
+  assert.deepEqual(ids, ["specifier", "planner", "implementer", "reviewer", "tester", "orchestrator"]);
   for (const role of AGENT_ROLES) {
     assert.ok(role.prompt.includes("Handoff") && role.prompt.includes("Do NOT"), role.id);
     for (const other of [...role.handoffFrom, ...role.handoffTo]) assert.ok(getAgentRole(other), other);

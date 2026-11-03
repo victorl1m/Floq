@@ -24,7 +24,7 @@ const FORM_ID = "new-agent-form";
 const GENERALIST = "__generalist__";
 
 export default function NewAgentDialog() {
-    const { client, info, newAgentOpen, newAgentOrigin, setNewAgentOpen, upsertSession, openSession, refresh, projects, projectsLoading, activeProjectId, activeWorkspaceId, selectProject, createProject } = useRuntime();
+    const { client, info, newAgentOpen, newAgentOrigin, setNewAgentOpen, upsertSession, openSession, focusOnCanvas, view, refresh, projects, projectsLoading, activeProjectId, activeWorkspaceId, selectProject, createProject } = useRuntime();
     const [chosen, setChosen] = useState<ProviderId>(() => loadComposerPrefs().provider);
     const [modelByProvider, setModelByProvider] = useState<Record<string, string>>(() => loadComposerPrefs().models);
     const [title, setTitle] = useState("");
@@ -90,7 +90,9 @@ export default function NewAgentDialog() {
         try {
             const session = await client.createSession(input);
             upsertSession(session);
-            openSession(session, newAgentOrigin);
+            // Started from the canvas: stay on it, centre the new node and show its terminal in the dialog instead of navigating to the old view.
+            if (view === "canvas" && session.projectId) focusOnCanvas(session, { dialog: true });
+            else openSession(session, newAgentOrigin);
             setNewAgentOpen(false);
             reset();
             void refresh();

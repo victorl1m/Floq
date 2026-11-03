@@ -89,7 +89,7 @@ function Row({ session, project, showWorkspace, active, open, closed, onActivate
 
 /** Every agent conversation of the active project (all workspaces): open tabs, running in the background, and closed ones to restore. */
 export default function ConversationsTab({ projectId, project }: { projectId: string | null; project?: RuntimeProject }) {
-  const { sessions, agentTabIds, activateSession, selectedId, loaded } = useRuntime();
+  const { sessions, agentTabIds, focusOnCanvas, selectedId, loaded } = useRuntime();
   const [query, setQuery] = useState("");
   const multipleWorkspaces = (project?.workspaces.length ?? 0) > 1;
 
@@ -147,7 +147,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
                     active={session.id === selectedId}
                     open={opened.has(session.id)}
                     closed={group.closed}
-                    onActivate={() => activateSession(session, "agent", { resume: true })}
+                    onActivate={() => focusOnCanvas(session)}
                   />
                 ))}
               </ul>

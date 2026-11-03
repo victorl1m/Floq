@@ -1,5 +1,9 @@
 import type {
   AgentLink,
+  Keychain,
+  KeychainInput,
+  CanvasNote,
+  CanvasNoteInput,
   AgentMessageEvent,
   AgentRole,
   AuthUser,
@@ -532,6 +536,60 @@ export class RuntimeClient {
 
   async deleteSecret(name: string): Promise<SecretInfo[]> {
     return (await this.call<{ secrets: SecretInfo[] }>("DELETE", `/v1/vault/${name}`)).secrets;
+  }
+
+  // --- canvas notes, agent secrets, orchestrator role (runtime block) ---
+
+  /** Notes of a project (UUID, or "none" for the scratch canvas). */
+  async projectNotes(projectId: string): Promise<CanvasNote[]> {
+    return (await this.call<{ notes: CanvasNote[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/notes`)).notes;
+  }
+  async createNote(projectId: string, input: CanvasNoteInput & { x: number; y: number }): Promise<CanvasNote> {
+    return this.call<CanvasNote>("POST", `/v1/projects/${encodeURIComponent(projectId)}/notes`, input);
+  }
+  async updateNote(noteId: string, patch: CanvasNoteInput): Promise<CanvasNote> {
+    return this.call<CanvasNote>("PATCH", `/v1/notes/${encodeURIComponent(noteId)}`, patch);
+  }
+  async deleteNote(noteId: string): Promise<void> {
+    await this.call("DELETE", `/v1/notes/${encodeURIComponent(noteId)}`);
+  }
+
+  // Keychains (wallets of secrets linked to agents). Values are write-only.
+  /** All of the user's keychains across projects (Secrets screen). */
+  keychains(): Promise<Keychain[]>;
+  /** Keychains of one project (UUID, or "none" for the scratch canvas). */
+  keychains(projectId: string): Promise<Keychain[]>;
+  async keychains(projectId?: string): Promise<Keychain[]> {
+    const path = projectId === undefined ? "/v1/keychains" : `/v1/projects/${encodeURIComponent(projectId)}/keychains`;
+    return (await this.call<{ keychains: Keychain[] }>("GET", path)).keychains;
+  }
+  async createKeychain(projectId: string, input: KeychainInput & { name: string; x: number; y: number }): Promise<Keychain> {
+    return this.call<Keychain>("POST", `/v1/projects/${encodeURIComponent(projectId)}/keychains`, input);
+  }
+  async updateKeychain(id: string, patch: KeychainInput): Promise<Keychain> {
+    return this.call<Keychain>("PATCH", `/v1/keychains/${encodeURIComponent(id)}`, patch);
+  }
+  async deleteKeychain(id: string): Promise<void> {
+    await this.call("DELETE", `/v1/keychains/${encodeURIComponent(id)}`);
+  }
+  /** Create or replace one secret (name A-Z0-9_). */
+  async setKeychainSecret(id: string, name: string, value: string): Promise<Keychain> {
+    return this.call<Keychain>("PUT", `/v1/keychains/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`, { value });
+  }
+  async deleteKeychainSecret(id: string, name: string): Promise<Keychain> {
+    return this.call<Keychain>("DELETE", `/v1/keychains/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`);
+  }
+  /** Idempotent; the agent must be in the keychain's project. */
+  async linkKeychain(id: string, sessionId: string): Promise<Keychain> {
+    return this.call<Keychain>("POST", `/v1/keychains/${encodeURIComponent(id)}/links`, { sessionId });
+  }
+  async unlinkKeychain(id: string, sessionId: string): Promise<Keychain> {
+    return this.call<Keychain>("DELETE", `/v1/keychains/${encodeURIComponent(id)}/links/${encodeURIComponent(sessionId)}`);
+  }
+
+  /** Mark/unmark an orchestrator ("orchestrator" | null). User-only; returns the updated summary. */
+  async setSessionRole(sessionId: string, role: string | null): Promise<SessionSummary> {
+    return this.call<SessionSummary>("PATCH", `/v1/sessions/${encodeURIComponent(sessionId)}/role`, { role });
   }
 
   // --- agent links ---

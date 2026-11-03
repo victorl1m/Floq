@@ -3,7 +3,6 @@ import {
   Background,
   BackgroundVariant,
   ConnectionMode,
-  Controls,
   MarkerType,
   MiniMap,
   Panel,
@@ -12,49 +11,113 @@ import {
   useNodesState,
   useOnViewportChange,
   useReactFlow,
+  useStore,
+  useViewport,
   type Connection,
+  type Node,
+  type Edge,
+  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  IconActivity, IconArrowsMaximize, IconHandStop, IconLayoutDistributeHorizontal, IconLink, IconMap, IconPlus, IconPointer, IconTopologyStar3,
+  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconKey, IconLayoutDistributeHorizontal, IconLink, IconMap, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyText } from "@/lib/clipboard";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
+import { recruitCounts, setOrchestrator } from "@/lib/runtime/orchestrator";
 import type { SessionSummary } from "@/lib/runtime/types";
 import AgentNodeCard, { HEADER_HEIGHT, MAX_SIZE, MIN_SIZE, type AgentNode } from "./agent-node";
 import ActivityPanel from "./activity-panel";
+import { Keys } from "./canvas-kbd";
+import KeychainDialog from "./keychain-dialog";
+import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
+import { NOTE_DEFAULT, NoteProvider, isNoteId, noteNodeTypes, useCanvasNotes } from "./canvas-notes";
+import CanvasComposer from "./canvas-composer";
+import TerminalDialog from "./terminal-dialog";
+import { sendToTargets, type Attachment } from "./canvas-send";
 import CanvasMenuContent, { type MenuApi, type MenuTarget, type SizePreset } from "./canvas-menu";
 import { CanvasCtx, type CanvasCtxValue, type LiveWire } from "./canvas-context";
-import { createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
+import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
 import { DEFAULT_NODE_SIZE, layoutTree } from "./layout";
 import { getMirrorText } from "./session-mirror";
-import WireEdgeView, { KIND_COLOR, type WireEdge } from "./wire-edge";
+import { agentActivity } from "@/components/agents/activity-indicator";
+import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
 
 // Defined once outside the components so React Flow does not remount nodes/edges on every render.
-const nodeTypes = { agent: AgentNodeCard };
-const edgeTypes = { wire: WireEdgeView };
+const nodeTypes = { agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes };
+const edgeTypes = { wire: WireEdgeView, ...keychainEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
   small: { width: 360, height: 220 },
   medium: DEFAULT_NODE_SIZE,
   large: { width: 860, height: 540 },
 };
+const MAP_COLOR = { running: "#10b981", working: "#0ea5e9", waiting: "#f59e0b", sleeping: "var(--muted-foreground)", failed: "var(--destructive)" } as const;
+
+function minimapColor(node: AgentNode) {
+  if ((node.type as string) === "keychain") return KC_AMBER;
+  if ((node.type as string) === "note") return "color-mix(in oklab, var(--muted-foreground) 45%, transparent)";
+  const session = node.data.session;
+  const activity = agentActivity(session);
+  if (activity) return MAP_COLOR[activity];
+  if (session.state === "running" || session.state === "starting") return MAP_COLOR.running;
+  if (session.state === "failed" || session.state === "exited") return MAP_COLOR.failed;
+  return MAP_COLOR.sleeping;
+}
+
+function ShortcutTip({ label, keys, children }: { label: string; keys?: string; children: React.ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top">{label}{keys && <Keys keys={keys} className="ml-2 pl-0" />}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Replaces React Flow's <Controls>: zoom out, live percentage (click = 100%), zoom in, fit view. */
+function CanvasControls() {
+  const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
+  const { zoom } = useViewport();
+  const minZoom = useStore((state) => state.minZoom);
+  const maxZoom = useStore((state) => state.maxZoom);
+  const button = "size-8";
+  return (
+    <Panel position="bottom-left" className="flex items-center gap-0.5 rounded-lg border border-border bg-card/80 p-1 shadow-md backdrop-blur-sm">
+      <ShortcutTip label="Zoom out" keys="Ctrl -">
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom out" disabled={zoom <= minZoom + 0.001} onClick={() => void zoomOut({ duration: 200 })}><IconMinus size={16} /></Button>
+      </ShortcutTip>
+      <ShortcutTip label="Reset zoom to 100%" keys="Ctrl 0">
+        <Button type="button" variant="ghost" size="sm" className="h-8 min-w-12 px-1.5 text-xs tabular-nums" aria-label="Reset zoom to 100%" onClick={() => void zoomTo(1, { duration: 200 })}>{Math.round(zoom * 100)}%</Button>
+      </ShortcutTip>
+      <ShortcutTip label="Zoom in" keys="Ctrl +">
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom in" disabled={zoom >= maxZoom - 0.001} onClick={() => void zoomIn({ duration: 200 })}><IconPlus size={16} /></Button>
+      </ShortcutTip>
+      <span className="mx-0.5 h-5 w-px bg-border" />
+      <ShortcutTip label="Fit view" keys="F">
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Fit view" onClick={() => void fitView({ padding: 0.2, duration: 300 })}><IconFocus2 size={16} /></Button>
+      </ShortcutTip>
+    </Panel>
+  );
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 function AgentCanvas() {
   const {
     sessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
-    client, upsertSession, closeTab,
+    client, upsertSession, canvasFocus, consumeCanvasFocus, deleteSession,
   } = useRuntime();
   const { resolvedTheme } = useTheme();
-  const { fitView, getViewport, zoomTo, screenToFlowPosition } = useReactFlow();
+  const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
   // The canvas is always bound to the project it was opened for, never to a possibly-null active project.
   const activeProjectId = canvasProjectId;
   const project = projects.find((item) => item.id === activeProjectId);
@@ -68,10 +131,24 @@ function AgentCanvas() {
   const sessionById = useCallback((id: string) => projectSessions.find((session) => session.id === id), [projectSessions]);
   const titleOf = useCallback((id: string) => sessionById(id)?.title ?? "agent", [sessionById]);
 
+  // The terminal opens in a dialog on the canvas; `focus` (full view) is the old navigation, kept for the dialog's "Open in full view".
+  const [terminalId, setTerminalId] = useState<string | null>(null);
+  const [sentIds, setSentIds] = useState<Set<string>>(new Set());
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const composerFocus = useRef<(() => void) | null>(null);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const markSent = useCallback((ids: string[], _preview: string) => {
+    setSentIds((current) => new Set([...current, ...ids]));
+    setTimeout(() => setSentIds((current) => { const next = new Set(current); for (const id of ids) next.delete(id); return next; }), 1600);
+  }, []);
+
   const focus = useCallback((session: SessionSummary) => {
     activateSession(session, "agent");
     navigate("session", session.id);
   }, [activateSession, navigate]);
+
+  const openTerminal = useCallback((session: SessionSummary) => setTerminalId(session.id), []);
 
   // ---- persisted placement ----
   const prefsRef = useRef(userPreferences);
@@ -90,6 +167,45 @@ function AgentCanvas() {
     prefsRef.current = { ...prefs, ...next };
     updateUserPreferences(next);
   }, [activeProjectId, updateUserPreferences]);
+
+  const persistMany = useCallback((positions: Record<string, { x: number; y: number }>) => {
+    if (!activeProjectId) return;
+    const prefs = prefsRef.current;
+    const next = { canvasPositions: { ...prefs.canvasPositions, [activeProjectId]: { ...prefs.canvasPositions[activeProjectId], ...positions } } };
+    prefsRef.current = { ...prefs, ...next };
+    updateUserPreferences(next);
+  }, [activeProjectId, updateUserPreferences]);
+
+  // The viewport is saved shortly after each move and flushed on unmount / page hide, so reopening restores what the user saw.
+  const viewportTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const viewportPending = useRef<{ projectId: string; view: { x: number; y: number; zoom: number } } | null>(null);
+  const flushViewport = useCallback(() => {
+    clearTimeout(viewportTimer.current);
+    const pending = viewportPending.current;
+    viewportPending.current = null;
+    if (!pending) return;
+    const prefs = prefsRef.current;
+    const next = { canvasViewports: { ...prefs.canvasViewports, [pending.projectId]: pending.view } };
+    prefsRef.current = { ...prefs, ...next };
+    updateUserPreferences(next);
+  }, [updateUserPreferences]);
+  const saveViewport = useCallback((view: { x: number; y: number; zoom: number }) => {
+    if (!activeProjectId) return;
+    viewportPending.current = { projectId: activeProjectId, view };
+    clearTimeout(viewportTimer.current);
+    viewportTimer.current = setTimeout(flushViewport, 300);
+  }, [activeProjectId, flushViewport]);
+  useEffect(() => {
+    window.addEventListener("pagehide", flushViewport);
+    return () => { window.removeEventListener("pagehide", flushViewport); flushViewport(); };
+  }, [flushViewport]);
+  const savedViewport = activeProjectId ? userPreferences.canvasViewports[activeProjectId] : undefined;
+  const savedViewportRef = useRef(savedViewport);
+  savedViewportRef.current = savedViewport;
+
+  // ---- notes ----
+  const notes = useCanvasNotes(client, activeProjectId);
+  const keychains = useCanvasKeychains(client, activeProjectId, titleOf);
 
   // ---- links ----
   const { links: runtimeLinks, loaded: linksLoaded, refresh: refreshLinks } = useProjectLinks(client, activeProjectId);
@@ -198,7 +314,9 @@ function AgentCanvas() {
   const auto = useMemo(() => {
     const parents = new Map<string, string>();
     for (const link of allLinks) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
-    return layoutTree(projectSessions.map((session) => ({ id: session.id, parentId: parents.get(session.id) ?? null })));
+    const linkedIds = new Set<string>();
+    for (const link of allLinks) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
+    return layoutTree(projectSessions.map((session) => ({ id: session.id, parentId: parents.get(session.id) ?? null, linked: linkedIds.has(session.id) || !!session.parentSessionId })));
   }, [allLinks, projectSessions]);
 
   const buildNodes = useCallback((useSaved: boolean): AgentNode[] => projectSessions.map((session) => {
@@ -228,6 +346,14 @@ function AgentCanvas() {
     });
   }, [buildNodes, setNodes]);
 
+  // Agents without a saved position get their computed one persisted once (after links settled), so they never jump on the next open.
+  useEffect(() => {
+    if (!linksLoaded || !activeProjectId) return;
+    const fresh: Record<string, { x: number; y: number }> = {};
+    for (const node of nodesRef.current) if (!savedRef.current.positions?.[node.id]) fresh[node.id] = { x: node.position.x, y: node.position.y };
+    if (Object.keys(fresh).length) persistMany(fresh);
+  }, [nodes, linksLoaded, activeProjectId, persistMany]);
+
   // "New agent here": the first session that appears afterwards lands at the clicked spot.
   const pendingRef = useRef<{ x: number; y: number; known: Set<string>; at: number } | null>(null);
   useEffect(() => {
@@ -243,9 +369,13 @@ function AgentCanvas() {
 
   // A different project is a different graph: refit once its nodes are in.
   useEffect(() => {
-    const frame = requestAnimationFrame(() => void fitView({ duration: 200 }));
+    const frame = requestAnimationFrame(() => {
+      const saved = savedViewportRef.current;
+      if (saved) void setViewport(saved);
+      else void fitView({ duration: 200 });
+    });
     return () => cancelAnimationFrame(frame);
-  }, [activeProjectId, fitView]);
+  }, [activeProjectId, fitView, setViewport]);
 
   // ---- live mirror budget: visible, expanded, nearest to the viewport centre, at most MAX_LIVE ----
   const collapsedRef = useRef(collapsed);
@@ -302,6 +432,33 @@ function AgentCanvas() {
     markerEnd: { type: MarkerType.ArrowClosed, color: link.kind === "manual" ? "#71717a" : KIND_COLOR[link.kind], width: 18, height: 18 },
   })), [allLinks, selectedEdgeId]);
 
+  const kcEdges = useMemo(() => {
+    const ids = new Set(projectSessions.map((session) => session.id));
+    return keychains.keychains.flatMap((kc) => kc.linkedSessionIds.filter((sid) => ids.has(sid)).map<KeychainWireEdge>((sid) => ({
+      id: kcLinkId(kc.id, sid),
+      type: "keychain-wire",
+      source: KC_PREFIX + kc.id,
+      target: sid,
+      data: { keychainId: kc.id, sessionId: sid, name: kc.name },
+      selected: kcLinkId(kc.id, sid) === selectedEdgeId,
+      markerEnd: { type: MarkerType.ArrowClosed, color: KC_AMBER, width: 16, height: 16 },
+    })));
+  }, [keychains.keychains, projectSessions, selectedEdgeId]);
+  const allEdges = useMemo(() => [...edges, ...kcEdges] as Edge[], [edges, kcEdges]);
+  const keychainCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const kc of keychains.keychains) for (const sid of kc.linkedSessionIds) counts[sid] = (counts[sid] ?? 0) + 1;
+    return counts;
+  }, [keychains.keychains]);
+
+  // Focus requested from the Secrets screen ("Open on canvas").
+  useEffect(() => {
+    const id = takeKeychainFocus((value) => keychains.keychains.some((kc) => kc.id === value));
+    if (!id) return;
+    keychains.onNodesChange([{ type: "select", id: KC_PREFIX + id, selected: true }]);
+    setTimeout(() => void fitView({ nodes: [{ id: KC_PREFIX + id }], duration: 300, padding: 0.5, maxZoom: 1 }), 120);
+  }, [keychains.keychains]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const startLink = useCallback((id: string | null) => { setLinkMode({ from: id }); setSelectedEdgeId(null); }, []);
   const toggleCollapse = useCallback((id: string) => {
     const isCollapsed = collapsedRef.current.has(id);
@@ -319,18 +476,71 @@ function AgentCanvas() {
     computeLive();
   }, [persistNode, computeLive]);
 
-  const relayout = useCallback(() => {
-    if (activeProjectId) {
-      const { [activeProjectId]: _positions, ...positions } = prefsRef.current.canvasPositions;
-      const { [activeProjectId]: _sizes, ...sizes } = prefsRef.current.canvasSizes;
-      prefsRef.current = { ...prefsRef.current, canvasPositions: positions, canvasSizes: sizes };
-      updateUserPreferences({ canvasPositions: positions, canvasSizes: sizes });
+  // ---- wake sleeping agents ----
+  const [waking, setWaking] = useState<Set<string>>(new Set());
+  const wakingRef = useRef(waking);
+  const wake = useCallback(async (session: SessionSummary): Promise<void> => {
+    if (!client || wakingRef.current.has(session.id)) return;
+    wakingRef.current = new Set(wakingRef.current).add(session.id);
+    setWaking(wakingRef.current);
+    try { upsertSession(await client.resumeSession(session.id)); }
+    catch (error) { toast.error(`Could not ${session.state === "sleeping" ? "wake" : "restart"} ${session.title}`, { description: errorMessage(error) }); }
+    finally {
+      const next = new Set(wakingRef.current);
+      next.delete(session.id);
+      wakingRef.current = next;
+      setWaking(next);
     }
-    savedRef.current = { positions: undefined, sizes: undefined };
-    setCollapsed(new Set());
-    setNodes(buildNodes(false));
+  }, [client, upsertSession]);
+  const sleepingCount = projectSessions.filter((session) => session.state === "sleeping").length;
+  const wakeAll = useCallback(async () => {
+    const queue = projectSessions.filter((session) => session.state === "sleeping");
+    if (queue.length === 0) return;
+    if (queue.length > 5 && !window.confirm(`Wake ${queue.length} sleeping agents?`)) return;
+    const worker = async () => { for (let next = queue.shift(); next; next = queue.shift()) await wake(next); };
+    await Promise.all([worker(), worker()]);
+  }, [projectSessions, wake]);
+
+  const sendMessage = useCallback(async (session: SessionSummary, text: string, attachments: Attachment[], onProgress: (id: string, fraction: number) => void) => {
+    if (!client) return false;
+    const result = await sendToTargets({ client, targets: [session], text, attachments, wake, getSession: (id) => sessionsRef.current.find((item) => item.id === id), onProgress });
+    if (result.delivered.length) markSent(result.delivered, text);
+    return result.delivered.length > 0;
+  }, [client, wake, markSent]);
+
+  const recruits = useMemo(
+    () => recruitCounts(projectSessions, allLinks.filter((link) => link.kind === "recruit").map((link) => ({ from: link.fromSessionId, to: link.toSessionId }))),
+    [projectSessions, allLinks],
+  );
+
+  const linkInfo = useMemo(() => {
+    const info: CanvasCtxValue["linkInfo"] = {};
+    const rects = new Map(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y, width: node.width ?? DEFAULT_NODE_SIZE.width, height: node.height ?? DEFAULT_NODE_SIZE.height }]));
+    const touch = (id: string, side: string) => { const entry = (info[id] ??= { count: 0, sides: new Set() }); entry.count += 1; entry.sides.add(side); };
+    for (const link of allLinks) {
+      const a = rects.get(link.fromSessionId), b = rects.get(link.toSessionId);
+      if (!a || !b) continue;
+      touch(link.fromSessionId, anchor(a, b).position);
+      touch(link.toSessionId, anchor(b, a).position);
+    }
+    return info;
+  }, [nodes, allLinks]);
+
+  // Re-layout changes POSITIONS only: sizes and collapsed state stay, and the result is persisted for every agent right away.
+  const relayout = useCallback(() => {
+    const current = nodesRef.current;
+    const widest = current.reduce((max, node) => Math.max(max, node.width ?? DEFAULT_NODE_SIZE.width), DEFAULT_NODE_SIZE.width);
+    const tallest = current.reduce((max, node) => Math.max(max, node.height ?? DEFAULT_NODE_SIZE.height), DEFAULT_NODE_SIZE.height);
+    const parents = new Map<string, string>();
+    for (const link of linksRef.current) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
+    const linkedIds = new Set<string>();
+    for (const link of linksRef.current) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
+    const layout = layoutTree(current.map((node) => ({ id: node.id, parentId: parents.get(node.id) ?? null, linked: linkedIds.has(node.id) || !!node.data.session.parentSessionId })), { width: widest, height: tallest });
+    savedRef.current = { ...savedRef.current, positions: { ...savedRef.current.positions, ...layout } };
+    setNodes((items) => items.map((node) => layout[node.id] ? { ...node, position: layout[node.id] } : node));
+    persistMany(layout);
     requestAnimationFrame(() => void fitView({ duration: 200 }));
-  }, [activeProjectId, updateUserPreferences, setNodes, buildNodes, fitView]);
+  }, [setNodes, persistMany, fitView]);
 
   const openNewAgent = useCallback(() => {
     selectProject(activeProjectId, project?.workspaces[0]?.id);
@@ -374,6 +584,62 @@ function AgentCanvas() {
     catch (error) { toast.error("Could not rename the agent", { description: errorMessage(error) }); }
   }
 
+  // ---- notes, secrets, deleting agents ----
+  const [kcDeleteAsk, setKcDeleteAsk] = useState<{ id: string; name: string } | null>(null);
+  const [vaultCount, setVaultCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!client) return;
+    let live = true;
+    client.secrets().then((list) => { if (live) setVaultCount(list.length); }, () => undefined);
+    return () => { live = false; };
+  }, [client]);
+  const [deleteAsk, setDeleteAsk] = useState<SessionSummary | null>(null);
+  const allNodes = useMemo(() => [...notes.nodes, ...keychains.nodes, ...nodes] as Node[], [notes.nodes, keychains.nodes, nodes]);
+  const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
+    const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
+    const forKeychain = (change: NodeChange<Node>) => "id" in change && isKeychainId(change.id);
+    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change));
+    const noteChanges = changes.filter(forNote);
+    const keychainChanges = changes.filter(forKeychain);
+    if (keychainChanges.length) keychains.onNodesChange(keychainChanges);
+    if (agentChanges.length) onNodesChange(agentChanges as NodeChange<AgentNode>[]);
+    if (noteChanges.length) notes.onNodesChange(noteChanges);
+  }, [onNodesChange, notes.onNodesChange, keychains.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addNoteAt = notes.add;
+  const addKeychainCenter = useCallback(() => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    const center = screenToFlowPosition({ x: (rect?.left ?? 0) + (rect?.width ?? 600) / 2, y: (rect?.top ?? 0) + (rect?.height ?? 400) / 2 });
+    void keychains.add({ x: Math.round(center.x - KC_DEFAULT.width / 2), y: Math.round(center.y - KC_DEFAULT.height / 2) });
+  }, [keychains.add, screenToFlowPosition]); // eslint-disable-line react-hooks/exhaustive-deps
+  const addNoteCenter = useCallback(() => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    const center = screenToFlowPosition({ x: (rect?.left ?? 0) + (rect?.width ?? 600) / 2, y: (rect?.top ?? 0) + (rect?.height ?? 400) / 2 });
+    void addNoteAt({ x: Math.round(center.x - NOTE_DEFAULT.width / 2), y: Math.round(center.y - NOTE_DEFAULT.height / 2) });
+  }, [addNoteAt, screenToFlowPosition]);
+
+  /** Deletes agent sessions at once (no confirmation); one summary toast, errors per agent. */
+  const deleteAgents = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const results = await Promise.all(ids.map(async (id) => {
+      const title = sessionsRef.current.find((item) => item.id === id)?.title ?? "agent";
+      try { await deleteSession(id); return id; }
+      catch (error) { toast.error(`Could not delete ${title}`, { description: errorMessage(error) }); return null; }
+    }));
+    const done = results.filter((id): id is string => id !== null);
+    if (done.length === 0) return;
+    setTerminalId((current) => (current && done.includes(current) ? null : current));
+    if (activeProjectId) {
+      const prefs = prefsRef.current;
+      const strip = <T,>(map: Record<string, T> | undefined) => Object.fromEntries(Object.entries(map ?? {}).filter(([id]) => !done.includes(id)));
+      const next = { canvasPositions: { ...prefs.canvasPositions, [activeProjectId]: strip(prefs.canvasPositions[activeProjectId]) }, canvasSizes: { ...prefs.canvasSizes, [activeProjectId]: strip(prefs.canvasSizes[activeProjectId]) } };
+      prefsRef.current = { ...prefs, ...next };
+      updateUserPreferences(next);
+    }
+    toast.success(done.length === 1 ? "Deleted 1 agent" : `Deleted ${done.length} agents`);
+  }, [deleteSession, activeProjectId, updateUserPreferences]);
+
+  const KCLINK_PREFIX_LEN = kcLinkId("", "").length - 1;
   const menuApi: MenuApi = {
     sessionById,
     linkById: (id) => allLinks.find((link) => link.id === id),
@@ -384,6 +650,22 @@ function AgentCanvas() {
     showMiniMap,
     showActivity,
     linkMode: linkMode !== null,
+    nodeCount: nodes.length,
+    addNoteHere: (flow) => void addNoteAt({ x: Math.round(flow.x), y: Math.round(flow.y) }),
+    keychainName: (id) => keychains.keychains.find((kc) => KC_PREFIX + kc.id === id)?.name,
+    addKeychainHere: (flow) => void keychains.add({ x: Math.round(flow.x), y: Math.round(flow.y) }),
+    renameKeychain: (id) => keychains.rename(id.slice(KC_PREFIX.length)),
+    manageKeychain: (id) => keychains.setManaging(id.slice(KC_PREFIX.length)),
+    deleteKeychain: (id) => { const kc = keychains.keychains.find((item) => KC_PREFIX + item.id === id); if (kc) setKcDeleteAsk({ id: kc.id, name: kc.name }); },
+    recolorKeychain: (id, color) => keychains.patch(id.slice(KC_PREFIX.length), { color }),
+    keychainEdge: (edgeId) => {
+      const [kcId, sid] = edgeId.slice(KCLINK_PREFIX_LEN).split(":");
+      const kc = keychains.keychains.find((item) => item.id === kcId);
+      return kc ? { keychain: kc.name, agent: titleOf(sid) } : undefined;
+    },
+    unlinkKeychain: (edgeId) => { const [kcId, sid] = edgeId.slice(KCLINK_PREFIX_LEN).split(":"); keychains.unlink(kcId, sid); },
+    deleteAgent: (session) => setDeleteAsk(session),
+    setOrchestrator: (session, on) => { if (client) void setOrchestrator(client, session, on, upsertSession, toast); },
     newAgentHere: (flow) => {
       pendingRef.current = { x: flow.x, y: flow.y, known: new Set(projectSessions.map((session) => session.id)), at: Date.now() };
       openNewAgent();
@@ -395,14 +677,10 @@ function AgentCanvas() {
     toggleMiniMap: () => setShowMiniMap((value) => !value),
     toggleActivity: () => setShowActivity((value) => !value),
     resetZoom: () => void zoomTo(1, { duration: 200 }),
-    focus,
+    focus: openTerminal,
     startLink,
     rename: (session) => setRenaming({ session, title: session.title }),
-    resume: async (session) => {
-      if (!client) return;
-      try { upsertSession(await client.resumeSession(session.id)); }
-      catch (error) { toast.error("Could not resume the agent", { description: errorMessage(error) }); }
-    },
+    resume: (session) => void wake(session),
     copyId: (id) => void copyText(id).then(() => toast.success("Session id copied"), (error) => toast.error("Could not copy", { description: errorMessage(error) })),
     copyOutput: (id) => {
       const text = getMirrorText(id);
@@ -412,43 +690,97 @@ function AgentCanvas() {
     toggleCollapse,
     resize,
     bringToFront,
-    hide: (session) => {
-      updateUserPreferences({ hiddenSessionIds: { ...prefsRef.current.hiddenSessionIds, [session.id]: true } });
-      closeTab(session.id, "agent");
-    },
     deleteLink: (link) => void deleteLink(link),
     reverseLink: (link) => void reverseLink(link),
     showWire: (link) => { setActivityFilter(link.id); setShowActivity(true); },
   };
 
   const ctx: CanvasCtxValue = {
-    liveIds, collapsed, linkMode, live, reducedMotion, titleOf, focus, startLink, toggleCollapse, activate, savePlacement,
+    recruits,
+    liveIds, collapsed, linkMode, live, reducedMotion, titleOf, focus: openTerminal, terminalId, sentIds, highlightId, sendMessage, startLink, toggleCollapse, activate, savePlacement, wake: (session) => void wake(session), waking, linkInfo,
     deleteLink: (link) => void deleteLink(link),
+    keychainCounts,
   };
 
+  // A sidebar click lands here: select + center the agent's node, flash it, and (for "Open") open its terminal dialog. Never resumes.
+  useEffect(() => {
+    if (!canvasFocus) return;
+    const session = sessionById(canvasFocus.id);
+    if (!session || !nodes.some((node) => node.id === canvasFocus.id)) return;
+    const request = canvasFocus;
+    consumeCanvasFocus(request.seq);
+    selectNodes(new Set([request.id]));
+    setSelectedEdgeId(null);
+    setHighlightId(request.id);
+    const timers = [
+      setTimeout(() => void fitView({ nodes: [{ id: request.id }], duration: 400, padding: 0.35, maxZoom: 1 }), 120),
+      setTimeout(() => setHighlightId((current) => (current === request.id ? null : current)), 1800),
+    ];
+    if (request.dialog) setTerminalId(request.id);
+    return () => { /* timers intentionally outlive the effect: the request is already consumed */ void timers; };
+  }, [canvasFocus, nodes, sessionById, consumeCanvasFocus, selectNodes, fitView]);
+
+  // Agent-to-agent drags create AgentLinks; a keychain and an agent create a keychain link (either direction); anything else is refused.
+  const connectNodes = useCallback((a: string, b: string) => {
+    const aKey = isKeychainId(a), bKey = isKeychainId(b);
+    if (aKey && bKey) { toast.error("Keychains can only be linked to agents"); return; }
+    if (aKey || bKey) {
+      const agent = aKey ? b : a;
+      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error("Keychains can only be linked to agents"); return; }
+      keychains.link((aKey ? a : b).slice(KC_PREFIX.length), agent);
+      return;
+    }
+    void createLink(a, b);
+  }, [createLink, keychains.link]); // eslint-disable-line react-hooks/exhaustive-deps
   const onConnect = useCallback((connection: Connection) => {
-    if (connection.source && connection.target) void createLink(connection.source, connection.target);
-  }, [createLink]);
+    if (connection.source && connection.target) connectNodes(connection.source, connection.target);
+  }, [connectNodes]);
 
   const isValidConnection = useCallback((connection: { source: string; target: string }) => connection.source !== connection.target, []);
 
   function onKeyDown(event: React.KeyboardEvent) {
     const target = event.target as HTMLElement;
-    if (target.closest("input, textarea, [contenteditable=true]")) return;
+    if (target.closest("input, textarea, select, [contenteditable=true], .xterm, [role=dialog], [data-radix-popper-content-wrapper]")) return;
     if (event.key === "Escape") { setLinkMode(null); setSelectedEdgeId(null); return; }
-    if ((event.key === "Delete" || event.key === "Backspace") && selectedEdgeId) {
-      const link = linksRef.current.find((item) => item.id === selectedEdgeId);
-      if (link) void deleteLink(link);
-      setSelectedEdgeId(null);
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (selectedEdgeId && isKeychainLinkId(selectedEdgeId)) {
+        const [kcId, sid] = selectedEdgeId.slice(KCLINK_PREFIX_LEN).split(":");
+        keychains.unlink(kcId, sid);
+        setSelectedEdgeId(null);
+        return;
+      }
+      if (selectedEdgeId) {
+        const link = linksRef.current.find((item) => item.id === selectedEdgeId);
+        if (link) void deleteLink(link);
+        setSelectedEdgeId(null);
+        return;
+      }
+      const agentIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
+      const noteIds = notes.nodes.filter((node) => node.selected).map((node) => node.data.note.id);
+      const kcSelected = keychains.keychains.find((kc) => keychains.nodes.some((node) => node.selected && node.data.keychain.id === kc.id));
+      if (agentIds.length || noteIds.length || kcSelected) {
+        event.preventDefault();
+        for (const id of noteIds) notes.remove(id);
+        void deleteAgents(agentIds);
+        if (kcSelected) setKcDeleteAsk({ id: kcSelected.id, name: kcSelected.name });
+      }
       return;
     }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); composerFocus.current?.(); return; }
     if (event.ctrlKey || event.metaKey) {
-      if (event.key.toLowerCase() === "a") { event.preventDefault(); selectNodes("all"); }
+      const key = event.key;
+      if (key.toLowerCase() === "a") { event.preventDefault(); selectNodes("all"); }
+      else if (key === "+" || key === "=") { event.preventDefault(); void zoomIn({ duration: 200 }); }
+      else if (key === "-") { event.preventDefault(); void zoomOut({ duration: 200 }); }
+      else if (key === "0") { event.preventDefault(); void zoomTo(1, { duration: 200 }); }
       return;
     }
     if (event.altKey) return;
+    if (event.key === "/") { event.preventDefault(); composerFocus.current?.(); return; }
     if (event.key.toLowerCase() === "l") setLinkMode((mode) => mode ? null : { from: null });
-    else if (event.key.toLowerCase() === "f") void fitView({ duration: 200 });
+    else if (event.key.toLowerCase() === "n") addNoteCenter();
+    else if (event.key.toLowerCase() === "k") addKeychainCenter();
+    else if (event.key.toLowerCase() === "f") void fitView({ padding: 0.2, duration: 300 });
   }
 
   if (projectSessions.length === 0) {
@@ -471,6 +803,10 @@ function AgentCanvas() {
 
   return (
     <CanvasCtx.Provider value={ctx}>
+      <NoteProvider value={notes.ctxValue}>
+      <KeychainProvider value={keychains.ctxValue}>
+      <KeychainWireCtx.Provider value={{ unlink: keychains.unlink }}>
+      <TooltipProvider>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
@@ -481,18 +817,21 @@ function AgentCanvas() {
             className={cn("size-full outline-none", linkMode && "[&_.react-flow__pane]:cursor-crosshair")}
           >
             <ReactFlow
-              nodes={nodes}
-              edges={edges}
+              nodes={allNodes}
+              edges={allEdges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onNodeDragStop={(_, node) => { persistNode(node.id, { position: { x: node.position.x, y: node.position.y } }); computeLive(); }}
-              onNodeDoubleClick={(_, node) => focus((node as AgentNode).data.session)}
+              onNodesChange={onNodesChangeAll}
+              onNodeDragStart={(_, node) => { if (isNoteId(node.id)) notes.dragStart(node); else if (isKeychainId(node.id)) keychains.dragStart(node); }}
+              onMoveEnd={(_, view) => saveViewport(view)}
+              defaultViewport={savedViewport}
+              onNodeDragStop={(_, node) => { if (isNoteId(node.id)) { notes.dragEnd(node); return; } if (isKeychainId(node.id)) { keychains.dragEnd(node); return; } persistNode(node.id, { position: { x: node.position.x, y: node.position.y } }); computeLive(); }}
+              onNodeDoubleClick={(_, node) => { if (node.type === "agent") openTerminal((node as AgentNode).data.session); }}
               onNodeClick={(_, node) => {
                 setSelectedEdgeId(null);
-                if (!linkMode) return;
+                if (!linkMode || isNoteId(node.id)) return;
                 if (linkMode.from === null) setLinkMode({ from: node.id });
-                else if (linkMode.from !== node.id) { void createLink(linkMode.from, node.id); setLinkMode(null); }
+                else if (linkMode.from !== node.id) { connectNodes(linkMode.from, node.id); setLinkMode(null); }
               }}
               onNodeContextMenu={(_, node) => { setMenuTarget({ kind: "node", id: node.id }); setSelectedEdgeId(null); selectNodes(new Set([node.id])); }}
               onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
@@ -509,14 +848,35 @@ function AgentCanvas() {
               selectionOnDrag={tool === "select"}
               panOnDrag={tool === "select" ? [1] : true}
               onlyRenderVisibleElements
-              fitView
+              fitView={!savedViewport}
               minZoom={0.1}
               colorMode={resolvedTheme === "dark" ? "dark" : "light"}
               proOptions={{ hideAttribution: true }}
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
-              <Controls showInteractive={false} />
-              {showMiniMap && <MiniMap pannable zoomable className="bg-card!" />}
+              <CanvasControls />
+              {showMiniMap && (
+                <>
+                  <MiniMap
+                    pannable
+                    zoomable
+                    position="bottom-right"
+                    style={{ width: 140, height: 90 }}
+                    className="m-2! overflow-hidden rounded-md! border border-border bg-card/80! shadow-sm backdrop-blur-sm"
+                    nodeColor={minimapColor}
+                    nodeStrokeColor={(node) => (recruits.has(node.id) ? "#8b5cf6" : "transparent")}
+                    nodeStrokeWidth={3}
+                    nodeBorderRadius={3}
+                    maskColor="color-mix(in oklab, var(--background) 65%, transparent)"
+                    maskStrokeColor="var(--primary)"
+                    maskStrokeWidth={1.5}
+                    aria-label="Canvas overview"
+                  />
+                  <Panel position="bottom-right" className="m-2! mb-[98px]! mr-2!">
+                    <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full border border-border bg-card/80 backdrop-blur-sm" aria-label="Hide mini map" title="Hide mini map" onClick={() => setShowMiniMap(false)}><IconX size={10} /></Button>
+                  </Panel>
+                </>
+              )}
 
               <Panel position="top-left" className="flex items-center gap-2">
                 <span className="max-w-60 truncate rounded-md border border-border bg-card px-2.5 py-1 text-sm font-medium" title={project?.cwd}>{projectName}</span>
@@ -524,6 +884,14 @@ function AgentCanvas() {
                   <IconPlus size={14} />
                   New agent
                 </Button>
+                {vaultCount !== null && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="flex items-center gap-1 rounded-md border border-amber-500/50 bg-card px-2 py-1 text-xs text-muted-foreground"><IconKey size={13} className="text-amber-500" />Vault · {vaultCount}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Global vault: available to all agents, no wires needed</TooltipContent>
+                  </Tooltip>
+                )}
               </Panel>
 
               <Panel position="top-center" className="flex items-center gap-0.5 rounded-lg border border-border bg-card p-1 shadow-md">
@@ -531,6 +899,12 @@ function AgentCanvas() {
                 {toolButton(tool === "pan", "Pan (drag to move canvas)", () => setTool("pan"), <IconHandStop size={16} />)}
                 <span className="mx-1 h-5 w-px bg-border" />
                 {toolButton(linkMode !== null, "Link mode (L)", () => setLinkMode((mode) => mode ? null : { from: null }), <IconLink size={16} />)}
+                <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label="Wake all sleeping agents" title={sleepingCount ? `Wake all sleeping agents (${sleepingCount})` : "No sleeping agents"} disabled={sleepingCount === 0} onClick={() => void wakeAll()}>
+                  <IconPlayerPlay size={16} />
+                  {sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{sleepingCount}</span>}
+                </Button>
+                {toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />)}
+                {toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />)}
                 {toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}
                 {toolButton(false, "Fit view (F)", () => void fitView({ duration: 200 }), <IconArrowsMaximize size={16} />)}
                 <span className="mx-1 h-5 w-px bg-border" />
@@ -539,13 +913,23 @@ function AgentCanvas() {
               </Panel>
 
               {linkMode && (
-                <Panel position="bottom-center" className="flex items-center gap-2 rounded-lg border border-violet-500/60 bg-card px-3 py-1.5 text-xs shadow-md">
-                  <IconLink size={14} className="text-violet-500" />
-                  {linkMode.from ? `Click another agent to connect it to ${titleOf(linkMode.from)}` : "Click the agent to link from, then the one to link to"}
-                  <span className="text-muted-foreground">· Esc to cancel</span>
-                  <Button type="button" variant="ghost" size="xs" onClick={() => setLinkMode(null)}>Cancel</Button>
+                <Panel position="top-center" className="mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm backdrop-blur-sm">
+                  <IconLink size={12} className="text-violet-500" />
+                  <span className="max-w-72 truncate">{linkMode.from ? `Link ${titleOf(linkMode.from)} to…` : "Pick the agent to link from"}</span>
+                  <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label="Cancel link mode (Esc)" title="Cancel (Esc)" onClick={() => setLinkMode(null)}><IconX size={11} /></Button>
                 </Panel>
               )}
+
+              <CanvasComposer
+                key={activeProjectId ?? "none"}
+                projectId={activeProjectId ?? ""}
+                client={client}
+                sessions={projectSessions}
+                selectedIds={nodes.filter((node) => node.selected).map((node) => node.id)}
+                wake={wake}
+                onSent={markSent}
+                focusRef={composerFocus}
+              />
 
               {showActivity && (
                 <ActivityPanel
@@ -562,6 +946,46 @@ function AgentCanvas() {
         </ContextMenuTrigger>
         <CanvasMenuContent target={menuTarget} api={menuApi} />
       </ContextMenu>
+      </TooltipProvider>
+
+      <TerminalDialog
+        session={terminalId ? sessionById(terminalId) ?? null : null}
+        waking={terminalId ? waking.has(terminalId) : false}
+        onClose={() => setTerminalId(null)}
+        onFullView={(session) => { setTerminalId(null); focus(session); }}
+        onWake={(session) => void wake(session)}
+        onCloseFocus={() => wrapRef.current?.focus()}
+      />
+
+      {keychains.managing && keychains.keychains.find((kc) => kc.id === keychains.managing) && (
+        <KeychainDialog key={keychains.managing} keychain={keychains.keychains.find((kc) => kc.id === keychains.managing)!} client={client} onClose={() => keychains.setManaging(null)} onChanged={keychains.refresh} />
+      )}
+
+      <AlertDialog open={kcDeleteAsk !== null} onOpenChange={(open) => { if (!open) setKcDeleteAsk(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete keychain {kcDeleteAsk?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>This permanently destroys its secrets and unlinks it from every agent.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => { const target = kcDeleteAsk; setKcDeleteAsk(null); if (target) keychains.remove(target.id); }}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={deleteAsk !== null} onOpenChange={(open) => { if (!open) setDeleteAsk(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteAsk?.title}?</AlertDialogTitle>
+            <AlertDialogDescription>This removes the session and its conversation. Tip: select agents and press Del to delete without asking.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => { const target = deleteAsk; setDeleteAsk(null); if (target) void deleteAgents([target.id]); }}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={renaming !== null} onOpenChange={(open) => { if (!open) setRenaming(null); }}>
         <DialogContent className="sm:max-w-sm">
@@ -575,6 +999,9 @@ function AgentCanvas() {
           </form>
         </DialogContent>
       </Dialog>
+      </KeychainWireCtx.Provider>
+      </KeychainProvider>
+      </NoteProvider>
     </CanvasCtx.Provider>
   );
 }

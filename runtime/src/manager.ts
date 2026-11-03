@@ -11,6 +11,9 @@ import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
 import { streamToFile, validAttachmentName } from "./attachments.js";
 import type { Readable } from "node:stream";
+import { mergeSecretEnv } from "./secrets.js";
+import type { Keychains } from "./keychains.js";
+import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { buildSessionEnv, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
@@ -238,6 +241,8 @@ export interface CreateSessionOptions {
 export class SessionManager {
   /** Owner of the Claude / Codex subscription credentials (set at startup). */
   credentials!: CredentialBroker;
+  /** Keychains linked to agents (set at startup); absent in tests that do not need them. */
+  keychains?: Keychains;
   private readonly logins = new Map<string, LoginState>();
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
@@ -825,10 +830,16 @@ export class SessionManager {
       "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY last_active_at DESC LIMIT 200",
       [userId],
     );
+    // ONE grouped query for the node badges (no N+1).
+    const counts = new Map<string, number>();
+    try {
+      const grouped = await this.pool.query("SELECT l.session_id, count(DISTINCT s.name)::int AS n FROM keychain_links l JOIN keychain_secrets s ON s.keychain_id = l.keychain_id WHERE l.user_id = $1 GROUP BY l.session_id", [userId]);
+      for (const g of grouped.rows) counts.set(g.session_id as string, g.n as number);
+    } catch { /* badge only */ }
     return result.rows.map((row: Row) => {
       const live = this.live.get(row.id);
-      if (!live) return summaryFromRow(row);
-      const summary = live.toSummary();
+      if (!live) return { ...summaryFromRow(row), secretCount: counts.get(row.id) ?? 0 };
+      const summary = { ...live.toSummary(), secretCount: counts.get(row.id) ?? 0 };
       // Turn status only for live agents (not shells); reads a bounded transcript tail.
       if (live.state === "running" && live.provider !== "shell") {
         const turn = this.readAgentTurn(live.id, userId);
@@ -1035,6 +1046,12 @@ export class SessionManager {
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
     Object.assign(env, forcedSessionEnv(row.provider)); // a vault entry must not undo the renderer pin
+    // Secrets of the keychains linked to this agent: env after the base env, never over reserved names. Children do not inherit them.
+    if (this.keychains) {
+      const own = await this.keychains.resolve(row.user_id, row.id);
+      mergeSecretEnv(env, own);
+      try { this.syncSecretFiles(handle, row.id, own); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+    }
     env.FLOQ_API_URL = "http://127.0.0.1:" + this.config.port;
     env.FLOQ_AGENT_TOKEN = this.vault.issueToken(row.user_id, row.id);
     env.FLOQ_AGENT_NAME = row.title;
@@ -1868,9 +1885,68 @@ export class SessionManager {
     await this.shards.sleep(userId);
   }
 
+  private secretDir(handle: ShardHandle, sessionId: string): string {
+    return this.shards.driver.hostPath(handle, ".floq/secrets/" + sessionId);
+  }
+
+  /** Replace <home>/.floq/secrets/<sessionId>/ with exactly these secrets (dir 0700, files 0400, owned by the shard uid). */
+  private syncSecretFiles(handle: ShardHandle, sessionId: string, secrets: Record<string, string>): void {
+    const dir = this.secretDir(handle, sessionId);
+    rmSync(dir, { recursive: true, force: true });
+    if (!Object.keys(secrets).length) return;
+    mkdirOwned(handle.mountPath, dir, handle.uid);
+    chmodSync(dir, 0o700);
+    for (const [name, value] of Object.entries(secrets)) this.writeSecretFile(handle, sessionId, name, value);
+  }
+
+  private writeSecretFile(handle: ShardHandle, sessionId: string, name: string, value: string | null): void {
+    const dir = this.secretDir(handle, sessionId);
+    const path = join(dir, name);
+    rmSync(path, { force: true });
+    if (value === null) return;
+    mkdirOwned(handle.mountPath, dir, handle.uid);
+    chmodSync(dir, 0o700);
+    writeFileSync(path, value, { mode: 0o400, flag: "wx" });
+    chmodSync(path, 0o400);
+    lchownSync(path, handle.uid, handle.uid);
+  }
+
+  /**
+   * Refresh <home>/.floq/secrets/<sessionId>/ of a running session from its linked keychains so floq secret get sees
+   * changes. Returns true when the session is live: its process env cannot change, so env applies on the next start.
+   * Never logs values.
+   */
+  async syncSessionSecrets(userId: string, sessionId: string): Promise<boolean> {
+    const live = this.live.get(sessionId);
+    if (!live || live.userId !== userId || !this.keychains) return false;
+    try {
+      const secrets = await this.keychains.resolve(userId, sessionId);
+      await this.withUserShardActivity(userId, async (handle) => this.syncSecretFiles(handle, sessionId, secrets));
+    } catch (error) {
+      log.warn("secret.sync_failed", { sessionId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+    }
+    return true;
+  }
+
+  /** Set or clear the role preset of an existing session (user-initiated only; the HTTP layer enforces who may call). */
+  async setRole(userId: string, id: string, roleValue: unknown): Promise<SessionSummary> {
+    const role = parseRoleIdForPatch(roleValue);
+    const result = await this.pool.query("UPDATE agent_sessions SET role=$3 WHERE id=$1 AND user_id=$2 RETURNING *", [id, userId, role?.id ?? null]);
+    const row = result.rows[0] as Row | undefined;
+    if (!row) throw notFound("Session " + id + " not found");
+    const live = this.live.get(id);
+    if (live && live.userId === userId) {
+      live.role = role?.id ?? null;
+      return live.toSummary();
+    }
+    return summaryFromRow(row);
+  }
+
   async remove(id: string, userId: string): Promise<void> {
     if (this.logins.get(id)?.userId === userId) return this.endLogin(id);
     await this.row(id, userId);
+    const awake = this.shards.awakeHandle(userId);
+    if (awake) { try { rmSync(this.secretDir(awake, id), { recursive: true, force: true }); } catch { /* best effort */ } }
     const session = this.live.get(id);
     if (session) {
       this.intentionalSleep.add(id);

@@ -1,16 +1,20 @@
-import { memo } from "react";
+import { memo, useRef, useState } from "react";
 import { Handle, NodeResizer, Position, useConnection, type Node, type NodeProps } from "@xyflow/react";
-import { IconChevronDown, IconChevronRight, IconEye, IconFocus2, IconLink, IconPlayerPlay } from "@tabler/icons-react";
+import { orchestratorLabel } from "@/lib/runtime/orchestrator";
+import { IconChevronDown, IconChevronRight, IconCrown, IconKey, IconLink, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import { ProviderIcon } from "@/components/agents/provider";
 import type { SessionState, SessionSummary } from "@/lib/runtime/types";
 import { useCanvasCtx } from "./canvas-context";
+import NodeMessageBar from "./node-message-bar";
 import SessionMirror, { getMirrorTail } from "./session-mirror";
 
 const DOT: Record<SessionState, string> = { running: "bg-emerald-500", starting: "bg-amber-400 animate-pulse", sleeping: "bg-muted-foreground/40", exited: "bg-muted-foreground/40", failed: "bg-destructive" };
+
 
 export interface AgentNodeData extends Record<string, unknown> {
   session: SessionSummary;
@@ -28,55 +32,111 @@ const SIDES = [
   { id: "left", position: Position.Left },
 ] as const;
 
-const HANDLE_CLASS =
-  "size-4! rounded-full! border-2! border-background! bg-primary! opacity-0 transition-opacity group-hover/node:opacity-100 data-[active=true]:opacity-100 hover:scale-125 [&.connectingto]:bg-emerald-500! [&.connectingto]:opacity-100 [&.valid]:bg-emerald-500!";
+type Side = (typeof SIDES)[number]["id"];
+
+/** Dots stay connectable (opacity only, never display/pointer-events); the ::after pseudo-element widens the hit area. */
+function handleClass(show: boolean, linked: boolean) {
+  return cn(
+    "size-3.5! rounded-full! border-2! border-background! bg-primary! transition-[opacity,transform] after:absolute after:-inset-2.5 after:content-[''] hover:scale-125 [&.connectingto]:bg-emerald-500! [&.valid]:bg-emerald-500!",
+    show ? "opacity-100 scale-125" : linked ? "opacity-60 scale-60 bg-muted-foreground!" : "opacity-0",
+  );
+}
+
+function nearestSide(event: React.PointerEvent<HTMLElement>): Side {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const distances: [Side, number][] = [
+    ["top", event.clientY - rect.top], ["right", rect.right - event.clientX], ["bottom", rect.bottom - event.clientY], ["left", event.clientX - rect.left],
+  ];
+  return distances.reduce((best, item) => (item[1] < best[1] ? item : best))[0];
+}
 
 export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
   const ctx = useCanvasCtx();
   const connection = useConnection();
   const { session } = data;
+  const isLead = ctx.recruits.has(id);
+  const lead = ctx.recruits.get(id) ?? 0;
   const inactive = session.state === "exited" || session.state === "failed";
   const collapsed = ctx.collapsed.has(id);
-  const live = ctx.liveIds.has(id) && !collapsed;
+  const live = ctx.liveIds.has(id) && !collapsed && ctx.terminalId !== id;
   const connecting = connection.inProgress;
   const linkPicking = ctx.linkMode !== null;
   const isLinkSource = ctx.linkMode?.from === id;
   const tail = getMirrorTail(id);
+  const sleeping = session.state === "sleeping";
+  const waking = ctx.waking.has(id);
+  const links = ctx.linkInfo[id];
+  const [hoverSide, setHoverSide] = useState<Side | null>(null);
+  const showAll = connecting || linkPicking;
+  const barRef = useRef<HTMLTextAreaElement>(null);
 
   return (
     <div
-      className={cn(
-        "group/node flex size-full flex-col overflow-visible rounded-lg border bg-card text-card-foreground shadow-md transition-[border-color,box-shadow]",
-        selected ? "border-primary ring-2 ring-primary/30" : "border-border",
-        isLinkSource && "border-violet-500 ring-2 ring-violet-500/40",
-        linkPicking && !isLinkSource && "cursor-crosshair hover:border-violet-500 hover:ring-2 hover:ring-violet-500/30",
-        inactive && "opacity-70",
-      )}
+      onPointerMove={(event) => { const side = nearestSide(event); setHoverSide((current) => (current === side ? current : side)); }}
+      onPointerLeave={() => setHoverSide(null)}
+      className="group/node relative size-full"
     >
       <NodeResizer isVisible={selected && !collapsed} minWidth={MIN_SIZE.width} minHeight={MIN_SIZE.height} maxWidth={MAX_SIZE.width} maxHeight={MAX_SIZE.height} onResizeEnd={(_, rect) => ctx.savePlacement(id, rect)} lineClassName="border-primary!" handleClassName="size-2.5! rounded-sm! border-primary! bg-background!" />
       {SIDES.map((side) => (
-        <Handle key={side.id} id={side.id} type="source" position={side.position} isConnectableStart isConnectableEnd data-active={connecting} className={HANDLE_CLASS} />
+        <Handle key={side.id} id={side.id} type="source" position={side.position} isConnectable isConnectableStart isConnectableEnd className={handleClass(showAll || hoverSide === side.id, !!links?.sides.has(side.id))} />
       ))}
 
-      <div className="flex h-10 shrink-0 items-center gap-2 rounded-t-lg border-b bg-muted/40 px-2.5" style={collapsed ? { borderBottomWidth: 0 } : undefined}>
-        <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan -ml-1" aria-label={collapsed ? "Expand" : "Collapse"} title={collapsed ? "Expand mirror" : "Collapse mirror"} onClick={() => ctx.toggleCollapse(id)}>
-          {collapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
-        </Button>
-        <ProviderIcon provider={session.provider} className="size-4 shrink-0" />
-        <span className={cn("size-2 shrink-0 rounded-full", DOT[session.state])} title={session.state} />
-        <span className="min-w-0 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
-        {session.role && <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[10px] font-normal">{session.role}</Badge>}
-        <ActivityIndicator session={session} className="mr-auto" />
-        <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan" aria-label={`Link ${session.title} to another agent`} title="Link to…" onClick={() => ctx.startLink(id)}>
-          <IconLink size={14} />
-        </Button>
-        <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan" aria-label={`Open ${session.title}`} title="Open full terminal" onClick={() => ctx.focus(session)}>
-          <IconFocus2 size={14} />
-        </Button>
+      <div
+          className={cn(
+          "flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-md transition-[border-color,box-shadow]",
+          selected ? "border-primary ring-2 ring-primary/30" : "border-border",
+          isLead && !selected && "border-violet-500/60 ring-1 ring-violet-500/60 shadow-[0_0_14px_-3px_rgba(139,92,246,0.45)]",
+          isLinkSource && "border-violet-500 ring-2 ring-violet-500/40",
+          linkPicking && !isLinkSource && "cursor-crosshair hover:border-violet-500 hover:ring-2 hover:ring-violet-500/30",
+          (inactive || sleeping) && "opacity-70",
+          ctx.sentIds.has(id) && "ring-2 ring-emerald-500/60",
+        ctx.highlightId === id && "ring-4 ring-primary/50 motion-safe:animate-pulse",
+        )}
+      >
+      <div className={cn("@container/head flex h-10 shrink-0 items-center gap-1 rounded-t-lg border-b bg-muted/40 px-2", isLead && "bg-violet-500/15")} style={collapsed ? { borderBottomWidth: 0 } : undefined}>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7 shrink-0" aria-label={collapsed ? "Expand" : "Collapse"} title={collapsed ? "Expand mirror" : "Collapse mirror"} onClick={() => ctx.toggleCollapse(id)}>
+            {collapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
+          </Button>
+          <ProviderIcon provider={session.provider} className="size-4 shrink-0" />
+          <span className={cn("size-2 shrink-0 rounded-full", DOT[session.state])} title={session.state} />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
+          <ActivityIndicator session={session} />
+          {isLead && (
+            <Badge variant="outline" className="h-4 shrink-0 gap-0.5 border-violet-500/50 bg-violet-500/10 px-1.5 text-[10px] font-medium text-violet-600 dark:text-violet-300" title={orchestratorLabel(lead)}>
+              <IconCrown size={10} aria-hidden="true" />Lead · {lead}
+            </Badge>
+          )}
+          {sleeping && <Badge variant="outline" className="hidden h-4 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground @[300px]/head:inline-flex">Sleeping</Badge>}
+          {session.role && <Badge variant="secondary" className="hidden h-4 shrink-0 px-1.5 text-[10px] font-normal @[420px]/head:inline-flex">{session.role}</Badge>}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {links && links.count > 0 && (
+            <span className="hidden shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground @[340px]/head:flex" title={`${links.count} link${links.count === 1 ? "" : "s"}`}>
+              <IconLink size={11} />{links.count}
+            </span>
+          )}
+          {(sleeping || inactive) && (
+            <Button type="button" variant="secondary" size="icon-xs" className="nodrag nopan size-7" aria-label={`${sleeping ? "Wake" : "Restart"} ${session.title}`} aria-busy={waking} title={sleeping ? "Wake agent" : "Restart agent"} disabled={waking} onClick={() => ctx.wake(session)}>
+              {waking ? <Spinner /> : sleeping ? <IconPlayerPlay size={14} /> : <IconRefresh size={14} />}
+            </Button>
+          )}
+          <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Link ${session.title} to another agent`} title="Link to…" onClick={() => ctx.startLink(id)}>
+            <IconLink size={14} />
+          </Button>
+          {(ctx.keychainCounts[id] ?? 0) > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-amber-600 tabular-nums dark:text-amber-400" title={`${ctx.keychainCounts[id]} keychain${ctx.keychainCounts[id] === 1 ? "" : "s"} linked`}>
+              <IconKey size={12} />{ctx.keychainCounts[id]}
+            </span>
+          )}
+          <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Open ${session.title}`} title="Open terminal" onClick={() => ctx.focus(session)}>
+            <IconWindowMaximize size={14} />
+          </Button>
+        </div>
       </div>
 
       {!collapsed && (
-        <div className="relative min-h-0 flex-1 overflow-hidden rounded-b-lg bg-[#0c0c0e]">
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0c0c0e]" onClick={() => { barRef.current?.focus(); }}>
           {live ? (
             <SessionMirror session={session} />
           ) : (
@@ -90,14 +150,10 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
               )}
             </div>
           )}
-          {live && (
-            <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-zinc-300" title="Mirror only: open the full terminal to type">
-              <IconEye size={10} />
-              view-only
-            </span>
-          )}
         </div>
       )}
+      {!collapsed && <NodeMessageBar session={session} inputRef={barRef} send={ctx.sendMessage} />}
+      </div>
     </div>
   );
 });
