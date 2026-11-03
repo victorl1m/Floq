@@ -6,6 +6,10 @@ Status: architecture proposal for automated orchestration. The manual `floq recr
 
 Lead agents can opt in to a separate branch and worktree for a recruited agent with `floq recruit "Builder" --isolated`. The default recruit still shares the lead's working directory. Isolated workers remain in the same logical project for `floq list`, `ask`, `connect`, and `dismiss`. Worktrees start from committed `HEAD`; the source's uncommitted changes are left in place and are not copied. Floq does not commit, push, prune, or remove a worktree when its agent is dismissed. Isolation requires a Git repository in the user's shard.
 
+## Reliable ask / wait / check
+
+`floq ask` blocks until the target's turn is complete and prints its full final reply. Completion comes from the agent's native transcript (Claude `~/.claude/projects/**/<id>.jsonl`, Codex rollout jsonl): a turn is open from the user prompt until `end_turn` / `turn_duration` (Claude) or `task_complete` (Codex), and the reply is the final assistant message text, so nothing is lost to terminal scrollback. Without a transcript it falls back to terminal quiet (5 s). `floq check` prints a `status:` line (`working|idle|waiting-for-input|exited|asleep`) plus the last reply (`--chars N` caps, `--full` lifts the cap), and `floq wait` blocks until idle. `waiting-for-input` means a turn is open but the terminal has been silent for 60 s (usually an approval prompt). Exit codes for ask/wait: 0 done, 3 timed out still working, 4 waiting for input, 5 exited. Orchestrators must not poll or grep spinner text.
+
 ## Recruiting by role
 
 Role presets (Spec Kit-style phases) live in `runtime/src/roles.ts` and are served at `GET /v1/agent-roles` and `GET /v1/agent-roles/:id`. Built-ins: `specifier`, `planner`, `implementer`, `reviewer` (read-only by instruction), `tester`; no role is a generalist. Each role has a capability hint (`reasoning-heavy`, `code-heavy`, `fast-cheap`, `review-strict`), never a fixed model.

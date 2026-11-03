@@ -20,7 +20,8 @@ import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } fr
 import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
-import { readClaudeNativeTitle, readCodexNativeTitle } from "./nativeTitle.js";
+import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
+import { analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
@@ -60,6 +61,24 @@ function findRollout(dir: string): string | null {
   return null;
 }
 
+function findRolloutFile(dir: string): string | null {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const found = findRolloutFile(join(dir, entry.name));
+      if (found) return found;
+    } else if (ROLLOUT.test(entry.name)) return join(dir, entry.name);
+  }
+  return null;
+}
+
+const MAX_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
+
 interface Row {
   id: string;
   user_id: string;
@@ -85,6 +104,7 @@ interface Row {
   lead: boolean;
   model: string | null;
   role?: string | null;
+  parent_session_id?: string | null;
 }
 
 function summaryFromRow(row: Row): SessionSummary {
@@ -114,6 +134,7 @@ function summaryFromRow(row: Row): SessionSummary {
     sleepReason: row.sleep_reason,
     model: row.model ?? null,
     role: row.role ?? null,
+    parentSessionId: row.parent_session_id ?? null,
   };
 }
 
@@ -208,6 +229,8 @@ export interface CreateSessionOptions {
   /** Source repository metadata; used for grouping but never to clone this session again. */
   projectGitUrl?: string | null;
   isolated?: boolean;
+  /** Session that recruited this one (floq CLI orchestration); drives the canvas edges. */
+  parentSessionId?: string | null;
 }
 
 export class SessionManager {
@@ -432,6 +455,22 @@ export class SessionManager {
   findLive(id: string, userId: string): Session | undefined {
     const session = this.live.get(id);
     return session && session.userId === userId ? session : undefined;
+  }
+
+  /**
+   * Last turn of a live Claude/Codex agent from its native transcript: whether a turn is open and its full final reply.
+   * Null when there is no transcript (shell session, not started yet, unreadable); callers fall back to terminal output.
+   */
+  readAgentTurn(id: string, userId: string): (TranscriptTurn & { mtimeMs: number; trailingAssistantText: boolean }) | null {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || state.userId !== userId) return null;
+    const path = state.provider === "claude"
+      ? claudeTranscriptPath(this.hostHome(state.handle), id)
+      : findRolloutFile(this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"));
+    if (!path) return null;
+    const tail = readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES);
+    if (!tail) return null;
+    return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
   }
 
   /** Live session for a user; throws 404 for anyone else's. */
@@ -1048,6 +1087,7 @@ export class SessionManager {
       resumeCount,
       model: row.model ?? null,
       role: row.role ?? null,
+      parentSessionId: row.parent_session_id ?? null,
     });
     this.live.set(row.id, session);
     if (row.provider === "claude" || row.provider === "codex") {
@@ -1355,9 +1395,9 @@ export class SessionManager {
     const title = input.title?.trim().slice(0, 120) || definition.label;
 
     const inserted = await this.pool.query(
-      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch, role)
-       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null],
+      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch, role, parent_session_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null, options.parentSessionId ?? null],
     );
     try {
       const session = await this.launch(inserted.rows[0] as Row, profile, handle, false, prompt);

@@ -14,6 +14,7 @@ import SettingsDialog from "./components/settings/settings-dialog";
 import { useRuntime } from "./lib/runtime/store";
 import SkillsPage from "./components/skills/skills-page";
 import SecretsPage from "./components/secrets/secrets-page";
+import AgentCanvasPage from "./components/canvas/agent-canvas-page";
 import TasksPage from "./components/tasks/tasks-page";
 import { useEffect } from "react";
 import { usePerformancePrefs } from "@/lib/prefs";
@@ -23,7 +24,7 @@ function App() {
   const [performancePrefs] = usePerformancePrefs();
 
   useEffect(() => {
-    document.title = view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq";
+    document.title = view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq";
   }, [view]);
 
   useEffect(() => {
@@ -43,10 +44,11 @@ function App() {
           <>
             {view === "home" && <HomeView />}
             {view === "tasks" && <div className="absolute inset-0 overflow-hidden"><TasksPage /></div>}
+            {view === "canvas" && <div className="absolute inset-0 overflow-hidden"><AgentCanvasPage /></div>}
             {view === "skills" && <div className="absolute inset-0 overflow-y-auto"><SkillsPage /></div>}
             {view === "secrets" && <div className="absolute inset-0 overflow-y-auto"><SecretsPage /></div>}
             {/* Kept mounted so xterm scrollback survives switching views. */}
-            <div className={view === "home" || view === "tasks" || view === "skills" || view === "secrets" ? "hidden" : "absolute inset-0"}>
+            <div className={view === "home" || view === "tasks" || view === "canvas" || view === "skills" || view === "secrets" ? "hidden" : "absolute inset-0"}>
               <TerminalPanel />
             </div>
           </>

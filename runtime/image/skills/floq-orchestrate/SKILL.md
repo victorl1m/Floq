@@ -35,15 +35,19 @@ Run `floq list` to see sessions you can reach. Each row includes its immutable F
 
 ## Delegate a bounded task
 
-Prefer `ask` or `check` with sessions already listed. Give a worker the goal, relevant paths, constraints, and a concrete completion report. Split work only where outputs can progress independently; do ordinary focused work in the current session. Do not recruit agents automatically just because a task is large or multi-step. Recruit only when the user or task instructions authorize it and this session is a lead.
+Prefer `ask` (it waits for the reply) or `check` with sessions already listed. Give a worker the goal, relevant paths, constraints, and a concrete completion report. Split work only where outputs can progress independently; do ordinary focused work in the current session. Do not recruit agents automatically just because a task is large or multi-step. Recruit only when the user or task instructions authorize it and this session is a lead.
 
 ```sh
 # Copy the exact UUID for Reviewer from `floq list`.
 floq ask "$REVIEWER_UUID" "Review the changes under src/auth for correctness risks. Do not edit files; report findings with paths and evidence."
-floq check "$REVIEWER_UUID"
+floq wait "$REVIEWER_UUID"   # only needed after a timeout, or to re-read the last reply
 ```
 
-`ask` types a prompt into another agent's terminal and returns output after it becomes quiet (usually about 5 seconds); it is best-effort with interactive terminal interfaces. Default timeout is 300 seconds; use `--timeout 600` to extend. Inspect returned output as a report, then verify important claims in the workspace. Use `check` to read recent output without sending a prompt; `--chars N` adjusts the captured output length.
+`ask` types the prompt into the agent's terminal, then **blocks until that agent finishes its turn** (detected from the agent's own transcript, not from terminal text) and prints `status: idle` followed by the agent's FULL final reply. Default timeout is 300 seconds; use `--timeout 900` for long jobs. If the timeout hits, the first line is `status: working (timed out ...; still working ...)` and the exit code is 3: keep waiting with `floq wait "$REVIEWER_UUID" --timeout 600` instead of polling. Other exit codes: 4 = `waiting-for-input` (the agent is stopped on a prompt or approval; look at it, do not wait longer), 5 = the agent exited. `ask --no-wait` only sends the message.
+
+`floq check "$ID"` never blocks: its first line is `status: working|idle|waiting-for-input|exited|asleep`; when idle it prints the last full reply, otherwise a tail of the terminal. `--chars N` caps the length (a cut reply ends with `[truncated: N more chars, use --full]`); `--full` prints everything. `floq wait "$ID"` blocks until the agent is idle and prints its last reply (it returns at once if the agent is already idle).
+
+Never poll in a shell loop and never grep terminal output for spinner or status words ("Baked for", "Worked for", ...): they are cosmetic and change between versions. Use `ask`, `wait` and the `status:` line. If a reply is missing, run `floq check "$ID" --full` rather than asking the agent to resend. Inspect the reply as a report, then verify important claims in the workspace.
 
 ## Share coordination context
 

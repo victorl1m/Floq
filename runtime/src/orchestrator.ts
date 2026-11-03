@@ -3,12 +3,16 @@ import type { ModelEntry } from "./config.js";
 import { HttpError, badRequest, conflict, notFound } from "./errors.js";
 import { safeRelative } from "./shard.js";
 import type { SessionManager } from "./manager.js";
+import type { Session } from "./session.js";
+import { agentStatus, DEFAULT_REPLY_CHARS, truncateReply, type AgentStatus, type TranscriptTurn } from "./turn.js";
 import type { SettingsStore } from "./settings.js";
 import { getAgentRole, GENERALIST_ID } from "./roles.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const QUIET_MS = 5_000;
+const POLL_MS = 1_000;
+const TRANSCRIPT_REGISTER_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
 const MAX_REPLY_CHARS = 20_000;
@@ -159,21 +163,85 @@ export class Orchestrator {
       }));
   }
 
-  /** Read recent terminal output of a connected agent. */
-  async check(userId: string, sessionId: string, name: unknown, chars = 6000) {
-    const { other } = await this.target(userId, sessionId, name);
-    const live = this.manager.findLive(other.id, userId);
-    if (!live) return { id: other.id, name: other.title, state: other.state, output: "(agent is asleep; use ask to wake it)" };
-    const text = live
-      .replaySince(0)
-      .chunks.map((c) => c.data)
-      .join("");
-    const out = stripAnsi(text);
-    return { id: other.id, name: other.title, state: live.state, output: out.slice(-Math.min(Math.max(chars, 200), MAX_REPLY_CHARS)) };
+  /** Snapshot of another agent: explicit status plus the parsed transcript turn (null without a transcript). */
+  private snapshot(live: Session, userId: string) {
+    const turn = this.manager.readAgentTurn(live.id, userId);
+    const status = agentStatus({
+      alive: live.isAlive,
+      sessionState: live.state,
+      turn,
+      outputQuietMs: Date.now() - live.lastActivity,
+      transcriptQuietMs: turn ? Date.now() - turn.mtimeMs : Infinity,
+    });
+    return { turn, status };
   }
 
-  /** Type a message into another agent's terminal and return what it prints until it goes quiet. */
-  async ask(userId: string, sessionId: string, name: unknown, prompt: unknown, timeoutSec?: number) {
+  private terminalTail(live: Session): string {
+    return stripAnsi(live.replaySince(0).chunks.map((c) => c.data).join("")).trim();
+  }
+
+  /** Read another agent's status and last reply. A finished turn returns the full reply from its transcript. */
+  async check(userId: string, sessionId: string, name: unknown, chars?: number, full = false) {
+    const { other } = await this.target(userId, sessionId, name);
+    const live = this.manager.findLive(other.id, userId);
+    if (!live) return { id: other.id, name: other.title, state: other.state, status: "asleep" as AgentStatus, source: "none", output: "(agent is asleep; use ask to wake it)", truncated: 0 };
+    const { turn, status } = this.snapshot(live, userId);
+    if (turn?.reply && status === "idle") {
+      const cut = truncateReply(turn.reply, full ? null : chars ? Math.max(chars, 200) : DEFAULT_REPLY_CHARS);
+      return { id: other.id, name: other.title, state: live.state, status, source: "transcript", output: cut.text, truncated: cut.truncated };
+    }
+    const tail = this.terminalTail(live);
+    const limit = full ? MAX_REPLY_CHARS : Math.min(Math.max(chars ?? 6000, 200), MAX_REPLY_CHARS);
+    return { id: other.id, name: other.title, state: live.state, status, source: "terminal", output: tail.slice(-limit), truncated: Math.max(0, tail.length - limit) };
+  }
+
+  /**
+   * Poll until the transcript shows a completed turn after `afterPrompts` user prompts, the agent needs input, it
+   * exits, or the timeout hits. Without a usable transcript it falls back to terminal quiet.
+   */
+  private async awaitTurn(live: Session, userId: string, afterPrompts: number, timeoutMs: number, sentAt: number) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const { turn, status } = this.snapshot(live, userId);
+      const terminalQuiet = Date.now() - Math.max(sentAt, live.lastActivity) >= QUIET_MS;
+      if (status === "exited" || status === "asleep") return { why: "exit" as const, turn };
+      if (turn) {
+        if (turn.prompts > afterPrompts && status === "idle") return { why: "done" as const, turn };
+        if (status === "waiting-for-input" && turn.prompts >= afterPrompts) return { why: "waiting-for-input" as const, turn };
+        // Our prompt never reached the transcript (unknown format?): fall back to terminal quiet.
+        if (turn.prompts <= afterPrompts && Date.now() - sentAt > TRANSCRIPT_REGISTER_MS && terminalQuiet) return { why: "quiet" as const, turn };
+      } else if (terminalQuiet) {
+        return { why: "quiet" as const, turn };
+      }
+      if (Date.now() >= deadline) return { why: "timeout" as const, turn };
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+  }
+
+  private turnResult(other: { id: string; title: string }, live: Session, why: string, turn: TranscriptTurn | null, chars: number | undefined, full: boolean, collected = "") {
+    const limit = full ? null : chars ? Math.max(chars, 200) : DEFAULT_REPLY_CHARS;
+    if (turn?.reply && (why === "done" || why === "quiet")) {
+      const cut = truncateReply(turn.reply, limit);
+      return { id: other.id, name: other.title, status: why, source: "transcript", output: cut.text, truncated: cut.truncated };
+    }
+    const tail = (collected || this.terminalTail(live)).slice(-(limit ?? MAX_REPLY_CHARS));
+    return { id: other.id, name: other.title, status: why, source: "terminal", output: tail, truncated: 0 };
+  }
+
+  /** Block until an agent finishes its current turn, then return its full last reply (`floq wait`). */
+  async wait(userId: string, sessionId: string, name: unknown, timeoutSec?: number, chars?: number, full = false) {
+    const { other } = await this.target(userId, sessionId, name);
+    const live = this.manager.findLive(other.id, userId);
+    if (!live) return { id: other.id, name: other.title, status: "asleep", source: "none", output: "(agent is asleep; use ask to wake it)", truncated: 0 };
+    const timeoutMs = Math.min(Math.max((timeoutSec ?? DEFAULT_TIMEOUT_MS / 1000) * 1000, 10_000), MAX_TIMEOUT_MS);
+    // An idle agent satisfies "prompts > afterPrompts" at once; a working one only when its open turn completes.
+    const afterPrompts = Math.max(0, (this.manager.readAgentTurn(other.id, userId)?.prompts ?? 0) - 1);
+    const { why, turn } = await this.awaitTurn(live, userId, afterPrompts, timeoutMs, 0);
+    return this.turnResult(other, live, why, turn, chars, full);
+  }
+
+  /** Type a message into another agent's terminal; by default wait for its turn to finish and return the full reply. */
+  async ask(userId: string, sessionId: string, name: unknown, prompt: unknown, timeoutSec?: number, wait = true, chars?: number, full = false) {
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 20_000) throw badRequest("prompt required (max 20000 chars)");
     const { me, other } = await this.target(userId, sessionId, name);
     const timeoutMs = Math.min(Math.max((timeoutSec ?? DEFAULT_TIMEOUT_MS / 1000) * 1000, 10_000), MAX_TIMEOUT_MS);
@@ -187,47 +255,20 @@ export class Orchestrator {
     }
     const target = live;
 
+    const afterPrompts = this.manager.readAgentTurn(other.id, userId)?.prompts ?? 0;
     const collected: string[] = [];
-    let lastData = 0;
-    const done = new Promise<"quiet" | "timeout" | "exit">((resolve) => {
-      let quiet: NodeJS.Timeout | undefined;
-      const finish = (why: "quiet" | "timeout" | "exit") => {
-        clearTimeout(quiet);
-        clearTimeout(hard);
-        unsubscribe();
-        resolve(why);
-      };
-      const arm = () => {
-        clearTimeout(quiet);
-        quiet = setTimeout(() => finish("quiet"), QUIET_MS);
-      };
-      const hard = setTimeout(() => finish("timeout"), timeoutMs);
-      const unsubscribe = target.subscribe((frame) => {
-        if (frame.type === "output") {
-          collected.push(frame.data);
-          lastData = Date.now();
-          arm();
-        } else if (frame.type === "exit" || frame.type === "state") {
-          finish("exit");
-        }
-      });
-      arm();
-    });
-
-    const body = prompt.replace(/\r?\n/g, " ").trim();
-    target.write("[Message from agent " + me.title + "] " + body);
-    await new Promise((r) => setTimeout(r, 300));
-    target.write("\r");
-
-    const why = await done;
-    const output = stripAnsi(collected.join("")).trim();
-    return {
-      id: other.id,
-      name: other.title,
-      status: why,
-      idleMs: lastData ? Date.now() - lastData : null,
-      output: output.slice(-MAX_REPLY_CHARS),
-    };
+    const unsubscribe = target.subscribe((frame) => { if (frame.type === "output") collected.push(frame.data); });
+    try {
+      const body = prompt.replace(/\r?\n/g, " ").trim();
+      target.write("[Message from agent " + me.title + "] " + body);
+      await new Promise((r) => setTimeout(r, 300));
+      target.write("\r");
+      if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0 };
+      const { why, turn } = await this.awaitTurn(target, userId, afterPrompts, timeoutMs, Date.now());
+      return this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim());
+    } finally {
+      unsubscribe();
+    }
   }
 
   /** Agents in one project are always connected: success within the project, 403 across projects. */
@@ -294,6 +335,7 @@ export class Orchestrator {
       projectCwd: me.project_cwd ?? (me.git_url ? me.cwd : projectOf(me.cwd) === "(scratch)" ? null : me.cwd),
       projectGitUrl: me.git_url,
       isolated: input.isolated === true,
+      parentSessionId: me.id,
     });
     if (rolePreset !== undefined) {
       // Preset roles are injected into the first message by SessionManager.create.

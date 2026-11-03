@@ -56,7 +56,7 @@ export function defaultBaseUrl(): string {
   }
 }
 
-export type View = "home" | "tasks" | "skills" | "secrets" | "terminal" | "session";
+export type View = "home" | "tasks" | "skills" | "secrets" | "canvas" | "terminal" | "session";
 
 interface HistoryEntry {
   view: View;

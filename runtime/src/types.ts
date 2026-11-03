@@ -34,6 +34,8 @@ export interface SessionSummary {
   model: string | null;
   /** Role preset id this agent was recruited with, or null (generalist). */
   role?: string | null;
+  /** Session that recruited this one via the floq CLI, or null. */
+  parentSessionId?: string | null;
 }
 
 export interface ProjectWorkspace {

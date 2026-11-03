@@ -8,6 +8,8 @@ export interface UserPreferences {
     folderNavExpanded: Record<string, boolean>;
     /** Sessions whose tab was closed: hidden from the left sidebar, still listed under Conversations. */
     hiddenSessionIds: Record<string, boolean>;
+    /** Dragged Agent Canvas node positions: project id -> session id -> position. */
+    canvasPositions: Record<string, Record<string, { x: number; y: number }>>;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
@@ -21,7 +23,23 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     workspaceNavExpanded: {},
     folderNavExpanded: {},
     hiddenSessionIds: {},
+    canvasPositions: {},
 };
+
+function positionMaps(value: unknown): UserPreferences["canvasPositions"] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: UserPreferences["canvasPositions"] = {};
+    for (const [project, nodes] of Object.entries(value)) {
+        if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) continue;
+        const positions: Record<string, { x: number; y: number }> = {};
+        for (const [id, point] of Object.entries(nodes)) {
+            const { x, y } = (point ?? {}) as { x?: unknown; y?: unknown };
+            if (typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
+        }
+        result[project] = positions;
+    }
+    return result;
+}
 
 function booleanMap(value: unknown): Record<string, boolean> {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -55,6 +73,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             workspaceNavExpanded: booleanMap(parsed.workspaceNavExpanded),
             folderNavExpanded: booleanMap(parsed.folderNavExpanded),
             hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),
+            canvasPositions: positionMaps(parsed.canvasPositions),
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
 }
