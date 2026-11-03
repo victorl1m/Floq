@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createWorktree } from "../dist/worktree.js";
 import { Orchestrator, selectableAgentModels } from "../dist/orchestrator.js";
 import { ownHomeAliasArgs } from "../dist/sandboxPaths.js";
-import { buildRecruitPayload, formatAgentListEntry, formatModel, formatRecruitment, parseArgs } from "../image/floq-args.mjs";
+import { buildRecruitPayload, formatAgentListEntry, formatModel, formatRecruitment, parseArgs } from "../dist/image/floq-args.mjs";
 
 const gitAvailable = spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
 
@@ -36,7 +36,7 @@ test("recruit CLI keeps worktree isolation opt-in and parses --isolated as a fla
   assert.deepEqual(buildRecruitPayload(parsed.positional, parsed.named), {
     name: "Haiku A", provider: "claude", model: "haiku", cwd: "workspace/repo", role: "write a haiku", isolated: true,
   });
-  const help = spawnSync(process.execPath, ["image/floq.mjs", "--help"], { cwd: new URL("..", import.meta.url), env: { PATH: process.env.PATH } });
+  const help = spawnSync(process.execPath, ["dist/image/floq.mjs", "--help"], { cwd: new URL("..", import.meta.url), env: { PATH: process.env.PATH } });
   assert.equal(help.status, 0);
   for (const flag of ["--model", "--cwd", "--isolated", "floq models"]) assert.ok(help.stdout.toString().includes(flag));
 });

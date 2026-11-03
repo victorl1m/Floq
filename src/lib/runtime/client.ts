@@ -27,6 +27,8 @@ import type {
   SessionSummary,
   SettingsPatch,
   UserSettings,
+  TaskTeam,
+  TaskBoard,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
 
@@ -168,6 +170,75 @@ export class RuntimeClient {
 
   async updateName(name: string): Promise<void> {
     await this.call("POST", "/api/auth/update-user", { name });
+  }
+
+  async teams(): Promise<TaskTeam[]> {
+    return (await this.call<{ teams: TaskTeam[] }>("GET", "/v1/teams")).teams;
+  }
+
+  async createTeam(name: string): Promise<TaskTeam> {
+    return (await this.call<{ team: TaskTeam }>("POST", "/v1/teams", { name })).team;
+  }
+
+  async createTeamInvitation(teamId: string, email: string): Promise<{ token: string; expiresAt: string }> {
+    return (await this.call<{ invitation: { token: string; expiresAt: string } }>("POST", `/v1/teams/${encodeURIComponent(teamId)}/invitations`, { email })).invitation;
+  }
+
+  async acceptTeamInvitation(token: string): Promise<{ teamId: string }> {
+    return this.call("POST", "/v1/team-invitations/accept", { token });
+  }
+
+  async teamBoards(teamId: string): Promise<Omit<TaskBoard, "lists">[]> {
+    return (await this.call<{ boards: Omit<TaskBoard, "lists">[] }>("GET", `/v1/teams/${encodeURIComponent(teamId)}/boards`)).boards;
+  }
+
+  async createTaskBoard(teamId: string, title: string): Promise<TaskBoard> {
+    return (await this.call<{ board: TaskBoard }>("POST", `/v1/teams/${encodeURIComponent(teamId)}/boards`, { title })).board;
+  }
+
+  async taskBoard(boardId: string): Promise<TaskBoard> {
+    return (await this.call<{ board: TaskBoard }>("GET", `/v1/task-boards/${encodeURIComponent(boardId)}`)).board;
+  }
+
+  async saveTaskBoard(boardId: string, title: string): Promise<void> {
+    await this.call("PATCH", `/v1/task-boards/${encodeURIComponent(boardId)}`, { title });
+  }
+
+  async deleteTaskBoard(boardId: string): Promise<void> {
+    await this.call("DELETE", `/v1/task-boards/${encodeURIComponent(boardId)}`);
+  }
+
+  async createTaskList(boardId: string, title: string): Promise<void> {
+    await this.call("POST", `/v1/task-boards/${encodeURIComponent(boardId)}/lists`, { title });
+  }
+
+  async saveTaskList(boardId: string, listId: string, input: { title: string; position: number }): Promise<void> {
+    await this.call("PATCH", `/v1/task-boards/${encodeURIComponent(boardId)}/lists/${encodeURIComponent(listId)}`, input);
+  }
+
+  async deleteTaskList(boardId: string, listId: string): Promise<void> {
+    await this.call("DELETE", `/v1/task-boards/${encodeURIComponent(boardId)}/lists/${encodeURIComponent(listId)}`);
+  }
+
+  async createTaskCard(boardId: string, input: { listId: string; title: string; description?: string; assigneeId?: string | null }): Promise<void> {
+    await this.call("POST", `/v1/task-boards/${encodeURIComponent(boardId)}/cards`, input);
+  }
+
+  async saveTaskCard(boardId: string, cardId: string, input: { listId: string; title: string; description?: string; position: number; assigneeId?: string | null; dueAt?: string | null }): Promise<void> {
+    await this.call("PATCH", `/v1/task-boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}`, input);
+  }
+
+  async deleteTaskCard(boardId: string, cardId: string): Promise<void> {
+    await this.call("DELETE", `/v1/task-boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}`);
+  }
+
+  taskRealtimeUrl(boardId: string): string {
+    if (!this.token) throw new RuntimeError(401, "unauthorized", "Sign in to join this board");
+    const url = new URL(this.baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/v1/tasks/realtime";
+    url.search = new URLSearchParams({ boardId, token: this.token }).toString();
+    return url.toString();
   }
 
   async changePassword(currentPassword: string, newPassword: string, revokeOtherSessions = false): Promise<void> {

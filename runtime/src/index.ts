@@ -15,6 +15,9 @@ import { Orchestrator } from "./orchestrator.js";
 import { Vault } from "./vault.js";
 import { SkillsService } from "./skills.js";
 import { GitReview } from "./gitReview.js";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "./generated/prisma/client.js";
+import { TasksService } from "./tasks.js";
 
 process.on("uncaughtException", (error) => log.error("process.uncaught", { error: error instanceof Error ? error.message : String(error) }));
 process.on("unhandledRejection", (reason) => log.error("process.unhandled_rejection", { error: reason instanceof Error ? reason.message : String(reason) }));
@@ -23,6 +26,7 @@ const config = loadConfig();
 configureLogger(config);
 
 const pool = createPool(config);
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.databaseUrl }) });
 const auth = createAuth(config, pool);
 await migrateAuth(auth);
 await migrateApp(pool);
@@ -43,7 +47,8 @@ credentials.start();
 const usage = new UsageService(credentials);
 const orchestrator = new Orchestrator(pool, manager, settings);
 const gitReview = new GitReview(manager, shards);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview });
+const tasks = new TasksService(prisma);
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, tasks });
 
 await server.listen();
 log.info("runtime.listening", {
@@ -63,6 +68,7 @@ async function stop(signal: string): Promise<void> {
   await manager.shutdown();
   await server.close();
   await pool.end();
+  await prisma.$disconnect();
   process.exit(0);
 }
 process.on("SIGINT", () => void stop("SIGINT"));

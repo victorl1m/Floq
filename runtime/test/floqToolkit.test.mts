@@ -10,10 +10,10 @@ import { Vault } from "../dist/vault.js";
 import { Orchestrator } from "../dist/orchestrator.js";
 import { encryptSecret } from "../dist/crypto.js";
 import { fixture } from "./mcpFixture.mjs";
-import { cleanSecretInput, formatMcpReview, parseArgs, parseSecretsAdd, scopeFields, splitDashDash } from "../image/floq-args.mjs";
+import { cleanSecretInput, formatMcpReview, parseArgs, parseSecretsAdd, scopeFields, splitDashDash } from "../dist/image/floq-args.mjs";
 
 const SECRET = "tok_live_9f8e7d6c5b4a_SHOULD_NEVER_APPEAR";
-const FLOQ = fileURLToPath(new URL("../image/floq.mjs", import.meta.url));
+const FLOQ = fileURLToPath(new URL("../dist/image/floq.mjs", import.meta.url));
 const key = Buffer.alloc(32, 9);
 const P1 = "11111111-1111-4111-8111-111111111111";
 

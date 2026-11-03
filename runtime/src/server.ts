@@ -21,6 +21,8 @@ import type { SettingsPatch, SettingsStore } from "./settings.js";
 import type { Session } from "./session.js";
 import type { GitReview } from "./gitReview.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
+import { TasksService } from "./tasks.js";
+import { expireStaleCursors } from "./taskPresence.js";
 
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
@@ -40,9 +42,10 @@ interface Deps {
   usage: UsageService;
   skills: SkillsService;
   gitReview: GitReview;
+  tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
@@ -338,6 +341,65 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       }
     }
 
+    if (url.pathname === "/v1/teams" && method === "GET") return send(res, 200, { teams: await tasks.teams(userId) });
+    if (url.pathname === "/v1/teams" && method === "POST") return send(res, 201, { team: await tasks.createTeam(userId, await readJson(req)) });
+    if (url.pathname === "/v1/team-invitations/accept" && method === "POST") {
+      const result = await tasks.acceptInvite(userId, (await readJson<{ token?: unknown }>(req)).token);
+      return send(res, 200, result);
+    }
+    const teamMatch = /^\/v1\/teams\/([\w-]+)(?:\/(members|invitations|boards))?$/.exec(url.pathname);
+    if (teamMatch) {
+      const [, teamId, action] = teamMatch;
+      if (!action && method === "GET") return send(res, 200, { members: await tasks.members(userId, teamId) });
+      if (action === "invitations" && method === "POST") return send(res, 201, { invitation: await tasks.createInvite(userId, teamId, await readJson(req)) });
+      if (action === "boards" && method === "GET") return send(res, 200, { boards: await tasks.boards(userId, teamId) });
+      if (action === "boards" && method === "POST") {
+        const board = await tasks.createBoard(userId, teamId, await readJson(req));
+        return send(res, 201, { board });
+      }
+    }
+    const boardMatch = /^\/v1\/task-boards\/([\w-]+)(?:\/(lists|cards)(?:\/([\w-]+))?)?$/.exec(url.pathname);
+    if (boardMatch) {
+      const [, boardId, section, childId] = boardMatch;
+      if (!section && method === "GET") return send(res, 200, { board: await tasks.board(userId, boardId) });
+      if (!section && method === "PATCH") {
+        await tasks.renameBoard(userId, boardId, (await readJson<{ title?: unknown }>(req)).title);
+        await broadcastTaskBoard(boardId);
+        return send(res, 200, { ok: true });
+      }
+      if (!section && method === "DELETE") { await tasks.deleteBoard(userId, boardId); return send(res, 200, { ok: true }); }
+      if (section === "lists" && method === "POST") {
+        await tasks.saveList(userId, boardId, await readJson(req));
+        await broadcastTaskBoard(boardId);
+        return send(res, 201, { ok: true });
+      }
+      if (section === "lists" && childId && method === "PATCH") {
+        await tasks.saveList(userId, boardId, await readJson(req), childId);
+        await broadcastTaskBoard(boardId);
+        return send(res, 200, { ok: true });
+      }
+      if (section === "lists" && childId && method === "DELETE") {
+        await tasks.deleteList(userId, boardId, childId);
+        await broadcastTaskBoard(boardId);
+        return send(res, 200, { ok: true });
+      }
+      if (section === "cards" && method === "POST") {
+        await tasks.saveCard(userId, boardId, await readJson(req));
+        await broadcastTaskBoard(boardId);
+        return send(res, 201, { ok: true });
+      }
+      if (section === "cards" && childId && method === "PATCH") {
+        await tasks.saveCard(userId, boardId, await readJson(req), childId);
+        await broadcastTaskBoard(boardId);
+        return send(res, 200, { ok: true });
+      }
+      if (section === "cards" && childId && method === "DELETE") {
+        await tasks.deleteCard(userId, boardId, childId);
+        await broadcastTaskBoard(boardId);
+        return send(res, 200, { ok: true });
+      }
+    }
+
     if (url.pathname === "/v1/skills" && method === "GET") {
       const userId = await userFor(req.headers);
       return send(res, 200, await skills.list(userId));
@@ -592,6 +654,24 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   });
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
+  type TaskPeer = { ws: WebSocket; boardId: string; userId: string; name: string; x: number; y: number; activeAt: number; sentAt: number; cursorVisible: boolean };
+  const taskPeers = new Set<TaskPeer>();
+  async function broadcastTaskBoard(boardId: string): Promise<void> {
+    const viewers = [...taskPeers].filter((peer) => peer.boardId === boardId && peer.ws.readyState === peer.ws.OPEN);
+    if (!viewers.length) return;
+    const board = await tasks.board(viewers[0].userId, boardId);
+    const frame = JSON.stringify({ type: "board", board });
+    for (const peer of viewers) peer.ws.send(frame);
+  }
+  const expireTaskCursors = setInterval(() => {
+    const now = Date.now();
+    for (const peer of expireStaleCursors(taskPeers, now)) {
+      for (const other of taskPeers) if (other !== peer && other.boardId === peer.boardId && other.ws.readyState === other.ws.OPEN) {
+        other.ws.send(JSON.stringify({ type: "presence-left", userId: peer.userId }));
+      }
+    }
+  }, 5_000);
+  expireTaskCursors.unref();
 
   server.on("upgrade", (req, socket, head) => {
     void handleUpgrade(req, socket, head);
@@ -604,6 +684,19 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     };
     try {
       const url = new URL(req.url ?? "/", "http://runtime");
+      if (url.pathname === "/v1/tasks/realtime") {
+        if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
+        const token = url.searchParams.get("token");
+        const boardId = url.searchParams.get("boardId");
+        if (!token || !boardId) return reject(401, "Unauthorized");
+        const headers = { ...req.headers, authorization: "Bearer " + token };
+        const userId = await userFor(headers);
+        const teamId = await tasks.requireBoard(userId, boardId);
+        const members = await tasks.members(userId, teamId);
+        const self = members.find((member) => member.id === userId);
+        wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Teammate"));
+        return;
+      }
       const match = SESSION_PATH.exec(url.pathname);
       if (!match || match[2] !== "stream") return reject(404, "Not Found");
       if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
@@ -618,6 +711,34 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     } catch (error) {
       reject(error instanceof HttpError ? error.status : 500, "Error");
     }
+  }
+
+  function attachTaskPeer(ws: WebSocket, boardId: string, userId: string, name: string): void {
+    const peer: TaskPeer = { ws, boardId, userId, name, x: 0, y: 0, activeAt: Date.now(), sentAt: 0, cursorVisible: true };
+    taskPeers.add(peer);
+    const send = (frame: unknown) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); };
+    void tasks.board(userId, boardId).then((board) => send({ type: "hello", board })).catch(() => ws.close(1011, "Unable to load board"));
+    for (const other of taskPeers) if (other !== peer && other.boardId === boardId && other.cursorVisible) send({ type: "presence", userId: other.userId, name: other.name, x: other.x, y: other.y });
+    for (const other of taskPeers) if (other !== peer && other.boardId === boardId) other.ws.send(JSON.stringify({ type: "presence", userId, name, x: 0, y: 0 }));
+    ws.on("message", (raw) => {
+      if (Date.now() - peer.sentAt < 40) return;
+      peer.sentAt = Date.now();
+      try {
+        const message = JSON.parse(raw.toString("utf8")) as { type?: string; x?: unknown; y?: unknown };
+        if (message.type !== "cursor" || typeof message.x !== "number" || typeof message.y !== "number" || !Number.isFinite(message.x) || !Number.isFinite(message.y)) return;
+        peer.x = Math.max(0, Math.min(1, message.x));
+        peer.y = Math.max(0, Math.min(1, message.y));
+        peer.activeAt = Date.now();
+        peer.cursorVisible = true;
+        for (const other of taskPeers) if (other !== peer && other.boardId === boardId && other.ws.readyState === other.ws.OPEN) other.ws.send(JSON.stringify({ type: "presence", userId, name, x: peer.x, y: peer.y }));
+      } catch { /* Ignore malformed presence frames. */ }
+    });
+    const cleanup = () => {
+      taskPeers.delete(peer);
+      for (const other of taskPeers) if (other.boardId === boardId && other.ws.readyState === other.ws.OPEN) other.ws.send(JSON.stringify({ type: "presence-left", userId }));
+    };
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
   }
 
   function attach(ws: WebSocket, session: Session, since: number): void {
@@ -675,6 +796,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       new Promise<void>((done) => server.listen(config.port, config.host, () => done())),
     close: () =>
       new Promise<void>((done) => {
+        clearInterval(expireTaskCursors);
+        for (const peer of taskPeers) peer.ws.close(1001, "server shutting down");
         wss.clients.forEach((client) => client.close(1001, "server shutting down"));
         server.close(() => done());
         setTimeout(done, 3_000).unref();

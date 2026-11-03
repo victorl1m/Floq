@@ -1,13 +1,13 @@
 # floq-runtime
 
-Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, each behind a PTY, and streams them to Floq over WebSocket. Users sign in with [better-auth](https://better-auth.com) (email + password, bearer tokens); their settings and credentials live in PostgreSQL.
+Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, each behind a PTY, and streams them to Floq over WebSocket. Users sign in with [better-auth](https://better-auth.com) (email + password, bearer tokens); their settings and credentials live in PostgreSQL. Team collaboration and Tasks use Prisma ORM 7 and the PostgreSQL driver adapter in a dedicated `collaboration` schema. Better Auth and the pre-existing runtime tables keep their existing migration owners and data.
 
 ## Deploy on Dokploy
 
 1. Create a **Compose** service, source = this repo, compose path `runtime/docker-compose.yml`.
 2. Environment tab: paste `.env.example` and fill every secret (commands are in the comments). Set `BETTER_AUTH_URL` to your public https URL and `FLOQ_BOOTSTRAP_ADMIN_EMAIL` for the first account (no password in env: see First run).
 3. Domains tab: service `runtime`, port `8787`, HTTPS on. Do not add host ports.
-4. Deploy. Postgres (`db`) starts first and the runtime migrates its tables on boot.
+4. Deploy. Postgres (`db`) starts first. Runtime startup applies the checked-in Prisma migrations to the isolated `collaboration` schema, then runs the existing idempotent app bootstrap and Better Auth migrations. The database role needs permission to create that schema and its tables.
 5. In Floq point the runtime URL at your domain and sign in.
 
 ## First run (admin account)
@@ -71,12 +71,29 @@ When `FLOQ_CODEX_MODELS` is unset or empty, authenticated `GET /v1/info` discove
 
 Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/email` returns a `set-auth-token` header; send it as `Authorization: Bearer <token>` on everything else (WebSocket: `?token=`).
 
+### Prisma and database ownership
+
+- `runtime/prisma/schema.prisma` and `runtime/prisma/migrations/` own only the `collaboration` schema; task/team models intentionally keep user IDs as strings and do not add foreign keys into Better Auth's `public.user` table.
+- `npm run build` generates the Prisma Client before TypeScript compilation. `npm start` runs `prisma migrate deploy` before starting the runtime; the Docker image includes the Prisma config and migration files.
+- For an existing deployment, redeploy the runtime image. The migration is additive and isolated: it creates `collaboration` and its team/task tables without altering existing public tables or rows. It does not require baselining or marking the legacy schema as Prisma-managed.
+- To apply the migration manually in a development environment, set `DATABASE_URL` and run `npm run prisma:deploy` from `runtime`. Do not use `prisma migrate reset` against an existing Floq database.
+- Prisma Client uses its own PostgreSQL driver pool in addition to the existing `pg` pool used by Better Auth and legacy services. Keep the database connection limit sized for both.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/healthz` | liveness, unauthenticated |
 | POST | `/v1/setup/lookup`, `/v1/setup/admin` | first-run admin setup, unauthenticated (see First run) |
 | GET | `/v1/github/repos?q=&page=` | repos of the connected GitHub account `{repos:[{fullName,private,description,defaultBranch,cloneUrl,updatedAt}], nextPage}`; 409 `github_not_connected` |
 | GET | `/v1/info` | server info, provider availability |
+| GET/POST | `/v1/teams` | list teams for the signed-in user / create an owner team |
+| GET | `/v1/teams/:id` | list team members (members only) |
+| POST | `/v1/teams/:id/invitations` | create a 7-day, email-bound, single-use member invitation; raw token is returned once |
+| POST | `/v1/team-invitations/accept` | accept an invitation while signed into its invited email |
+| GET/POST | `/v1/teams/:id/boards` | list/create team boards |
+| GET/PATCH/DELETE | `/v1/task-boards/:id` | read, rename, or owner-delete a board |
+| POST/PATCH/DELETE | `/v1/task-boards/:id/lists[/listId]` | create, rename/reorder, or delete a list |
+| POST/PATCH/DELETE | `/v1/task-boards/:id/cards[/cardId]` | create, move/edit, or delete a card |
+| WS | `/v1/tasks/realtime?boardId=<id>&token=<bearer>` | membership-checked board updates and expiring cursor presence |
 | GET/PATCH | `/v1/settings` | `claudeAutoApprove`, `codexAutoApprove`, `gitName`, `gitEmail`, `gitCoauthor` (read-only `gitCoauthorAvailable`) |
 | GET | `/v1/providers/usage` | plan limits `{claude, codex}` (each `null` or `{connected, plan, windows:[{id,label,usedPercent,resetsAt}], fetchedAt, error?}`), cached 60 s; Claude via `GET api.anthropic.com/api/oauth/usage`, Codex via `GET chatgpt.com/backend-api/wham/usage` |
 | GET | `/v1/providers/status` | `{claude:{connected,detail}, codex:{...}}`: subscription logins |

@@ -10,9 +10,9 @@ import { createRuntimeServer } from "../dist/server.js";
 import { Vault } from "../dist/vault.js";
 import { Orchestrator } from "../dist/orchestrator.js";
 import { fixture } from "./mcpFixture.mjs";
-import { readSkillDirectory } from "../image/floq-args.mjs";
+import { readSkillDirectory } from "../dist/image/floq-args.mjs";
 
-const FLOQ = fileURLToPath(new URL("../image/floq.mjs", import.meta.url));
+const FLOQ = fileURLToPath(new URL("../dist/image/floq.mjs", import.meta.url));
 const P1 = "11111111-1111-4111-8111-111111111111";
 const SESSIONS = [
   { id: "s-lead", user_id: "owner", title: "Lead", provider: "claude", model: null, state: "running", lead: true, cwd: "repo", git_url: null, project_cwd: "repo", project_id: P1, workspace_id: null },
