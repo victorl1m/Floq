@@ -7,6 +7,12 @@
 //   floq-vault headers --server NAME --spec BASE64URL   prints HTTP headers as JSON for Claude Code's headersHelper
 import { spawn } from "node:child_process";
 
+type SecretValues = Record<string, string>;
+type VaultSecret = { name: string; description?: string };
+type Redactor = { push(chunk: Buffer): void; end(): void };
+type SecretResponse = { secrets: SecretValues };
+type SecretListResponse = { secrets: VaultSecret[] };
+
 const url = process.env.FLOQ_API_URL;
 const token = process.env.FLOQ_AGENT_TOKEN;
 if (!url || !token) {
@@ -14,7 +20,7 @@ if (!url || !token) {
   process.exit(2);
 }
 
-async function call(path, body) {
+async function call<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(url + path, {
     method: body ? "POST" : "GET",
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
@@ -25,14 +31,14 @@ async function call(path, body) {
     console.error("floq-vault: request failed (" + response.status + ") " + text.slice(0, 200));
     process.exit(1);
   }
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
-function redactor(secrets, write) {
+function redactor(secrets: SecretValues, write: (text: string) => void): Redactor {
   const values = Object.values(secrets).filter((v) => v.length >= 4).sort((a, b) => b.length - a.length);
   const keep = Math.max(0, ...values.map((v) => v.length)) - 1;
   let tail = "";
-  const scrub = (text) => {
+  const scrub = (text: string) => {
     for (const value of values) text = text.split(value).join("[REDACTED]");
     return text;
   };
@@ -52,10 +58,10 @@ function redactor(secrets, write) {
 }
 
 /** Redacts complete lines as they arrive (used for the MCP child's stderr; the protocol stream on stdout is never touched). */
-function lineRedactor(secrets, write) {
+function lineRedactor(secrets: SecretValues, write: (text: string) => void): Redactor {
   const values = Object.values(secrets).filter((v) => v.length >= 4).sort((a, b) => b.length - a.length);
   let pending = "";
-  const scrub = (text) => {
+  const scrub = (text: string) => {
     for (const value of values) text = text.split(value).join("[REDACTED]");
     return text;
   };
@@ -73,8 +79,8 @@ function lineRedactor(secrets, write) {
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /** Fetches exactly these secrets. A name that is missing (deleted or renamed after the MCP server was set up) is a clear error. */
-async function revealExactly(names) {
-  const { secrets } = await call("/internal/vault/reveal", { names });
+async function revealExactly(names: string[]): Promise<SecretValues> {
+  const { secrets } = await call<SecretResponse>("/internal/vault/reveal", { names });
   const missing = names.filter((name) => !(name in secrets));
   if (missing.length) {
     console.error("floq-vault: secret " + missing.join(", ") + " was not found. It was probably renamed or deleted in Floq > Secrets; recreate it with the same name or reinstall the MCP server.");
@@ -86,7 +92,7 @@ async function revealExactly(names) {
 const [command, ...rest] = process.argv.slice(2);
 
 if (command === "list") {
-  const { secrets } = await call("/internal/vault/secrets");
+  const { secrets } = await call<SecretListResponse>("/internal/vault/secrets");
   if (secrets.length === 0) console.log("No secrets registered.");
   for (const s of secrets) console.log(s.name + (s.description ? "  - " + s.description : ""));
 } else if (command === "run") {
@@ -101,7 +107,7 @@ if (command === "list") {
   const names = onlyIndex !== -1 && options[onlyIndex + 1] ? options[onlyIndex + 1].split(",").map((n) => n.trim()) : null;
   if (options.includes("--stdio")) {
     // MCP stdio server: JSON-RPC frames flow through untouched in both directions, so nothing here may buffer or rewrite stdout.
-    const maps = [];
+    const maps: [string, string][] = [];
     for (let i = 0; i < options.length; i++) {
       if (options[i] !== "--map") continue;
       const m = /^([A-Za-z_][A-Za-z0-9_]{0,127})=([A-Z][A-Z0-9_]{0,63})$/.exec(options[i + 1] ?? "");
@@ -112,18 +118,22 @@ if (command === "list") {
     if (maps.some(([, secret]) => !names.includes(secret))) { console.error("floq-vault: every --map secret must also be listed in --only"); process.exit(2); }
     const secrets = await revealExactly(names);
     const injected = maps.length ? Object.fromEntries(maps.map(([envName, secret]) => [envName, secrets[secret]])) : secrets;
-    const child = spawn(argv[0], argv.slice(1), {
+    const executable = argv[0];
+    if (!executable) { console.error("usage: floq-vault run [--only NAME,NAME] -- command [args...]"); process.exit(2); }
+    const child = spawn(executable, argv.slice(1), {
       stdio: ["inherit", "inherit", "pipe"],
       env: { ...process.env, ...injected, FLOQ_AGENT_TOKEN: "", FLOQ_API_URL: "" },
     });
     const err = lineRedactor(secrets, (text) => process.stderr.write(text));
     child.stderr.on("data", (c) => err.push(c));
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as NodeJS.Signals[]) process.on(signal, () => child.kill(signal));
     child.on("error", (e) => { console.error("floq-vault: " + e.message); process.exit(127); });
     child.on("close", (code, signal) => { err.end(); process.exit(code ?? (signal ? 1 : 0)); });
   } else {
-  const { secrets } = await call("/internal/vault/reveal", { names });
-  const child = spawn(argv[0], argv.slice(1), {
+  const { secrets } = await call<SecretResponse>("/internal/vault/reveal", { names });
+  const executable = argv[0];
+  if (!executable) { console.error("usage: floq-vault run [--only NAME,NAME] -- command [args...]"); process.exit(2); }
+  const child = spawn(executable, argv.slice(1), {
     stdio: ["inherit", "pipe", "pipe"],
     env: { ...process.env, ...secrets, FLOQ_AGENT_TOKEN: "", FLOQ_API_URL: "" },
   });
@@ -145,15 +155,15 @@ if (command === "list") {
   // Called by Claude Code as an MCP "headersHelper". It prints header values for one named MCP server, so it is exactly as
   // revealing as "floq-vault run" (an agent can already pipe a secret through a command). The server-name check only stops
   // accidental or casual calls; it is not a security boundary.
-  const get = (flag) => { const i = rest.indexOf(flag); return i >= 0 ? rest[i + 1] : undefined; };
+  const get = (flag: string) => { const i = rest.indexOf(flag); return i >= 0 ? rest[i + 1] : undefined; };
   const server = get("--server");
-  let spec;
+  let spec: Record<string, string> | null;
   try { spec = JSON.parse(Buffer.from(get("--spec") ?? "", "base64url").toString("utf8")); } catch { spec = null; }
   if (!server || !spec || typeof spec !== "object" || Array.isArray(spec)) { console.error("floq-vault: usage: floq-vault headers --server NAME --spec BASE64URL"); process.exit(2); }
   if (process.env.CLAUDE_CODE_MCP_SERVER_NAME !== server) { console.error("floq-vault: headers is only for Claude Code's MCP header helper; use floq-vault run instead"); process.exit(2); }
-  const names = [...new Set(Object.values(spec).flatMap((template) => [...String(template).matchAll(/\{\{([A-Z][A-Z0-9_]{0,63})\}\}/g)].map((m) => m[1])))];
+  const names = [...new Set(Object.values(spec).flatMap((template) => [...template.matchAll(/\{\{([A-Z][A-Z0-9_]{0,63})\}\}/g)].map((m) => m[1])))];
   const secrets = await revealExactly(names);
-  const headers = Object.fromEntries(Object.entries(spec).map(([header, template]) => [header, String(template).replace(/\{\{([A-Z][A-Z0-9_]{0,63})\}\}/g, (_m, name) => secrets[name])]));
+  const headers = Object.fromEntries(Object.entries(spec).map(([header, template]) => [header, template.replace(/\{\{([A-Z][A-Z0-9_]{0,63})\}\}/g, (_match, name: string) => secrets[name] ?? "")]));
   process.stdout.write(JSON.stringify(headers));
 } else {
   console.error("usage: floq-vault list | floq-vault run [--only A,B] -- command [args...]");

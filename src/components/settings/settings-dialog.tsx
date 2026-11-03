@@ -5,6 +5,7 @@ import {
     IconInfoCircle,
     IconCreditCard,
     IconPalette,
+    IconGauge,
     IconRobot,
     IconServer,
     IconUser,
@@ -22,6 +23,7 @@ import AboutSection from "./about-section";
 import AccountSection from "./account-section";
 import AgentsSection from "./agents-section";
 import AppearanceSection from "./appearance-section";
+import PerformanceSection from "./performance-section";
 import GitSection from "./git-section";
 import RuntimeSection from "./runtime-section";
 
@@ -34,6 +36,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
             { id: "account", label: "Account", icon: IconUser },
             { id: "accounts", label: "Accounts", icon: IconCreditCard },
             { id: "appearance", label: "Appearance", icon: IconPalette },
+            { id: "performance", label: "Performance", icon: IconGauge },
         ],
     },
     {
@@ -84,6 +87,7 @@ export default function SettingsDialog() {
         );
     } else if (section === "account") content = <AccountSection />;
     else if (section === "appearance") content = <AppearanceSection />;
+    else if (section === "performance") content = <PerformanceSection />;
     else if (section === "agents" && settings) content = <AgentsSection settings={settings} onChange={setSettings} />;
     else if (section === "accounts") content = <AccountsSection />;
     else if (section === "git" && settings) content = <GitSection settings={settings} onChange={setSettings} reload={reload} />;

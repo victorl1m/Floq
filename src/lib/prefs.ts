@@ -67,6 +67,101 @@ export function useTerminalPrefs(): [TerminalPrefs, (patch: Partial<TerminalPref
     return [prefs, update];
 }
 
+// --- terminal memory/performance ---
+
+export type PerformanceMode = "automatic" | "balanced" | "low-memory" | "custom";
+
+export interface PerformancePrefs {
+    mode: PerformanceMode;
+    scrollback: number;
+    reduceMotion: boolean;
+    smoothTerminalScrolling: boolean;
+    reduceBackgroundRefresh: boolean;
+}
+
+const PERFORMANCE_KEY = "floq.performance";
+const PERFORMANCE_EVENT = "floq:performance-prefs";
+const PERFORMANCE_DEFAULTS: PerformancePrefs = {
+    mode: "automatic",
+    scrollback: 10_000,
+    reduceMotion: false,
+    smoothTerminalScrolling: false,
+    reduceBackgroundRefresh: false,
+};
+const MIN_SCROLLBACK = 1_000;
+const MAX_SCROLLBACK = 20_000;
+
+let performanceRaw: string | null | undefined;
+let performanceCache: PerformancePrefs = PERFORMANCE_DEFAULTS;
+
+function boundedScrollback(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return PERFORMANCE_DEFAULTS.scrollback;
+    return Math.min(MAX_SCROLLBACK, Math.max(MIN_SCROLLBACK, Math.round(value / 1_000) * 1_000));
+}
+
+export function loadPerformancePrefs(): PerformancePrefs {
+    const raw = read(PERFORMANCE_KEY);
+    if (raw === performanceRaw) return performanceCache;
+    performanceRaw = raw;
+    try {
+        const value: unknown = raw ? JSON.parse(raw) : null;
+        const parsed = value && typeof value === "object" ? value as Partial<PerformancePrefs> : {};
+        const mode: PerformanceMode = parsed.mode === "balanced" || parsed.mode === "low-memory" || parsed.mode === "custom"
+            ? parsed.mode
+            : "automatic";
+        performanceCache = {
+            mode,
+            scrollback: boundedScrollback(parsed.scrollback),
+            reduceMotion: parsed.reduceMotion === true,
+            smoothTerminalScrolling: parsed.smoothTerminalScrolling === true,
+            reduceBackgroundRefresh: parsed.reduceBackgroundRefresh === true,
+        };
+    } catch {
+        performanceCache = PERFORMANCE_DEFAULTS;
+    }
+    return performanceCache;
+}
+
+/** Device RAM is intentionally a coarse hint: many desktop WebViews do not expose it. */
+export function recommendedScrollback(): number {
+    const memory = typeof navigator !== "undefined" ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined;
+    return typeof memory === "number" && memory > 0 && memory < 8 ? 2_500 : 10_000;
+}
+
+export function effectiveScrollback(prefs = loadPerformancePrefs()): number {
+    if (prefs.mode === "low-memory") return 2_500;
+    if (prefs.mode === "custom") return boundedScrollback(prefs.scrollback);
+    return prefs.mode === "automatic" ? recommendedScrollback() : 10_000;
+}
+
+export function runtimePollInterval(hidden: boolean, reduceBackgroundRefresh: boolean): number {
+    return hidden && reduceBackgroundRefresh ? 30_000 : 5_000;
+}
+
+function subscribePerformance(callback: () => void) {
+    window.addEventListener(PERFORMANCE_EVENT, callback);
+    window.addEventListener("storage", callback);
+    return () => {
+        window.removeEventListener(PERFORMANCE_EVENT, callback);
+        window.removeEventListener("storage", callback);
+    };
+}
+
+export function usePerformancePrefs(): [PerformancePrefs, (patch: Partial<PerformancePrefs>) => void] {
+    const prefs = useSyncExternalStore(subscribePerformance, loadPerformancePrefs, () => PERFORMANCE_DEFAULTS);
+    const update = useCallback((patch: Partial<PerformancePrefs>) => {
+        const current = loadPerformancePrefs();
+        const next: PerformancePrefs = {
+            ...current,
+            ...patch,
+            scrollback: boundedScrollback(patch.scrollback ?? current.scrollback),
+        };
+        write(PERFORMANCE_KEY, JSON.stringify(next));
+        window.dispatchEvent(new Event(PERFORMANCE_EVENT));
+    }, []);
+    return [prefs, update];
+}
+
 // --- resume sleeping agents on click ---
 
 const AUTO_RESUME_KEY = "floq.autoResumeOnClick";

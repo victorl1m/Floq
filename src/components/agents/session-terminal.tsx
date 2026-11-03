@@ -27,7 +27,7 @@ export const STATE_DOT: Record<SessionState, string> = {
 };
 import { openExternal } from "@/lib/open-external";
 import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
-import { loadTerminalPrefs, useTerminalPrefs } from "@/lib/prefs";
+import { effectiveScrollback, loadPerformancePrefs, loadTerminalPrefs, usePerformancePrefs, useTerminalPrefs } from "@/lib/prefs";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { ClientFrame, ServerFrame, SessionState, SessionSummary } from "@/lib/runtime/types";
 import { ProviderIcon, isLive } from "./provider";
@@ -101,6 +101,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
 
     const slot = useTitlebarSlot();
     const [termPrefs] = useTerminalPrefs();
+    const [performancePrefs] = usePerformancePrefs();
     const [termReady, setTermReady] = useState(false);
     const [busy, setBusy] = useState<"resume" | "sleep" | "interrupt" | null>(null);
     const [resumeError, setResumeError] = useState<string | null>(null);
@@ -186,7 +187,8 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             fontSize: loadTerminalPrefs().fontSize,
             cursorStyle: loadTerminalPrefs().cursorStyle,
             cursorBlink: loadTerminalPrefs().cursorBlink,
-            scrollback: 10000,
+            scrollback: effectiveScrollback(loadPerformancePrefs()),
+            smoothScrollDuration: 0,
             allowProposedApi: true,
             theme: THEME,
             // Clicking a link opens it directly (no native confirm dialog).
@@ -351,12 +353,14 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         term.options.fontSize = termPrefs.fontSize;
         term.options.cursorStyle = termPrefs.cursorStyle;
         term.options.cursorBlink = termPrefs.cursorBlink;
+        term.options.scrollback = effectiveScrollback(performancePrefs);
+        term.options.smoothScrollDuration = performancePrefs.smoothTerminalScrolling && !performancePrefs.reduceMotion ? 100 : 0;
         try {
             fitRef.current?.fit();
         } catch {
             /* hidden */
         }
-    }, [termPrefs, termReady]);
+    }, [termPrefs, performancePrefs, termReady]);
 
     // Stream connection: only while the session is live; reconnects with backoff from the last seq.
     useEffect(() => {

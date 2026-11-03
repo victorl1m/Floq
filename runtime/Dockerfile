@@ -5,8 +5,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY package.json package-lock.json* ./
 RUN npm ci --include=dev || npm install
 COPY tsconfig.json ./
+COPY tsconfig.image.json ./
+COPY prisma.config.ts ./
+COPY prisma ./prisma
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+COPY image ./image
+# Prisma generation reads the config's datasource URL but does not connect; use a build-only placeholder.
+RUN DATABASE_URL=postgresql://floq:build-only@127.0.0.1:5432/floq npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
@@ -46,9 +51,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
     && uv tool install specify-cli --from "git+https://github.com/github/spec-kit.git@${SPECKIT_REF}" \
     && chmod -R a+rX /usr/local/share/uv \
     && rm -rf /tmp/uv-cache
-COPY image/floq.mjs /usr/local/bin/floq
-COPY image/floq-args.mjs /usr/local/bin/floq-args.mjs
-COPY image/floq-vault.mjs /usr/local/bin/floq-vault
+COPY --from=build /app/dist/image/floq.mjs /usr/local/bin/floq
+COPY --from=build /app/dist/image/floq-args.mjs /usr/local/bin/floq-args.mjs
+COPY --from=build /app/dist/image/floq-vault.mjs /usr/local/bin/floq-vault
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
 RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-vault \
     && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault
@@ -67,10 +72,12 @@ RUN mkdir -p /var/lib/floq/shards && chmod 700 /var/lib/floq/shards
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma.config.ts ./
+COPY --from=build /app/prisma ./prisma
 COPY package.json ./
 VOLUME ["/var/lib/floq/shards"]
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD curl -fsS http://127.0.0.1:8787/healthz || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "dist/index.js"]
+CMD ["npm", "start"]

@@ -5,8 +5,8 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
-const VAULT = fileURLToPath(new URL("../image/floq-vault.mjs", import.meta.url));
-const ECHO = fileURLToPath(new URL("./mcpEchoServer.cjs", import.meta.url));
+const VAULT = fileURLToPath(new URL("../dist/image/floq-vault.mjs", import.meta.url));
+const ECHO = fileURLToPath(new URL("./mcpEchoServer.mts", import.meta.url));
 const TOKEN = "tok-wrapper-test";
 const SECRETS = { MY_SERVER_API_KEY: "fake-secret-VALUE-123", MY_SERVER_OTHER: "fake-other-VALUE-456", NOT_REQUESTED: "never-asked-for-789" };
 
@@ -59,7 +59,7 @@ function frames(child) {
   });
 }
 
-const wrapperArgs = (extra = []) => ["run", "--stdio", "--only", "MY_SERVER_API_KEY", "--map", "TEST_SECRET=MY_SERVER_API_KEY", ...extra, "--", process.execPath, ECHO];
+const wrapperArgs = (extra = []) => ["run", "--stdio", "--only", "MY_SERVER_API_KEY", "--map", "TEST_SECRET=MY_SERVER_API_KEY", ...extra, "--", process.execPath, "--import", "tsx", ECHO];
 const line = (obj) => JSON.stringify(obj) + "\n";
 
 test("a JSON-RPC exchange passes through byte for byte, including a 3 MB frame, and small frames are not delayed", async (t) => {
@@ -98,7 +98,7 @@ test("a JSON-RPC exchange passes through byte for byte, including a 3 MB frame, 
 
 test("the server gets the secret under the mapped name, never sees the session token, and the wrapper asked for exactly the --only names", async (t) => {
   const rt = await fakeRuntime(t);
-  const wrapper = run(rt, ["run", "--stdio", "--only", "MY_SERVER_API_KEY,MY_SERVER_OTHER", "--map", "TEST_SECRET=MY_SERVER_API_KEY", "--map", "OTHER_SECRET=MY_SERVER_OTHER", "--", process.execPath, ECHO]);
+  const wrapper = run(rt, ["run", "--stdio", "--only", "MY_SERVER_API_KEY,MY_SERVER_OTHER", "--map", "TEST_SECRET=MY_SERVER_API_KEY", "--map", "OTHER_SECRET=MY_SERVER_OTHER", "--", process.execPath, "--import", "tsx", ECHO]);
   const next = frames(wrapper.child);
   wrapper.child.stdin.write(line({ jsonrpc: "2.0", id: 1, method: "ping" }));
   const { message } = await next();

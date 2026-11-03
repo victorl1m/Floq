@@ -11,7 +11,11 @@
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
 import { readFileSync } from "node:fs";
-import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash } from "./floq-args.mjs";
+import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
+
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+type SkillResponse = { skill: { source: string; skillId: string; name: string; provider: string; location: string; description: string }; files: { path: string; size: number }[]; markdown?: string; dryRun?: boolean; scope?: string; projectId?: string };
+type ScopeResponse = ScopeResult & { scope: "project" | "global"; projectId?: string };
 
 const help = `Floq agent coordination
 
@@ -70,16 +74,16 @@ if (!url || !token) {
   process.exit(2);
 }
 
-async function call(path, body) {
+async function call<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(url + "/internal/" + path, {
     method: "POST",
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
   const text = await response.text();
-  let data;
+  let data: { error?: { message?: string } };
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(text) as { error?: { message?: string } };
   } catch {
     data = { error: { message: text.slice(0, 200) } };
   }
@@ -87,17 +91,17 @@ async function call(path, body) {
     console.error("floq: " + (data.error?.message ?? "request failed (" + response.status + ")"));
     process.exit(1);
   }
-  return data;
+  return data as unknown as T;
 }
 
-function scopeOrExit(options) {
-  try { return scopeFields(options); } catch (error) { console.error("floq: " + error.message); process.exit(2); }
+function scopeOrExit(options: NamedArgs): ScopeResult {
+  try { return scopeFields(options); } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
 }
-function providerOrExit(value, allowBoth) {
-  try { return checkProvider(value, allowBoth); } catch (error) { console.error("floq: " + error.message); process.exit(2); }
+function providerOrExit(value: string | boolean | undefined, allowBoth: boolean) {
+  try { return checkProvider(value, allowBoth); } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
 }
 
-async function readSecretValue(name) {
+async function readSecretValue(name: string): Promise<string> {
   if (process.stdin.isTTY) {
     // Hidden prompt: nothing is echoed and nothing is kept in shell history.
     process.stderr.write("Value for " + name + " (input hidden, press Enter to finish): ");
@@ -105,8 +109,8 @@ async function readSecretValue(name) {
     process.stdin.resume();
     process.stdin.setEncoding("utf8");
     let value = "";
-    await new Promise((resolve) => {
-      const onData = (chunk) => {
+    await new Promise<void>((resolve) => {
+      const onData = (chunk: string) => {
         for (const ch of chunk) {
           if (ch === "\r" || ch === "\n") { process.stdin.off("data", onData); return resolve(); }
           if (ch === "\u0003") { process.stderr.write("\n"); process.exit(130); }
@@ -131,12 +135,12 @@ async function readSecretValue(name) {
   return cleanSecretInput(Buffer.concat(chunks).toString("utf8"));
 }
 
-const usage = () => {
+const usage = (): never => {
   console.error('usage: floq --help');
   process.exit(2);
 };
 
-const allowedOptions = {
+const allowedOptions: Record<string, string[]> = {
   list: [], models: ["provider"], ask: ["timeout"], check: ["chars"],
   recruit: ["provider", "model", "cwd", "role", "isolated"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
@@ -157,37 +161,39 @@ switch (command) {
     break;
   }
   case "list": {
-    const { agents } = await call("agents/list");
+    const { agents } = await call<{ agents: AgentEntry[] }>("agents/list");
     for (const a of agents) console.log(formatAgentListEntry(a));
     break;
   }
   case "models": {
-    const providers = named.provider ? [named.provider] : ["claude", "codex"];
+    if (named.provider !== undefined && typeof named.provider !== "string") usage();
+    const requestedProvider = typeof named.provider === "string" ? named.provider : undefined;
+    const providers = requestedProvider ? [requestedProvider] : ["claude", "codex"];
     if (providers.some((provider) => provider !== "claude" && provider !== "codex")) usage();
-    const { models } = await call("agents/models", { provider: named.provider });
-    for (const provider of providers) for (const model of models[provider]) console.log(formatModel(provider, model));
+    const { models } = await call<{ models: Record<string, ModelEntry[]> }>("agents/models", { provider: requestedProvider });
+    for (const provider of providers) for (const model of models[provider] ?? []) console.log(formatModel(provider, model));
     break;
   }
   case "ask": {
     if (positional.length < 2) usage();
-    const r = await call("agents/ask", { name: positional[0], prompt: positional.slice(1).join(" "), timeoutSec: named.timeout ? Number(named.timeout) : undefined });
+    const r = await call<{ status: string; output: string }>("agents/ask", { name: positional[0], prompt: positional.slice(1).join(" "), timeoutSec: typeof named.timeout === "string" ? Number(named.timeout) : undefined });
     if (r.status !== "quiet") console.error("floq: reply " + (r.status === "timeout" ? "timed out; output so far:" : "ended early:"));
     console.log(r.output || "(no output)");
     break;
   }
   case "check": {
     if (positional.length < 1) usage();
-    const r = await call("agents/check", { name: positional[0], chars: named.chars ? Number(named.chars) : undefined });
+    const r = await call<{ output: string }>("agents/check", { name: positional[0], chars: typeof named.chars === "string" ? Number(named.chars) : undefined });
     console.log(r.output || "(no output)");
     break;
   }
   case "note": {
     const [sub, name, ...text] = positional;
     if (sub === "list") {
-      const { notes } = await call("notes/list");
+      const { notes } = await call<{ notes: { name: string }[] }>("notes/list");
       for (const n of notes) console.log(n.name);
     } else if (sub === "read" && name) {
-      console.log((await call("notes/read", { name })).content);
+      console.log((await call<{ content: string }>("notes/read", { name })).content);
     } else if ((sub === "write" || sub === "append") && name) {
       await call("notes/write", { name, content: text.join(" "), append: sub === "append" });
     } else usage();
@@ -195,7 +201,7 @@ switch (command) {
   }
   case "recruit": {
     if (positional.length < 1) usage();
-    const r = await call("agents/recruit", buildRecruitPayload(positional, named));
+    const r = await call<Pick<AgentEntry, "name" | "id" | "provider" | "model">>("agents/recruit", buildRecruitPayload(positional, named));
     console.log(formatRecruitment(r));
     break;
   }
@@ -215,21 +221,21 @@ switch (command) {
     const [sub, ...args] = positional;
     const scope = scopeOrExit(named);
     if (sub === "list") {
-      const r = await call("skills/list", scope);
+      const r = await call<ScopeResponse & { skills: SkillSummary[] }>("skills/list", scope);
       console.log("skills in " + scopeLabel(r));
       for (const skill of r.skills) console.log(formatSkill(skill));
     } else if (sub === "search" && args.length) {
-      const { skills } = await call("skills/search", { query: args.join(" ") });
+      const { skills } = await call<{ skills: { source: string; skillId: string; installs: number }[] }>("skills/search", { query: args.join(" ") });
       if (!skills.length) console.log("no results");
       for (const item of skills) console.log(item.source + "\t" + item.skillId + "\t" + item.installs + " installs");
     } else if ((sub === "preview" || sub === "add") && (args.length === 2 || (args.length === 1 && /^https:\/\//.test(args[0])))) {
       const ref = args.length === 2 ? { source: args[0], skillId: args[1] } : { url: args[0] };
       if (sub === "preview") {
-        const r = await call("skills/preview", ref);
+        const r = await call<SkillResponse>("skills/preview", ref);
         console.log(r.skill.source + " / " + r.skill.skillId + "\nfiles: " + r.files.map((file) => file.path + " (" + file.size + " bytes)").join(", ") + "\n\n" + r.markdown);
       } else {
         const provider = providerOrExit(named.provider, false);
-        const r = await call("skills/add", { ...ref, provider, scope: scope.scope, projectId: scope.projectId });
+        const r = await call<SkillResponse>("skills/add", { ...ref, provider, scope: scope.scope, projectId: scope.projectId });
         console.log("installed skill \"" + r.skill.name + "\" for " + r.skill.provider + (r.scope === "project" ? " in project " + r.projectId : " in your home") + " (" + r.skill.location + ")");
         console.log("files: " + r.files.map((file) => file.path).join(", "));
         console.log("It loads when a session starts or resumes; running sessions need a restart or resume.");
@@ -238,19 +244,20 @@ switch (command) {
       // The content comes from exactly one place: a directory, an instructions file, or stdin ("-").
       const sources = [named.from !== undefined, named.instructions !== undefined, args[1] === "-"].filter(Boolean).length;
       if (sources !== 1 || named.from === true || named.instructions === true) { console.error("floq: give exactly one of --from DIR, --instructions FILE, or - (stdin)"); process.exit(2); }
-      const body = { name: args[0], description: typeof named.description === "string" ? named.description : undefined, provider: providerOrExit(named.provider, false), scope: scope.scope, projectId: scope.projectId, dryRun: named["dry-run"] === true };
+      const body: { name: string; description?: string; provider?: string; scope?: string; projectId?: string; dryRun: boolean; files?: Record<string, string>; instructions?: string } = { name: args[0], description: typeof named.description === "string" ? named.description : undefined, provider: providerOrExit(named.provider, false), scope: scope.scope, projectId: scope.projectId, dryRun: named["dry-run"] === true };
       try {
-        if (named.from !== undefined) body.files = readSkillDirectory(named.from);
-        else body.instructions = named.instructions === "-" || args[1] === "-" ? readFileSync(0, "utf8") : readFileSync(named.instructions, "utf8");
-      } catch (error) { console.error("floq: " + (error.message.startsWith("--from") ? error.message : "could not read the skill content")); process.exit(2); }
+        if (typeof named.from === "string") body.files = readSkillDirectory(named.from);
+        else if (typeof named.instructions === "string") body.instructions = named.instructions === "-" || args[1] === "-" ? readFileSync(0, "utf8") : readFileSync(named.instructions, "utf8");
+        else body.instructions = readFileSync(0, "utf8");
+      } catch (error) { const message = errorMessage(error); console.error("floq: " + (message.startsWith("--from") ? message : "could not read the skill content")); process.exit(2); }
       if (body.instructions !== undefined && !body.description) { console.error("floq: --description is required when the skill is written from instructions"); process.exit(2); }
-      const r = await call("skills/create", body);
+      const r = await call<SkillResponse>("skills/create", body);
       console.log((r.dryRun ? "Would create" : "Created") + " skill \"" + r.skill.name + "\" for " + r.skill.provider + (r.scope === "project" ? " in project " + r.projectId : " in your home") + " at " + r.skill.location);
       console.log("description: " + r.skill.description);
       console.log("files: " + r.files.map((file) => file.path + " (" + file.size + " bytes)").join(", "));
       console.log(r.dryRun ? "dry run: nothing was written" : "It loads when a session starts or resumes; running sessions need a restart or resume.");
     } else if (sub === "remove" && args.length === 1) {
-      const r = await call("skills/remove", { name: args[0], provider: providerOrExit(named.provider, false) });
+      const r = await call<{ matched: number }>("skills/remove", { name: args[0], provider: providerOrExit(named.provider, false) });
       console.log("removed " + args[0] + " (" + r.matched + " match" + (r.matched === 1 ? "" : "es") + ")");
     } else usage();
     break;
@@ -259,7 +266,7 @@ switch (command) {
     const [sub, ...args] = positional;
     const scope = scopeOrExit(named);
     if (sub === "list") {
-      const r = await call("mcp/list", { ...scope, provider: providerOrExit(named.provider, false) });
+      const r = await call<ScopeResponse & { servers: McpServer[]; malformedConfigs?: number }>("mcp/list", { ...scope, provider: providerOrExit(named.provider, false) });
       console.log("MCP servers, scope: " + scopeLabel(r));
       for (const server of r.servers) console.log(formatMcpServer(server));
       if (r.malformedConfigs) console.log(r.malformedConfigs + " config file(s) could not be read");
@@ -269,7 +276,7 @@ switch (command) {
       if (named.json !== undefined) {
         if (named.json === true || args.length || dashed) usage();
         let text;
-        try { text = named.json === "-" ? readFileSync(0, "utf8") : readFileSync(named.json, "utf8"); }
+        try { text = named.json === "-" ? readFileSync(0, "utf8") : readFileSync(String(named.json), "utf8"); }
         catch { console.error("floq: could not read the JSON config"); process.exit(1); }
         body = { config: text, name: named.name };
       } else {
@@ -280,7 +287,7 @@ switch (command) {
         if (!server) usage();
         body = { config: { ...server, name: args[0] } };
       }
-      const r = await call("mcp/add", { ...body, ...scope, providers, dryRun: named["dry-run"] === true, allowPlaintext: named["allow-plaintext"] === true });
+      const r = await call<ScopeResponse & { dryRun: boolean; installed: McpReview; servers: { provider: string }[] }>("mcp/add", { ...body, ...scope, providers, dryRun: named["dry-run"] === true, allowPlaintext: named["allow-plaintext"] === true });
       console.log(formatMcpReview(r.installed, r));
       if (r.dryRun) console.log("dry run: nothing was changed");
       else {
@@ -288,7 +295,7 @@ switch (command) {
         console.log("It loads when a session starts or resumes; running sessions need a restart or resume.");
       }
     } else if (sub === "remove" && args.length === 1) {
-      const r = await call("mcp/remove", { ...scope, provider: providerOrExit(named.provider, false), name: args[0] });
+      const r = await call<ScopeResponse>("mcp/remove", { ...scope, provider: providerOrExit(named.provider, false), name: args[0] });
       console.log("removed MCP server \"" + args[0] + "\" (" + scopeLabel(r) + ")");
       console.log("Running sessions keep it until they restart or resume.");
     } else usage();
@@ -297,12 +304,12 @@ switch (command) {
   case "secrets": {
     const [sub] = positional;
     if (sub === "list") {
-      const { secrets } = await call("vault/secrets");
+      const { secrets } = await call<{ secrets: { name: string; description?: string }[] }>("vault/secrets");
       if (!secrets.length) console.log("no secrets");
       for (const secret of secrets) console.log(secret.name + (secret.description ? "\t" + secret.description : ""));
     } else if (sub === "add") {
       let request;
-      try { request = parseSecretsAdd(positional.slice(1), named); } catch (error) { console.error("floq: " + error.message); process.exit(2); }
+      try { request = parseSecretsAdd(positional.slice(1), named); } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
       const value = await readSecretValue(request.name);
       await call("secrets/add", { name: request.name, value, description: request.description });
       console.log("created secret " + request.name + " (tool-only: use it with floq-vault run; agents cannot read, change or delete it)");

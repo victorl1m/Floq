@@ -230,7 +230,7 @@ The runtime is a separate Node project with its own dependencies. Configure the 
 ```bash
 cd runtime
 npm ci
-npm test       # builds, then runs node --test test/*.test.mjs
+npm test       # builds, then runs node --import tsx --test test/*.test.mts
 npm run dev    # tsx watch src/index.ts
 ```
 

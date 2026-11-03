@@ -1,8 +1,17 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-export function parseArgs(args) {
+
+export type NamedArgs = Record<string, string | boolean>;
+export interface ScopeResult { scope?: "global" | "project"; projectId?: string; dryRun?: boolean }
+export interface AgentEntry { self?: boolean; name: string; id: string; provider: string; model?: string | null; state: string; lead?: boolean }
+export interface ModelEntry { id: string; label: string }
+export interface McpReview { name: string; type: "stdio" | "http"; summary: string; secrets?: { target: string; secret: string }[]; plaintext?: string[] }
+export interface McpServer { provider: string; name: string; transport: string; command?: string; urlHost?: string; usesSecrets?: boolean; secretNames?: string[]; protected?: boolean; source?: string }
+export interface SkillSummary { provider: string; name: string; source: string; description?: string }
+
+export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
-  const named = {};
+  const named: NamedArgs = {};
   const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
@@ -22,19 +31,19 @@ export function parseArgs(args) {
   return { positional, named };
 }
 
-export function formatAgentListEntry(agent) {
+export function formatAgentListEntry(agent: AgentEntry) {
   return (agent.self ? "* " : "  ") + agent.name + "  " + agent.id + "  [" + agent.provider + ", configured model: " + (agent.model ?? "default") + ", " + agent.state + (agent.lead ? ", lead" : "") + "]";
 }
 
-export function formatRecruitment(agent) {
+export function formatRecruitment(agent: Pick<AgentEntry, "name" | "id" | "provider" | "model">) {
   return "recruited " + agent.name + " " + agent.id + " (" + agent.provider + ", configured model: " + (agent.model ?? "default") + ")";
 }
 
-export function formatModel(provider, model) {
+export function formatModel(provider: string, model: ModelEntry) {
   return provider + "\t" + model.id + "\t" + model.label;
 }
 
-export function buildRecruitPayload(positional, named) {
+export function buildRecruitPayload(positional: string[], named: NamedArgs) {
   return {
     name: positional[0],
     provider: named.provider,
@@ -48,13 +57,13 @@ export function buildRecruitPayload(positional, named) {
 const PROJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Splits `a b -- c d` into [["a","b"], ["c","d"]]; the second part is null without a `--`. */
-export function splitDashDash(args) {
+export function splitDashDash(args: string[]): [string[], string[] | null] {
   const at = args.indexOf("--");
   return at < 0 ? [args, null] : [args.slice(0, at), args.slice(at + 1)];
 }
 
 /** `--global` or `--project [UUID]` -> body fields; nothing given lets the runtime pick (this session's project, else global). */
-export function scopeFields(named) {
+export function scopeFields(named: NamedArgs): ScopeResult {
   if (named.global && named.project) throw new Error("use either --global or --project, not both");
   if (named.global) return { scope: "global" };
   if (named.project === true) return { scope: "project" };
@@ -65,18 +74,18 @@ export function scopeFields(named) {
   return {};
 }
 
-export function checkProvider(value, allowBoth) {
+export function checkProvider(value: string | boolean | undefined, allowBoth: boolean): "claude" | "codex" | "both" | undefined {
   if (value === undefined) return undefined;
   if (value === "claude" || value === "codex" || (allowBoth && value === "both")) return value;
   throw new Error("--provider must be claude, codex" + (allowBoth ? " or both" : ""));
 }
 
-export function scopeLabel(result) {
+export function scopeLabel(result: ScopeResult & { scope?: string; projectId?: string }) {
   return result.scope === "project" ? "project " + result.projectId : "global (your whole home)";
 }
 
 /** Review text printed before and after an MCP install. Only names of env/header entries, never values. */
-export function formatMcpReview(review, result) {
+export function formatMcpReview(review: McpReview, result: ScopeResult & { dryRun?: boolean }) {
   const lines = [
     (result.dryRun ? "Would install" : "Installing") + " MCP server \"" + review.name + "\" (" + (review.type === "stdio" ? "stdio" : "HTTP") + ")",
     review.type === "stdio" ? "  runs:  " + review.summary : "  url:   " + review.summary,
@@ -90,24 +99,24 @@ export function formatMcpReview(review, result) {
   return lines.join("\n");
 }
 
-export function formatMcpServer(server) {
+export function formatMcpServer(server: McpServer) {
   const detail = server.command ?? server.urlHost ?? "";
   return server.provider + "\t" + server.name + "\t" + server.transport + (detail ? "\t" + detail : "") + (server.usesSecrets ? "\t(uses vault secrets" + (server.secretNames?.length ? ": " + server.secretNames.join(",") : "") + ")" : "") + (server.protected || server.source === "bundled" ? "\t(bundled, protected)" : "");
 }
 
-export function formatSkill(skill) {
+export function formatSkill(skill: SkillSummary) {
   return skill.provider + "\t" + skill.name + "\t" + skill.source + (skill.description ? "\t" + skill.description.replace(/\s+/g, " ").slice(0, 100) : "");
 }
 
 /** Parses the `secrets add` arguments. The value is never an argument: any extra positional or --value is refused. */
-export function parseSecretsAdd(positional, named) {
+export function parseSecretsAdd(positional: string[], named: NamedArgs): { name: string; description?: string } {
   if (positional.length !== 1) throw new Error("usage: floq secrets add NAME [--description TEXT]  (the value is read from stdin or a hidden prompt, never from an argument)");
   if ("value" in named || "expose" in named) throw new Error("secrets add does not accept --value or --expose; the value comes from stdin or a hidden prompt, and agent-created secrets are always tool-only");
   return { name: positional[0], description: typeof named.description === "string" ? named.description : undefined };
 }
 
 /** Trims exactly one trailing newline from piped input. */
-export function cleanSecretInput(raw) {
+export function cleanSecretInput(raw: string) {
   return raw.replace(/\r?\n$/, "");
 }
 
@@ -117,14 +126,14 @@ const SKILL_LIMITS = { files: 120, total: 512 * 1024, file: 64 * 1024 };
  * Reads a skill directory for `floq skills create --from DIR`: regular UTF-8 text files only, no symbolic links, within the same
  * limits the runtime enforces (it checks again). Returns { "SKILL.md": text, "references/x.md": text, ... }.
  */
-export function readSkillDirectory(root) {
+export function readSkillDirectory(root: string): Record<string, string> {
   let rootStat;
   try { rootStat = lstatSync(root); } catch { throw new Error("--from: cannot read " + root); }
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("--from must be a real directory, not a link or a file");
-  const files = {};
+  const files: Record<string, string> = {};
   let count = 0;
   let total = 0;
-  const walk = (current, prefix) => {
+  const walk = (current: string, prefix: string): void => {
     for (const entry of readdirSync(current, { withFileTypes: true }).sort((x, y) => (x.name < y.name ? -1 : 1))) {
       const rel = prefix + entry.name;
       const full = join(current, entry.name);

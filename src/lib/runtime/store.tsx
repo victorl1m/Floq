@@ -10,11 +10,10 @@ import {
 } from "react";
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
-import { loadAutoResumeOnClick } from "@/lib/prefs";
+import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
 import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary } from "./types";
 
 const STORAGE_KEY = "floq.connection";
-const POLL_MS = 5000;
 
 interface Connection {
   baseUrl: string;
@@ -56,7 +55,7 @@ export function defaultBaseUrl(): string {
   }
 }
 
-export type View = "home" | "skills" | "secrets" | "terminal" | "session";
+export type View = "home" | "tasks" | "skills" | "secrets" | "terminal" | "session";
 
 interface HistoryEntry {
   view: View;
@@ -162,6 +161,7 @@ export function errorMessage(error: unknown): string {
 }
 
 export function RuntimeProvider({ children }: { children: ReactNode }) {
+  const [performancePrefs] = usePerformancePrefs();
   const [connection, setConnection] = useState<Connection | null>(loadConnection);
   const [ready, setReady] = useState(() => connection === null);
   const [info, setInfo] = useState<RuntimeInfo | null>(null);
@@ -306,6 +306,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const failures = useRef(0);
+  const pollInFlight = useRef(false);
 
   const refreshProjects = useCallback(async (force = false) => {
     if (!client) { setProjects([]); return; }
@@ -391,20 +392,44 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     };
     refreshInfo();
     const infoTimer = setInterval(refreshInfo, 5 * 60_000);
-    let timer: ReturnType<typeof setTimeout>;
-    // Poll every 5s, backing off up to 30s while the runtime is unreachable.
-    const tick = async () => {
-      await refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
       if (cancelled) return;
-      timer = setTimeout(() => void tick(), Math.min(30_000, POLL_MS * 2 ** Math.min(failures.current, 3)));
+      clearTimeout(timer);
+      const base = runtimePollInterval(document.hidden, performancePrefs.reduceBackgroundRefresh);
+      timer = setTimeout(() => void tick(), Math.min(30_000, base * 2 ** Math.min(failures.current, 3)));
     };
+    // Foreground defaults to 5s. The device-only preference backs hidden-window metadata polling off to 30s.
+    const tick = async () => {
+      if (cancelled) return;
+      if (pollInFlight.current) {
+        schedule();
+        return;
+      }
+      pollInFlight.current = true;
+      try {
+        await refresh();
+      } finally {
+        pollInFlight.current = false;
+        schedule();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) schedule();
+      else {
+        clearTimeout(timer);
+        void tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     void tick();
     return () => {
       cancelled = true;
       clearTimeout(timer);
       clearInterval(infoTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [client, signedIn, refresh]);
+  }, [client, signedIn, refresh, performancePrefs.reduceBackgroundRefresh]);
 
   const signIn = useCallback(async (input: SignInInput) => {
     const baseUrl = normalizeBaseUrl(input.baseUrl);
