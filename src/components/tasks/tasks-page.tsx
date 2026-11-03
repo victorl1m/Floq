@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
-import { IconArrowRight, IconChecklist, IconCopy, IconDots, IconMenu2, IconPlus, IconTrash, IconUsers } from "@tabler/icons-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
+import { IconArrowRight, IconChecklist, IconCopy, IconDots, IconPlus, IconTrash, IconUsers, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,8 @@ import { Label } from "@/components/ui/label";
 import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -26,18 +28,22 @@ import TaskCardDialog from "./task-card-dialog";
 
 type Cursor = { userId: string; name: string; x: number; y: number };
 type RealtimeFrame = { type: "hello" | "board"; board: TaskBoard } | { type: "presence"; userId: string; name: string; x: number; y: number } | { type: "presence-left"; userId: string };
-type BoardNavigationPreferences = { favorites: string[]; recent: string[] };
+type BoardNavigationPreferences = { favorites: string[]; recent: string[]; openTabs: string[]; activeBoardId: string; tabsInitialized: boolean };
 
 function readBoardNavigationPreferences(key: string): BoardNavigationPreferences {
-  if (!key) return { favorites: [], recent: [] };
+  if (!key) return { favorites: [], recent: [], openTabs: [], activeBoardId: "", tabsInitialized: false };
   try {
-    const parsed = JSON.parse(localStorage.getItem(key) ?? "null") as { version?: number; favorites?: unknown; recent?: unknown } | null;
-    if (parsed?.version !== 1) return { favorites: [], recent: [] };
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "null") as { version?: number; favorites?: unknown; recent?: unknown; openTabs?: unknown; activeBoardId?: unknown; tabsInitialized?: unknown } | null;
+    if (parsed?.version !== 1) return { favorites: [], recent: [], openTabs: [], activeBoardId: "", tabsInitialized: false };
+    const ids = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === "string"))] : [];
     return {
-      favorites: Array.isArray(parsed.favorites) ? parsed.favorites.filter((id): id is string => typeof id === "string") : [],
+      favorites: ids(parsed.favorites),
       recent: Array.isArray(parsed.recent) ? parsed.recent.filter((id): id is string => typeof id === "string").slice(0, 12) : [],
+      openTabs: ids(parsed.openTabs),
+      activeBoardId: typeof parsed.activeBoardId === "string" ? parsed.activeBoardId : "",
+      tabsInitialized: typeof parsed.tabsInitialized === "boolean" ? parsed.tabsInitialized : Array.isArray(parsed.openTabs),
     };
-  } catch { return { favorites: [], recent: [] }; }
+  } catch { return { favorites: [], recent: [], openTabs: [], activeBoardId: "", tabsInitialized: false }; }
 }
 
 function formatTaskDueDate(value: string): string {
@@ -47,7 +53,7 @@ function formatTaskDueDate(value: string): string {
 }
 
 export default function TasksPage() {
-  const { client, user, teams, teamsLoading, teamsError, refreshTeams, activeTeamId, selectTeam: selectActiveTeam, userPreferences, updateUserPreferences } = useRuntime();
+  const { client, user, teams, teamsLoading, teamsError, refreshTeams, activeTeamId, selectTeam: selectActiveTeam } = useRuntime();
   const teamId = activeTeamId ?? "";
   const [boards, setBoards] = useState<Omit<TaskBoard, "lists">[]>([]);
   const [board, setBoard] = useState<TaskBoard | null>(null);
@@ -65,15 +71,20 @@ export default function TasksPage() {
   const [pendingDelete, setPendingDelete] = useState<{ title: string; description: string; action: () => Promise<void> } | null>(null);
   const [dialog, setDialog] = useState<"team" | "board" | "invite" | "join" | "rename" | null>(null);
   const [activeCard, setActiveCard] = useState<TaskCard | null>(null);
-  const [mobileNavigatorOpen, setMobileNavigatorOpen] = useState(false);
-  const desktopNavigatorOpen = userPreferences.taskNavigatorOpen;
+  const [boardPickerOpen, setBoardPickerOpen] = useState(false);
+  const [pendingTabFocus, setPendingTabFocus] = useState<string | null>(null);
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
   const [dropTargetListId, setDropTargetListId] = useState<string | null>(null);
-  const [navigationPreferences, setNavigationPreferences] = useState<{ scope: string; value: BoardNavigationPreferences }>({ scope: "", value: { favorites: [], recent: [] } });
+  const [navigationPreferences, setNavigationPreferences] = useState<{ scope: string; value: BoardNavigationPreferences }>({ scope: "", value: readBoardNavigationPreferences("") });
+  const [boardsReadyScope, setBoardsReadyScope] = useState("");
   const [addingCardTo, setAddingCardTo] = useState<string | null>(null);
   const [newCardTitle, setNewCardTitle] = useState("");
   const [newCardDescription, setNewCardDescription] = useState("");
   const boardSurface = useRef<HTMLDivElement>(null);
+  const boardTabStripRef = useRef<HTMLDivElement>(null);
+  const boardTabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pickerButtonRef = useRef<HTMLButtonElement>(null);
+  const titlebarSlot = useTitlebarSlot();
   const socketRef = useRef<WebSocket | null>(null);
   const boardRequest = useRef(0);
   const currentBoardId = useRef(boardId);
@@ -83,18 +94,49 @@ export default function TasksPage() {
   const navigationScope = client && user && teamId
     ? `floq.tasks.navigation.v1:${encodeURIComponent(client.baseUrl)}:${encodeURIComponent(user.id)}:${encodeURIComponent(teamId)}`
     : "";
-  const activeNavigationPreferences = navigationPreferences.scope === navigationScope ? navigationPreferences.value : { favorites: [], recent: [] };
+  const activeNavigationPreferences = navigationPreferences.scope === navigationScope ? navigationPreferences.value : readBoardNavigationPreferences("");
   const selectedTeam = teams.find((team) => team.id === teamId) ?? null;
+  const visibleBoard = boardsReadyScope === navigationScope && board?.teamId === teamId ? board : null;
+  const openedBoards = activeNavigationPreferences.openTabs.flatMap((id) => {
+    if (boardsReadyScope !== navigationScope) return [];
+    const item = boards.find((entry) => entry.id === id);
+    return item ? [item] : [];
+  });
 
   useEffect(() => {
+    if (pendingTabFocus === null) return;
+    if (pendingTabFocus) boardTabRefs.current.get(pendingTabFocus)?.focus();
+    else pickerButtonRef.current?.focus();
+    setPendingTabFocus(null);
+  }, [pendingTabFocus, openedBoards.length]);
+
+  useEffect(() => {
+    const strip = boardTabStripRef.current;
+    if (!strip) return;
+    const ensureActiveTabVisible = () => {
+      const tab = boardTabRefs.current.get(boardId);
+      if (!tab) return;
+      const stripRect = strip.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      if (tabRect.left < stripRect.left) strip.scrollLeft -= stripRect.left - tabRect.left;
+      else if (tabRect.right > stripRect.right) strip.scrollLeft += tabRect.right - stripRect.right;
+    };
+    ensureActiveTabVisible();
+    const observer = new ResizeObserver(ensureActiveTabVisible);
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [boardId, openedBoards.length, titlebarSlot]);
+
+  useEffect(() => {
+    setBoardsReadyScope("");
     setNavigationPreferences({ scope: navigationScope, value: readBoardNavigationPreferences(navigationScope) });
   }, [navigationScope]);
 
   useEffect(() => {
-    if (!navigationScope || navigationPreferences.scope !== navigationScope) return;
+    if (!navigationScope || navigationPreferences.scope !== navigationScope || boardsReadyScope !== navigationScope) return;
     try { localStorage.setItem(navigationScope, JSON.stringify({ version: 1, ...navigationPreferences.value })); }
     catch { /* Favorites and recents are optional if storage is unavailable or full. */ }
-  }, [navigationScope, navigationPreferences]);
+  }, [navigationScope, navigationPreferences, boardsReadyScope]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -103,22 +145,11 @@ export default function TasksPage() {
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']"))) return;
       if (document.querySelector("[role='dialog'], [role='alertdialog']")) return;
       event.preventDefault();
-      if (window.matchMedia("(min-width: 768px)").matches) {
-        updateUserPreferences({ taskNavigatorOpen: true });
-        window.requestAnimationFrame(() => [...document.querySelectorAll<HTMLInputElement>("[data-task-board-search='true']")].find((input) => input.getClientRects().length > 0)?.focus());
-      } else {
-        setMobileNavigatorOpen(true);
-      }
+      setBoardPickerOpen(true);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [updateUserPreferences]);
-
-  useEffect(() => {
-    if (!mobileNavigatorOpen) return;
-    const frame = window.requestAnimationFrame(() => [...document.querySelectorAll<HTMLInputElement>("[data-task-board-search='true']")].find((input) => input.getClientRects().length > 0)?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, [mobileNavigatorOpen]);
+  }, []);
 
   useEffect(() => {
     if (!client || !teamId) { setBoards([]); setBoard(null); setBoardId(""); return; }
@@ -131,8 +162,14 @@ export default function TasksPage() {
       const saved = readBoardNavigationPreferences(navigationScope);
       const validFavorites = saved.favorites.filter((id) => boardIds.has(id));
       const validRecent = saved.recent.filter((id) => boardIds.has(id));
-      setNavigationPreferences({ scope: navigationScope, value: { favorites: validFavorites, recent: validRecent } });
-      setBoardId((current) => loaded.some((item) => item.id === current) ? current : validRecent[0] ?? loaded[0]?.id ?? "");
+      const defaultBoardId = validRecent[0] ?? loaded[0]?.id ?? "";
+      const openTabs = saved.tabsInitialized
+        ? saved.openTabs.filter((id) => boardIds.has(id))
+        : defaultBoardId ? [defaultBoardId] : [];
+      const activeBoardId = openTabs.includes(saved.activeBoardId) ? saved.activeBoardId : openTabs[0] ?? "";
+      setNavigationPreferences({ scope: navigationScope, value: { favorites: validFavorites, recent: validRecent, openTabs, activeBoardId, tabsInitialized: true } });
+      setBoardId(activeBoardId);
+      setBoardsReadyScope(navigationScope);
       setError(null);
     }).catch((reason) => live && setError(errorMessage(reason)));
     return () => { live = false; };
@@ -155,7 +192,8 @@ export default function TasksPage() {
       const loaded = await client.teamBoards(teamId);
       if (currentTeamId.current !== requestedTeamId) return;
       setBoards(loaded);
-      const nextBoardId = loaded.some((item) => item.id === boardId) ? boardId : loaded[0]?.id ?? "";
+      const validTabs = activeNavigationPreferences.openTabs.filter((id) => loaded.some((item) => item.id === id));
+      const nextBoardId = validTabs.includes(boardId) ? boardId : validTabs.includes(activeNavigationPreferences.activeBoardId) ? activeNavigationPreferences.activeBoardId : "";
       setBoardId(nextBoardId);
       const nextBoard = nextBoardId ? await client.taskBoard(nextBoardId) : null;
       if (currentTeamId.current === requestedTeamId && (currentBoardId.current === requestedBoardId || currentBoardId.current === nextBoardId)) setBoard(nextBoard);
@@ -214,8 +252,14 @@ export default function TasksPage() {
   };
   const selectBoard = (nextBoardId: string) => {
     setError(null);
-    setMobileNavigatorOpen(false);
-    updateNavigationPreferences((current) => ({ ...current, recent: [nextBoardId, ...current.recent.filter((id) => id !== nextBoardId)].slice(0, 12) }));
+    setBoardPickerOpen(false);
+    updateNavigationPreferences((current) => ({
+      ...current,
+      recent: [nextBoardId, ...current.recent.filter((id) => id !== nextBoardId)].slice(0, 12),
+      openTabs: current.openTabs.includes(nextBoardId) ? current.openTabs : [...current.openTabs, nextBoardId],
+      activeBoardId: nextBoardId,
+      tabsInitialized: true,
+    }));
     if (nextBoardId === boardId) return;
     setActiveCard(null);
     setAddingCardTo(null);
@@ -223,6 +267,17 @@ export default function TasksPage() {
     setBoard(null);
     setCursors([]);
     setBoardId(nextBoardId);
+  };
+  const closeBoardTab = (closedId: string) => {
+    const index = activeNavigationPreferences.openTabs.indexOf(closedId);
+    const nextTabs = activeNavigationPreferences.openTabs.filter((id) => id !== closedId);
+    const nextActive = boardId === closedId ? nextTabs[Math.min(index, nextTabs.length - 1)] ?? "" : boardId;
+    updateNavigationPreferences((current) => ({ ...current, openTabs: nextTabs, activeBoardId: nextActive, tabsInitialized: true }));
+    if (boardId === closedId) {
+      setBoard(null); setCursors([]); setActiveCard(null); setAddingCardTo(null);
+      setBoardId(nextActive);
+    }
+    setPendingTabFocus(nextActive);
   };
   const toggleFavorite = (favoriteBoardId: string) => updateNavigationPreferences((current) => ({
     ...current,
@@ -315,59 +370,46 @@ export default function TasksPage() {
     socket.send(JSON.stringify({ type: "cursor", x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }));
   };
 
-  const cardCount = useMemo(() => board?.lists.reduce((total, list) => total + list.cards.length, 0) ?? 0, [board]);
+  const cardCount = useMemo(() => visibleBoard?.lists.reduce((total, list) => total + list.cards.length, 0) ?? 0, [visibleBoard]);
+  const onBoardTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, tabId: string) => {
+    const currentIndex = openedBoards.findIndex((item) => item.id === tabId);
+    if (currentIndex < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? openedBoards.length - 1 : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + openedBoards.length) % openedBoards.length;
+    const nextId = openedBoards[nextIndex]?.id;
+    if (!nextId) return;
+    selectBoard(nextId);
+    requestAnimationFrame(() => boardTabRefs.current.get(nextId)?.focus());
+  };
   if (teamsLoading) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col bg-background text-foreground">
-      <div className="flex min-h-0 min-w-0 flex-1">
-        {desktopNavigatorOpen && <aside id="task-board-navigator" className="hidden w-56 shrink-0 border-r bg-muted/10 md:flex">
-          <TaskBoardNavigator
-            key={teamId}
-            teams={teams}
-            teamId={teamId}
-            boards={boards}
-            boardId={boardId}
-            favorites={activeNavigationPreferences.favorites}
-            recent={activeNavigationPreferences.recent}
-            onTeamChange={changeTeam}
-            onBoardChange={selectBoard}
-            onFavoriteToggle={toggleFavorite}
-            onCreateTeam={() => { setError(null); setMobileNavigatorOpen(false); setDialog("team"); }}
-            onCreateBoard={() => { setError(null); setBoardName(""); setDialog(teams.length ? "board" : "team"); }}
-            className="w-full"
-          />
-        </aside>}
-        <Sheet open={mobileNavigatorOpen} onOpenChange={setMobileNavigatorOpen}>
-          <SheetContent side="left" className="w-[min(20rem,88vw)] gap-0 p-0 sm:max-w-sm">
-            <SheetHeader className="border-b pr-12">
-              <SheetTitle>Task boards</SheetTitle>
-              <SheetDescription>Choose a team and board.</SheetDescription>
-            </SheetHeader>
-            <TaskBoardNavigator
-              key={teamId}
-              teams={teams}
-              teamId={teamId}
-              boards={boards}
-              boardId={boardId}
-              favorites={activeNavigationPreferences.favorites}
-              recent={activeNavigationPreferences.recent}
-            onTeamChange={changeTeam}
-              onBoardChange={selectBoard}
-              onFavoriteToggle={toggleFavorite}
-              onCreateTeam={() => { setError(null); setMobileNavigatorOpen(false); setDialog("team"); }}
-              onCreateBoard={() => { setError(null); setBoardName(""); setMobileNavigatorOpen(false); setDialog(teams.length ? "board" : "team"); }}
-              className="min-h-0 flex-1"
-            />
-          </SheetContent>
-        </Sheet>
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {titlebarSlot && createPortal(
+        <div className="flex h-full min-w-0 items-center gap-1 overflow-hidden">
+          <div ref={boardTabStripRef} className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Boards">
+            {openedBoards.map((item) => {
+            const active = item.id === boardId;
+            return <div key={item.id} role="presentation" className={`group flex h-7 shrink-0 items-center gap-1.5 rounded-md pr-1 pl-2.5 text-xs ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}>
+              <Button ref={(node) => { if (node) boardTabRefs.current.set(item.id, node); else boardTabRefs.current.delete(item.id); }} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls="task-board-panel" id={`task-board-tab-${item.id}`} data-task-board-tab={item.id} title={item.title} variant="ghost" className="h-7 min-w-0 max-w-40 justify-start truncate px-0 text-xs" onClick={() => selectBoard(item.id)} onKeyDown={(event) => onBoardTabKeyDown(event, item.id)}>{item.title}</Button>
+              <Button type="button" aria-label={`Close ${item.title} board tab`} title={`Close ${item.title}`} size="icon-xs" variant="ghost" className="rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => closeBoardTab(item.id)}><IconX className="size-3" /></Button>
+            </div>;
+          })}
+          </div>
+          <Button ref={pickerButtonRef} type="button" size="icon-sm" variant="ghost" className="size-7 shrink-0" aria-label="Open board" title="Open board (B)" onClick={() => setBoardPickerOpen(true)}><IconPlus /></Button>
+        </div>,
+        titlebarSlot,
+      )}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5 sm:px-5">
-            <Button className="shrink-0 md:hidden" size="icon-sm" variant="outline" aria-label="Open board navigator" aria-expanded={mobileNavigatorOpen} aria-controls="mobile-task-board-navigator" onClick={() => setMobileNavigatorOpen(true)}><IconMenu2 /></Button>
-            <Button className="hidden shrink-0 md:flex" size="icon-sm" variant="outline" aria-label={desktopNavigatorOpen ? "Hide board navigator" : "Show board navigator"} aria-expanded={desktopNavigatorOpen} aria-controls="task-board-navigator" onClick={() => updateUserPreferences({ taskNavigatorOpen: !desktopNavigatorOpen })}><IconMenu2 /></Button>
+            {teams.length > 0 && <Select value={teamId} onValueChange={changeTeam}>
+              <SelectTrigger aria-label="Choose team" className="h-8 w-36 shrink-0 sm:w-48"><SelectValue placeholder="Choose team" /></SelectTrigger>
+              <SelectContent avoidCollisions position="popper" className="w-[var(--radix-select-trigger-width)] min-w-0">
+                {teams.map((team) => <SelectItem key={team.id} value={team.id} textValue={team.name}><span className="min-w-0 flex-1 truncate">{team.name}</span></SelectItem>)}
+              </SelectContent>
+            </Select>}
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{selectedTeam?.name ?? "Team workspace"}</p>
-              <h1 className="truncate text-base font-semibold">{board?.title ?? (teams.length ? "Choose a board" : "Tasks")}</h1>
+              <h1 className="truncate text-base font-semibold">Tasks</h1>
             </div>
             {selectedTeam && <div className="hidden items-center gap-2 sm:flex" aria-label="Team members">
               <AvatarGroup>{members.slice(0, 4).map((member) => {
@@ -377,19 +419,18 @@ export default function TasksPage() {
               })}{members.length > 4 && <Tooltip><TooltipTrigger asChild><AvatarGroupCount tabIndex={0} aria-label={members.length - 4 + " more team members"} className="focus-visible:ring-2 focus-visible:ring-ring">+{members.length - 4}</AvatarGroupCount></TooltipTrigger><TooltipContent>{members.slice(4).map((member) => (member.name || member.email) + (member.role === "owner" ? " · owner" : "")).join(", ")}</TooltipContent></Tooltip>}</AvatarGroup>
               <Badge variant="outline"><IconUsers />{members.length}</Badge>
             </div>}
-            {board && <Badge variant="secondary">{cardCount} {cardCount === 1 ? "card" : "cards"}</Badge>}
+            {visibleBoard && <Badge variant="secondary">{cardCount} {cardCount === 1 ? "card" : "cards"}</Badge>}
             <Button size="sm" onClick={() => { setError(null); setBoardName(""); setTeamName(""); setDialog(teams.length ? "board" : "team"); }}><IconPlus /><span className="hidden sm:inline">{teams.length ? "New board" : "Create team"}</span></Button>
             <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="outline" aria-label="Team and board actions"><IconDots /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => { setError(null); setTeamName(""); setDialog("team"); }}><IconPlus />Create team</DropdownMenuItem>
               {selectedTeam?.role === "owner" && <DropdownMenuItem onSelect={() => { setError(null); setInviteToken(""); setInviteEmail(""); setDialog("invite"); }}><IconUsers />Invite teammate</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => { setError(null); setDialog("join"); }}><IconArrowRight />Join with token</DropdownMenuItem>
-              {board && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => { setBoardName(board.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
-                {selectedTeam?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + board.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(board.id); const remaining = await client?.teamBoards(teamId) ?? []; setBoards(remaining); setBoardId(remaining[0]?.id ?? ""); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
+              {visibleBoard && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => { setBoardName(visibleBoard.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
+                {selectedTeam?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + visibleBoard.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(visibleBoard.id); const remaining = await client?.teamBoards(teamId) ?? []; const tabs = activeNavigationPreferences.openTabs.filter((id) => id !== visibleBoard.id && remaining.some((item) => item.id === id)); const nextActive = tabs[0] ?? ""; setNavigationPreferences((current) => ({ ...current, value: { ...current.value, openTabs: tabs, activeBoardId: nextActive, tabsInitialized: true } })); setBoards(remaining); setBoardId(nextActive); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
             </DropdownMenuContent></DropdownMenu>
           </header>
 
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+      <div id="task-board-panel" role="tabpanel" aria-labelledby={openedBoards.some((item) => item.id === boardId) ? `task-board-tab-${boardId}` : undefined} aria-label={visibleBoard?.title ?? "Task board"} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
         {pageError && <div className="px-4 pt-3 sm:px-6"><ErrorBanner>{pageError}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void retryLoad()}>Retry</Button></ErrorBanner></div>}
         {!teams.length ? (
           <Empty className="m-auto max-w-lg border-0">
@@ -398,14 +439,14 @@ export default function TasksPage() {
           </Empty>
         ) : (
           <>
-            {!board ? (
+            {!visibleBoard ? (
                 <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this team."}</EmptyDescription></EmptyHeader>{!boards.length && <EmptyContent><Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button></EmptyContent>}</Empty>
             ) : (
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
-                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" aria-label={`${board.title} board`}>
-                  {board.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
-                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, action: async () => { await client?.deleteTaskList(board.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
+                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" aria-label={`${visibleBoard.title} board`}>
+                  {visibleBoard.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
+                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
                     <div className="min-h-10 space-y-2 overflow-y-auto p-2.5">
                       {list.cards.map((card) => <Card key={card.id} size="sm" className={`gap-0 rounded-lg p-2.5 py-2.5 shadow-sm transition-colors hover:bg-accent/40 ${draggingCardId === card.id ? "opacity-50" : ""}`}>
                         <Button type="button" variant="ghost" draggable aria-description="Drag to move this card, or open details and change its list with the keyboard." aria-label={"Open card: " + card.title} className="h-auto w-full cursor-grab flex-col items-stretch gap-2 whitespace-normal rounded-md p-0 text-left active:cursor-grabbing" onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); setDraggingCardId(card.id); }} onDragEnd={() => { setDraggingCardId(null); setDropTargetListId(null); }} onClick={() => setActiveCard(card)}>
@@ -438,7 +479,9 @@ export default function TasksPage() {
         )}
       </div>
         </main>
-      </div>
+      <AppDialog open={boardPickerOpen} onOpenChange={setBoardPickerOpen} icon={<IconChecklist />} title="Open a board" description="Search your favorites, recent boards, or the full team list." size="md" className="sm:max-w-[480px]">
+        <TaskBoardNavigator key={teamId} teams={teams} teamId={teamId} boards={boardsReadyScope === navigationScope ? boards : []} boardId={boardId} favorites={activeNavigationPreferences.favorites} recent={activeNavigationPreferences.recent} onTeamChange={changeTeam} onBoardChange={selectBoard} onFavoriteToggle={toggleFavorite} onCreateTeam={() => { setBoardPickerOpen(false); setDialog("team"); }} onCreateBoard={() => { setBoardPickerOpen(false); setBoardName(""); setDialog(teams.length ? "board" : "team"); }} showTeamSelector={false} className="h-[min(58dvh,28rem)]" />
+      </AppDialog>
       <AppDialog open={dialog === "team"} onOpenChange={(open) => { if (!busy) setDialog(open ? "team" : null); }} icon={<IconUsers />} title="Create a team" description="Start a shared space for boards and teammates." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="create-team-form" disabled={busy || !teamName.trim()}><IconPlus />Create team</Button></>}>
         <form id="create-team-form" className="space-y-2" noValidate onSubmit={onCreateTeam}><Label htmlFor="new-team">Team name</Label><Input id="new-team" autoFocus maxLength={80} value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="e.g. Product" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
       </AppDialog>
@@ -454,7 +497,7 @@ export default function TasksPage() {
       <AppDialog open={dialog === "rename"} onOpenChange={(open) => { if (!busy) setDialog(open ? "rename" : null); }} title="Rename board" description="Choose a clear name for this board." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="rename-board-form" disabled={busy || !boardName.trim()}>Save name</Button></>}>
         <form id="rename-board-form" className="space-y-2" noValidate onSubmit={updateBoard}><Label htmlFor="rename-board">Board name</Label><Input id="rename-board" autoFocus maxLength={120} value={boardName} onChange={(event) => setBoardName(event.target.value)} />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
       </AppDialog>
-      {board && <TaskCardDialog open={!!activeCard} onOpenChange={(open) => { if (!busy && !open) setActiveCard(null); }} board={board} card={activeCard} members={members} busy={busy} error={error} onSave={saveCard} onDelete={requestCardDelete} />}
+      {visibleBoard && <TaskCardDialog open={!!activeCard} onOpenChange={(open) => { if (!busy && !open) setActiveCard(null); }} board={visibleBoard} card={activeCard} members={members} busy={busy} error={error} onSave={saveCard} onDelete={requestCardDelete} />}
     </section>
   );
 }

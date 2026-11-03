@@ -47,7 +47,8 @@ function TitlebarButton({
 export default function Titlebar() {
     const [isMaximized, setIsMaximized] = useState(false);
     const { user, canGoBack, canGoForward, goBack, goForward } = useRuntime();
-    const { open: sidebarOpen } = useSidebar();
+    const { open: sidebarOpen, isMobile } = useSidebar();
+    const sidebarUsesTitlebarWidth = sidebarOpen && !isMobile;
     const auth = !user;
 
     useEffect(() => {
@@ -83,7 +84,7 @@ export default function Titlebar() {
                 data-tauri-drag-region
                 className={cn(
                     "flex h-full items-center pl-3 transition-[width] duration-200",
-                    auth ? "flex-1" : sidebarOpen ? "w-(--sidebar-width) shrink-0" : "shrink-0"
+                    auth ? "flex-1" : sidebarUsesTitlebarWidth ? "w-(--sidebar-width) shrink-0" : "shrink-0"
                 )}
             >
                 <IconBrandFloq size={20} className="text-muted-foreground transition-colors hover:text-foreground" />
@@ -99,7 +100,7 @@ export default function Titlebar() {
                 {!auth && (
                     <div
                         data-tauri-drag-region
-                        className={cn("flex animate-in items-center fade-in-0 duration-200", sidebarOpen ? "ml-auto pr-2" : "ml-1")}
+                        className={cn("flex animate-in items-center fade-in-0 duration-200", sidebarUsesTitlebarWidth ? "ml-auto pr-2" : "ml-1")}
                     >
                         <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={!canGoBack} onClick={goBack}>
                             <IconArrowLeft />
