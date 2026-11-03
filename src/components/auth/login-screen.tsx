@@ -205,7 +205,7 @@ function InvitationRegistrationStep({
     async function onSubmit(values: InvitationRegistrationValues) {
         const baseUrl = normalizeBaseUrl(values.serverUrl);
         try {
-            await new RuntimeClient(baseUrl).registerWithTeamInvitation({
+            await new RuntimeClient(baseUrl).registerWithOrganizationInvitation({
                 token: values.token.trim(),
                 email: values.email.trim(),
                 name: values.name.trim(),
@@ -217,7 +217,7 @@ function InvitationRegistrationStep({
             try {
                 await signIn({ baseUrl, email: values.email.trim(), password: values.password });
             } catch {
-                form.setError("root", { message: "Your account was created and you joined the team. Sign in to continue." });
+                form.setError("root", { message: "Your account was created and you joined the organization. Sign in to continue." });
             }
         } catch (error) {
             if (error instanceof RuntimeError && error.code === "invitation_account_exists") {
@@ -231,7 +231,7 @@ function InvitationRegistrationStep({
     return (
         <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
-                <p className="text-sm text-muted-foreground">Use the email address on your invitation to create an account and join the team.</p>
+                <p className="text-sm text-muted-foreground">Use the email address on your invitation to create an account and join the organization.</p>
                 <div className="flex flex-col gap-3">
                     <FormField control={form.control} name="serverUrl" render={({ field }) => (
                         <FormItem><FormLabel>Runtime URL</FormLabel><FormControl><Input inputMode="url" autoComplete="url" placeholder="https://runtime.example.com" {...field} /></FormControl><FormMessage /></FormItem>
@@ -317,7 +317,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                                 <FormControl>
                                     <Input autoComplete="organization" {...field} />
                                 </FormControl>
-                                <FormDescription>Optional. If blank, your first team uses your name.</FormDescription>
+                                <FormDescription>Optional. If blank, your first organization uses your name.</FormDescription>
                                 <FormMessage />
                             </FormItem>
                         )}
@@ -371,10 +371,10 @@ export default function LoginScreen() {
     const blockClose = (event: Event) => event.preventDefault();
 
     const heading =
-        step === "invite" ? "Join a team" : step === "setup" ? "Set up your administrator" : step === "password" ? "Welcome back" : "Sign in to Floq";
+        step === "invite" ? "Join an organization" : step === "setup" ? "Set up your administrator" : step === "password" ? "Welcome back" : "Sign in to Floq";
     const subtitle =
         step === "invite"
-            ? "Use the invitation token from your team owner."
+            ? "Use the invitation token from your organization owner."
             : step === "setup"
             ? "This is the first run of this runtime. This email becomes the administrator account."
             : step === "password"
@@ -449,7 +449,7 @@ export default function LoginScreen() {
 
                     {step === "email" && (
                         <div className="flex flex-col items-center gap-2 border-t pt-4 text-xs text-muted-foreground">
-                            <span>Invited to a team?</span>
+                            <span>Invited to an organization?</span>
                             <Button type="button" variant="link" className="h-auto px-1" onClick={() => setStep("invite")}>
                                 Join with an invitation
                             </Button>

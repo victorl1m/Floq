@@ -4,9 +4,9 @@ import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { registerWithInvitation, type InvitationRegistration } from "../dist/invitationRegistration.js";
 
-interface Invite { id: string; team_id: string; email: string; token_hash: string; expires: boolean }
+interface Invite { id: string; organization_id: string; email: string; token_hash: string; expires: boolean }
 interface Account { id: string; email: string; passwordHash: string }
-interface Member { teamId: string; userId: string; role: string }
+interface Member { organizationId: string; userId: string; role: string }
 
 class TestDatabase {
   invites: Invite[] = [];
@@ -16,7 +16,7 @@ class TestDatabase {
   private lockTail: Promise<void> = Promise.resolve();
 
   async query(sql: string, values: unknown[] = []) {
-    if (sql.startsWith("SELECT") && sql.includes("team_invitations")) {
+    if (sql.startsWith("SELECT") && sql.includes("organization_invitations")) {
       const row = this.invites.find((invite) => invite.token_hash === values[0] && !invite.expires);
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
@@ -40,7 +40,7 @@ class TestDatabase {
     return {
       query: async (sql: string, values: unknown[] = []) => {
         if (sql === "BEGIN") return { rows: [], rowCount: 0 };
-        if (sql.includes("team_invitations") && sql.includes("FOR UPDATE")) {
+        if (sql.includes("organization_invitations") && sql.includes("FOR UPDATE")) {
           await acquire();
           const invite = this.invites.find((entry) => entry.token_hash === values[0] && !entry.expires);
           return { rows: invite ? [invite] : [], rowCount: invite ? 1 : 0 };
@@ -60,11 +60,11 @@ class TestDatabase {
           user.passwordHash = String(values[3]);
           return { rows: [], rowCount: 1 };
         }
-        if (sql.includes("INSERT INTO collaboration.team_members")) {
-          this.members.push({ teamId: String(values[0]), userId: String(values[1]), role: "member" });
+        if (sql.includes("INSERT INTO collaboration.organization_members")) {
+          this.members.push({ organizationId: String(values[0]), userId: String(values[1]), role: "member" });
           return { rows: [], rowCount: 1 };
         }
-        if (sql.startsWith("DELETE FROM collaboration.team_invitations")) {
+        if (sql.startsWith("DELETE FROM collaboration.organization_invitations")) {
           const index = this.invites.findIndex((entry) => entry.id === values[0] && entry.token_hash === values[1] && !entry.expires);
           if (index < 0) return { rows: [], rowCount: 0 };
           const [deleted] = this.invites.splice(index, 1);
@@ -90,8 +90,8 @@ class TestDatabase {
 
 function setup(email = "new@example.invalid", token = "valid-token") {
   const db = new TestDatabase();
-  db.invites.push({ id: "invite-1", team_id: "team-1", email, token_hash: createHash("sha256").update(token).digest("hex"), expires: false });
-  const input: InvitationRegistration = { token, email, name: "New Teammate", password: "a-long-password" };
+  db.invites.push({ id: "invite-1", organization_id: "organization-1", email, token_hash: createHash("sha256").update(token).digest("hex"), expires: false });
+  const input: InvitationRegistration = { token, email, name: "New Member", password: "a-long-password" };
   const hashPassword = async (password: string) => `hashed:${password}`;
   const register = (override: Partial<InvitationRegistration> = {}) => registerWithInvitation(db as unknown as Pool, { ...input, ...override }, hashPassword);
   return { db, input, register };
@@ -100,11 +100,11 @@ function setup(email = "new@example.invalid", token = "valid-token") {
 test("registration creates one credential user and consumes the matching invite", async () => {
   const { db, register } = setup("New@Example.invalid");
   const result = await register({ email: "new@example.invalid" });
-  assert.equal(result.teamId, "team-1");
+  assert.equal(result.organizationId, "organization-1");
   assert.equal(db.users.length, 1);
   assert.equal(db.users[0].passwordHash, "hashed:a-long-password");
   assert.equal(db.members.length, 1);
-  assert.deepEqual(db.members[0], { teamId: "team-1", userId: result.userId, role: "member" });
+  assert.deepEqual(db.members[0], { organizationId: "organization-1", userId: result.userId, role: "member" });
   assert.equal(db.invites.length, 0);
   await assert.rejects(register(), /invalid or has expired/);
 });
@@ -157,7 +157,7 @@ test("only one concurrent registration can consume an invitation", async () => {
 
 test("concurrent invitations for the same address create only one account", async () => {
   const { db, input, register } = setup();
-  db.invites.push({ id: "invite-2", team_id: "team-2", email: input.email, token_hash: createHash("sha256").update("second-token").digest("hex"), expires: false });
+  db.invites.push({ id: "invite-2", organization_id: "organization-2", email: input.email, token_hash: createHash("sha256").update("second-token").digest("hex"), expires: false });
   const outcomes = await Promise.allSettled([register(), register({ token: "second-token" })]);
   assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
   assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);

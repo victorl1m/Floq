@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
-import { IconPlayerPlay, IconPlayerStop, IconMoon, IconSearch, IconChevronUp, IconChevronDown, IconX, IconGitCompare } from "@tabler/icons-react";
+import { IconPlayerPlay, IconPlayerStop, IconMoon, IconSearch, IconChevronUp, IconChevronDown, IconX, IconGitCompare, IconUpload } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +19,48 @@ import { canReadClipboard, copyText, readClipboardText } from "@/lib/clipboard";
 import { parseOsc52 } from "@/lib/osc52";
 
 const MAX_INPUT_CHARS = 20_000;
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_UPLOAD_COUNT = 20;
+const MAX_UPLOAD_TOTAL_BYTES = 16 * 1024 * 1024;
+
+function shellQuote(value: string): string {
+    return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+function base64FromBytes(bytes: Uint8Array): string {
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+}
+
+async function readBrowserFiles(files: File[], onReady: (items: Array<{ name: string; bytes: Uint8Array }>) => void) {
+    const selected = files.slice(0, MAX_UPLOAD_COUNT);
+    if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+    let total = 0;
+    const ready: Array<{ name: string; bytes: Uint8Array }> = [];
+    for (const file of selected) {
+        if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || /[\u0000-\u001f\u007f]/.test(file.name)) {
+            toast.error(`Could not upload ${file.name || "file"}`, { description: "Files must be between 1 byte and 4 MiB, with no control characters in the name." });
+            continue;
+        }
+        if (total + file.size > MAX_UPLOAD_TOTAL_BYTES) {
+            toast.error(`${file.name} exceeds the 16 MiB total limit`);
+            continue;
+        }
+        try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            if (bytes.byteLength !== file.size) throw new Error("File changed while it was being read");
+            ready.push({ name: file.name, bytes });
+            total += bytes.byteLength;
+        } catch {
+            toast.error(`Could not read ${file.name}`);
+        }
+    }
+    onReady(ready);
+}
 
 export const STATE_DOT: Record<SessionState, string> = {
     running: "bg-emerald-500",
@@ -86,6 +130,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const fitRef = useRef<FitAddon | null>(null);
     const searchAddonRef = useRef<SearchAddon | null>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const lastSeqRef = useRef(0);
     // True while replayed (buffered) output is being parsed; OSC 52 clipboard writes are ignored then.
@@ -98,6 +143,13 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     outputRef.current = onOutput;
     const activeRef = useRef(active);
     activeRef.current = active;
+    const providerRef = useRef(session?.provider);
+    providerRef.current = session?.provider;
+    const sessionIdRef = useRef(sessionId);
+    sessionIdRef.current = sessionId;
+    const uploadFilesRef = useRef<(files: Array<{ name: string; bytes: Uint8Array }>) => void>(() => undefined);
+    const uploadingRef = useRef(false);
+    const canUploadRef = useRef(false);
 
     const slot = useTitlebarSlot();
     const [termPrefs] = useTerminalPrefs();
@@ -110,6 +162,93 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const [searchText, setSearchText] = useState("");
     const [searchMessage, setSearchMessage] = useState("");
     const [changesOpen, setChangesOpen] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; name: string } | null>(null);
+    const [dropHover, setDropHover] = useState(false);
+    canUploadRef.current = Boolean(!embedded && live && termReady && busy === null && active);
+
+    async function uploadFiles(files: Array<{ name: string; bytes: Uint8Array }>) {
+        if (!client || !files.length || !canUploadRef.current || uploadingRef.current) return;
+        uploadingRef.current = true;
+        const picked = files.slice(0, MAX_UPLOAD_COUNT);
+        if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+        if (picked.reduce((sum, file) => sum + file.bytes.byteLength, 0) > MAX_UPLOAD_TOTAL_BYTES) {
+            toast.error("Files exceed the 16 MiB total limit");
+            uploadingRef.current = false;
+            return;
+        }
+        const originalTerm = termRef.current;
+        const originalSocket = wsRef.current;
+        const originalSessionId = sessionId;
+        const uploadedPaths: string[] = [];
+        let failures = 0;
+        try {
+            for (let index = 0; index < picked.length; index += 1) {
+                const file = picked[index];
+                if (file.bytes.byteLength === 0 || file.bytes.byteLength > MAX_UPLOAD_BYTES || /[\u0000-\u001f\u007f]/.test(file.name)) {
+                    failures += 1;
+                    toast.error(`Could not upload ${file.name || "file"}`, { description: "Files must be between 1 byte and 4 MiB, with no control characters in the name." });
+                    continue;
+                }
+                setUploadProgress({ current: index + 1, total: picked.length, name: file.name });
+                try {
+                    const result = await client.uploadSessionAttachment(originalSessionId, file.name, base64FromBytes(file.bytes));
+                    uploadedPaths.push(shellQuote(result.path));
+                } catch (error) {
+                    failures += 1;
+                    toast.error(`Could not upload ${file.name}`, { description: errorMessage(error) });
+                }
+            }
+            const socket = wsRef.current;
+            const canPaste = uploadedPaths.length && canUploadRef.current && originalTerm && termRef.current === originalTerm && sessionIdRef.current === originalSessionId && originalSocket && socket === originalSocket && socket.readyState === WebSocket.OPEN;
+            if (canPaste) {
+                originalTerm.paste(uploadedPaths.join(" ") + " ");
+                originalTerm.focus();
+                if (failures < picked.length) toast.success(`Uploaded ${uploadedPaths.length} ${uploadedPaths.length === 1 ? "file" : "files"}`);
+            } else if (uploadedPaths.length) {
+                toast.error("Files uploaded, but the terminal disconnected", {
+                    description: "Copy the saved paths and paste them after reconnecting.",
+                    action: { label: "Copy paths", onClick: () => void copyText(uploadedPaths.join(" ") + " ").catch(() => toast.error("Could not copy the paths to the clipboard")) },
+                });
+            }
+        } finally {
+            uploadingRef.current = false;
+            setUploadProgress(null);
+        }
+    }
+    uploadFilesRef.current = (files) => { void uploadFiles(files); };
+
+    useEffect(() => {
+        if (embedded || !isTauri()) return;
+        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        void getCurrentWindow().onDragDropEvent((event) => {
+            if (event.payload.type === "leave") { setDropHover(false); return; }
+            if (!canUploadRef.current) { setDropHover(false); return; }
+            const host = hostRef.current;
+            if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
+            const rect = host.getBoundingClientRect();
+            const x = event.payload.position.x / window.devicePixelRatio;
+            const y = event.payload.position.y / window.devicePixelRatio;
+            const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+            if (event.payload.type === "enter" || event.payload.type === "over") {
+                setDropHover(inside);
+                return;
+            }
+            setDropHover(false);
+            if (event.payload.type !== "drop" || !inside) return;
+            if (event.payload.paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+            void invoke<Array<{ name: string; bytes: number[] | null; error: string | null }>>("read_dropped_files", { paths: event.payload.paths.slice(0, MAX_UPLOAD_COUNT) })
+                .then((dropped) => {
+                    const files = dropped.flatMap((file) => {
+                        if (!file.bytes) { toast.error(`Could not read ${file.name}`, { description: file.error ?? "This file cannot be uploaded." }); return []; }
+                        return [{ name: file.name, bytes: Uint8Array.from(file.bytes) }];
+                    });
+                    uploadFilesRef.current(files);
+                })
+                .catch((error: unknown) => toast.error("Could not read dropped files", { description: typeof error === "string" ? error : "Could not read the dropped files." }));
+        }).then((off) => { if (disposed) off(); else unlisten = off; }).catch(() => undefined);
+        return () => { disposed = true; unlisten?.(); };
+    }, [embedded]);
 
     useEffect(() => {
         if (!active) setChangesOpen(false);
@@ -220,14 +359,32 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         // Clipboard: Tauri reads/writes without a prompt. In a browser a read would prompt, so paste keys
         // are left alone and the native paste event reaches xterm's textarea.
         const isMac = /Mac|iPhone|iPad/i.test(navigator.platform);
+        // Claude Code and Codex paste a clipboard image with Alt+V (Ctrl+V on macOS), so when Ctrl+V finds
+        // no text on the clipboard we forward Alt+V (ESC v) to those CLIs. Shell terminals are untouched.
+        const imagePasteProvider = () => !isMac && (providerRef.current === "claude" || providerRef.current === "codex");
+        const sendImagePasteKey = () => send({ type: "input", data: "\x1bv" });
         const pasteFromClipboard = async () => {
+            const imageKey = imagePasteProvider();
             try {
                 const text = await readClipboardText();
                 if (text) term.paste(text);
+                else if (imageKey) sendImagePasteKey();
             } catch {
-                /* denied */
+                // An image-only clipboard makes the text read fail; a denied read is indistinguishable.
+                if (imageKey) sendImagePasteKey();
             }
         };
+        // Browser: the native paste event decides. Image file and no text => Alt+V; otherwise xterm pastes text.
+        const onPasteCapture = (event: ClipboardEvent) => {
+            if (!imagePasteProvider()) return;
+            const clip = event.clipboardData;
+            if (!clip || clip.getData("text/plain")) return;
+            if (!Array.from(clip.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))) return;
+            event.preventDefault();
+            event.stopPropagation();
+            sendImagePasteKey();
+        };
+        host.addEventListener("paste", onPasteCapture, true);
         const copySelection = async (text: string): Promise<boolean> => {
             try {
                 await copyText(text);
@@ -331,6 +488,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
 
         return () => {
             observer.disconnect();
+            host.removeEventListener("paste", onPasteCapture, true);
             host.removeEventListener("contextmenu", onContextMenu);
             host.removeEventListener("mousedown", onMouseDown);
             document.removeEventListener("mouseup", onMouseUp);
@@ -581,8 +739,47 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     </div>,
                     slot,
                 )}
-            <div className="relative min-h-0 flex-1" style={{ backgroundColor: THEME.background }}>
+            <div
+                className="relative min-h-0 flex-1"
+                style={{ backgroundColor: THEME.background }}
+                onDragEnter={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); if (canUploadRef.current) setDropHover(true); } }}
+                onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; if (canUploadRef.current) setDropHover(true); } }}
+                onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropHover(false); }}
+                onDrop={(event) => {
+                    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+                    event.preventDefault();
+                    setDropHover(false);
+                    void readBrowserFiles(Array.from(event.dataTransfer.files), (items) => uploadFilesRef.current(items));
+                }}
+            >
                 <div ref={hostRef} className="absolute inset-2" />
+                {dropHover && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-primary/10 text-sm font-medium text-primary">Drop files to upload</div>}
+                {!embedded && active && <>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-label="Choose files to upload to terminal"
+                        onChange={(event) => {
+                            const files = Array.from(event.currentTarget.files ?? []);
+                            event.currentTarget.value = "";
+                            void readBrowserFiles(files, (items) => uploadFilesRef.current(items));
+                        }}
+                    />
+                    <div className="absolute top-2 right-11 z-10 flex items-center gap-1">
+                        {uploadProgress && <span role="status" aria-live="polite" className="max-w-36 truncate rounded-md bg-black/70 px-2 py-1 text-xs text-zinc-200">Uploading {uploadProgress.current}/{uploadProgress.total}: {uploadProgress.name}</span>}
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button variant="ghost" size="icon-sm" aria-label="Upload files to terminal" disabled={!canUploadRef.current || uploadingRef.current} onClick={() => fileInputRef.current?.click()}>
+                                    <IconUpload />
+                                </Button>
+                            </TooltipTrigger>
+                                <TooltipContent>Upload files (up to 4 MiB each, 16 MiB total, 20 files)</TooltipContent>
+                        </Tooltip>
+                    </div>
+                </>}
                 {!embedded && active && !searchOpen && (
                     <div className="absolute top-2 right-2 z-10">
                         <Tooltip>

@@ -1,6 +1,6 @@
 # floq-runtime
 
-Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, each behind a PTY, and streams them to Floq over WebSocket. Users sign in with [better-auth](https://better-auth.com) (email + password, bearer tokens); their settings and credentials live in PostgreSQL. Team collaboration and Tasks use Prisma ORM 7 and the PostgreSQL driver adapter in a dedicated `collaboration` schema. Better Auth and the pre-existing runtime tables keep their existing migration owners and data.
+Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, each behind a PTY, and streams them to Floq over WebSocket. Users sign in with [better-auth](https://better-auth.com) (email + password, bearer tokens); their settings and credentials live in PostgreSQL. Organization collaboration and Tasks use Prisma ORM 7 and the PostgreSQL driver adapter in a dedicated `collaboration` schema. Better Auth and the pre-existing runtime tables keep their existing migration owners and data.
 
 ## Deploy on Dokploy
 
@@ -12,11 +12,11 @@ Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, e
 
 ## First run (admin account)
 
-There is no password in the environment. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL`; when that email has no account yet, the app asks for it, `POST /v1/setup/lookup` answers `{"step":"setup"}`, and the admin chooses a password (12-128 chars) via `POST /v1/setup/admin`, then signs in normally. Setup optionally accepts a Company name (up to 80 characters) and creates the Better Auth account plus its initial owner team atomically. If blank, the team is named `<first name>'s Team`; if no name was provided, it uses the email local part, falling back to `Admin`. Once the account exists (and for every other email) lookup answers `{"step":"password"}` and setup returns 409 `setup_unavailable`, so it cannot be used to discover accounts or take over. Both routes are unauthenticated and rate limited per IP (10/min).
+There is no password in the environment. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL`; when that email has no account yet, the app asks for it, `POST /v1/setup/lookup` answers `{"step":"setup"}`, and the admin chooses a password (12-128 chars) via `POST /v1/setup/admin`, then signs in normally. Setup optionally accepts a Company name (up to 80 characters) and creates the Better Auth account plus its initial owner organization atomically. If blank, the organization is named `<first name>'s Organization`; if no name was provided, it uses the email local part, falling back to `Admin`. Once the account exists (and for every other email) lookup answers `{"step":"password"}` and setup returns 409 `setup_unavailable`, so it cannot be used to discover accounts or take over. Both routes are unauthenticated and rate limited per IP (10/min).
 
-## Joining a team
+## Joining an organization
 
-Public signup stays off unless `FLOQ_ALLOW_SIGNUP=1`. A person without an account can use the login screen's **Join with an invitation** flow with the 7-day single-use token, the invited email, a name, and a 12-128 character password. Registration creates a member account only when the invitation is valid and the email matches; creating the account, membership, and consuming the token happen in one database transaction. The runtime does not email invitations: the team owner shares the raw token with the invited person. Existing accounts sign in with the invited email and accept the token in Floq. A token is never included in a URL.
+Public signup stays off unless `FLOQ_ALLOW_SIGNUP=1`. A person without an account can use the login screen's **Join with an invitation** flow with the 7-day single-use token, the invited email, a name, and a 12-128 character password. Registration creates a member account only when the invitation is valid and the email matches; creating the account, membership, and consuming the token happen in one database transaction. The runtime does not email invitations: the organization owner shares the raw token with the invited person. Existing accounts sign in with the invited email and accept the token in Floq. A token is never included in a URL.
 
 ## Subscription logins and git identity
 
@@ -81,9 +81,9 @@ Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/e
 
 ### Prisma and database ownership
 
-- `runtime/prisma/schema.prisma` and `runtime/prisma/migrations/` own only the `collaboration` schema; task/team models intentionally keep user IDs as strings and do not add foreign keys into Better Auth's `public.user` table.
+- `runtime/prisma/schema.prisma` and `runtime/prisma/migrations/` own only the `collaboration` schema; task/organization models intentionally keep user IDs as strings and do not add foreign keys into Better Auth's `public.user` table.
 - `npm run build` generates the Prisma Client before TypeScript compilation. `npm start` runs `prisma migrate deploy` before starting the runtime; the Docker image includes the Prisma config and migration files.
-- For an existing deployment, redeploy the runtime image. The migration is additive and isolated: it creates `collaboration` and its team/task tables without altering existing public tables or rows. It does not require baselining or marking the legacy schema as Prisma-managed.
+- For an existing deployment, redeploy the runtime image. The migration is additive and isolated: it creates `collaboration` and its organization/task tables without altering existing public tables or rows. It does not require baselining or marking the legacy schema as Prisma-managed.
 - To apply the migration manually in a development environment, set `DATABASE_URL` and run `npm run prisma:deploy` from `runtime`. Do not use `prisma migrate reset` against an existing Floq database.
 - Prisma Client uses its own PostgreSQL driver pool in addition to the existing `pg` pool used by Better Auth and legacy services. Keep the database connection limit sized for both.
 
@@ -93,12 +93,12 @@ Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/e
 | POST | `/v1/setup/lookup`, `/v1/setup/admin` | first-run admin setup, unauthenticated (see First run) |
 | GET | `/v1/github/repos?q=&page=` | repos of the connected GitHub account `{repos:[{fullName,private,description,defaultBranch,cloneUrl,updatedAt}], nextPage}`; 409 `github_not_connected` |
 | GET | `/v1/info` | server info, provider availability |
-| GET/POST | `/v1/teams` | list teams for the signed-in user / create an owner team |
-| GET | `/v1/teams/:id` | list team members (members only) |
-| POST | `/v1/teams/:id/invitations` | create a 7-day, email-bound, single-use member invitation; raw token is returned once |
-| POST | `/v1/team-invitations/accept` | accept an invitation while signed into its invited email |
-| POST | `/v1/team-invitations/register` | create a member account and accept a valid matching invitation while public signup is off; rate limited per IP |
-| GET/POST | `/v1/teams/:id/boards` | list/create team boards |
+| GET/POST | `/v1/organizations` | list organizations for the signed-in user / create an owner organization |
+| GET | `/v1/organizations/:id` | list organization members (members only) |
+| POST | `/v1/organizations/:id/invitations` | create a 7-day, email-bound, single-use member invitation; raw token is returned once |
+| POST | `/v1/organization-invitations/accept` | accept an invitation while signed into its invited email |
+| POST | `/v1/organization-invitations/register` | create a member account and accept a valid matching invitation while public signup is off; rate limited per IP |
+| GET/POST | `/v1/organizations/:id/boards` | list/create organization boards |
 | GET/PATCH/DELETE | `/v1/task-boards/:id` | read, rename, or owner-delete a board |
 | POST/PATCH/DELETE | `/v1/task-boards/:id/lists[/listId]` | create, rename/reorder, or delete a list |
 | POST/PATCH/DELETE | `/v1/task-boards/:id/cards[/cardId]` | create, move/edit, or delete a card |
@@ -118,3 +118,8 @@ Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/e
 | WS | `/v1/sessions/:id/stream?since=<seq>&token=` | terminal stream |
 
 Local dev: run a Postgres, set the required env vars, then `npm install && npm run dev`.
+
+## Administration and updates
+
+- Instance roles (`admin`/`member`) live in `collaboration.user_roles`. When no administrator exists, the `FLOQ_BOOTSTRAP_ADMIN_EMAIL` user (else the earliest registered user) is promoted once; afterwards administrators manage roles from Settings > Users. The last administrator cannot be demoted.
+- `GET /v1/admin/updates`, `POST /v1/admin/updates/apply {target, force}` (admin only). Env: `FLOQ_UPDATE_REPO` (GitHub `owner/name` releases, default `victorl1m/Floq`), `FLOQ_UPDATE_RUNTIME_COMMAND` (JSON argv of an operator deploy script), `FLOQ_UPDATE_RUNTIME_DIR` (git checkout for `git pull` + build). Claude Code and Codex are upgraded with `npm install -g <pkg>@latest`. A runtime update ends with SIGTERM; the container restart policy starts the new build.

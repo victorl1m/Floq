@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::{fs::File, io::Read, path::Path};
 use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
 use tauri::Manager;
 #[cfg(windows)]
@@ -90,12 +91,83 @@ fn get_memory_details() -> MemoryDetails {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DroppedFile {
+    name: String,
+    bytes: Option<Vec<u8>>,
+    error: Option<String>,
+}
+
+/// Read paths requested by the renderer, with strict per-file and aggregate bounds.
+#[tauri::command]
+fn read_dropped_files(paths: Vec<String>) -> Result<Vec<DroppedFile>, String> {
+    const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+    if paths.is_empty() || paths.len() > 20 {
+        return Err("Drop between 1 and 20 files".into());
+    }
+    let mut total = 0_u64;
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let file_path = Path::new(&path);
+            let name = file_path
+                .file_name()
+                .and_then(|part| part.to_str())
+                .unwrap_or("Dropped file")
+                .to_string();
+            let read = (|| -> Result<Vec<u8>, String> {
+                let file =
+                    File::open(file_path).map_err(|_| "Could not read this file".to_string())?;
+                let metadata = file
+                    .metadata()
+                    .map_err(|_| "Could not inspect this file".to_string())?;
+                if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
+                    return Err("Files must be regular files between 1 byte and 4 MiB".into());
+                }
+                if total + metadata.len() > MAX_TOTAL_BYTES {
+                    return Err("A drop can contain at most 16 MiB total".into());
+                }
+                let mut bytes = Vec::with_capacity(metadata.len() as usize);
+                file.take(MAX_FILE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "Could not read this file".to_string())?;
+                if bytes.is_empty()
+                    || bytes.len() as u64 > MAX_FILE_BYTES
+                    || bytes.len() as u64 != metadata.len()
+                {
+                    return Err("File changed while it was being read".into());
+                }
+                total += bytes.len() as u64;
+                Ok(bytes)
+            })();
+            match read {
+                Ok(bytes) => DroppedFile {
+                    name,
+                    bytes: Some(bytes),
+                    error: None,
+                },
+                Err(error) => DroppedFile {
+                    name,
+                    bytes: None,
+                    error: Some(error),
+                },
+            }
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .invoke_handler(tauri::generate_handler![greet, get_memory_details])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_memory_details,
+            read_dropped_files
+        ])
         .setup(|app| {
             // Handle window creation here: Tauri panics if an automatically
             // created window fails during the native event-loop callback.

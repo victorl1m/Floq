@@ -19,11 +19,11 @@ function initials(label: string): string {
 }
 
 export default function UserCard() {
-    const { user, online, signOut, openSettings, navigate, teams, teamsLoading, teamsError, refreshTeams, activeTeamId, selectTeam } = useRuntime();
+    const { user, online, signOut, openSettings, navigate, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId, selectOrganization } = useRuntime();
     if (!user) return null;
     const name = user.name?.trim() || user.email.split("@")[0];
-    const activeTeam = teams.find((team) => team.id === activeTeamId);
-    const teamSubtitle = activeTeam?.name ?? (teamsLoading ? "Loading team…" : teamsError ? "Teams unavailable" : "No team yet");
+    const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId);
+    const organizationSubtitle = activeOrganization?.name ?? (organizationsLoading ? "Loading organization…" : organizationsError ? "Organizations unavailable" : "No organization yet");
 
     return (
         <SidebarMenu>
@@ -32,7 +32,7 @@ export default function UserCard() {
                     <DropdownMenuTrigger asChild>
                         <SidebarMenuButton
                             size="lg"
-                            tooltip={`${name} · ${teamSubtitle}`}
+                            tooltip={`${name} · ${organizationSubtitle}`}
                             className="h-12 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
                         >
                             <Avatar size="sm" className="size-8">
@@ -41,19 +41,19 @@ export default function UserCard() {
                             </Avatar>
                             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
                                 <span className="truncate text-sm font-semibold">{name}</span>
-                                <span className="truncate text-xs text-muted-foreground">{teamSubtitle}</span>
+                                <span className="truncate text-xs text-muted-foreground">{organizationSubtitle}</span>
                             </div>
                             <IconSelector className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                         </SidebarMenuButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="top" align="start" className="w-56">
-                        <DropdownMenuLabel>Teams</DropdownMenuLabel>
-                        {teamsLoading && <DropdownMenuItem disabled>Loading teams…</DropdownMenuItem>}
-                        {!teamsLoading && teamsError && <DropdownMenuItem onSelect={() => void refreshTeams()}><IconRefresh />Retry loading teams</DropdownMenuItem>}
-                        {!teamsLoading && !teamsError && teams.length > 0 && <DropdownMenuRadioGroup value={activeTeamId ?? ""} onValueChange={selectTeam}>
-                            {teams.map((team) => <DropdownMenuRadioItem key={team.id} value={team.id} textValue={team.name} className="min-w-0"><IconChecklist /><span className="truncate">{team.name}</span></DropdownMenuRadioItem>)}
+                        <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+                        {organizationsLoading && <DropdownMenuItem disabled>Loading organizations…</DropdownMenuItem>}
+                        {!organizationsLoading && organizationsError && <DropdownMenuItem onSelect={() => void refreshOrganizations()}><IconRefresh />Retry loading organizations</DropdownMenuItem>}
+                        {!organizationsLoading && !organizationsError && organizations.length > 0 && <DropdownMenuRadioGroup value={activeOrganizationId ?? ""} onValueChange={selectOrganization}>
+                            {organizations.map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organization.name} className="min-w-0"><IconChecklist /><span className="truncate">{organization.name}</span></DropdownMenuRadioItem>)}
                         </DropdownMenuRadioGroup>}
-                        {!teamsLoading && !teamsError && teams.length === 0 && <DropdownMenuItem onSelect={() => navigate("tasks")}><IconChecklist />Create your first team in Tasks</DropdownMenuItem>}
+                        {!organizationsLoading && !organizationsError && organizations.length === 0 && <DropdownMenuItem onSelect={() => navigate("tasks")}><IconChecklist />Create your first organization in Tasks</DropdownMenuItem>}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => openSettings()}>
                             <IconSettings />

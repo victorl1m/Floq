@@ -34,7 +34,7 @@ Claude Code and Codex in cloud terminals · Per-user encrypted home · Sleep and
 
 <br/>
 
-> **Status:** early (`0.1.0`) and written for a single owner. It is not a SaaS and has no teams, billing, or multi-tenant admin tooling. See [Security model](#-security-model) before you deploy it.
+> **Status:** early (`0.1.0`) and written for a single owner. It is not a SaaS and has no organizations, billing, or multi-tenant admin tooling. See [Security model](#-security-model) before you deploy it.
 
 Source: [github.com/victorl1m/floq](https://github.com/victorl1m/floq) · [Report an issue](https://github.com/victorl1m/floq/issues)
 

@@ -24,6 +24,8 @@ import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerIn
 import { TasksService } from "./tasks.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
+import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
+import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
@@ -52,6 +54,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
   const scheduledAgentRestarts = new Set<string>();
+  const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
   function rateLimitSetup(req: IncomingMessage): void {
     const forwarded = req.headers["x-forwarded-for"];
@@ -343,7 +346,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, { ok: true });
     }
 
-    if (method === "POST" && url.pathname === "/v1/team-invitations/register") {
+    if (method === "POST" && url.pathname === "/v1/organization-invitations/register") {
       rateLimitSetup(req);
       const body = await readJson<{ token?: unknown; email?: unknown; name?: unknown; password?: unknown }>(req);
       const token = typeof body.token === "string" ? body.token.trim() : "";
@@ -355,10 +358,24 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (typeof password !== "string" || password.length < 12 || password.length > 128) throw badRequest("Password must be 12-128 characters", "invalid_password");
       const context = await auth.$context;
       const registered = await registerWithInvitation(pool, { token, email, name, password }, (value) => context.password.hash(value));
-      return send(res, 201, { ok: true, teamId: registered.teamId });
+      return send(res, 201, { ok: true, organizationId: registered.organizationId });
     }
 
     const userId = await userFor(req.headers);
+
+    if (url.pathname.startsWith("/v1/admin/") || url.pathname === "/v1/me/role") {
+      if (url.pathname === "/v1/me/role" && method === "GET") return send(res, 200, { role: await getRole(pool, config.bootstrapAdminEmail, userId) });
+      await requireAdmin(pool, config.bootstrapAdminEmail, userId);
+      if (url.pathname === "/v1/admin/updates" && method === "GET") return send(res, 200, await updates.check(url.searchParams.get("refresh") === "1"));
+      if (url.pathname === "/v1/admin/updates/apply" && method === "POST") return send(res, 200, await updates.apply(userId, await readJson<{ target?: unknown; force?: unknown }>(req)));
+      if (url.pathname === "/v1/admin/users" && method === "GET") return send(res, 200, { users: await listUsers(pool) });
+      const userRoleMatch = /^\/v1\/admin\/users\/([\w-]+)$/.exec(url.pathname);
+      if (userRoleMatch && method === "PATCH") {
+        const body = await readJson<{ role?: unknown }>(req);
+        return send(res, 200, await setUserRole(pool, userId, userRoleMatch[1], requireRoleValue(body.role)));
+      }
+      throw notFound();
+    }
 
     if (method === "GET" && url.pathname === "/v1/info") {
       const providers = listProviders(config);
@@ -386,20 +403,21 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       }
     }
 
-    if (url.pathname === "/v1/teams" && method === "GET") return send(res, 200, { teams: await tasks.teams(userId) });
-    if (url.pathname === "/v1/teams" && method === "POST") return send(res, 201, { team: await tasks.createTeam(userId, await readJson(req)) });
-    if (url.pathname === "/v1/team-invitations/accept" && method === "POST") {
+    if (url.pathname === "/v1/organizations" && method === "GET") return send(res, 200, { organizations: await tasks.organizations(userId) });
+    if (url.pathname === "/v1/organizations" && method === "POST") return send(res, 201, { organization: await tasks.createOrganization(userId, await readJson(req)) });
+    if (url.pathname === "/v1/organization-invitations/accept" && method === "POST") {
       const result = await tasks.acceptInvite(userId, (await readJson<{ token?: unknown }>(req)).token);
       return send(res, 200, result);
     }
-    const teamMatch = /^\/v1\/teams\/([\w-]+)(?:\/(members|invitations|boards))?$/.exec(url.pathname);
-    if (teamMatch) {
-      const [, teamId, action] = teamMatch;
-      if (!action && method === "GET") return send(res, 200, { members: await tasks.members(userId, teamId) });
-      if (action === "invitations" && method === "POST") return send(res, 201, { invitation: await tasks.createInvite(userId, teamId, await readJson(req)) });
-      if (action === "boards" && method === "GET") return send(res, 200, { boards: await tasks.boards(userId, teamId) });
+    const organizationMatch = /^\/v1\/organizations\/([\w-]+)(?:\/(members|invitations|boards))?$/.exec(url.pathname);
+    if (organizationMatch) {
+      const [, organizationId, action] = organizationMatch;
+      if (!action && method === "GET") return send(res, 200, { members: await tasks.members(userId, organizationId) });
+      if (!action && method === "PATCH") { await tasks.renameOrganization(userId, organizationId, (await readJson<{ name?: unknown }>(req)).name); return send(res, 200, { ok: true }); }
+      if (action === "invitations" && method === "POST") return send(res, 201, { invitation: await tasks.createInvite(userId, organizationId, await readJson(req)) });
+      if (action === "boards" && method === "GET") return send(res, 200, { boards: await tasks.boards(userId, organizationId) });
       if (action === "boards" && method === "POST") {
-        const board = await tasks.createBoard(userId, teamId, await readJson(req));
+        const board = await tasks.createBoard(userId, organizationId, await readJson(req));
         return send(res, 201, { board });
       }
     }
@@ -635,6 +653,12 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, await gitReview.diff(userId, changesMatch[1], url.searchParams.get("path")));
     }
 
+    const attachmentMatch = /^\/v1\/sessions\/([\w-]+)\/attachments$/.exec(url.pathname);
+    if (attachmentMatch && method === "POST") {
+      const body = await readJson<{ name?: unknown; data?: unknown }>(req, 6 * 1024 * 1024);
+      return send(res, 201, await manager.uploadSessionAttachment(attachmentMatch[1], userId, body.name, body.data));
+    }
+
     const match = SESSION_PATH.exec(url.pathname);
     if (match) {
       const action = match[2];
@@ -736,10 +760,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         if (!token || !boardId) return reject(401, "Unauthorized");
         const headers = { ...req.headers, authorization: "Bearer " + token };
         const userId = await userFor(headers);
-        const teamId = await tasks.requireBoard(userId, boardId);
-        const members = await tasks.members(userId, teamId);
+        const organizationId = await tasks.requireBoard(userId, boardId);
+        const members = await tasks.members(userId, organizationId);
         const self = members.find((member) => member.id === userId);
-        wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Teammate"));
+        wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Member"));
         return;
       }
       const match = SESSION_PATH.exec(url.pathname);

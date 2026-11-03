@@ -11,14 +11,14 @@ export interface InvitationRegistration {
 
 export interface RegisteredInvitation {
   userId: string;
-  teamId: string;
+  organizationId: string;
 }
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
 interface InvitationRow extends QueryResultRow {
   id: string;
-  team_id: string;
+  organization_id: string;
   email: string;
 }
 
@@ -28,7 +28,7 @@ interface UserRow extends QueryResultRow {
 
 async function findInvitation(pool: Pool, tokenHash: string): Promise<InvitationRow | undefined> {
   const result = await pool.query<InvitationRow>(
-    "SELECT id, team_id, email FROM collaboration.team_invitations WHERE token_hash = $1 AND expires_at > now()",
+    "SELECT id, organization_id, email FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now()",
     [tokenHash],
   );
   return result.rows[0];
@@ -68,7 +68,7 @@ export async function registerWithInvitation(
     await client.query("BEGIN");
     transactionStarted = true;
     const invitation = await client.query<InvitationRow>(
-      "SELECT id, team_id, email FROM collaboration.team_invitations WHERE token_hash = $1 AND expires_at > now() FOR UPDATE",
+      "SELECT id, organization_id, email FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now() FOR UPDATE",
       [digest],
     );
     const row = invitation.rows[0];
@@ -86,17 +86,17 @@ export async function registerWithInvitation(
       [accountId, userId, userId, passwordHash],
     );
     await client.query(
-      "INSERT INTO collaboration.team_members (team_id, user_id, role) VALUES ($1::uuid, $2, 'member')",
-      [row.team_id, userId],
+      "INSERT INTO collaboration.organization_members (organization_id, user_id, role) VALUES ($1::uuid, $2, 'member')",
+      [row.organization_id, userId],
     );
     const consumed = await client.query(
-      "DELETE FROM collaboration.team_invitations WHERE id = $1::uuid AND token_hash = $2 AND expires_at > now() RETURNING id",
+      "DELETE FROM collaboration.organization_invitations WHERE id = $1::uuid AND token_hash = $2 AND expires_at > now() RETURNING id",
       [row.id, digest],
     );
     if (consumed.rowCount !== 1) throw notFound("Invitation is invalid or has expired");
     await client.query("COMMIT");
     transactionStarted = false;
-    return { userId, teamId: row.team_id };
+    return { userId, organizationId: row.organization_id };
   } catch (error) {
     if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
     if (isUniqueViolation(error)) {

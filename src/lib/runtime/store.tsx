@@ -12,7 +12,7 @@ import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
 import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
-import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, TaskTeam } from "./types";
+import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization } from "./types";
 
 const STORAGE_KEY = "floq.connection";
 
@@ -102,12 +102,12 @@ interface RuntimeContextValue {
   lookup: (baseUrl: string, email: string) => Promise<"setup" | "password">;
   setupAdmin: (input: SignInInput & { name?: string; companyName?: string }) => Promise<void>;
   signOut: () => Promise<void>;
-  teams: TaskTeam[];
-  teamsLoading: boolean;
-  teamsError: string | null;
-  refreshTeams: (preferredTeamId?: string) => Promise<void>;
-  activeTeamId: string | null;
-  selectTeam: (teamId: string) => void;
+  organizations: Organization[];
+  organizationsLoading: boolean;
+  organizationsError: string | null;
+  refreshOrganizations: (preferredOrganizationId?: string) => Promise<void>;
+  activeOrganizationId: string | null;
+  selectOrganization: (organizationId: string) => void;
   userPreferences: UserPreferences;
   updateUserPreferences: (patch: UserPreferencePatch) => void;
   refresh: () => Promise<boolean>;
@@ -197,13 +197,13 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [online, setOnline] = useState(true);
-  const [teams, setTeams] = useState<TaskTeam[]>([]);
-  const [teamsLoading, setTeamsLoading] = useState(() => connection !== null);
-  const [teamsError, setTeamsError] = useState<string | null>(null);
-  const teamsRequest = useRef(0);
-  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
-  const activeTeamIdRef = useRef(activeTeamId);
-  activeTeamIdRef.current = activeTeamId;
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [organizationsLoading, setOrganizationsLoading] = useState(() => connection !== null);
+  const [organizationsError, setOrganizationsError] = useState<string | null>(null);
+  const organizationsRequest = useRef(0);
+  const [activeOrganizationId, setActiveOrganizationId] = useState<string | null>(null);
+  const activeOrganizationIdRef = useRef(activeOrganizationId);
+  activeOrganizationIdRef.current = activeOrganizationId;
   const [preferencesState, setPreferencesState] = useState<{ scope: string | null; value: UserPreferences }>({ scope: null, value: USER_PREFERENCE_DEFAULTS });
   const [history, setHistory] = useState<{ stack: HistoryEntry[]; index: number }>({
     stack: [{ view: "home", arg: null }],
@@ -274,11 +274,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setNewAgentOpen(false);
     setSearchOpen(false);
     setSettingsOpen(false);
-    setTeams([]);
-    setTeamsLoading(false);
-    setTeamsError(null);
-    setActiveTeamId(null);
-    activeTeamIdRef.current = null;
+    setOrganizations([]);
+    setOrganizationsLoading(false);
+    setOrganizationsError(null);
+    setActiveOrganizationId(null);
+    activeOrganizationIdRef.current = null;
     setHistory({ stack: [{ view: "home", arg: null }], index: 0 });
     setReady(true);
   }, []);
@@ -416,56 +416,56 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const signedIn = client !== null && ready;
 
-  const refreshTeams = useCallback(async (preferredTeamId?: string) => {
+  const refreshOrganizations = useCallback(async (preferredOrganizationId?: string) => {
     const requestedClient = client;
     const requestedBaseUrl = preferenceBaseUrl;
     const requestedUserId = preferenceUserId;
-    const requestId = ++teamsRequest.current;
+    const requestId = ++organizationsRequest.current;
     if (!requestedClient || !signedIn) {
-      setTeams([]); setTeamsError(null); setTeamsLoading(false);
-      setActiveTeamId(null); activeTeamIdRef.current = null;
+      setOrganizations([]); setOrganizationsError(null); setOrganizationsLoading(false);
+      setActiveOrganizationId(null); activeOrganizationIdRef.current = null;
       return;
     }
-    setTeamsLoading(true);
-    setTeamsError(null);
+    setOrganizationsLoading(true);
+    setOrganizationsError(null);
     try {
-      const loaded = await requestedClient.teams();
-      if (teamsRequest.current !== requestId || clientRef.current !== requestedClient) return;
-      setTeams(loaded);
-      const savedTeamId = loadUserPreferences(requestedBaseUrl, requestedUserId).activeTeamId;
-      const currentTeamId = activeTeamIdRef.current;
-      const nextTeamId = preferredTeamId && loaded.some((team) => team.id === preferredTeamId)
-        ? preferredTeamId
-        : loaded.some((team) => team.id === currentTeamId)
-          ? currentTeamId
-          : loaded.some((team) => team.id === savedTeamId)
-            ? savedTeamId
+      const loaded = await requestedClient.organizations();
+      if (organizationsRequest.current !== requestId || clientRef.current !== requestedClient) return;
+      setOrganizations(loaded);
+      const savedOrganizationId = loadUserPreferences(requestedBaseUrl, requestedUserId).activeOrganizationId;
+      const currentOrganizationId = activeOrganizationIdRef.current;
+      const nextOrganizationId = preferredOrganizationId && loaded.some((organization) => organization.id === preferredOrganizationId)
+        ? preferredOrganizationId
+        : loaded.some((organization) => organization.id === currentOrganizationId)
+          ? currentOrganizationId
+          : loaded.some((organization) => organization.id === savedOrganizationId)
+            ? savedOrganizationId
             : loaded[0]?.id ?? null;
-      activeTeamIdRef.current = nextTeamId;
-      setActiveTeamId(nextTeamId);
-      if (nextTeamId !== savedTeamId) updateUserPreferences({ activeTeamId: nextTeamId });
+      activeOrganizationIdRef.current = nextOrganizationId;
+      setActiveOrganizationId(nextOrganizationId);
+      if (nextOrganizationId !== savedOrganizationId) updateUserPreferences({ activeOrganizationId: nextOrganizationId });
     } catch (reason) {
-      if (teamsRequest.current === requestId && clientRef.current === requestedClient) setTeamsError(errorMessage(reason));
+      if (organizationsRequest.current === requestId && clientRef.current === requestedClient) setOrganizationsError(errorMessage(reason));
     } finally {
-      if (teamsRequest.current === requestId && clientRef.current === requestedClient) setTeamsLoading(false);
+      if (organizationsRequest.current === requestId && clientRef.current === requestedClient) setOrganizationsLoading(false);
     }
   }, [client, preferenceBaseUrl, preferenceUserId, signedIn, updateUserPreferences]);
 
-  const selectTeam = useCallback((teamId: string) => {
-    if (!teams.some((team) => team.id === teamId)) return;
-    activeTeamIdRef.current = teamId;
-    setActiveTeamId(teamId);
-    updateUserPreferences({ activeTeamId: teamId });
-  }, [teams, updateUserPreferences]);
+  const selectOrganization = useCallback((organizationId: string) => {
+    if (!organizations.some((organization) => organization.id === organizationId)) return;
+    activeOrganizationIdRef.current = organizationId;
+    setActiveOrganizationId(organizationId);
+    updateUserPreferences({ activeOrganizationId: organizationId });
+  }, [organizations, updateUserPreferences]);
 
   useEffect(() => {
     if (!signedIn) {
-      setTeams([]); setTeamsError(null); setTeamsLoading(false);
-      setActiveTeamId(null); activeTeamIdRef.current = null;
+      setOrganizations([]); setOrganizationsError(null); setOrganizationsLoading(false);
+      setActiveOrganizationId(null); activeOrganizationIdRef.current = null;
       return;
     }
-    void refreshTeams();
-  }, [signedIn, client, refreshTeams]);
+    void refreshOrganizations();
+  }, [signedIn, client, refreshOrganizations]);
 
   useEffect(() => {
     if (!client || !signedIn) return;
@@ -524,7 +524,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     if (!baseUrl) throw new Error("Enter the runtime URL");
     const runtime = new RuntimeClient(baseUrl);
     const { token, user } = await runtime.signIn(input.email, input.password);
-    if (input.invitationToken) await runtime.withToken(token).acceptTeamInvitation(input.invitationToken);
+    if (input.invitationToken) await runtime.withToken(token).acceptOrganizationInvitation(input.invitationToken);
     const next: Connection = { baseUrl, token, user };
     saveConnection(next);
     try {
@@ -532,11 +532,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
-    setTeams([]);
-    setTeamsLoading(true);
-    setTeamsError(null);
-    setActiveTeamId(null);
-    activeTeamIdRef.current = null;
+    setOrganizations([]);
+    setOrganizationsLoading(true);
+    setOrganizationsError(null);
+    setActiveOrganizationId(null);
+    activeOrganizationIdRef.current = null;
     setConnection(next);
     setChangeServer(false);
     setReady(true);
@@ -705,12 +705,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       lookup,
       setupAdmin,
       signOut,
-      teams,
-      teamsLoading,
-      teamsError,
-      refreshTeams,
-      activeTeamId,
-      selectTeam,
+      organizations,
+      organizationsLoading,
+      organizationsError,
+      refreshOrganizations,
+      activeOrganizationId,
+      selectOrganization,
       userPreferences,
       updateUserPreferences,
       refresh,
@@ -769,12 +769,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       lookup,
       setupAdmin,
       signOut,
-      teams,
-      teamsLoading,
-      teamsError,
-      refreshTeams,
-      activeTeamId,
-      selectTeam,
+      organizations,
+      organizationsLoading,
+      organizationsError,
+      refreshOrganizations,
+      activeOrganizationId,
+      selectOrganization,
       userPreferences,
       updateUserPreferences,
       refresh,

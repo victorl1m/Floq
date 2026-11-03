@@ -8,14 +8,14 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { TaskBoard, TaskCard, TaskTeam } from "@/lib/runtime/types";
+import type { TaskBoard, TaskCard, Organization } from "@/lib/runtime/types";
 
 interface TaskCardDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   board: TaskBoard;
   card: TaskCard | null;
-  members: TaskTeam["members"];
+  members: Organization["members"];
   busy: boolean;
   error: string | null;
   onSave: (card: TaskCard, input: { listId: string; title: string; description: string; position: number; assigneeId: string | null; dueAt: string | null }) => Promise<boolean>;

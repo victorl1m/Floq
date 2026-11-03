@@ -9,13 +9,13 @@ export interface BootstrapAdminInput {
   companyName?: string;
 }
 
-export function bootstrapTeamName(name: string | undefined, email: string): string {
+export function bootstrapOrganizationName(name: string | undefined, email: string): string {
   const firstName = name?.trim().split(/\s+/)[0] || email.trim().split("@")[0] || "Admin";
-  return `${firstName.slice(0, 72)}'s Team`;
+  return `${firstName.slice(0, 72)}'s Organization`;
 }
 
 /**
- * Create the initial credential account and owned team in one transaction.
+ * Create the initial credential account and owned organization in one transaction.
  * The caller has already checked that this is the configured bootstrap address.
  */
 export async function registerBootstrapAdmin(
@@ -28,7 +28,7 @@ export async function registerBootstrapAdmin(
   const companyName = input.companyName?.trim() ?? "";
   if (name.length > 100) throw badRequest("Name must be 100 characters or fewer");
   if (companyName.length > 80) throw badRequest("Company name must be 80 characters or fewer");
-  const teamName = companyName || bootstrapTeamName(name, email);
+  const organizationName = companyName || bootstrapOrganizationName(name, email);
 
   const existing = await pool.query('SELECT 1 FROM public."user" WHERE lower(email) = $1 LIMIT 1', [email]);
   if (existing.rowCount) return false;
@@ -36,7 +36,7 @@ export async function registerBootstrapAdmin(
   const passwordHash = await hashPassword(input.password);
   const userId = randomUUID();
   const accountId = randomUUID();
-  const teamId = randomUUID();
+  const organizationId = randomUUID();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -55,12 +55,12 @@ export async function registerBootstrapAdmin(
       [accountId, userId, userId, passwordHash],
     );
     await client.query(
-      "INSERT INTO collaboration.teams (id, name, created_by, created_at) VALUES ($1::uuid, $2, $3, now())",
-      [teamId, teamName, userId],
+      "INSERT INTO collaboration.organizations (id, name, created_by, created_at) VALUES ($1::uuid, $2, $3, now())",
+      [organizationId, organizationName, userId],
     );
     await client.query(
-      "INSERT INTO collaboration.team_members (team_id, user_id, role, created_at) VALUES ($1::uuid, $2, 'owner', now())",
-      [teamId, userId],
+      "INSERT INTO collaboration.organization_members (organization_id, user_id, role, created_at) VALUES ($1::uuid, $2, 'owner', now())",
+      [organizationId, userId],
     );
     await client.query("COMMIT");
     return true;

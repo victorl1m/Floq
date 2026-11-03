@@ -1,6 +1,6 @@
 export interface UserPreferences {
     version: 1;
-    activeTeamId: string | null;
+    activeOrganizationId: string | null;
     sidebarOpen: boolean;
     taskNavigatorOpen: boolean;
     projectNavExpanded: Record<string, boolean>;
@@ -12,7 +12,7 @@ export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
 
 export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     version: 1,
-    activeTeamId: null,
+    activeOrganizationId: null,
     sidebarOpen: true,
     taskNavigatorOpen: true,
     projectNavExpanded: {},
@@ -42,9 +42,10 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
         const value: unknown = JSON.parse(local.getItem(key) ?? "null");
         if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) return USER_PREFERENCE_DEFAULTS;
         const parsed = value as Partial<UserPreferences>;
+        const legacy = value as { activeTeamId?: unknown }; // pre-rename persisted key
         return {
             version: 1,
-            activeTeamId: typeof parsed.activeTeamId === "string" ? parsed.activeTeamId : null,
+            activeOrganizationId: typeof parsed.activeOrganizationId === "string" ? parsed.activeOrganizationId : typeof legacy.activeTeamId === "string" ? legacy.activeTeamId : null,
             sidebarOpen: typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : true,
             taskNavigatorOpen: typeof parsed.taskNavigatorOpen === "boolean" ? parsed.taskNavigatorOpen : true,
             projectNavExpanded: booleanMap(parsed.projectNavExpanded),

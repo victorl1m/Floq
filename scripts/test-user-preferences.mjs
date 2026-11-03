@@ -10,12 +10,12 @@ globalThis.localStorage = {
 const prefs = await import('../src/lib/user-preferences.ts');
 
 test('preferences stay isolated by runtime and account', () => {
-  prefs.saveUserPreferences('https://one.example', 'user-a', { activeTeamId: 'team-a', sidebarOpen: false });
-  prefs.saveUserPreferences('https://one.example', 'user-b', { activeTeamId: 'team-b' });
-  prefs.saveUserPreferences('https://two.example', 'user-a', { activeTeamId: 'team-c' });
-  assert.equal(prefs.loadUserPreferences('https://one.example', 'user-a').activeTeamId, 'team-a');
-  assert.equal(prefs.loadUserPreferences('https://one.example', 'user-b').activeTeamId, 'team-b');
-  assert.equal(prefs.loadUserPreferences('https://two.example', 'user-a').activeTeamId, 'team-c');
+  prefs.saveUserPreferences('https://one.example', 'user-a', { activeOrganizationId: 'organization-a', sidebarOpen: false });
+  prefs.saveUserPreferences('https://one.example', 'user-b', { activeOrganizationId: 'organization-b' });
+  prefs.saveUserPreferences('https://two.example', 'user-a', { activeOrganizationId: 'organization-c' });
+  assert.equal(prefs.loadUserPreferences('https://one.example', 'user-a').activeOrganizationId, 'organization-a');
+  assert.equal(prefs.loadUserPreferences('https://one.example', 'user-b').activeOrganizationId, 'organization-b');
+  assert.equal(prefs.loadUserPreferences('https://two.example', 'user-a').activeOrganizationId, 'organization-c');
   assert.equal(prefs.loadUserPreferences('https://one.example', 'user-a').sidebarOpen, false);
 });
 
@@ -24,9 +24,9 @@ test('partial patches retain current values even when storage reads and writes f
   globalThis.localStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
   try {
     const first = prefs.saveUserPreferences('https://runtime.example', 'user', { sidebarOpen: false });
-    const second = prefs.saveUserPreferences('https://runtime.example', 'user', { activeTeamId: 'team-1' }, first);
+    const second = prefs.saveUserPreferences('https://runtime.example', 'user', { activeOrganizationId: 'organization-1' }, first);
     assert.equal(second.sidebarOpen, false);
-    assert.equal(second.activeTeamId, 'team-1');
+    assert.equal(second.activeOrganizationId, 'organization-1');
   } finally { globalThis.localStorage = original; }
 });
 
@@ -52,5 +52,5 @@ test('malformed preference JSON falls back to defaults without affecting another
   const key = prefs.userPreferenceKey('https://runtime.example', 'broken-user');
   values.set(key, '{');
   assert.deepEqual(prefs.loadUserPreferences('https://runtime.example', 'broken-user'), prefs.USER_PREFERENCE_DEFAULTS);
-  assert.notEqual(prefs.loadUserPreferences('https://runtime.example', 'broken-user').activeTeamId, 'team-1');
+  assert.notEqual(prefs.loadUserPreferences('https://runtime.example', 'broken-user').activeOrganizationId, 'organization-1');
 });

@@ -8,58 +8,58 @@ datasource db {
   schemas  = ["collaboration"]
 }
 
-model Team {
+model Organization {
   id        String             @id @db.Uuid
   name      String             @db.VarChar(80)
   createdBy String             @map("created_by")
   createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  members   TeamMember[]
-  invites   TeamInvitation[]
+  members   OrganizationMember[]
+  invites   OrganizationInvitation[]
   boards    TaskBoard[]
 
-  @@map("teams")
+  @@map("organizations")
   @@schema("collaboration")
 }
 
-model TeamMember {
-  teamId    String   @map("team_id") @db.Uuid
+model OrganizationMember {
+  organizationId    String   @map("organization_id") @db.Uuid
   userId    String   @map("user_id")
   role      String   @db.VarChar(16)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@id([teamId, userId])
-  @@index([userId, teamId], map: "team_members_user_idx")
-  @@map("team_members")
+  @@id([organizationId, userId])
+  @@index([userId, organizationId], map: "organization_members_user_idx")
+  @@map("organization_members")
   @@schema("collaboration")
 }
 
-model TeamInvitation {
+model OrganizationInvitation {
   id        String   @id @db.Uuid
-  teamId    String   @map("team_id") @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
   email     String   @db.VarChar(254)
   tokenHash String   @unique @map("token_hash") @db.VarChar(64)
   invitedBy String   @map("invited_by")
   expiresAt DateTime @map("expires_at") @db.Timestamptz
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@unique([teamId, email])
-  @@map("team_invitations")
+  @@unique([organizationId, email])
+  @@map("organization_invitations")
   @@schema("collaboration")
 }
 
 model TaskBoard {
   id        String     @id @db.Uuid
-  teamId    String     @map("team_id") @db.Uuid
+  organizationId    String     @map("organization_id") @db.Uuid
   title     String     @db.VarChar(120)
   createdBy String     @map("created_by")
   createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime   @default(now()) @map("updated_at") @db.Timestamptz
-  team      Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   lists     TaskList[]
 
-  @@index([teamId, createdAt(sort: Desc)], map: "task_boards_team_idx")
+  @@index([organizationId, createdAt(sort: Desc)], map: "task_boards_organization_idx")
   @@map("task_boards")
   @@schema("collaboration")
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ComponentType } from "react";
 import {
     IconAdjustmentsAlt,
     IconBrandGithub,
+    IconBuilding,
     IconInfoCircle,
     IconCreditCard,
     IconPalette,
@@ -9,6 +10,7 @@ import {
     IconRobot,
     IconServer,
     IconUser,
+    IconUsers,
 } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -24,8 +26,11 @@ import AccountSection from "./account-section";
 import AgentsSection from "./agents-section";
 import AppearanceSection from "./appearance-section";
 import PerformanceSection from "./performance-section";
+import OrganizationSection from "./organization-section";
 import GitSection from "./git-section";
 import RuntimeSection from "./runtime-section";
+import UsersSection from "./users-section";
+import { useIsAdmin } from "./use-admin";
 
 type Item = { id: string; label: string; icon: ComponentType<{ className?: string }> };
 
@@ -34,7 +39,8 @@ const GROUPS: { title: string; items: Item[] }[] = [
         title: "General",
         items: [
             { id: "account", label: "Account", icon: IconUser },
-            { id: "accounts", label: "Accounts", icon: IconCreditCard },
+            { id: "organization", label: "Organization", icon: IconBuilding },
+            { id: "accounts", label: "LLM Providers", icon: IconCreditCard },
             { id: "appearance", label: "Appearance", icon: IconPalette },
             { id: "performance", label: "Performance", icon: IconGauge },
         ],
@@ -56,11 +62,14 @@ const GROUPS: { title: string; items: Item[] }[] = [
     },
 ];
 
-const ALL = GROUPS.flatMap((g) => g.items);
+const ADMIN_GROUP = { title: "Administration", items: [{ id: "users", label: "Users", icon: IconUsers }] };
 
 export default function SettingsDialog() {
     const { client, settingsOpen, setSettingsOpen, settingsSection, openSettings } = useRuntime();
     const [settings, setSettings] = useState<UserSettings | null>(null);
+    const isAdmin = useIsAdmin();
+    const groups = isAdmin ? [...GROUPS, ADMIN_GROUP] : GROUPS;
+    const ALL = groups.flatMap((g) => g.items);
     const section = ALL.some((i) => i.id === settingsSection) ? settingsSection : "account";
 
     const reload = useCallback(async () => {
@@ -89,15 +98,17 @@ export default function SettingsDialog() {
     else if (section === "appearance") content = <AppearanceSection />;
     else if (section === "performance") content = <PerformanceSection />;
     else if (section === "agents" && settings) content = <AgentsSection settings={settings} onChange={setSettings} />;
+    else if (section === "organization") content = <OrganizationSection />;
     else if (section === "accounts") content = <AccountsSection />;
     else if (section === "git" && settings) content = <GitSection settings={settings} onChange={setSettings} reload={reload} />;
     else if (section === "runtime") content = <RuntimeSection />;
+    else if (section === "users") content = <UsersSection />;
     else if (section === "advanced" && settings) content = <AdvancedSection settings={settings} onChange={setSettings} />;
     else content = <AboutSection />;
 
     return (
         <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="flex h-[min(640px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[900px] max-w-[90vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[900px]">
+        <DialogContent className="flex h-[min(820px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[1120px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1120px]">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">Configure Floq</DialogDescription>
         <div className="flex h-full min-h-0 flex-col md:flex-row">
@@ -118,7 +129,7 @@ export default function SettingsDialog() {
             </div>
 
             <nav aria-label="Settings" className="hidden w-[200px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-border bg-muted/30 p-3 md:flex">
-                {GROUPS.map((group) => (
+                {groups.map((group) => (
                     <div key={group.title} className="flex flex-col gap-0.5">
                         <span className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.title}</span>
                         {group.items.map((item) => (
@@ -143,7 +154,7 @@ export default function SettingsDialog() {
             </nav>
 
             <div className="mt-10 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1 md:mt-10">
-                <div className="mx-auto w-full max-w-[640px] px-8 pt-2 pb-8">{content}</div>
+                <div className="mx-auto w-full max-w-[760px] px-8 pt-2 pb-8">{content}</div>
             </div>
         </div>
         </DialogContent>
