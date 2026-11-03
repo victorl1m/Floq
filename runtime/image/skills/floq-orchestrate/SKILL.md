@@ -71,6 +71,22 @@ floq connect "$BUILDER_UUID" "$REVIEWER_UUID"
 floq dismiss "$BUILDER_UUID"
 ```
 
+## Recruit by role
+
+Floq ships role presets (specifier, planner, implementer, reviewer, tester; no `--role` means a generalist). Before recruiting, compare and read them, then choose provider and model yourself:
+
+```sh
+floq roles                 # one line per role: id, capability hint, read-only/read-write, summary
+floq role reviewer         # full description: when to use / not use, inputs, outputs, handoffs, model advice
+floq models                # accepted model ids per provider
+floq recruit "Spec" --role specifier --provider claude --model opus
+floq recruit "Review" --role reviewer --provider codex --model MODEL_ID --isolated
+```
+
+1. Run `floq roles`, then `floq role ID` for the candidates, and pick the role whose "When to use" fits the job. Chain roles through handoffs: specifier -> planner -> implementer -> reviewer/tester (reviewer and tester may hand back to implementer). Pass file paths from each role's Handoff section into the next role's task.
+2. Choose the model from the role's capability hint (reasoning-heavy: strongest model; code-heavy: strong coding model; fast-cheap: smallest fast model; review-strict: strong model, preferably different from the implementer's) using only ids from `floq models`. A role never fixes a model. `--model auto` lets Floq pick by capability and falls back to the provider default if nothing matches.
+3. `--role ID` applies the preset prompt as the agent's first message; send the concrete task afterwards with `floq ask`. A `--role` value that is not a preset id and contains spaces is the older free-text first message. A read-only role (reviewer) is instructed not to edit; it is not sandboxed.
+
 Agent display names and roles do not choose a model. Check the accepted IDs with `floq models`, then pass the exact ID with `--model`; omitted model means the provider CLI default. `floq list` and `floq recruit` report the configured model selection, which can differ from a later in-terminal model change.
 
 Use `connect` only when sessions need direct reachability; it is a no-op for agents already in the same project and cannot connect across projects. Dismiss only when the worker is no longer needed and doing so is within the user's instructions.

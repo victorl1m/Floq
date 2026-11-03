@@ -118,7 +118,7 @@ interface RuntimeContextValue {
    * A deliberate click on a session (sidebar row or tab). Same as openSession, plus: when the
    * "resume on click" preference is on and the session is asleep, asks its terminal to resume it.
    */
-  activateSession: (session: Pick<SessionSummary, "id" | "provider" | "state"> & Partial<Pick<SessionSummary, "projectId" | "worktreeId" | "cwd">>, area?: "agent" | "terminal") => void;
+  activateSession: (session: Pick<SessionSummary, "id" | "provider" | "state"> & Partial<Pick<SessionSummary, "projectId" | "worktreeId" | "cwd">>, area?: "agent" | "terminal", options?: { resume?: boolean }) => void;
   /** One-shot resume request raised by activateSession; the session's terminal consumes it. */
   resumeRequest: { id: string; seq: number } | null;
   consumeResumeRequest: (seq: number) => void;
@@ -605,6 +605,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         setActiveWorkspaceId(null);
       }
       setOpenedIds((opened) => (opened.includes(session.id) ? opened : [...opened, session.id]));
+      // Opening a session (new, resumed or restored) puts it back in the left sidebar.
+      const hidden = userPreferencesRef.current.hiddenSessionIds;
+      if (hidden[session.id]) {
+        const { [session.id]: _removed, ...rest } = hidden;
+        updateUserPreferences({ hiddenSessionIds: rest });
+      }
       if (targetArea === "terminal") {
         setTerminalTabIds((opened) => opened.includes(session.id) ? opened : [...opened, session.id]);
         setShellId(session.id);
@@ -619,16 +625,16 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         navigate("session", session.id);
       }
     },
-    [navigate, projects],
+    [navigate, projects, updateUserPreferences],
   );
   const [resumeRequest, setResumeRequest] = useState<{ id: string; seq: number } | null>(null);
   const resumeSeq = useRef(0);
   const consumeResumeRequest = useCallback((seq: number) => setResumeRequest((r) => (r && r.seq === seq ? null : r)), []);
   const activateSession = useCallback<RuntimeContextValue["activateSession"]>(
-    (session, area) => {
+    (session, area, options) => {
       openSession(session, area);
-      // Only a sleeping session, and only when the user opted in. Failed/exited sessions are left alone.
-      if (session.state === "sleeping" && loadAutoResumeOnClick()) setResumeRequest({ id: session.id, seq: ++resumeSeq.current });
+      // Only a sleeping session, and only when the user opted in (or the caller restores it explicitly). Failed/exited sessions are left alone.
+      if (session.state === "sleeping" && (options?.resume || loadAutoResumeOnClick())) setResumeRequest({ id: session.id, seq: ++resumeSeq.current });
     },
     [openSession],
   );

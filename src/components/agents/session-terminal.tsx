@@ -6,7 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
-import { IconPlayerPlay, IconPlayerStop, IconMoon, IconSearch, IconChevronUp, IconChevronDown, IconX, IconGitCompare, IconUpload } from "@tabler/icons-react";
+import { IconPlayerPlay, IconSearch, IconChevronUp, IconChevronDown, IconX, IconGitCompare, IconUpload } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import { createPortal } from "react-dom";
 import { cn } from "cn";
 import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { canReadClipboard, copyText, readClipboardText } from "@/lib/clipboard";
+import { canReadClipboard, copyText, readClipboardImagePng, readClipboardText } from "@/lib/clipboard";
 import { parseOsc52 } from "@/lib/osc52";
 
 const MAX_INPUT_CHARS = 20_000;
@@ -77,7 +77,7 @@ import type { ClientFrame, ServerFrame, SessionState, SessionSummary } from "@/l
 import { ProviderIcon, isLive } from "./provider";
 import { resumeHint, sleepReasonText } from "./sleep-copy";
 import { formatDistanceToNowStrict } from "date-fns";
-import ProjectChangesDialog from "./project-changes-dialog";
+import { openRightSidebar } from "@/lib/right-sidebar";
 
 const THEME = {
     background: "#0c0c0e",
@@ -155,13 +155,12 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const [termPrefs] = useTerminalPrefs();
     const [performancePrefs] = usePerformancePrefs();
     const [termReady, setTermReady] = useState(false);
-    const [busy, setBusy] = useState<"resume" | "sleep" | "interrupt" | null>(null);
+    const [busy, setBusy] = useState<"resume" | null>(null);
     const [resumeError, setResumeError] = useState<string | null>(null);
     const resumingRef = useRef(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchText, setSearchText] = useState("");
     const [searchMessage, setSearchMessage] = useState("");
-    const [changesOpen, setChangesOpen] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; name: string } | null>(null);
     const [dropHover, setDropHover] = useState(false);
     canUploadRef.current = Boolean(!embedded && live && termReady && busy === null && active);
@@ -249,10 +248,6 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         }).then((off) => { if (disposed) off(); else unlisten = off; }).catch(() => undefined);
         return () => { disposed = true; unlisten?.(); };
     }, [embedded]);
-
-    useEffect(() => {
-        if (!active) setChangesOpen(false);
-    }, [active]);
 
     function openSearch() {
         setSearchOpen(true);
@@ -359,30 +354,37 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         // Clipboard: Tauri reads/writes without a prompt. In a browser a read would prompt, so paste keys
         // are left alone and the native paste event reaches xterm's textarea.
         const isMac = /Mac|iPhone|iPad/i.test(navigator.platform);
-        // Claude Code and Codex paste a clipboard image with Alt+V (Ctrl+V on macOS), so when Ctrl+V finds
-        // no text on the clipboard we forward Alt+V (ESC v) to those CLIs. Shell terminals are untouched.
-        const imagePasteProvider = () => !isMac && (providerRef.current === "claude" || providerRef.current === "codex");
-        const sendImagePasteKey = () => send({ type: "input", data: "\x1bv" });
+        // Claude Code and Codex read images from the clipboard of the machine they run on, which is the
+        // runtime host, not this one. So an image on the local clipboard is uploaded and its path pasted.
+        const imagePasteProvider = () => providerRef.current === "claude" || providerRef.current === "codex";
+        const uploadClipboardImage = (bytes: Uint8Array) => {
+            uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.png`, bytes }]);
+        };
         const pasteFromClipboard = async () => {
-            const imageKey = imagePasteProvider();
             try {
                 const text = await readClipboardText();
-                if (text) term.paste(text);
-                else if (imageKey) sendImagePasteKey();
+                if (text) { term.paste(text); return; }
             } catch {
-                // An image-only clipboard makes the text read fail; a denied read is indistinguishable.
-                if (imageKey) sendImagePasteKey();
+                // An image-only clipboard can make the text read fail; fall through to the image read.
             }
+            if (!imagePasteProvider()) return;
+            const png = await readClipboardImagePng();
+            if (png) uploadClipboardImage(png);
         };
-        // Browser: the native paste event decides. Image file and no text => Alt+V; otherwise xterm pastes text.
+        // Browser: the native paste event decides. Image file and no text => upload; otherwise xterm pastes text.
         const onPasteCapture = (event: ClipboardEvent) => {
             if (!imagePasteProvider()) return;
             const clip = event.clipboardData;
             if (!clip || clip.getData("text/plain")) return;
-            if (!Array.from(clip.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))) return;
+            const item = Array.from(clip.items ?? []).find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
+            const file = item?.getAsFile();
+            if (!file) return;
             event.preventDefault();
             event.stopPropagation();
-            sendImagePasteKey();
+            void file.arrayBuffer().then((buffer) => {
+                const extension = file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
+                uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.${extension}`, bytes: new Uint8Array(buffer) }]);
+            });
         };
         host.addEventListener("paste", onPasteCapture, true);
         const copySelection = async (text: string): Promise<boolean> => {
@@ -470,23 +472,40 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             }
         };
         host.addEventListener("contextmenu", onContextMenu);
-        const refit = () => {
+        const doFit = () => {
             // Hidden tabs (display: none) have no size; fitting would collapse the terminal.
             if (host.clientWidth === 0 || host.clientHeight === 0) return;
             try {
+                const dims = fit.proposeDimensions();
+                if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+                // Same cell grid: nothing to do (avoids needless reflow/SIGWINCH redraws that shift the viewport).
+                if (dims.cols === term.cols && dims.rows === term.rows) return;
+                const buffer = term.buffer.active;
+                const wasAtBottom = buffer.viewportY >= buffer.baseY;
+                const previousY = buffer.viewportY;
                 fit.fit();
+                // Keep the bottom pinned if the user was there; otherwise keep their scroll position.
+                if (wasAtBottom) term.scrollToBottom();
+                else term.scrollToLine(Math.min(previousY, term.buffer.active.baseY));
             } catch {
                 /* not laid out yet */
             }
+        };
+        // Debounced so dragging the right panel's resize handle refits once the size settles.
+        let refitTimer: ReturnType<typeof setTimeout> | undefined;
+        const refit = () => {
+            clearTimeout(refitTimer);
+            refitTimer = setTimeout(doFit, 80);
         };
 
         const data = term.onData((d) => send({ type: "input", data: d }));
         const resize = term.onResize(({ cols, rows }) => send({ type: "resize", cols, rows }));
         const observer = new ResizeObserver(refit);
         observer.observe(host);
-        refit();
+        doFit();
 
         return () => {
+            clearTimeout(refitTimer);
             observer.disconnect();
             host.removeEventListener("paste", onPasteCapture, true);
             host.removeEventListener("contextmenu", onContextMenu);
@@ -647,30 +666,6 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resumeRequest]);
 
-    async function sleep() {
-        if (!client) return;
-        setBusy("sleep");
-        try {
-            upsertSession(await client.sleepSession(sessionId));
-        } catch (e) {
-            toast.error("Could not sleep", { description: errorMessage(e) });
-        } finally {
-            setBusy(null);
-        }
-    }
-
-    async function interrupt() {
-        if (!client) return;
-        setBusy("interrupt");
-        try {
-            await client.interrupt(sessionId);
-        } catch (e) {
-            toast.error("Could not interrupt", { description: errorMessage(e) });
-        } finally {
-            setBusy(null);
-        }
-    }
-
     if (!session) return null;
 
     const stoppedAgo = session.endedAt && !Number.isNaN(Date.parse(session.endedAt))
@@ -700,40 +695,12 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                                         variant="ghost"
                                         size="icon-sm"
                                         aria-label="Review project changes"
-                                        onClick={() => setChangesOpen(true)}
+                                        onClick={() => openRightSidebar("changes")}
                                     >
                                         <IconGitCompare />
                                     </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>Review project changes</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        aria-label="Interrupt"
-                                        disabled={!live || busy !== null}
-                                        onClick={() => void interrupt()}
-                                    >
-                                        <IconPlayerStop />
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Interrupt (Ctrl+C)</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        aria-label="Sleep"
-                                        disabled={!live || busy !== null}
-                                        onClick={() => void sleep()}
-                                    >
-                                        <IconMoon />
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Sleep</TooltipContent>
                             </Tooltip>
                         </div>
                     </div>,
@@ -883,7 +850,6 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     </div>
                 )}
             </div>
-            {!embedded && <ProjectChangesDialog open={changesOpen} onOpenChange={setChangesOpen} client={client} sessionId={sessionId} sessionTitle={session.title} />}
         </div>
     );
 }

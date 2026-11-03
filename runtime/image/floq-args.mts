@@ -39,6 +39,12 @@ export function formatRecruitment(agent: Pick<AgentEntry, "name" | "id" | "provi
   return "recruited " + agent.name + " " + agent.id + " (" + agent.provider + ", configured model: " + (agent.model ?? "default") + ")";
 }
 
+export interface RoleEntry { id: string; label: string; summary: string; capability: string; readOnly: boolean }
+
+export function formatRoleLine(role: RoleEntry) {
+  return [role.id.padEnd(12), role.capability.padEnd(16), role.readOnly ? "read-only" : "read-write", role.summary].join("  ");
+}
+
 export function formatModel(provider: string, model: ModelEntry) {
   return provider + "\t" + model.id + "\t" + model.label;
 }

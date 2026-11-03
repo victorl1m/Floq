@@ -6,6 +6,12 @@ Status: architecture proposal for automated orchestration. The manual `floq recr
 
 Lead agents can opt in to a separate branch and worktree for a recruited agent with `floq recruit "Builder" --isolated`. The default recruit still shares the lead's working directory. Isolated workers remain in the same logical project for `floq list`, `ask`, `connect`, and `dismiss`. Worktrees start from committed `HEAD`; the source's uncommitted changes are left in place and are not copied. Floq does not commit, push, prune, or remove a worktree when its agent is dismissed. Isolation requires a Git repository in the user's shard.
 
+## Recruiting by role
+
+Role presets (Spec Kit-style phases) live in `runtime/src/roles.ts` and are served at `GET /v1/agent-roles` and `GET /v1/agent-roles/:id`. Built-ins: `specifier`, `planner`, `implementer`, `reviewer` (read-only by instruction), `tester`; no role is a generalist. Each role has a capability hint (`reasoning-heavy`, `code-heavy`, `fast-cheap`, `review-strict`), never a fixed model.
+
+An orchestrator should run `floq roles` to compare, `floq role ID` to read when to use it, its inputs/outputs and handoffs, then `floq models`, and recruit with `floq recruit NAME --role ID --provider P --model M` (`--model auto` picks by capability, else the CLI default). The role prompt is prepended to the agent's first message on a fresh start for both Claude Code and Codex, and the id is stored in `agent_sessions.role` and returned in session listings. Chain: specifier -> planner -> implementer -> reviewer/tester, passing artifact paths from each Handoff section. `--role` text that is not a preset id remains the free-form first message.
+
 ## 1. What we are competing with
 
 [Orca](https://onorca.dev/) (Stably AI, MIT) is a desktop "agent IDE". From its [directory listing](https://landscape.jimmysong.io/projects/orca/) and site: one git worktree per task, one prompt fanned out to several agents and the winner merged, inline diff review, GitHub and Linear task import, SSH to remote machines, a phone companion for notifications and follow-ups, usage and rate-limit display, an embedded browser with a design mode. It is bring-your-own-subscription and runs on the user's machine. (Feature claims are from marketing pages, not verified docs.)

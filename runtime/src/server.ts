@@ -13,6 +13,7 @@ import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized } fr
 import { log } from "./logger.js";
 import type { SessionManager } from "./manager.js";
 import type { GithubLinker } from "./github.js";
+import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles.js";
 import { selectableAgentModels, type Orchestrator } from "./orchestrator.js";
 import type { PatchSecret, PutSecret, Vault } from "./vault.js";
 import { listProviders } from "./providers.js";
@@ -20,11 +21,13 @@ import { IdempotencyCache } from "./idempotency.js";
 import type { SettingsPatch, SettingsStore } from "./settings.js";
 import type { Session } from "./session.js";
 import type { GitReview } from "./gitReview.js";
+import type { WorkspaceFiles } from "./workspaceFiles.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
+import { listSessionPorts, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
 const startedAt = new Date().toISOString();
@@ -46,10 +49,11 @@ interface Deps {
   usage: UsageService;
   skills: SkillsService;
   gitReview: GitReview;
+  workspaceFiles?: WorkspaceFiles;
   tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, tasks }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
@@ -229,6 +233,13 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, {
             models: await selectableAgentModels(config, (id) => manager.codexModels(id), userId, requested as "claude" | "codex" | undefined),
           });
+        }
+        case "agents/roles":
+          return send(res, 200, { roles: listAgentRoles() });
+        case "agents/role": {
+          const role = typeof body.id === "string" ? getAgentRole(body.id) : undefined;
+          if (!role) throw notFound("Unknown role; run `floq roles` for the list (" + AGENT_ROLES.map((r) => r.id).join(", ") + ")");
+          return send(res, 200, { role, text: describeRole(role) });
         }
         case "agents/ask":
           return send(res, 200, await orchestrator.ask(userId, sessionId, body.name, body.prompt, Number(body.timeoutSec) || undefined));
@@ -615,6 +626,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, await manager.deleteWorktree(userId, projectWorkspace[1], projectWorkspace[2], force === "1"));
     }
 
+    if (method === "GET" && url.pathname === "/v1/agent-roles") return send(res, 200, { roles: listAgentRoles() });
+    const roleMatch = /^\/v1\/agent-roles\/([\w-]+)$/.exec(url.pathname);
+    if (method === "GET" && roleMatch) {
+      const role = getAgentRole(roleMatch[1]);
+      if (!role) throw notFound("Unknown role");
+      return send(res, 200, { role, text: describeRole(role) });
+    }
+
     if (url.pathname === "/v1/sessions") {
       if (method === "GET") return send(res, 200, { sessions: await manager.list(userId) });
       if (method === "POST") {
@@ -651,6 +670,18 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (changesMatch && method === "GET") {
       if (changesMatch[2] === "changes") return send(res, 200, await gitReview.changes(userId, changesMatch[1]));
       return send(res, 200, await gitReview.diff(userId, changesMatch[1], url.searchParams.get("path")));
+    }
+
+    const filesMatch = /^\/v1\/sessions\/([\w-]+)\/files(\/content)?$/.exec(url.pathname);
+    if (filesMatch && method === "GET") {
+      if (!workspaceFiles) throw notFound();
+      const path = url.searchParams.get("path");
+      return send(res, 200, filesMatch[2] ? await workspaceFiles.read(userId, filesMatch[1], path) : await workspaceFiles.list(userId, filesMatch[1], path));
+    }
+
+    const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
+    if (portsMatch && method === "GET") {
+      return send(res, 200, { ports: await listSessionPorts(manager.getLive(portsMatch[1], userId).pid) });
     }
 
     const attachmentMatch = /^\/v1\/sessions\/([\w-]+)\/attachments$/.exec(url.pathname);
@@ -764,6 +795,21 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         const members = await tasks.members(userId, organizationId);
         const self = members.find((member) => member.id === userId);
         wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Member"));
+        return;
+      }
+      const tunnel = /^\/v1\/sessions\/([\w-]+)\/ports\/(\d{1,5})\/tunnel$/.exec(url.pathname);
+      if (tunnel) {
+        if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
+        // Same auth as the terminal stream: bearer header, or ?token= where headers cannot be set.
+        const token = url.searchParams.get("token");
+        const headers = { ...req.headers };
+        if (token) headers.authorization = "Bearer " + token;
+        const userId = await userFor(headers);
+        const session = manager.getLive(tunnel[1], userId);
+        // Only ports this session's own processes listen on: no SSRF into the host or other sessions.
+        const target = tunnelTarget(await listSessionPorts(session.pid), Number(tunnel[2]));
+        if (!target) return reject(404, "Not Found");
+        wss.handleUpgrade(req, socket, head, (ws) => { pipeTunnel(ws, target); });
         return;
       }
       const match = SESSION_PATH.exec(url.pathname);

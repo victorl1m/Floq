@@ -1,5 +1,6 @@
 import type {
   AgentLink,
+  AgentRole,
   AuthUser,
   CreateSessionInput,
   DeviceFlow,
@@ -24,6 +25,7 @@ import type {
   LoginProviderId,
   ProvidersStatus,
   ProvidersUsage,
+  SessionPort,
   SessionSummary,
   SettingsPatch,
   UserSettings,
@@ -31,6 +33,7 @@ import type {
   TaskBoard,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
+import type { FileContent, FileListing } from "./workspace-files";
 import type { AdminUser, UpdateResult, UpdatesStatus, UpdateTarget, UserRole } from "./admin-types";
 
 function skillFileParams(skill: { scope: string; projectId?: string | null; provider: string; source: string; location: string }, path?: string): URLSearchParams {
@@ -262,6 +265,7 @@ export class RuntimeClient {
 
   health = () => this.call<{ ok: boolean }>("GET", "/healthz");
   info = () => this.call<RuntimeInfo>("GET", "/v1/info");
+  agentRoles = async () => (await this.call<{ roles: AgentRole[] }>("GET", "/v1/agent-roles")).roles;
 
   // --- administration (admin-only on the server) ---
 
@@ -332,6 +336,23 @@ export class RuntimeClient {
 
   gitDiff = (sessionId: string, path: string) =>
     this.call<GitFileDiff>("GET", `/v1/sessions/${sessionId}/diff?path=${encodeURIComponent(path)}`);
+
+  listFiles = (sessionId: string, path = "") =>
+    this.call<FileListing>("GET", `/v1/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`);
+
+  readFile = (sessionId: string, path: string) =>
+    this.call<FileContent>("GET", `/v1/sessions/${sessionId}/files/content?path=${encodeURIComponent(path)}`);
+
+  sessionPorts = async (sessionId: string) =>
+    (await this.call<{ ports: SessionPort[] }>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/ports`)).ports;
+
+  /** WebSocket URL for one TCP connection to a port the session listens on (one socket per connection). */
+  portTunnelUrl(sessionId: string, port: number): string {
+    const url = new URL(this.baseUrl + `/v1/sessions/${encodeURIComponent(sessionId)}/ports/${port}/tunnel`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (this.token) url.searchParams.set("token", this.token);
+    return url.toString();
+  }
 
   /** Plain input to the PTY (no bracketed paste). */
   async sendInput(id: string, data: string): Promise<void> {

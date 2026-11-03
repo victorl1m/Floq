@@ -36,7 +36,7 @@ test("rename validates title, persists lock, broadcasts state, and keeps Floq ID
     userId: "user-1", provider: "claude", fallback: stored.title, lastNativeTitle: null,
     providerSessionId: id, handle: {}, checkedAt: 0, checking: false,
   }]]);
-  manager.shards = { driver: { homePath: () => home } };
+  manager.shards = { driver: { homePath: () => "/home/agent", hostPath: () => home } };
   manager.pool = { async query(sql, values) {
     updateCount += 1;
     if (sql.includes("title_locked=TRUE")) {
@@ -105,7 +105,7 @@ test("a delayed native-title DB response cannot overwrite a completed manual ren
     userId: "user-1", provider: "claude", fallback: stored.title, lastNativeTitle: null,
     providerSessionId: id, handle: {}, checkedAt: 0, checking: false,
   }]]);
-  manager.shards = { driver: { homePath: () => home } };
+  manager.shards = { driver: { homePath: () => "/home/agent", hostPath: () => home } };
   manager.pool = { async query(sql, values) {
     if (sql.includes("title_locked=FALSE")) {
       // Model the native UPDATE having committed while its result packet is delayed.

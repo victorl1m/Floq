@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../dist/manager.js";
@@ -104,7 +104,7 @@ test("reaper adopts late native titles over the initial prompt and follows a nat
   manager.live = new Map([[id, session]]);
   manager.logins = new Map();
   manager.syncBack = async () => {};
-  manager.shards = { driver: { homePath: () => home, hostPath: (_handle, rel) => join(home, rel) } };
+  manager.shards = { driver: { homePath: () => "/home/agent", hostPath: (_handle, rel) => join(home, rel) } };
   manager.nativeTitleSessions = new Map([[id, {
     userId: "user-1",
     provider: "claude",
@@ -117,7 +117,6 @@ test("reaper adopts late native titles over the initial prompt and follows a nat
   }]]);
   manager.pool = { async query(_sql, values) {
     assert.equal(values[0], id);
-    if (storedTitle !== values[3]) return { rows: [] };
     storedTitle = values[1];
     return { rows: [{ id }] };
   } };
@@ -134,4 +133,73 @@ test("reaper adopts late native titles over the initial prompt and follows a nat
   assert.equal(storedTitle, "Renamed in Claude");
   assert.equal(session.title, "Renamed in Claude");
   t.after(() => rmSync(home, { recursive: true, force: true }));
+});
+
+function fixtureHome(name) {
+  const home = join(tmpdir(), `floq-title-${name}-${process.pid}-${Date.now()}`);
+  const project = join(home, ".claude", "projects", "-work-repo");
+  mkdirSync(project, { recursive: true });
+  return { home, project };
+}
+
+test("Claude title found in the middle of a transcript larger than the old 1MB tail", (t) => {
+  const { home, project } = fixtureHome("big");
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const filler = JSON.stringify({ type: "assistant", text: "x".repeat(4000) });
+  const lines = [JSON.stringify({ type: "ai-title", aiTitle: "Middle title" })];
+  for (let i = 0; i < 700; i += 1) lines.push(filler); // ~2.8MB after the title
+  writeFileSync(join(project, id + ".jsonl"), lines.join("\n") + "\n");
+  assert.equal(readClaudeNativeTitle(home, id), "Middle title");
+  // Incremental: appended records are picked up and the newest wins.
+  appendFileSync(join(project, id + ".jsonl"), JSON.stringify({ type: "ai-title", aiTitle: "Newer title" }) + "\n");
+  assert.equal(readClaudeNativeTitle(home, id), "Newer title");
+  appendFileSync(join(project, id + ".jsonl"), JSON.stringify({ type: "custom-title", customTitle: "Renamed" }) + "\n");
+  assert.equal(readClaudeNativeTitle(home, id), "Renamed");
+});
+
+test("Claude legacy summary records are a lowest-priority fallback", (t) => {
+  const { home, project } = fixtureHome("summary");
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  writeFileSync(join(project, id + ".jsonl"), [
+    JSON.stringify({ type: "summary", summary: "Older summary", leafUuid: "x" }),
+    JSON.stringify({ type: "summary", summary: "Latest summary", leafUuid: "y" }),
+    JSON.stringify({ type: "user", message: "hi" }),
+  ].join("\n") + "\n");
+  assert.equal(readClaudeNativeTitle(home, id), "Latest summary");
+  appendFileSync(join(project, id + ".jsonl"), JSON.stringify({ type: "ai-title", aiTitle: "AI wins" }) + "\n");
+  assert.equal(readClaudeNativeTitle(home, id), "AI wins");
+});
+
+test("Claude duplicate transcripts for one uuid resolve to the newest instead of failing", (t) => {
+  const { home, project } = fixtureHome("dup");
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const other = join(home, ".claude", "projects", "-work-repo-worktree");
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(project, id + ".jsonl"), JSON.stringify({ type: "ai-title", aiTitle: "Old copy" }) + "\n");
+  writeFileSync(join(other, id + ".jsonl"), JSON.stringify({ type: "ai-title", aiTitle: "Live copy" }) + "\n");
+  const past = new Date(Date.now() - 60_000);
+  utimesSync(join(project, id + ".jsonl"), past, past);
+  assert.equal(readClaudeNativeTitle(home, id), "Live copy");
+});
+
+test("native title replaces a stale in-memory fallback but never a locked title", async () => {
+  const { home, project } = fixtureHome("stale");
+  writeFileSync(join(project, id + ".jsonl"), JSON.stringify({ type: "ai-title", aiTitle: "Native title" }) + "\n");
+  let locked = false;
+  let stored = "Claude Code (renamed by a role flow)";
+  const session = { id, title: stored, setTitle(title) { this.title = title; } };
+  const manager = Object.create(SessionManager.prototype);
+  manager.live = new Map([[id, session]]);
+  manager.shards = { driver: { homePath: () => "/home/agent", hostPath: () => home } };
+  manager.nativeTitleSessions = new Map([[id, { userId: "u", provider: "claude", fallback: "Claude Code", lastNativeTitle: null, providerSessionId: id, handle: {}, checkedAt: 0, checking: false }]]);
+  manager.pool = { async query(sql, values) {
+    assert.ok(sql.includes("title_locked=FALSE"));
+    if (locked) return { rows: [] };
+    stored = values[1];
+    return { rows: [{ id }] };
+  } };
+  await manager.updateNativeTitle(id, true);
+  assert.equal(stored, "Native title");
+  assert.equal(session.title, "Native title");
+  rmSync(home, { recursive: true, force: true });
 });

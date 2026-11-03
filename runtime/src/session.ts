@@ -28,6 +28,7 @@ export interface SessionOptions {
   createdAt?: number;
   resumeCount?: number;
   model?: string | null;
+  role?: string | null;
 }
 
 export class Session {
@@ -44,6 +45,7 @@ export class Session {
   readonly createdAt: number;
   readonly resumeCount: number;
   readonly model: string | null;
+  readonly role: string | null;
 
   private _state: SessionState = "starting";
   private _cols: number;
@@ -84,6 +86,7 @@ export class Session {
     this.worktreeId = options.worktreeId ?? null;
     this.branch = options.branch ?? null;
     this.gitUrl = options.gitUrl ?? null;
+    this.role = options.role ?? null;
     this._cols = options.cols;
     this._rows = options.rows;
     this.outputBufferBytes = options.outputBufferBytes;
@@ -315,6 +318,7 @@ export class Session {
       resumeCount: this.resumeCount,
       sleepReason: null,
       model: this.model,
+      role: this.role,
     };
   }
 }

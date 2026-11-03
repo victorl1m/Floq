@@ -80,7 +80,7 @@ function StateDot({ state }: { state: SessionState }) {
 type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, activeProjectId, activeWorkspaceId, view, openSession, activateSession, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
+  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, activeProjectId, activeWorkspaceId, view, openSession, activateSession, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   const projectMeta = useCanonicalProjectMeta(scope);
@@ -259,7 +259,7 @@ export default function CanonicalProjectList() {
 
   function renderAgent(session: SessionSummary) {
     return <SidebarMenuSubItem key={session.id} className="group/agent-row relative">
-      <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}`} isActive={session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
+      <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
         <StateDot state={session.state} /><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>
       </SidebarMenuButton>
       <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1 text-muted-foreground md:opacity-0 md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
@@ -297,7 +297,7 @@ export default function CanonicalProjectList() {
         <CollapsibleContent>
           <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-2 pr-0">
             {workspaces.map((workspace) => {
-              const agents = sessionsForWorkspace(project.id, workspace, sessions).filter((session) => session.provider !== "shell");
+              const agents = sessionsForWorkspace(project.id, workspace, sessions).filter((session) => session.provider !== "shell" && (!userPreferences.hiddenSessionIds[session.id] || isLive(session.state) || openedIds.includes(session.id)));
               const label = workspace.branch || workspace.name || "Main";
               const workspaceKey = `${project.id}:${workspace.id}`;
               const workspaceExpanded = userPreferences.workspaceNavExpanded[workspaceKey] ?? true;

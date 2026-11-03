@@ -21,6 +21,7 @@ import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { readClaudeNativeTitle, readCodexNativeTitle } from "./nativeTitle.js";
+import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
@@ -83,6 +84,7 @@ interface Row {
   title_locked: boolean;
   lead: boolean;
   model: string | null;
+  role?: string | null;
 }
 
 function summaryFromRow(row: Row): SessionSummary {
@@ -111,6 +113,7 @@ function summaryFromRow(row: Row): SessionSummary {
     resumeCount: row.resume_count,
     sleepReason: row.sleep_reason,
     model: row.model ?? null,
+    role: row.role ?? null,
   };
 }
 
@@ -1044,6 +1047,7 @@ export class SessionManager {
       createdAt: row.created_at.getTime(),
       resumeCount,
       model: row.model ?? null,
+      role: row.role ?? null,
     });
     this.live.set(row.id, session);
     if (row.provider === "claude" || row.provider === "codex") {
@@ -1074,6 +1078,7 @@ export class SessionManager {
       [row.id, resumeCount],
     );
     void this.updateNativeTitle(row.id);
+    if (row.provider === "claude" || row.provider === "codex") this.pollNativeTitleSoon(row.id);
     if (row.provider === "codex" && !providerId) this.pollCodexId(row.id, handle);
     return session;
   }
@@ -1089,6 +1094,21 @@ export class SessionManager {
     return true;
   }
 
+  /** A fresh session gets its native title shortly after the first reply: poll quickly for a minute, then reap() takes over. */
+  private pollNativeTitleSoon(id: string): void {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      if (!this.nativeTitleSessions.has(id) || Date.now() - startedAt > 60_000) return clearInterval(timer);
+      void this.updateNativeTitle(id, true);
+    }, 3_000);
+    timer.unref();
+  }
+
+  /** Host-side path of the user's home. driver.homePath() is the sandbox view (/home/agent) and does not exist on the host. */
+  private hostHome(handle: ShardHandle): string {
+    return this.shards.driver.hostPath(handle, ".");
+  }
+
   private async updateNativeTitle(id: string, force = false): Promise<void> {
     const now = Date.now();
     const state = this.nativeTitleSessions.get(id);
@@ -1097,15 +1117,17 @@ export class SessionManager {
     state.checking = true;
     try {
       const title = state.provider === "claude"
-        ? readClaudeNativeTitle(this.shards.driver.homePath(state.handle), id)
+        ? readClaudeNativeTitle(this.hostHome(state.handle), id)
         : state.providerSessionId
-          ? readCodexNativeTitle(this.shards.driver.homePath(state.handle), this.shards.driver.hostPath(state.handle, codexHomeRel(id)), state.providerSessionId)
+          ? readCodexNativeTitle(this.hostHome(state.handle), this.shards.driver.hostPath(state.handle, codexHomeRel(id)), state.providerSessionId)
           : null;
       const previousTitle = state.lastNativeTitle ?? state.fallback;
       if (!title || title === previousTitle) return;
       const updated = await this.pool.query(
-        "UPDATE agent_sessions SET title=$2 WHERE id=$1 AND user_id=$3 AND title=$4 AND title_locked=FALSE RETURNING id",
-        [id, title, state.userId, previousTitle],
+        // No `title = previous` guard: a stale in-memory fallback (restart, role/preset flows) used to make the
+        // update match nothing and silently end title sync. Only a manual rename (title_locked) is protected.
+        "UPDATE agent_sessions SET title=$2 WHERE id=$1 AND user_id=$3 AND title_locked=FALSE RETURNING id",
+        [id, title, state.userId],
       );
       // A manual rename may have completed while this native metadata write was waiting on the DB.
       if (this.nativeTitleSessions.get(id) !== state) return;
@@ -1195,7 +1217,12 @@ export class SessionManager {
     const codexModels = input.provider === "codex" && typeof input.model === "string" && input.model
       ? await this.codexModels(userId)
       : undefined;
-    const model = resolveModel(this.config, input.provider, input.model, codexModels);
+    const requestedRole = parseRoleId(input.role);
+    // model "auto" = let the role's capability hint choose from the configured list (CLI default when nothing fits).
+    const requestedModel = input.model === "auto"
+      ? (requestedRole ? pickModelForCapability(requestedRole.capability, codexModels ?? (input.provider === "shell" ? [] : this.config.models[input.provider])) : null)
+      : input.model;
+    const model = resolveModel(this.config, input.provider, requestedModel, codexModels);
     if (model === "invalid") {
       const available = input.provider === "shell" ? "" : (codexModels ?? this.config.models[input.provider]).map((entry) => entry.id).join(", ");
       throw badRequest("model is not available for this provider; configured model ids: default" + (available ? ", " + available : ""), "invalid_model");
@@ -1207,6 +1234,10 @@ export class SessionManager {
       }
       prompt = input.prompt.trim();
     }
+    const role = requestedRole;
+    if (role && input.provider === "shell") throw badRequest("role is not supported for shell sessions", "invalid_role");
+    // The role prompt rides in the first message (fresh start only); the provider conversation keeps it on resume.
+    prompt = composeRolePrompt(role, prompt);
     const releaseCapacity = this.capacityReservations.reserve(userId, this.activeCountFor(userId), this.config.maxSessions);
     if (!releaseCapacity) throw tooMany("Session limit reached (" + this.config.maxSessions + ")");
     try {
@@ -1324,9 +1355,9 @@ export class SessionManager {
     const title = input.title?.trim().slice(0, 120) || definition.label;
 
     const inserted = await this.pool.query(
-      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch)
-       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch],
+      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch, role)
+       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null],
     );
     try {
       const session = await this.launch(inserted.rows[0] as Row, profile, handle, false, prompt);

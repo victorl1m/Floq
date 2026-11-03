@@ -9,7 +9,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
+import type { AgentRole, CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import ModelSelect, { normalizeModels } from "./model-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { loadComposerPrefs } from "@/lib/prefs";
@@ -28,6 +29,8 @@ export default function NewAgentDialog() {
     const [title, setTitle] = useState("");
     const [cloneOpen, setCloneOpen] = useState(false);
     const [isolated, setIsolated] = useState(false);
+    const [roles, setRoles] = useState<AgentRole[]>([]);
+    const [role, setRole] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [setupOpen, setSetupOpen] = useState(false);
@@ -49,6 +52,11 @@ export default function NewAgentDialog() {
     useEffect(() => {
         if (newAgentOpen) setIsolated(false);
     }, [newAgentOpen]);
+
+    useEffect(() => {
+        if (!newAgentOpen || !client || roles.length > 0) return;
+        client.agentRoles().then(setRoles).catch(() => undefined); // Older runtimes: no role picker.
+    }, [newAgentOpen, client, roles.length]);
 
     function reset() {
         setTitle("");
@@ -72,7 +80,10 @@ export default function NewAgentDialog() {
         if (isolated) input.isolated = true;
         input.specKit = true;
         input.lead = true;
+        // With a role and no explicit model, the runtime picks one from the role's capability hint.
         if (model) input.model = model;
+        else if (role) input.model = "auto";
+        if (role) input.role = role;
         setBusy(true);
         setError(null);
         try {
@@ -171,6 +182,19 @@ export default function NewAgentDialog() {
                             disabled={busy}
                             onChange={(value) => setModelByProvider({ ...modelByProvider, [provider]: value })}
                         />
+                    </div>
+                )}
+
+                {roles.length > 0 && usable.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                        <Label htmlFor="agent-role">Role</Label>
+                        <NativeSelect id="agent-role" className="w-full" value={role} disabled={busy} onChange={(event) => setRole(event.target.value)}>
+                            <NativeSelectOption value="">Generalist</NativeSelectOption>
+                            {roles.map((r) => (
+                                <NativeSelectOption key={r.id} value={r.id}>{r.label} - {r.summary}</NativeSelectOption>
+                            ))}
+                        </NativeSelect>
+                        {role && !model && <p className="text-xs text-muted-foreground">Model: Auto, chosen for this role ({roles.find((r) => r.id === role)?.capability}).</p>}
                     </div>
                 )}
 

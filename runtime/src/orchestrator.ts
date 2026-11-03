@@ -4,6 +4,7 @@ import { HttpError, badRequest, conflict, notFound } from "./errors.js";
 import { safeRelative } from "./shard.js";
 import type { SessionManager } from "./manager.js";
 import type { SettingsStore } from "./settings.js";
+import { getAgentRole, GENERALIST_ID } from "./roles.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -250,6 +251,12 @@ export class Orchestrator {
     if ((await this.rows(userId)).some((r) => r.title.toLowerCase() === name.toLowerCase())) throw conflict('An agent named "' + name + '" already exists');
     const provider = input.provider === "codex" ? "codex" : "claude";
     if (input.model !== undefined && typeof input.model !== "string") throw badRequest("model must be a configured model id");
+    // `--role` is a preset id (see `floq roles`); any other value is the older free-text brief typed into the terminal.
+    const roleText = typeof input.role === "string" ? input.role.trim() : "";
+    if (roleText && /^[a-z][a-z0-9-]*$/.test(roleText) && roleText !== GENERALIST_ID && !getAgentRole(roleText) && roleText.length <= 20) {
+      throw badRequest("Unknown role \"" + roleText + "\"; run `floq roles` to list presets", "invalid_role");
+    }
+    const rolePreset = roleText && (roleText === GENERALIST_ID || getAgentRole(roleText)) ? roleText : undefined;
     // New agents join the lead's project: same cwd unless an equivalent path inside it is given.
     const requestedCwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd.trim() : undefined;
     let cwd = requestedCwd ?? me.cwd;
@@ -278,6 +285,7 @@ export class Orchestrator {
     const created: SessionSummary = await this.manager.create(userId, await this.settings.profile(userId), {
       provider,
       model: input.model as string | undefined,
+      role: rolePreset,
       title: name,
       cwd: cwd ?? undefined,
       projectId: me.project_id ?? undefined,
@@ -287,7 +295,9 @@ export class Orchestrator {
       projectGitUrl: me.git_url,
       isolated: input.isolated === true,
     });
-    if (typeof input.role === "string" && input.role.trim()) {
+    if (rolePreset !== undefined) {
+      // Preset roles are injected into the first message by SessionManager.create.
+    } else if (typeof input.role === "string" && input.role.trim()) {
       const live = this.manager.findLive(created.id, userId);
       const role = input.role.replace(/\r?\n/g, " ").trim().slice(0, 4000);
       setTimeout(() => {
