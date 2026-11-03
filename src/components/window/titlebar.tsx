@@ -6,13 +6,14 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { IconArrowLeft, IconArrowRight, IconCopy, IconMinus, IconSquare, IconX } from "@tabler/icons-react";
+import { IconArrowLeft, IconArrowRight, IconCopy, IconLayoutSidebarRight, IconMinus, IconSquare, IconX } from "@tabler/icons-react";
 import { cn } from "cn";
 import { setTitlebarSlot } from "@/lib/titlebar-slot";
 import { SidebarTrigger, useSidebar } from "../ui/sidebar";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
 import { Button } from "@/components/ui/button"
 import { useRuntime } from "@/lib/runtime/store";
+import { toggleRightSidebar, useRightSidebar } from "@/lib/right-sidebar";
 
 
 const appWindow = isTauri() ? getCurrentWindow() : null;
@@ -46,7 +47,8 @@ function TitlebarButton({
 
 export default function Titlebar() {
     const [isMaximized, setIsMaximized] = useState(false);
-    const { user, canGoBack, canGoForward, goBack, goForward } = useRuntime();
+    const { user, view, canGoBack, canGoForward, goBack, goForward } = useRuntime();
+    const rightSidebar = useRightSidebar();
     const { open: sidebarOpen, isMobile } = useSidebar();
     const sidebarUsesTitlebarWidth = sidebarOpen && !isMobile;
     const auth = !user;
@@ -120,6 +122,12 @@ export default function Titlebar() {
 
             {/* Views portal tabs/toolbars here; the empty remainder stays draggable. */}
             {!auth && <div ref={setTitlebarSlot} data-tauri-drag-region className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-hidden px-1" />}
+
+            {!auth && (view === "session" || view === "terminal") && (
+                <Button variant="ghost" size="icon-sm" className="mr-1 shrink-0" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>
+                    <IconLayoutSidebarRight />
+                </Button>
+            )}
 
             <div className="flex h-full items-stretch">
                 <TitlebarButton

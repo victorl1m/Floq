@@ -3,7 +3,9 @@ import { join, relative, resolve, sep } from "node:path";
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_CLAUDE_TREE_ENTRIES = 10_000;
-const MAX_TITLE_RECORD_BYTES = 1024 * 1024;
+const TITLE_CHUNK_BYTES = 1024 * 1024;
+const MAX_TITLE_SCAN_BYTES = 64 * 1024 * 1024;
+const MAX_TITLE_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_CODEX_INDEX_BYTES = 256 * 1024;
 const MAX_CODEX_INDEX_LINES = 2_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,21 +35,6 @@ function safeOpen(path: string, maxBytes: number): { fd: number; size: number } 
   }
 }
 
-function readTail(path: string, maxBytes: number): string | null {
-  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER);
-  if (!opened) return null;
-  try {
-    const count = Math.min(opened.size, maxBytes);
-    const bytes = Buffer.allocUnsafe(count);
-    const read = readSync(opened.fd, bytes, 0, count, opened.size - count);
-    return bytes.subarray(0, read).toString("utf8");
-  } catch {
-    return null;
-  } finally {
-    closeSync(opened.fd);
-  }
-}
-
 function isSafeDirectory(path: string): boolean {
   try {
     const stat = lstatSync(path);
@@ -71,46 +58,115 @@ function findClaudeTranscript(home: string, id: string): string | null {
   }
   const stack: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
   let visited = 0;
-  let found: string | null = null;
-  while (stack.length) {
+  const matches: string[] = [];
+  walk: while (stack.length) {
     const next = stack.pop()!;
     let entries;
     try { entries = readdirSync(next.path, { withFileTypes: true }); }
     catch { continue; }
     for (const entry of entries) {
-      if (++visited > MAX_CLAUDE_TREE_ENTRIES) return null;
+      // Budget exhausted: use what was found so far rather than giving up on the title entirely.
+      if (++visited > MAX_CLAUDE_TREE_ENTRIES) break walk;
       const candidate = join(next.path, entry.name);
       if (!resolve(candidate).startsWith(confinedRoot)) continue;
       if (entry.isDirectory() && next.depth < 8) stack.push({ path: candidate, depth: next.depth + 1 });
-      else if (entry.isFile() && entry.name === id + ".jsonl") {
-        if (found) return null;
-        found = candidate;
-      }
+      else if (entry.isFile() && entry.name === id + ".jsonl") matches.push(candidate);
     }
   }
-  if (found) {
+  if (!matches.length) return null;
+  // Several project folders can hold the same uuid (resumed or moved worktrees); the most recently written one is live.
+  let found = matches[0]!;
+  if (matches.length > 1) {
+    let newest = -1;
+    for (const candidate of matches) {
+      try {
+        const stat = lstatSync(candidate);
+        if (stat.isSymbolicLink()) continue;
+        if (stat.mtimeMs > newest) { newest = stat.mtimeMs; found = candidate; }
+      } catch { /* vanished */ }
+    }
+  } else {
     if (claudeTranscripts.size >= 1_000) claudeTranscripts.delete(claudeTranscripts.keys().next().value!);
     claudeTranscripts.set(cacheKey, found);
   }
   return found;
 }
 
-function titleFromRecordText(text: string, type: "custom-title" | "ai-title"): string | null {
-  const field = type === "custom-title" ? "customTitle" : "aiTitle";
-  const lines = text.split(/\r?\n/).reverse();
-  for (const line of lines) {
-    if (!line.includes(`"type":"${type}"`) && !line.includes(`"type": "${type}"`)) continue;
-    try {
-      const record: unknown = JSON.parse(line);
-      if (record && typeof record === "object" && "type" in record && record.type === type && field in record) {
-        const title = cleanTitle((record as Record<string, unknown>)[field]);
-        if (title) return title;
-      }
-    } catch {
-      // Ignore incomplete or malformed CLI records.
+interface TitleScan { custom: string | null; ai: string | null; summary: string | null }
+const TITLE_TYPE = /"type"\s*:\s*"(custom-title|ai-title|summary)"/;
+const TITLE_FIELD = { "custom-title": "customTitle", "ai-title": "aiTitle", summary: "summary" } as const;
+
+function scanLine(line: string, into: TitleScan): void {
+  const match = TITLE_TYPE.exec(line);
+  if (!match) return;
+  const type = match[1] as keyof typeof TITLE_FIELD;
+  const slot = type === "custom-title" ? "custom" : type === "ai-title" ? "ai" : "summary";
+  if (into[slot]) return; // scanning newest-first: the first hit wins
+  try {
+    const record: unknown = JSON.parse(line);
+    if (record && typeof record === "object" && (record as Record<string, unknown>).type === type) {
+      into[slot] = cleanTitle((record as Record<string, unknown>)[TITLE_FIELD[type]]);
     }
+  } catch {
+    // Ignore incomplete or malformed CLI records.
   }
-  return null;
+}
+
+/** Scan [start,end) newest-first in bounded chunks. Lines cut by the range start are dropped unless `aligned`. */
+function scanRange(fd: number, start: number, end: number, aligned: boolean, into: TitleScan): void {
+  let pos = end;
+  let carry: Buffer = Buffer.alloc(0);
+  while (pos > start && !into.custom) {
+    const count = Math.min(TITLE_CHUNK_BYTES, pos - start);
+    const chunk = Buffer.allocUnsafe(count);
+    const read = readSync(fd, chunk, 0, count, pos - count);
+    if (read <= 0) return;
+    pos -= count;
+    let buf = Buffer.concat([chunk.subarray(0, read), carry]);
+    const atStart = pos <= start;
+    const firstNewline = buf.indexOf(0x0a);
+    if (atStart && aligned) carry = Buffer.alloc(0);
+    else if (firstNewline === -1) { carry = buf.length > MAX_TITLE_LINE_BYTES ? Buffer.alloc(0) : buf; continue; }
+    else { carry = buf.subarray(0, firstNewline); buf = buf.subarray(firstNewline + 1); }
+    if (carry.length > MAX_TITLE_LINE_BYTES) carry = Buffer.alloc(0);
+    for (const line of buf.toString("utf8").split(/\r?\n/).reverse()) scanLine(line, into);
+  }
+}
+
+const claudeTitleCache = new Map<string, { size: number; scan: TitleScan }>();
+
+function scanTranscript(transcript: string): TitleScan | null {
+  const opened = safeOpen(transcript, Number.MAX_SAFE_INTEGER);
+  if (!opened) return null;
+  try {
+    const key = resolve(transcript);
+    const cached = claudeTitleCache.get(key);
+    if (cached && cached.size === opened.size) return cached.scan;
+    const merged: TitleScan = { custom: null, ai: null, summary: null };
+    const grown = cached && cached.size < opened.size;
+    // Only bytes appended since the last scan need reading; a rewritten (smaller) file is rescanned.
+    const from = grown ? cached.size : Math.max(0, opened.size - MAX_TITLE_SCAN_BYTES);
+    scanRange(opened.fd, from, opened.size, from === 0 || grown === true, merged);
+    if (grown) {
+      for (const slot of ["custom", "ai", "summary"] as const) merged[slot] ??= cached.scan[slot];
+    } else if (from > 0 && !merged.custom) {
+      // Very large transcript: the title can also sit in the first part of the file.
+      const head: TitleScan = { custom: null, ai: null, summary: null };
+      scanRange(opened.fd, 0, Math.min(from, TITLE_CHUNK_BYTES), true, head);
+      for (const slot of ["custom", "ai", "summary"] as const) merged[slot] ??= head[slot];
+    }
+    if (claudeTitleCache.size >= 1_000) claudeTitleCache.delete(claudeTitleCache.keys().next().value!);
+    // Only resume incrementally from a clean line boundary; a half-written last record is rescanned next time.
+    const last = Buffer.alloc(1);
+    const endsClean = opened.size > 0 && readSync(opened.fd, last, 0, 1, opened.size - 1) === 1 && last[0] === 0x0a;
+    if (endsClean) claudeTitleCache.set(key, { size: opened.size, scan: merged });
+    else claudeTitleCache.delete(key);
+    return merged;
+  } catch {
+    return null;
+  } finally {
+    closeSync(opened.fd);
+  }
 }
 
 /** Read only native title records for the exact Claude session UUID. */
@@ -142,9 +198,10 @@ export function readClaudeNativeTitle(home: string, id: string): string | null {
       } finally { closeSync(opened.fd); }
     }
   } catch { /* optional sidecar is missing or outside the checked projects tree */ }
-  const text = readTail(transcript, MAX_TITLE_RECORD_BYTES);
-  if (!text) return null;
-  return titleFromRecordText(text, "custom-title") ?? titleFromRecordText(text, "ai-title");
+  const scan = scanTranscript(transcript);
+  if (!scan) return null;
+  // `summary` records are the legacy (pre ai-title) Claude Code format; lowest priority.
+  return scan.custom ?? scan.ai ?? scan.summary;
 }
 
 function safeDirectoryWithin(root: string, target: string): boolean {

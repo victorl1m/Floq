@@ -6,6 +6,8 @@ export interface UserPreferences {
     projectNavExpanded: Record<string, boolean>;
     workspaceNavExpanded: Record<string, boolean>;
     folderNavExpanded: Record<string, boolean>;
+    /** Sessions whose tab was closed: hidden from the left sidebar, still listed under Conversations. */
+    hiddenSessionIds: Record<string, boolean>;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
@@ -18,6 +20,7 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     projectNavExpanded: {},
     workspaceNavExpanded: {},
     folderNavExpanded: {},
+    hiddenSessionIds: {},
 };
 
 function booleanMap(value: unknown): Record<string, boolean> {
@@ -51,6 +54,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             projectNavExpanded: booleanMap(parsed.projectNavExpanded),
             workspaceNavExpanded: booleanMap(parsed.workspaceNavExpanded),
             folderNavExpanded: booleanMap(parsed.folderNavExpanded),
+            hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
 }

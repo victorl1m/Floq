@@ -31,6 +31,18 @@ export interface SessionSummary {
   resumeCount: number;
   sleepReason: string | null;
   model?: string | null;
+  /** Agent role preset id, or null/absent for a generalist. */
+  role?: string | null;
+}
+
+export interface AgentRole {
+  id: string;
+  label: string;
+  summary: string;
+  icon: string;
+  capability: string;
+  readOnly: boolean;
+  whenToUse: string;
 }
 
 export interface ProjectWorkspace {
@@ -174,7 +186,10 @@ export interface CreateSessionInput {
   gitUrl?: string;
   specKit?: boolean;
   lead?: boolean;
+  /** Model id, or "auto" to let the role's capability choose. */
   model?: string;
+  /** Agent role preset id from /v1/agent-roles. */
+  role?: string;
   /** Initial prompt passed to the CLI at launch. */
   prompt?: string;
   cols?: number;
@@ -302,3 +317,9 @@ export interface ProviderUsage {
 }
 
 export type ProvidersUsage = Record<LoginProviderId, ProviderUsage | null>;
+
+/** A TCP port a session's processes are listening on (runtime host side). */
+export interface SessionPort {
+  port: number;
+  address: string;
+}

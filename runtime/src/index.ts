@@ -15,6 +15,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { Vault } from "./vault.js";
 import { SkillsService } from "./skills.js";
 import { GitReview } from "./gitReview.js";
+import { WorkspaceFiles } from "./workspaceFiles.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { TasksService } from "./tasks.js";
@@ -47,8 +48,9 @@ credentials.start();
 const usage = new UsageService(credentials);
 const orchestrator = new Orchestrator(pool, manager, settings);
 const gitReview = new GitReview(manager, shards);
+const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, tasks });
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
 
 await server.listen();
 log.info("runtime.listening", {

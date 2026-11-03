@@ -59,6 +59,8 @@ export default function TerminalPanel() {
         activeWorkspaceId,
         selectProject,
         createProject,
+        userPreferences,
+        updateUserPreferences,
     } = useRuntime();
 
     const shells = sessions.filter((s) => s.provider === "shell");
@@ -101,11 +103,17 @@ export default function TerminalPanel() {
         const session = sessions.find((item) => item.id === id);
         return session && session.provider === "shell" ? [session] : [];
     });
-    // The project strip shows agents and terminals together.
+    // The project strip shows agents and terminals together, for the whole project: every workspace and
+    // worktree of the selected session's project, so moving between them never swaps the strip.
+    const selectedSession = sessions.find((item) => item.id === selectedId);
+    const tabProjectId = selectedSession ? selectedSession.projectId ?? null : activeProjectId;
     const agentTabs = agentTabIds.flatMap((id) => {
         const session = sessions.find((item) => item.id === id);
-        return session ? [session] : [];
+        return session && (session.projectId ?? null) === tabProjectId ? [session] : [];
     });
+    // Label tabs with their workspace/branch only when the strip mixes several.
+    const tabBranches = new Set(agentTabs.map((session) => session.worktreeId ?? session.cwd));
+    const tabBranchLabel = (session: SessionSummary) => tabBranches.size > 1 ? session.branch || session.cwd.split("/").filter(Boolean).pop() || null : null;
 
     // Entering the Terminal view reopens an existing terminal before creating anything new.
     const wasTerminal = useRef(false);
@@ -170,6 +178,15 @@ export default function TerminalPanel() {
             }
         }
         closeTab(session.id, area);
+        if (session.provider !== "shell") {
+            // The conversation lives on under the right sidebar's Conversations tab; drop it from the left sidebar.
+            updateUserPreferences({ hiddenSessionIds: { ...userPreferences.hiddenSessionIds, [session.id]: true } });
+        }
+        // Stay inside the project: fall back to a neighbouring tab of the same project when the focused tab closed.
+        if (area === "agent" && view === "session" && session.id === selectedId) {
+            const next = agentTabs.filter((item) => item.id !== session.id).pop();
+            if (next) openSession(next, "agent");
+        }
     }
 
     const isActive = (id: string) => {
@@ -318,6 +335,7 @@ export default function TerminalPanel() {
                                 <button type="button" className="max-w-40 truncate" title={[project?.displayName || project?.name, session.branch, session.title].filter(Boolean).join(" · ")} onClick={() => activateSession(session, "agent")}>
                                     {session.title}
                                 </button>
+                                {tabBranchLabel(session) && <span className="max-w-24 truncate text-[10px] text-muted-foreground/70">{tabBranchLabel(session)}</span>}
                                 <button
                                     type="button"
                                     aria-label={session.provider === "shell" ? `Stop terminal ${session.title}` : `Close tab ${session.title}`}

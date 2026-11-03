@@ -5,14 +5,14 @@
 //   floq ask <UUID|Name> "prompt" [--timeout S] send a message to another agent and wait for its reply
 //   floq check <UUID|Name> [--chars N]          read another agent's recent terminal output
 //   floq note list | read N | write N TEXT | append N TEXT
-//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role TEXT] [--isolated]   (lead agents only)
+//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (lead agents only)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
 //   floq skills list|search|preview|add|create|remove   find, install and author skills (add/create/remove: lead agents only)
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
 import { readFileSync } from "node:fs";
-import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
+import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 type SkillResponse = { skill: { source: string; skillId: string; name: string; provider: string; location: string; description: string }; files: { path: string; size: number }[]; markdown?: string; dryRun?: boolean; scope?: string; projectId?: string };
@@ -24,9 +24,11 @@ Commands:
   floq list
   floq session restart                   restart this agent to reload its current configuration
   floq models [--provider claude|codex]
+  floq roles                             one line per agent role preset (compare, then pick)
+  floq role ID                           full description of a role: when to use, handoffs, model advice
   floq ask <UUID|Name> "prompt" [--timeout SECONDS]
   floq check <UUID|Name> [--chars N]
-  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role TEXT] [--isolated]
+  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
@@ -47,7 +49,7 @@ Commands:
 Use immutable Floq UUIDs printed by list/recruit for agent references. Names are accepted
 for compatibility, but duplicate names are ambiguous. --isolated recruits into a managed
 Git worktree in a registered Git project; --cwd selects an allowed directory in this project.
-Check models with "floq models" before recruiting with --model. The name/role do not select a model.
+Check models with "floq models" before recruiting with --model. The name/role do not select a model: read "floq roles" / "floq role ID", then choose a provider and a --model matching the role's capability. --role ID applies a preset prompt; other --role text is a free-form first message.
 Recruit/connect/dismiss require a lead session and user authorization.
 
 Skills, MCP servers and secrets: list/search/preview and "mcp add --dry-run" work in any agent session. Installing or removing
@@ -143,7 +145,7 @@ const usage = (): never => {
 };
 
 const allowedOptions: Record<string, string[]> = {
-  list: [], models: ["provider"], ask: ["timeout"], check: ["chars"],
+  list: [], roles: [], role: [], models: ["provider"], ask: ["timeout"], check: ["chars"],
   session: [],
   recruit: ["provider", "model", "cwd", "role", "isolated"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
@@ -183,6 +185,17 @@ switch (command) {
     if (providers.some((provider) => provider !== "claude" && provider !== "codex")) usage();
     const { models } = await call<{ models: Record<string, ModelEntry[]> }>("agents/models", { provider: requestedProvider });
     for (const provider of providers) for (const model of models[provider] ?? []) console.log(formatModel(provider, model));
+    break;
+  }
+  case "roles": {
+    const { roles } = await call<{ roles: RoleEntry[] }>("agents/roles");
+    console.log("generalist    (no preset)       read-write  Default agent with no role prompt");
+    for (const role of roles) console.log(formatRoleLine(role));
+    break;
+  }
+  case "role": {
+    if (positional.length !== 1) usage();
+    console.log((await call<{ text: string }>("agents/role", { id: positional[0] })).text);
     break;
   }
   case "ask": {

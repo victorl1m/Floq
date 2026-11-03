@@ -7,6 +7,8 @@ import { AppSidebar } from "./components/app-sidebar";
 import LoginScreen from "./components/auth/login-screen";
 import NewAgentDialog from "./components/agents/new-agent-dialog";
 import TerminalPanel from "./components/agents/terminal-panel";
+import RightSidebar from "./components/agents/right-sidebar/right-sidebar";
+import { ActivePortWatcher } from "./components/agents/right-sidebar/ports-tab";
 import HomeView from "./components/home/home-view";
 import SettingsDialog from "./components/settings/settings-dialog";
 import { useRuntime } from "./lib/runtime/store";
@@ -50,6 +52,8 @@ function App() {
           </>
         ) : null}
       </main>
+      {user && ready && <RightSidebar />}
+      {user && ready && <ActivePortWatcher />}
       {ready && !user && <LoginScreen />}
       {user && (
         <>

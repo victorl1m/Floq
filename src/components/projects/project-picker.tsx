@@ -1,4 +1,4 @@
-import { IconChevronDown, IconFolder, IconGitBranch, IconPlus } from "@tabler/icons-react";
+import { IconBox, IconChevronDown, IconGitBranch, IconPlus } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { ProjectMark } from "@/components/projects/project-identity";
 import {
@@ -53,7 +53,7 @@ export default function ProjectPicker({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button type="button" variant="ghost" size="sm" className={className ?? "text-muted-foreground"} disabled={disabled}>
-          {selectedWorkspace?.isWorktree ? <IconGitBranch /> : selected ? <ProjectMark project={selected} /> : <IconFolder />}
+          {selectedWorkspace?.isWorktree ? <IconGitBranch /> : selected ? <ProjectMark project={selected} /> : <IconBox />}
           <span className="max-w-52 truncate">{label}</span>
           <IconChevronDown className="size-3" />
         </Button>

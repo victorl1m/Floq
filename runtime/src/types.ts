@@ -32,6 +32,8 @@ export interface SessionSummary {
   sleepReason: string | null;
   /** Chosen model id, or null for the CLI default. */
   model: string | null;
+  /** Role preset id this agent was recruited with, or null (generalist). */
+  role?: string | null;
 }
 
 export interface ProjectWorkspace {
@@ -86,6 +88,8 @@ export interface CreateSessionInput {
   lead?: boolean;
   /** First message for the agent. Fresh start only, never on resume; not stored. */
   prompt?: string;
+  /** Agent role preset id (see roles.ts); omit or "generalist" for none. Fresh start only. */
+  role?: string;
   /** Model id from the provider's list in /v1/info (omit or "default" for the CLI default). */
   model?: string;
   cols?: number;

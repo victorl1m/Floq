@@ -1,3 +1,4 @@
+mod port_forward;
 use serde::Serialize;
 use std::{fs::File, io::Read, path::Path};
 use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
@@ -161,12 +162,15 @@ fn read_dropped_files(paths: Vec<String>) -> Result<Vec<DroppedFile>, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .manage(port_forward::Forwards::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             get_memory_details,
-            read_dropped_files
+            read_dropped_files,
+            port_forward::port_forward_start,
+            port_forward::port_forward_stop
         ])
         .setup(|app| {
             // Handle window creation here: Tauri panics if an automatically

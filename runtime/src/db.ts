@@ -53,6 +53,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS project_id UUID;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS workspace_id UUID;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS branch TEXT;
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS role TEXT;
     UPDATE agent_sessions AS child SET project_cwd = child.cwd
       WHERE child.project_cwd IS NULL AND EXISTS (
         SELECT 1 FROM agent_sessions AS repo
