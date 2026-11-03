@@ -20,7 +20,7 @@ ENV NODE_ENV=production \
     FLOQ_PORT=8787
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates curl ripgrep tini bash procps \
-        bubblewrap gocryptfs fuse3 util-linux \
+        bubblewrap gocryptfs fuse3 util-linux strace \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code @openai/codex \
