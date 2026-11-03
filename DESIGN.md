@@ -28,4 +28,6 @@ Primary navigation order is Home, Tasks, Skills & MCP, Secrets, Terminal. Tasks 
 
 The Tasks team and board selectors use native `<select>` controls because their compact option lists accept operating-system popup geometry and keyboard behavior. The Performance history-profile selector uses the shared authored Select primitive so its popup follows the settings surface. Performance preferences are device-local: explain immediate scrollback trimming and the coarse memory hint in the setting copy; reduced background refresh changes polling only while the window is hidden.
 
+The required sign-in dialog offers a dedicated invitation registration panel without changing public signup policy. Keep token entry in transient form state, use the shared auth field and validation patterns, and cap the dialog height so the content scrolls on short or narrow viewports. Existing accounts sign in and accept the invitation through the same dialog flow.
+
 Workspace rows reserve fixed space for disclosure and worktree menu buttons, including when hidden. Long branch names truncate before these controls; row-specific padding and action offsets take precedence over shared sidebar defaults.

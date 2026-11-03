@@ -41,3 +41,18 @@ export const setupSchema = z
         message: "Passwords don't match",
     });
 export type SetupValues = z.infer<typeof setupSchema>;
+
+export const invitationRegistrationSchema = z
+    .object({
+        serverUrl: emailSchema.shape.serverUrl,
+        token: z.string().trim().min(1, "Paste the invitation token").max(128, "Invitation token is too long"),
+        email: z.string().trim().min(1, "Enter your email").email("Enter a valid email"),
+        name: z.string().trim().min(1, "Enter your name").max(100, "Name is too long"),
+        password: z.string().min(MIN_PASSWORD, `At least ${MIN_PASSWORD} characters.`).max(128, "At most 128 characters."),
+        confirm: z.string(),
+    })
+    .refine((v) => v.confirm === v.password, {
+        path: ["confirm"],
+        message: "Passwords don't match",
+    });
+export type InvitationRegistrationValues = z.infer<typeof invitationRegistrationSchema>;
