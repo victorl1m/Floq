@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 import { IconFiles, IconGitCompare, IconMessages, IconPlugConnected, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
+import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { useRuntime } from "@/lib/runtime/store";
 import {
   RIGHT_SIDEBAR_MAX,
@@ -13,7 +14,7 @@ import {
   type RightSidebarTab,
 } from "@/lib/right-sidebar";
 import { isLive } from "../provider";
-import ChangesTab from "./changes-tab";
+import ChangesTab, { type WorkspaceTarget } from "./changes-tab";
 import ConversationsTab from "./conversations-tab";
 import FilesTab from "./files-tab";
 import PortsTab from "./ports-tab";
@@ -60,6 +61,18 @@ export default function RightSidebar() {
     const stamp = (item: (typeof mine)[number]) => Date.parse(item.endedAt ?? item.startedAt ?? item.createdAt) || 0;
     return mine.find((item) => isLive(item.state)) ?? mine.sort((a, b) => stamp(b) - stamp(a))[0];
   }, [activeSession, projectId, sessions]);
+  // Changes and Files span every folder / worktree of the project, each reached through one of its sessions.
+  const targets = useMemo<WorkspaceTarget[]>(() => {
+    const result: WorkspaceTarget[] = [];
+    const stamp = (item: (typeof sessions)[number]) => Date.parse(item.createdAt) || 0;
+    for (const workspace of project?.workspaces ?? []) {
+      const members = sessionsForWorkspace(project!.id, workspace, sessions);
+      const rep = members.find((item) => item.id === activeSession?.id) ?? [...members].sort((a, b) => stamp(b) - stamp(a))[0];
+      if (rep) result.push({ id: workspace.id, label: workspace.name || workspace.cwd, branch: workspace.branch, sessionId: rep.id });
+    }
+    if (result.length === 0 && session) result.push({ id: session.worktreeId ?? session.cwd, label: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "Workspace", branch: session.branch ?? null, sessionId: session.id });
+    return result;
+  }, [project, sessions, activeSession, session]);
   const conversationCount = useMemo(() => projectId === null && !activeSession ? 0 : sessions.filter((item) => item.provider !== "shell" && (item.projectId ?? null) === projectId).length, [sessions, projectId, activeSession]);
   const badges: Partial<Record<RightSidebarTab, number | null>> = { changes: changeCount, conversations: conversationCount };
 
@@ -139,10 +152,10 @@ export default function RightSidebar() {
       {/* Panels stay mounted so tree expansion, scroll and loaded diffs survive switching tabs. */}
       <div id="right-sidebar-panel" role="tabpanel" aria-labelledby={`right-sidebar-tab-${tab}`} className="min-h-0 flex-1">
         <div className={cn("h-full", tab !== "changes" && "hidden")}>
-          {session ? <ChangesTab client={client} sessionId={session.id} onCount={setChangeCount} /> : <PanelEmpty icon={<IconGitCompare />} title="No agent in this project" hint="Start an agent to review its changes." />}
+          {session ? <ChangesTab client={client} targets={targets} onCount={setChangeCount} /> : <PanelEmpty icon={<IconGitCompare />} title="No agent in this project" hint="Start an agent to review its changes." />}
         </div>
         <div className={cn("h-full", tab !== "files" && "hidden")}>
-          {session ? <FilesTab client={client} sessionId={session.id} /> : <PanelEmpty icon={<IconFiles />} title="No agent in this project" hint="Start an agent to browse its workspace files." />}
+          {session ? <FilesTab client={client} targets={targets} /> : <PanelEmpty icon={<IconFiles />} title="No agent in this project" hint="Start an agent to browse its workspace files." />}
         </div>
         <div className={cn("h-full", tab !== "ports" && "hidden")}>
           {session ? <PortsTab client={client} sessionId={session.id} /> : <PanelEmpty icon={<IconPlugConnected />} title="No agent in this project" hint="Start an agent to forward its ports." />}

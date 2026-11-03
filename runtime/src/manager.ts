@@ -21,7 +21,7 @@ import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
-import { analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
+import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
@@ -825,7 +825,15 @@ export class SessionManager {
     );
     return result.rows.map((row: Row) => {
       const live = this.live.get(row.id);
-      return live ? live.toSummary() : summaryFromRow(row);
+      if (!live) return summaryFromRow(row);
+      const summary = live.toSummary();
+      // Turn status only for live agents (not shells); reads a bounded transcript tail.
+      if (live.state === "running" && live.provider !== "shell") {
+        const turn = this.readAgentTurn(live.id, userId);
+        const status = agentStatus({ alive: live.isAlive, sessionState: live.state, turn, outputQuietMs: Date.now() - live.lastActivity, transcriptQuietMs: turn ? Date.now() - turn.mtimeMs : Infinity });
+        if (status === "working" || status === "idle" || status === "waiting-for-input") summary.activity = status;
+      }
+      return summary;
     });
   }
 

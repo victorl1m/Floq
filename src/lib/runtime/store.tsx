@@ -60,7 +60,7 @@ export type View = "home" | "tasks" | "skills" | "secrets" | "canvas" | "termina
 
 interface HistoryEntry {
   view: View;
-  /** Session id for the "session" view. */
+  /** Session id for the "session" view, project id for the "canvas" view. */
   arg: string | null;
 }
 
@@ -137,6 +137,10 @@ interface RuntimeContextValue {
   /** True while the last poll of the runtime succeeded. */
   online: boolean;
   view: View;
+  /** Project whose Agent Canvas is showing, or null when another view is. */
+  canvasProjectId: string | null;
+  /** Select a project and open its Agent Canvas. */
+  openCanvas: (projectId: string, workspaceId?: string | null) => void;
   navigate: (view: View, arg?: string | null) => void;
   openSettings: (section?: string) => void;
   settingsSection: string;
@@ -210,6 +214,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     index: 0,
   });
   const view = history.stack[history.index].view;
+  /** Project whose canvas is showing (null in every other view). Single source of truth for the canvas's active state. */
+  const canvasProjectId = view === "canvas" ? history.stack[history.index].arg : null;
   const historyRef = useRef(history);
   historyRef.current = history;
   const selectedRef = useRef(selectedId);
@@ -219,7 +225,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     const h = historyRef.current;
     const entry: HistoryEntry = {
       view: next,
-      arg: next === "session" ? (arg ?? selectedRef.current) : null,
+      arg: next === "session" ? (arg ?? selectedRef.current) : next === "canvas" ? (arg ?? activeProjectIdRef.current) : null,
     };
     const current = h.stack[h.index];
     if (current.view === entry.view && current.arg === entry.arg) return;
@@ -233,6 +239,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     if (index < 0 || index >= h.stack.length) return;
     const entry = h.stack[index];
     if (entry.view === "session") setSelectedId(entry.arg);
+    if (entry.view === "canvas" && entry.arg) setActiveProjectId(entry.arg);
     setHistory({ ...h, index });
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -396,6 +403,25 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setActiveProjectId(id);
     setActiveWorkspaceId(workspaceId ?? (id ? projects.find((project) => project.id === id)?.workspaces[0]?.id ?? null : null));
   }, [projects]);
+
+  /** Select a project and show its Agent Canvas. */
+  const openCanvas = useCallback((projectId: string, workspaceId?: string | null) => {
+    selectProject(projectId, workspaceId);
+    navigate("canvas", projectId);
+  }, [selectProject, navigate]);
+
+  // Restore the canvas that was open before a reload (once projects are known), then keep the preference in sync.
+  const canvasRestored = useRef(false);
+  useEffect(() => {
+    if (canvasRestored.current || projects.length === 0) return;
+    canvasRestored.current = true;
+    const id = userPreferencesRef.current.lastCanvasProjectId;
+    if (id && historyRef.current.stack[historyRef.current.index].view === "home" && projects.some((project) => project.id === id)) openCanvas(id);
+  }, [projects, openCanvas]);
+  useEffect(() => {
+    if (!canvasRestored.current) return;
+    if (userPreferencesRef.current.lastCanvasProjectId !== canvasProjectId) updateUserPreferences({ lastCanvasProjectId: canvasProjectId });
+  }, [canvasProjectId, updateUserPreferences]);
 
   const refresh = useCallback(async (): Promise<boolean> => {
     if (!client) return true;
@@ -584,7 +610,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const upsertSession = useCallback((session: SessionSummary) => {
     mutation.current++;
     setSessions((list) =>
-      list.some((s) => s.id === session.id) ? list.map((s) => (s.id === session.id ? session : s)) : [session, ...list],
+      list.some((s) => s.id === session.id) ? list.map((s) => (s.id === session.id ? { ...session, activity: session.activity ?? (session.state === "running" ? s.activity : undefined) } : s)) : [session, ...list],
     );
   }, []);
 
@@ -736,6 +762,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       setSearchOpen,
       online,
       view,
+      canvasProjectId,
+      openCanvas,
       navigate,
       openSettings,
       settingsSection,
@@ -799,6 +827,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       searchOpen,
       online,
       history,
+      canvasProjectId,
+      openCanvas,
       navigate,
       openSettings,
       settingsSection,

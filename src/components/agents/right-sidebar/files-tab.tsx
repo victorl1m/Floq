@@ -8,12 +8,20 @@ import type { FileContent, FileEntry, FileListing } from "@/lib/runtime/workspac
 import { errorMessage } from "@/lib/runtime/store";
 import { FileIcon, FolderIcon } from "./file-icons";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
+import type { WorkspaceTarget } from "./changes-tab";
 
 type Listing = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; listing: FileListing };
 
 type Row =
   | { kind: "node"; item: FileEntry; depth: number }
   | { kind: "status"; key: string; depth: number; tone: "loading" | "error" | "empty" | "more"; text: string; retry?: string };
+
+/** Tree paths are namespaced per project folder: "<target id>", a newline, then the path relative to that folder. */
+const treePath = (targetId: string, rel: string) => `${targetId}\n${rel}`;
+function splitTreePath(full: string): { id: string; rel: string } {
+  const index = full.indexOf("\n");
+  return { id: full.slice(0, index), rel: full.slice(index + 1) };
+}
 
 const INDENT = 12;
 const BASE_PAD = 8;
@@ -60,7 +68,7 @@ function Breadcrumb({ path }: { path: string }) {
   );
 }
 
-function Preview({ client, sessionId, path, onBack }: { client: RuntimeClient; sessionId: string; path: string; onBack?: () => void }) {
+function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeClient; sessionId: string; path: string; label?: string; onBack?: () => void }) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -93,7 +101,7 @@ function Preview({ client, sessionId, path, onBack }: { client: RuntimeClient; s
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
         {onBack && <Button type="button" variant="ghost" size="icon-xs" aria-label="Back to file tree" title="Back to file tree" onClick={onBack}><IconArrowLeft /></Button>}
-        <Breadcrumb path={path} />
+        <Breadcrumb path={label ? `${label}/${path}` : path} />
         {file && !error && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
         <Button type="button" variant="ghost" size="icon-xs" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy />}</Button>
       </div>
@@ -113,8 +121,8 @@ function Preview({ client, sessionId, path, onBack }: { client: RuntimeClient; s
   );
 }
 
-/** Lazy file explorer of the session's workspace with a read-only text preview. */
-export default function FilesTab({ client, sessionId }: { client: RuntimeClient; sessionId: string }) {
+/** Lazy file explorer of every folder / worktree in the active project (one top-level node each) with a read-only text preview. */
+export default function FilesTab({ client, targets }: { client: RuntimeClient; targets: WorkspaceTarget[] }) {
   const [dirs, setDirs] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string | null>(null);
@@ -129,13 +137,25 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
   const generation = useRef(0);
   const split = width >= SPLIT_MIN_WIDTH;
 
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const signature = targets.map((target) => `${target.id}:${target.sessionId}`).join("|");
+  const multi = targets.length > 1;
+
   const load = useCallback((path: string, silent = false) => {
     const gen = generation.current;
+    const { id, rel } = splitTreePath(path);
+    const target = targetsRef.current.find((item) => item.id === id);
+    if (!target) return;
     setDirs((current) => (silent && current[path]?.state === "ready" ? current : { ...current, [path]: { state: "loading" } }));
-    client.listFiles(sessionId, path)
-      .then((listing) => { if (gen === generation.current) setDirs((current) => ({ ...current, [path]: { state: "ready", listing: { ...listing, entries: sortEntries(listing.entries) } } })); })
+    client.listFiles(target.sessionId, rel)
+      .then((listing) => {
+        // Namespace entry paths so the same relative path in two folders stays distinct.
+        const entries = sortEntries(listing.entries.map((entry) => ({ ...entry, path: treePath(id, entry.path) })));
+        if (gen === generation.current) setDirs((current) => ({ ...current, [path]: { state: "ready", listing: { ...listing, entries } } }));
+      })
       .catch((cause) => { if (gen === generation.current) setDirs((current) => ({ ...current, [path]: { state: "error", message: errorMessage(cause) } })); });
-  }, [client, sessionId]);
+  }, [client]);
 
   // A different workspace starts from a fresh tree.
   useEffect(() => {
@@ -146,8 +166,11 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
     setCursor(null);
     setQuery("");
     setShowPreview(false);
-    load("");
-  }, [load]);
+    const roots = targetsRef.current.map((target) => treePath(target.id, ""));
+    // Several project folders: each is a top-level node, opened by default.
+    setExpanded(roots.length > 1 ? Object.fromEntries(roots.map((root) => [root, true])) : {});
+    for (const root of roots) load(root);
+  }, [load, signature]);
 
   function toggle(path: string, force?: boolean) {
     const open = force ?? !expandedRef.current[path];
@@ -157,7 +180,8 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
 
   function refresh() {
     const open = Object.keys(expandedRef.current).filter((path) => expandedRef.current[path]);
-    for (const path of ["", ...open]) load(path, true);
+    const roots = targets.map((target) => treePath(target.id, ""));
+    for (const path of new Set([...roots, ...open])) load(path, true);
   }
 
   function openFile(path: string) {
@@ -170,20 +194,25 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
     const walk = (path: string, depth: number) => {
       const entry = dirs[path];
       if (!entry || entry.state === "loading") {
-        if (path !== "") result.push({ kind: "status", key: `${path}:loading`, depth, tone: "loading", text: "Loading…" });
+        if (splitTreePath(path).rel !== "") result.push({ kind: "status", key: `${path}:loading`, depth, tone: "loading", text: "Loading…" });
         return;
       }
       if (entry.state === "error") { result.push({ kind: "status", key: `${path}:error`, depth, tone: "error", text: entry.message, retry: path }); return; }
-      if (entry.listing.entries.length === 0 && path !== "") { result.push({ kind: "status", key: `${path}:empty`, depth, tone: "empty", text: "Empty folder" }); return; }
+      if (entry.listing.entries.length === 0 && splitTreePath(path).rel !== "") { result.push({ kind: "status", key: `${path}:empty`, depth, tone: "empty", text: "Empty folder" }); return; }
       for (const item of entry.listing.entries) {
         result.push({ kind: "node", item, depth });
         if (item.type === "dir" && expanded[item.path]) walk(item.path, depth + 1);
       }
       if (entry.listing.truncated) result.push({ kind: "status", key: `${path}:more`, depth, tone: "more", text: "Showing the first 2,000 entries." });
     };
-    walk("", 0);
+    for (const target of targets) {
+      const rootPath = treePath(target.id, "");
+      if (!multi) { walk(rootPath, 0); continue; }
+      result.push({ kind: "node", item: { name: target.label, path: rootPath, type: "dir" }, depth: 0 });
+      if (expanded[rootPath]) walk(rootPath, 1);
+    }
     return result;
-  }, [dirs, expanded]);
+  }, [dirs, expanded, targets, multi]);
 
   const needle = query.trim().toLowerCase();
   const filtered = useMemo<FileEntry[]>(() => {
@@ -241,7 +270,8 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
     }
   }
 
-  const root = dirs[""];
+  const root = multi ? undefined : dirs[treePath(targets[0]?.id ?? "", "")];
+  const selectedTarget = selected ? targets.find((target) => target.id === splitTreePath(selected).id) : undefined;
   const previewVisible = selected !== null && (split || showPreview);
   const treeVisible = split || !previewVisible;
   const treeActiveId = treeFocused && cursorIndex >= 0 ? `files-row-${cursorIndex}` : undefined;
@@ -268,14 +298,16 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
         onBlur={() => setTreeFocused(false)}
         className="min-h-0 flex-1 overflow-auto py-1 focus-visible:outline-none"
       >
-        {!root || root.state === "loading" ? <RowSkeletons count={9} />
-          : root.state === "error" ? <PanelError message={root.message} onRetry={() => load("")} />
+        {targets.length === 0 ? <PanelEmpty icon={<IconFiles />} title="No folders to browse" hint="Start an agent in this project to browse its files." />
+          : !multi && (!root || root.state === "loading") ? <RowSkeletons count={9} />
+          : root?.state === "error" ? <PanelError message={root.message} onRetry={() => load(treePath(targets[0].id, ""))} />
           : needle ? (
             filtered.length === 0 ? <PanelEmpty icon={<IconSearch />} title="No matching files" hint="Only folders you have expanded are searched." />
               : filtered.map((item, index) => {
-                const dir = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+                const { rel: itemRel } = splitTreePath(item.path);
+                const dir = itemRel.includes("/") ? itemRel.slice(0, itemRel.lastIndexOf("/")) : "";
                 return (
-                  <div key={item.path} id={`files-row-${index}`} role="treeitem" aria-selected={selected === item.path} title={item.path} onClick={() => activate(item)} className={cn("flex h-6 min-w-0 cursor-pointer items-center gap-1.5 px-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}>
+                  <div key={item.path} id={`files-row-${index}`} role="treeitem" aria-selected={selected === item.path} title={splitTreePath(item.path).rel || item.name} onClick={() => activate(item)} className={cn("flex h-6 min-w-0 cursor-pointer items-center gap-1.5 px-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}>
                     {item.type === "dir" ? <FolderIcon /> : <FileIcon name={item.name} />}
                     <span className="min-w-0 truncate">{item.name}</span>
                     {dir && <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{dir}</span>}
@@ -307,7 +339,7 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
                   aria-level={depth + 1}
                   aria-expanded={isDir ? open : undefined}
                   aria-selected={selected === item.path}
-                  title={item.path}
+                  title={splitTreePath(item.path).rel || item.name}
                   onClick={() => activate(item)}
                   style={{ paddingLeft: pad }}
                   className={cn("relative flex h-6 cursor-pointer items-center gap-1 pr-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}
@@ -327,7 +359,7 @@ export default function FilesTab({ client, sessionId }: { client: RuntimeClient;
   return (
     <div ref={rootRef} className="flex h-full min-h-0">
       {treeVisible && tree}
-      {previewVisible && selected && <Preview key={selected} client={client} sessionId={sessionId} path={selected} onBack={split ? undefined : () => setShowPreview(false)} />}
+      {previewVisible && selected && selectedTarget && <Preview key={selected} client={client} sessionId={selectedTarget.sessionId} path={splitTreePath(selected).rel} label={multi ? selectedTarget.label : undefined} onBack={split ? undefined : () => setShowPreview(false)} />}
       {split && !previewVisible && (
         <div className="flex min-w-0 flex-1 items-center justify-center bg-muted/20">
           <PanelEmpty icon={<IconFiles />} title="Select a file to preview" hint="Use the arrow keys to browse and Enter to open." />
