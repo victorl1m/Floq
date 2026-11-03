@@ -169,6 +169,35 @@ function scanTranscript(transcript: string): TitleScan | null {
   }
 }
 
+/** Path of the exact Claude session's transcript jsonl, confined to the user's ~/.claude/projects tree. */
+export function claudeTranscriptPath(home: string, id: string): string | null {
+  if (!UUID.test(id)) return null;
+  const transcript = findClaudeTranscript(home, id);
+  if (!transcript) return null;
+  try {
+    if (!realpathSync(transcript).startsWith(realpathSync(join(home, ".claude", "projects")) + sep)) return null;
+  } catch { return null; }
+  return transcript;
+}
+
+/** Read a transcript's last `maxBytes` as text; a line cut by the range start is dropped. Null if unsafe or missing. */
+export function readTranscriptTail(path: string, maxBytes: number): { text: string; mtimeMs: number } | null {
+  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER);
+  if (!opened) return null;
+  try {
+    const size = Math.min(opened.size, maxBytes);
+    const bytes = Buffer.allocUnsafe(size);
+    const count = readSync(opened.fd, bytes, 0, size, opened.size - size);
+    let text = bytes.subarray(0, count).toString("utf8");
+    if (opened.size > size) text = text.slice(text.indexOf("\n") + 1);
+    return { text, mtimeMs: fstatSync(opened.fd).mtimeMs };
+  } catch {
+    return null;
+  } finally {
+    closeSync(opened.fd);
+  }
+}
+
 /** Read only native title records for the exact Claude session UUID. */
 export function readClaudeNativeTitle(home: string, id: string): string | null {
   if (!UUID.test(id)) return null;

@@ -33,6 +33,8 @@ export interface SessionSummary {
   model?: string | null;
   /** Agent role preset id, or null/absent for a generalist. */
   role?: string | null;
+  /** Session that recruited this one via the floq CLI, or null. */
+  parentSessionId?: string | null;
 }
 
 export interface AgentRole {

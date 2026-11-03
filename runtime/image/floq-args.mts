@@ -12,7 +12,7 @@ export interface SkillSummary { provider: string; name: string; source: string; 
 export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
   const named: NamedArgs = {};
-  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext"]);
+  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
       positional.push(args[i]);
@@ -160,4 +160,27 @@ export function readSkillDirectory(root: string): Record<string, string> {
   walk(root, "");
   if (!("SKILL.md" in files)) throw new Error("--from: the directory must contain a SKILL.md");
   return files;
+}
+
+export interface AgentReply { status: string; output: string; truncated?: number; source?: string }
+
+/**
+ * Render a check/ask/wait response: an explicit `status:` first line, then the reply. Exit codes: 0 finished or
+ * sent, 3 still working after the timeout, 4 waiting for input, 5 exited/asleep.
+ */
+export function formatAgentReply(command: "ask" | "check" | "wait", id: string, reply: AgentReply, timeoutSec?: number): { text: string; code: number } {
+  const status = reply.status;
+  let label = status;
+  let code = 0;
+  if (status === "done" || status === "quiet") label = "idle";
+  else if (status === "timeout") { label = "working (timed out" + (timeoutSec ? " after " + timeoutSec + "s" : "") + "; still working, run `floq wait " + id + "` to keep waiting)"; code = 3; }
+  else if (status === "waiting-for-input") { label = "waiting-for-input (the agent is stopped on a prompt; check the terminal)"; code = 4; }
+  else if (status === "exit" || status === "exited" || status === "asleep") { label = status === "asleep" ? "asleep" : "exited"; code = status === "asleep" ? 0 : 5; }
+  else if (status === "working" && command !== "check") code = 3;
+  const lines = ["status: " + label];
+  if (command === "check" && reply.source) lines.push("source: " + (reply.source === "transcript" ? "last reply" : reply.source === "terminal" ? "terminal tail (no finished reply yet)" : reply.source));
+  if (reply.output) lines.push(reply.output);
+  else if (status !== "sent") lines.push("(no output)");
+  if (reply.truncated) lines.push("[truncated: " + reply.truncated + " more chars, use --full]");
+  return { text: lines.join("\n"), code };
 }

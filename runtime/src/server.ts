@@ -242,9 +242,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { role, text: describeRole(role) });
         }
         case "agents/ask":
-          return send(res, 200, await orchestrator.ask(userId, sessionId, body.name, body.prompt, Number(body.timeoutSec) || undefined));
+          return send(res, 200, await orchestrator.ask(userId, sessionId, body.name, body.prompt, Number(body.timeoutSec) || undefined, body.wait !== false, Number(body.chars) || undefined, body.full === true));
         case "agents/check":
-          return send(res, 200, await orchestrator.check(userId, sessionId, body.name, Number(body.chars) || undefined));
+          return send(res, 200, await orchestrator.check(userId, sessionId, body.name, Number(body.chars) || undefined, body.full === true));
+        case "agents/wait":
+          return send(res, 200, await orchestrator.wait(userId, sessionId, body.name, Number(body.timeoutSec) || undefined, Number(body.chars) || undefined, body.full === true));
         case "agents/connect":
           return send(res, 200, await orchestrator.connect(userId, sessionId, body.from, body.to));
         case "agents/recruit":

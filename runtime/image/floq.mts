@@ -2,8 +2,9 @@
 // floq: agent-to-agent orchestration from inside a Floq terminal.
 //   floq list                              agents you can talk to
 //   floq session restart                    restart this agent after replying to reload its configuration
-//   floq ask <UUID|Name> "prompt" [--timeout S] send a message to another agent and wait for its reply
-//   floq check <UUID|Name> [--chars N]          read another agent's recent terminal output
+//   floq ask <UUID|Name> "prompt" [--timeout S] [--no-wait] [--chars N|--full]   message another agent, wait until it finishes, print its full reply
+//   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
+//   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
 //   floq note list | read N | write N TEXT | append N TEXT
 //   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (lead agents only)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
@@ -12,7 +13,7 @@
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
 import { readFileSync } from "node:fs";
-import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
+import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 type SkillResponse = { skill: { source: string; skillId: string; name: string; provider: string; location: string; description: string }; files: { path: string; size: number }[]; markdown?: string; dryRun?: boolean; scope?: string; projectId?: string };
@@ -26,8 +27,9 @@ Commands:
   floq models [--provider claude|codex]
   floq roles                             one line per agent role preset (compare, then pick)
   floq role ID                           full description of a role: when to use, handoffs, model advice
-  floq ask <UUID|Name> "prompt" [--timeout SECONDS]
-  floq check <UUID|Name> [--chars N]
+  floq ask <UUID|Name> "prompt" [--timeout SECONDS] [--no-wait] [--chars N | --full]
+  floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
+  floq check <UUID|Name> [--chars N | --full]
   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
@@ -139,13 +141,26 @@ async function readSecretValue(name: string): Promise<string> {
   return cleanSecretInput(Buffer.concat(chunks).toString("utf8"));
 }
 
+// Node's fetch gives up on a response after ~300s of silence, so long waits are split into shorter requests.
+const WAIT_CHUNK_SEC = 240;
+async function waitChunked(first: AgentReply, firstSec: number, total: number, name: string, extra: Record<string, unknown>): Promise<AgentReply> {
+  let reply = first;
+  let remaining = total - firstSec;
+  while (reply.status === "timeout" && remaining > 0) {
+    const chunk = Math.min(WAIT_CHUNK_SEC, remaining);
+    remaining -= chunk;
+    reply = await call<AgentReply>("agents/wait", { name, timeoutSec: Math.max(chunk, 10), ...extra });
+  }
+  return reply;
+}
+
 const usage = (): never => {
   console.error('usage: floq --help');
   process.exit(2);
 };
 
 const allowedOptions: Record<string, string[]> = {
-  list: [], roles: [], role: [], models: ["provider"], ask: ["timeout"], check: ["chars"],
+  list: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   session: [],
   recruit: ["provider", "model", "cwd", "role", "isolated"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
@@ -200,15 +215,32 @@ switch (command) {
   }
   case "ask": {
     if (positional.length < 2) usage();
-    const r = await call<{ status: string; output: string }>("agents/ask", { name: positional[0], prompt: positional.slice(1).join(" "), timeoutSec: typeof named.timeout === "string" ? Number(named.timeout) : undefined });
-    if (r.status !== "quiet") console.error("floq: reply " + (r.status === "timeout" ? "timed out; output so far:" : "ended early:"));
-    console.log(r.output || "(no output)");
+    const timeoutSec = typeof named.timeout === "string" ? Number(named.timeout) : undefined;
+    const total = timeoutSec ?? 300;
+    const extra = { chars: typeof named.chars === "string" ? Number(named.chars) : undefined, full: named.full === true };
+    const first = Math.min(total, WAIT_CHUNK_SEC);
+    const r = await waitChunked(await call<AgentReply>("agents/ask", { name: positional[0], prompt: positional.slice(1).join(" "), timeoutSec: first, wait: named["no-wait"] !== true, ...extra }), first, total, positional[0], extra);
+    const out = formatAgentReply("ask", positional[0], r, total);
+    console.log(out.text);
+    process.exitCode = out.code;
+    break;
+  }
+  case "wait": {
+    if (positional.length !== 1) usage();
+    const timeoutSec = typeof named.timeout === "string" ? Number(named.timeout) : undefined;
+    const total = timeoutSec ?? 300;
+    const extra = { chars: typeof named.chars === "string" ? Number(named.chars) : undefined, full: named.full === true };
+    const first = Math.min(total, WAIT_CHUNK_SEC);
+    const r = await waitChunked(await call<AgentReply>("agents/wait", { name: positional[0], timeoutSec: first, ...extra }), first, total, positional[0], extra);
+    const out = formatAgentReply("wait", positional[0], r, total);
+    console.log(out.text);
+    process.exitCode = out.code;
     break;
   }
   case "check": {
     if (positional.length < 1) usage();
-    const r = await call<{ output: string }>("agents/check", { name: positional[0], chars: typeof named.chars === "string" ? Number(named.chars) : undefined });
-    console.log(r.output || "(no output)");
+    const r = await call<AgentReply>("agents/check", { name: positional[0], chars: typeof named.chars === "string" ? Number(named.chars) : undefined, full: named.full === true });
+    console.log(formatAgentReply("check", positional[0], r).text);
     break;
   }
   case "note": {
