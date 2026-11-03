@@ -24,6 +24,7 @@ interface TaskBoardNavigatorProps {
   onCreateBoard: () => void;
   sourceNavigation?: ReactNode;
   className?: string;
+  showTeamSelector?: boolean;
 }
 
 export default function TaskBoardNavigator({
@@ -40,6 +41,7 @@ export default function TaskBoardNavigator({
   onCreateBoard,
   sourceNavigation,
   className,
+  showTeamSelector = true,
 }: TaskBoardNavigatorProps) {
   const [query, setQuery] = useState("");
   const selectedTeam = teams.find((team) => team.id === teamId);
@@ -102,17 +104,17 @@ export default function TaskBoardNavigator({
     <div className={`flex min-h-0 min-w-0 flex-col ${className ?? ""}`}>
       <div className="space-y-2 border-b p-3">
         <div className="flex items-center justify-between px-1"><p className="text-[11px] font-medium uppercase tracking-[0.13em] text-muted-foreground">Boards</p><Badge variant="outline" className="h-5 px-1.5 text-[10px]">{boards.length}</Badge></div>
-        {teams.length > 0 ? (
+        {showTeamSelector && teams.length > 0 ? (
           <Select value={teamId} onValueChange={onTeamChange}>
             <SelectTrigger aria-label="Choose team" className="w-full"><SelectValue placeholder="Choose a team" /></SelectTrigger>
             <SelectContent avoidCollisions position="popper" className="w-[var(--radix-select-trigger-width)] min-w-0">
               {teams.map((team) => <SelectItem key={team.id} value={team.id} textValue={team.name}><span className="min-w-0 flex-1 truncate">{team.name}</span></SelectItem>)}
             </SelectContent>
           </Select>
-        ) : (
+        ) : showTeamSelector ? (
           <Button size="sm" className="w-full" onClick={onCreateTeam}>Create a team</Button>
-        )}
-        {teams.length > 0 && <div className="relative"><IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search boards" data-task-board-search="true" className="h-8 pl-8 pr-8" placeholder="Find a board" value={query} onChange={(event) => setQuery(event.target.value)} /><Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2">B</Kbd></div>}
+        ) : null}
+        {teams.length > 0 && <div className="relative"><IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" /><Input autoFocus aria-label="Search boards" data-task-board-search="true" className="h-8 pl-8 pr-8" placeholder="Find a board" value={query} onChange={(event) => setQuery(event.target.value)} /><Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2">B</Kbd></div>}
       </div>
       {!normalizedQuery && sourceNavigation && <div className="border-b p-2">{sourceNavigation}</div>}
       <ScrollArea className="min-h-0 flex-1">
