@@ -14,11 +14,12 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { IconFocus2, IconLayoutDistributeHorizontal, IconTopologyStar3 } from "@tabler/icons-react";
+import { IconFocus2, IconLayoutDistributeHorizontal, IconPlus, IconTopologyStar3 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import { useRuntime } from "@/lib/runtime/store";
 import type { SessionState, SessionSummary } from "@/lib/runtime/types";
 import { layoutTree } from "./layout";
@@ -55,7 +56,8 @@ const AgentNodeCard = memo(function AgentNodeCard({ data, selected }: NodeProps<
       <Handle type="target" position={Position.Top} className="size-1.5! border-0! bg-muted-foreground!" />
       <div className="flex items-center gap-2">
         <span className={cn("size-2 shrink-0 rounded-full", DOT[session.state])} title={session.state} />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
+        <span className="min-w-0 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
+        <ActivityIndicator session={session} className="mr-auto" />
         <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan" aria-label={`Focus ${session.title}`} title="Focus" onClick={() => onFocus(session)}>
           <IconFocus2 size={14} />
         </Button>
@@ -77,12 +79,16 @@ const AgentNodeCard = memo(function AgentNodeCard({ data, selected }: NodeProps<
 const nodeTypes = { agent: AgentNodeCard };
 
 function AgentCanvas() {
-  const { sessions, activeProjectId, activateSession, navigate, userPreferences, updateUserPreferences } = useRuntime();
+  const { sessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences } = useRuntime();
   const { resolvedTheme } = useTheme();
   const { fitView } = useReactFlow();
+  // The canvas is always bound to the project it was opened for, never to a possibly-null active project.
+  const activeProjectId = canvasProjectId;
+  const project = projects.find((item) => item.id === activeProjectId);
+  const projectName = project ? project.displayName?.trim() || project.name : "Project";
 
   const projectSessions = useMemo(
-    () => sessions.filter((session) => (session.projectId ?? null) === activeProjectId),
+    () => activeProjectId ? sessions.filter((session) => session.projectId === activeProjectId) : [],
     [sessions, activeProjectId],
   );
 
@@ -155,8 +161,12 @@ function AgentCanvas() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
         <IconTopologyStar3 size={28} stroke={1.5} />
-        <p className="text-sm font-medium text-foreground">No agents in this project yet</p>
+        <p className="text-sm font-medium text-foreground">{projectName} has no agents yet</p>
         <p className="text-xs">Start an agent and the sessions it recruits will appear here.</p>
+        <Button type="button" size="sm" className="mt-1" disabled={!activeProjectId} onClick={() => { selectProject(activeProjectId, project?.workspaces[0]?.id); setNewAgentOpen(true); }}>
+          <IconPlus size={14} />
+          New agent
+        </Button>
       </div>
     );
   }
@@ -181,10 +191,15 @@ function AgentCanvas() {
       <Background gap={20} />
       <Controls showInteractive={false} />
       <MiniMap pannable zoomable className="bg-card!" />
-      <div className="absolute top-3 left-3 z-10">
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
+        <span className="max-w-60 truncate rounded-md border border-border bg-card px-2.5 py-1 text-sm font-medium" title={project?.cwd}>{projectName}</span>
         <Button type="button" variant="outline" size="sm" onClick={relayout}>
           <IconLayoutDistributeHorizontal size={14} />
           Re-layout
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => { selectProject(activeProjectId, project?.workspaces[0]?.id); setNewAgentOpen(true); }}>
+          <IconPlus size={14} />
+          New agent
         </Button>
       </div>
     </ReactFlow>

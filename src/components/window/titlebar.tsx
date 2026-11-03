@@ -6,7 +6,7 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { IconArrowLeft, IconArrowRight, IconCopy, IconLayoutSidebarRight, IconMinus, IconSquare, IconX } from "@tabler/icons-react";
+import { IconArrowLeft, IconArrowRight, IconCopy, IconLayoutSidebarRight, IconMinus, IconSquare, IconTopologyStar3, IconX } from "@tabler/icons-react";
 import { cn } from "cn";
 import { setTitlebarSlot } from "@/lib/titlebar-slot";
 import { SidebarTrigger, useSidebar } from "../ui/sidebar";
@@ -47,7 +47,7 @@ function TitlebarButton({
 
 export default function Titlebar() {
     const [isMaximized, setIsMaximized] = useState(false);
-    const { user, view, canGoBack, canGoForward, goBack, goForward } = useRuntime();
+    const { user, view, activeProjectId, openCanvas, canGoBack, canGoForward, goBack, goForward } = useRuntime();
     const rightSidebar = useRightSidebar();
     const { open: sidebarOpen, isMobile } = useSidebar();
     const sidebarUsesTitlebarWidth = sidebarOpen && !isMobile;
@@ -122,6 +122,13 @@ export default function Titlebar() {
 
             {/* Views portal tabs/toolbars here; the empty remainder stays draggable. */}
             {!auth && <div ref={setTitlebarSlot} data-tauri-drag-region className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-hidden px-1" />}
+
+            {!auth && (view === "session" || view === "terminal") && activeProjectId && (
+                <Button variant="ghost" size="sm" className="mr-1 shrink-0 text-muted-foreground" aria-label="Back to project canvas" title="Project canvas" onClick={() => openCanvas(activeProjectId)}>
+                    <IconTopologyStar3 />
+                    Canvas
+                </Button>
+            )}
 
             {!auth && (view === "session" || view === "terminal") && (
                 <Button variant="ghost" size="icon-sm" className="mr-1 shrink-0" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>

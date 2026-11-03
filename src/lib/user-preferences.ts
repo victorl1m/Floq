@@ -10,6 +10,8 @@ export interface UserPreferences {
     hiddenSessionIds: Record<string, boolean>;
     /** Dragged Agent Canvas node positions: project id -> session id -> position. */
     canvasPositions: Record<string, Record<string, { x: number; y: number }>>;
+    /** Project whose Agent Canvas was open last; restored after a reload. */
+    lastCanvasProjectId: string | null;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
@@ -24,6 +26,7 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     folderNavExpanded: {},
     hiddenSessionIds: {},
     canvasPositions: {},
+    lastCanvasProjectId: null,
 };
 
 function positionMaps(value: unknown): UserPreferences["canvasPositions"] {
@@ -74,6 +77,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             folderNavExpanded: booleanMap(parsed.folderNavExpanded),
             hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),
             canvasPositions: positionMaps(parsed.canvasPositions),
+            lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
 }

@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
 import { ProviderIcon, isLive } from "@/components/agents/provider";
+import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, removeProjectFolder, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
 import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
@@ -80,7 +81,7 @@ function StateDot({ state }: { state: SessionState }) {
 type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, activeProjectId, activeWorkspaceId, view, openSession, activateSession, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
+  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, activeProjectId, activeWorkspaceId, view, canvasProjectId, openCanvas, openSession, activateSession, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   const projectMeta = useCanonicalProjectMeta(scope);
@@ -259,8 +260,8 @@ export default function CanonicalProjectList() {
 
   function renderAgent(session: SessionSummary) {
     return <SidebarMenuSubItem key={session.id} className="group/agent-row relative">
-      <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
-        <StateDot state={session.state} /><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>
+      <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={(view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
+        <StateDot state={session.state} /><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span><ActivityIndicator session={session} className="ml-1" />
       </SidebarMenuButton>
       <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1 text-muted-foreground md:opacity-0 md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className={MENU}>
@@ -280,11 +281,10 @@ export default function CanonicalProjectList() {
     return <SidebarMenuItem key={project.id}>
       <Collapsible open={projectExpanded} onOpenChange={(open) => updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: open } })} className="group/project">
         <div className="group/project-row relative">
-          <CollapsibleTrigger asChild>
-            <SidebarMenuButton className="h-8 pr-8 text-[13px] font-medium" title={project.cwd}>
-              <ProjectMark project={project} className="text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span><IconChevronRight className="text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]/project:rotate-90 md:opacity-0 md:group-hover/project-row:opacity-100 md:group-focus-visible/menu-button:opacity-100" />
-            </SidebarMenuButton>
-          </CollapsibleTrigger>
+          <SidebarMenuButton isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium" title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
+            <ProjectMark project={project} className="text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
+          </SidebarMenuButton>
+          <CollapsibleTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-7! text-muted-foreground md:opacity-0 md:group-hover/project-row:opacity-100 md:focus-visible:opacity-100" aria-label={`Toggle ${project.displayName || project.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/project:rotate-90" /></SidebarMenuAction></CollapsibleTrigger>
           <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-1.5 transition-opacity md:opacity-0 md:group-hover/project-row:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className={MENU}>
               <DropdownMenuItem onClick={() => openProjectEdit(project)}><IconPencil />Project settings</DropdownMenuItem>

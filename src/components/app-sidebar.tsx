@@ -1,4 +1,4 @@
-import { IconHome, IconLock, IconSearch, IconSparkles, IconTerminal2, IconChecklist, IconTopologyStar3 } from "@tabler/icons-react";
+import { IconHome, IconLock, IconSearch, IconSparkles, IconTerminal2, IconChecklist } from "@tabler/icons-react";
 import { Kbd } from "@/components/ui/kbd";
 import {
     Sidebar,
@@ -20,7 +20,6 @@ import { useRuntime, type View } from "@/lib/runtime/store";
 const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
     { view: "home", label: "Home", icon: IconHome },
     { view: "tasks", label: "Tasks", icon: IconChecklist },
-    { view: "canvas", label: "Canvas", icon: IconTopologyStar3 },
     { view: "skills", label: "Skills & MCP", icon: IconSparkles },
     { view: "secrets", label: "Secrets", icon: IconLock },
     { view: "terminal", label: "Terminal", icon: IconTerminal2 },

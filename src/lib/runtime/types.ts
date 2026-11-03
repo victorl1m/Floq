@@ -35,6 +35,8 @@ export interface SessionSummary {
   role?: string | null;
   /** Session that recruited this one via the floq CLI, or null. */
   parentSessionId?: string | null;
+  /** Turn status of a running agent; only present on polled session lists. */
+  activity?: "working" | "idle" | "waiting-for-input";
 }
 
 export interface AgentRole {
