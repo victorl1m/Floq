@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FLOQ_CODEX_GUIDANCE, FLOQ_GUIDANCE_BEGIN, FLOQ_GUIDANCE_END, mergeFloqGuidance, syncCodexManagedGuidance, syncProtectedCodexSkill } from "../dist/codexGuidance.js";
+import { FLOQ_CODEX_GUIDANCE, FLOQ_GUIDANCE_BEGIN, FLOQ_GUIDANCE_END, mergeFloqGuidance, syncCodexManagedGuidance, syncProtectedFloqSkill } from "../dist/codexGuidance.js";
 
 function fixture(): string {
   return mkdtempSync(join(tmpdir(), "floq-codex-guidance-"));
@@ -66,7 +66,7 @@ test("protected Floq skill refresh updates canonical files without deleting unre
   writeFileSync(sourceSkill, "New canonical guidance");
   mkdirSync(join(source, "references"));
   writeFileSync(join(source, "references", "inspiration.md"), "Reference");
-  syncProtectedCodexSkill(home, source, owner());
+  syncProtectedFloqSkill(home, source, owner());
   assert.equal(readFileSync(destinationSkill, "utf8"), "New canonical guidance");
   assert.equal(readFileSync(join(home, "skills", "floq-orchestrate", "custom.md"), "utf8"), "User file");
   assert.equal(readFileSync(join(home, "skills", "floq-orchestrate", "references", "inspiration.md"), "utf8"), "Reference");

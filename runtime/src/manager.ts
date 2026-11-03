@@ -6,7 +6,7 @@ import { chmodSync, existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, 
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type pg from "pg";
 import type { Config, ModelEntry } from "./config.js";
-import { badRequest, conflict, notFound, tooMany } from "./errors.js";
+import { badRequest, conflict, notFound, tooMany, unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
@@ -21,7 +21,7 @@ import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { readClaudeNativeTitle, readCodexNativeTitle } from "./nativeTitle.js";
-import { syncCodexManagedGuidance, syncProtectedCodexSkill } from "./codexGuidance.js";
+import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { mkdirOwned, safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
@@ -213,6 +213,7 @@ export class SessionManager {
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
   private readonly live = new Map<string, Session>();
+  private readonly stoppingSessions = new Map<string, Session>();
   private readonly intentionalSleep = new Set<string>();
   private readonly lockTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexPollers = new Map<string, NodeJS.Timeout>();
@@ -231,6 +232,7 @@ export class SessionManager {
   private readonly capacityReservations = new CapacityReservations();
   private readonly lifecycle = new ClosingGate();
   private readonly resumeTasks = new Map<string, Promise<SessionSummary>>();
+  private readonly restartTasks = new Map<string, Promise<SessionSummary>>();
   private readonly loginTasks = new Map<string, Promise<SessionSummary>>();
   private readonly projectCreates = new Map<string, Promise<RuntimeProject>>();
   private readonly projectBranchLocks = new Map<string, Promise<void>>();
@@ -251,15 +253,21 @@ export class SessionManager {
   }
 
   get activeCount(): number {
-    let count = 0;
-    for (const session of this.live.values()) if (session.isAlive) count++;
-    return count;
+    return this.countActiveProcesses();
   }
 
   activeCountFor(userId: string): number {
-    let count = 0;
-    for (const session of this.live.values()) if (session.userId === userId && session.isAlive) count++;
-    return count;
+    return this.countActiveProcesses(userId);
+  }
+
+  private countActiveProcesses(userId?: string): number {
+    const sessions = new Map(this.live);
+    for (const [id, session] of this.stoppingSessions) sessions.set(id, session);
+    return [...sessions.values()].filter((session) => (!userId || session.userId === userId) && session.isAlive && !session.hasExited).length;
+  }
+
+  private hasActiveProcess(userId: string): boolean {
+    return this.activeCountFor(userId) > 0;
   }
 
   /** Discover models with this user's refreshed subscription credential and private Codex home. */
@@ -282,7 +290,7 @@ export class SessionManager {
     try {
       handle = await this.shards.wake(userId);
     } catch (error) {
-      if (this.shards.isAwake(userId) && ![...this.live.values()].some((session) => session.userId === userId && session.isAlive)) {
+      if (this.shards.isAwake(userId) && !this.hasActiveProcess(userId)) {
         this.scheduleLock(userId);
       }
       throw error;
@@ -319,7 +327,7 @@ export class SessionManager {
           log.warn("codex.models_temp_cleanup_failed", { userId });
         }
       }
-      if (![...this.live.values()].some((session) => session.userId === userId && session.isAlive)) this.scheduleLock(userId);
+      if (!this.hasActiveProcess(userId)) this.scheduleLock(userId);
     }
   }
 
@@ -889,7 +897,7 @@ export class SessionManager {
   }
 
   /** Start (or restart) the PTY for a session row inside the user's shard. */
-  private async launch(row: Row, profile: RuntimeProfile, handle: ShardHandle, resume: boolean, prompt?: string): Promise<Session> {
+  private async launch(row: Row, profile: RuntimeProfile, handle: ShardHandle, resume: boolean, prompt?: string, strictResume = false): Promise<Session> {
     const definition = getProviderDefinition(row.provider, this.config);
     // Claude's conversation id is the Floq session id; Codex's is discovered and stored.
     const providerId = row.provider === "claude" ? row.id : row.provider_session_id;
@@ -920,7 +928,7 @@ export class SessionManager {
       this.shards.seed(codexHome, ".codex", handle.uid, await loadRemovedSkills(this.pool, row.user_id).catch(() => null));
       this.syncGlobalCodexMcp(handle, codexHome);
       try {
-        syncProtectedCodexSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid);
+        syncProtectedFloqSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid);
       } catch (error) {
         log.warn("codex.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
@@ -933,6 +941,13 @@ export class SessionManager {
       if (cred) this.writeCredFile(handle, this.codexAuthPath(handle, row.id), JSON.stringify(cred));
     }
     if (row.provider === "claude") {
+      const claudeHome = this.shards.driver.hostPath(handle, ".claude");
+      mkdirOwned(handle.mountPath, claudeHome, handle.uid);
+      try {
+        syncProtectedFloqSkill(claudeHome, join(this.config.skelDir, ".claude/skills/floq-orchestrate"), handle.uid);
+      } catch (error) {
+        log.warn("claude.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
       const cred = await this.freshCredential(row.user_id, "claude");
       if (cred) this.writeClaude(handle, cred);
       this.enforceClaudeSettings(handle, profile);
@@ -1005,7 +1020,7 @@ export class SessionManager {
         void this.updateNativeTitle(row.id);
         return;
       }
-      if (frame.type === "exit") void this.onExit(session, frame.session.state, resuming && Date.now() - launchedAt < RESUME_FALLBACK_MS, profile, handle);
+      if (frame.type === "exit") void this.onExit(session, frame.session.state, !strictResume && resuming && Date.now() - launchedAt < RESUME_FALLBACK_MS, profile, handle);
     });
 
     await this.pool.query(
@@ -1087,15 +1102,15 @@ export class SessionManager {
     profile: RuntimeProfile,
     handle: ShardHandle,
   ): Promise<void> {
+    const current = this.live.get(session.id);
+    // A delayed exit from an older PTY must not revoke a resumed replacement's token or title state.
+    if (current && current !== session) return;
+    if (!current && !this.intentionalSleep.has(session.id)) return;
     this.stopCodexPoll(session.id);
     this.vault.revokeSession(session.id);
     if (this.intentionalSleep.delete(session.id)) {
-      await this.updateNativeTitle(session.id, true);
       this.nativeTitleSessions.delete(session.id);
-      return;
-    }
-    if (this.live.get(session.id) !== session) {
-      this.nativeTitleSessions.delete(session.id);
+      if (this.stoppingSessions.get(session.id) === session) this.stoppingSessions.delete(session.id);
       return;
     }
     if (session.provider === "codex") await this.captureCodexId(session.id, handle).catch(() => false);
@@ -1284,13 +1299,20 @@ export class SessionManager {
   }
 
   /** Wake the shard and continue the provider's last conversation in this session's directory. */
-  async resume(userId: string, profile: RuntimeProfile, id: string): Promise<SessionSummary> {
+  async resume(userId: string, profile: RuntimeProfile, id: string, options: { strict?: boolean } = {}): Promise<SessionSummary> {
     this.assertLifecycleOpen();
-    return coalesce(this.resumeTasks, userId + ":" + id, () => this.resumeOnce(userId, profile, id));
+    const key = userId + ":" + id;
+    const restart = this.restartTasks.get(key);
+    if (restart) return restart;
+    return coalesce(this.resumeTasks, key, () => this.resumeOnce(userId, profile, id, options.strict === true));
   }
 
-  private async resumeOnce(userId: string, profile: RuntimeProfile, id: string): Promise<SessionSummary> {
+  private async resumeOnce(userId: string, profile: RuntimeProfile, id: string, strictResume = false): Promise<SessionSummary> {
     this.assertLifecycleOpen();
+    const stopping = this.stoppingSessions.get(id);
+    if (stopping && stopping.userId !== userId) throw notFound("Session " + id + " not found");
+    if (stopping && !stopping.hasExited) throw unavailable("The previous process is still stopping; try resuming again after it exits.", "session_stopping");
+    if (stopping) this.stoppingSessions.delete(id);
     const existing = this.live.get(id);
     if (existing && existing.userId === userId && existing.isAlive) return existing.toSummary();
 
@@ -1304,12 +1326,46 @@ export class SessionManager {
     try {
       const handle = await this.shards.wake(userId);
       this.assertLifecycleOpen();
-      const session = await this.launch(row, profile, handle, true);
+      const session = await this.launch(row, profile, handle, true, undefined, strictResume);
       log.info("session.resume", { sessionId: id, userId, count: session.resumeCount });
       return session.toSummary();
     } finally {
       releaseCapacity();
     }
+  }
+
+  /** Validate that this live agent can be restarted without losing its provider conversation. */
+  async assertSelfRestartable(userId: string, id: string): Promise<void> {
+    const session = this.getLive(id, userId);
+    if (!session.isAlive) throw conflict("This session is already stopping. Wait for it to finish before restarting.", "restart_not_ready");
+    if (session.provider === "shell") throw notFound("Calling session not found");
+    const row = await this.row(id, userId);
+    if (row.provider !== session.provider) throw conflict("Session provider changed; try again", "restart_not_ready");
+    if (session.provider === "codex" && !row.provider_session_id) {
+      const titleState = this.nativeTitleSessions.get(id);
+      const captured = titleState ? await this.captureCodexId(id, titleState.handle).catch(() => false) : false;
+      if (!captured) throw conflict("Codex has not saved a resumable conversation yet. Wait a moment and try again.", "restart_not_ready");
+    }
+  }
+
+  /** Restart only the caller's own session, preserving its row and provider conversation. */
+  async restartSelf(userId: string, profile: RuntimeProfile, id: string): Promise<SessionSummary> {
+    this.assertLifecycleOpen();
+    return coalesce(this.restartTasks, userId + ":" + id, async () => {
+      await this.assertSelfRestartable(userId, id);
+      try {
+        await this.sleepSession(id, "self-restart", { waitForExit: true });
+        return await this.resumeOnce(userId, profile, id, true);
+      } catch (error) {
+        await this.pool.query(
+          "UPDATE agent_sessions SET state='failed', sleep_reason='self-restart-failed', last_active_at=now(), slept_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('running','sleeping')",
+          [id, userId],
+        ).catch((updateError) => log.error("agent.self_restart_state_failed", { userId, sessionId: id, error: updateError instanceof Error ? updateError.message.slice(0, 160) : "unknown" }));
+        throw error;
+      } finally {
+        this.intentionalSleep.delete(id);
+      }
+    });
   }
 
   isLogin(id: string): boolean {
@@ -1607,7 +1663,7 @@ export class SessionManager {
   }
 
   /** Save state to the DB and stop the PTY. The conversation stays in the user's encrypted home. */
-  async sleepSession(id: string, reason: string): Promise<void> {
+  async sleepSession(id: string, reason: string, options: { waitForExit?: boolean } = {}): Promise<void> {
     if (this.logins.has(id)) return this.endLogin(id);
     const session = this.live.get(id);
     if (!session) return;
@@ -1619,13 +1675,30 @@ export class SessionManager {
       await this.captureCodexId(id, handle).catch(() => false);
     }
     this.intentionalSleep.add(id);
+    if (options.waitForExit) this.stoppingSessions.set(id, session);
     this.live.delete(id);
+    this.nativeTitleSessions.delete(id);
     await this.pool.query(
       "UPDATE agent_sessions SET state = 'sleeping', sleep_reason = $2, last_seq = $3, last_active_at = now(), slept_at = now() WHERE id = $1",
       [id, reason, summary.seq],
     );
     session.broadcast({ type: "state", session: { ...summary, state: "sleeping", sleepReason: reason, pid: null } });
-    session.dispose();
+    if (options.waitForExit) {
+      if (!(await session.disposeAndWait())) {
+        this.intentionalSleep.delete(id);
+        void session.whenExited().then(() => {
+          if (this.stoppingSessions.get(id) === session) {
+            this.stoppingSessions.delete(id);
+            if (!this.hasActiveProcess(session.userId)) this.scheduleLock(session.userId);
+          }
+        });
+        throw unavailable("The old process did not stop; the session was left sleeping to protect its conversation.", "restart_stop_failed");
+      }
+      if (this.stoppingSessions.get(id) === session) this.stoppingSessions.delete(id);
+    } else {
+      session.dispose();
+      this.intentionalSleep.delete(id);
+    }
     log.info("session.sleep", { sessionId: id, userId: session.userId, reason });
     this.scheduleLock(session.userId);
   }
@@ -1633,6 +1706,10 @@ export class SessionManager {
   async sleepUser(userId: string, reason: string): Promise<void> {
     const mine = [...this.live.values()].filter((s) => s.userId === userId);
     await Promise.all(mine.map((s) => (s.isAlive ? this.sleepSession(s.id, reason) : Promise.resolve())));
+    if (this.hasActiveProcess(userId)) {
+      log.warn("logout.shard_kept_awake_for_stopping_session", { userId });
+      return;
+    }
     this.cancelLock(userId);
     await this.shards.sleep(userId);
   }
@@ -1662,7 +1739,7 @@ export class SessionManager {
       const remaining = (this.shardActivityCounts.get(userId) ?? 1) - 1;
       if (remaining <= 0) this.shardActivityCounts.delete(userId);
       else this.shardActivityCounts.set(userId, remaining);
-      if (remaining <= 0 && !this.shuttingDown && ![...this.live.values()].some((session) => session.userId === userId && session.isAlive)) {
+      if (remaining <= 0 && !this.shuttingDown && !this.hasActiveProcess(userId)) {
         this.scheduleLock(userId);
       }
     });
@@ -1679,7 +1756,7 @@ export class SessionManager {
     const timer = setTimeout(() => {
       this.lockTimers.delete(userId);
       if ((this.shardActivityCounts.get(userId) ?? 0) > 0) return;
-      const busy = [...this.live.values()].some((s) => s.userId === userId && s.isAlive);
+      const busy = this.hasActiveProcess(userId);
       if (!busy) void this.shards.sleep(userId).catch((error) => log.error("shard.lock_failed", { userId, error: String(error) }));
     }, this.config.shardLockDelayMs);
     timer.unref();
@@ -1714,8 +1791,13 @@ export class SessionManager {
     clearInterval(this.reaper);
     for (const timer of this.lockTimers.values()) clearTimeout(timer);
     await Promise.allSettled([...this.shardActivities]);
+    await Promise.allSettled([...this.restartTasks.values()]);
     for (const session of [...this.live.values()]) {
       if (session.isAlive) await this.sleepSession(session.id, "shutdown").catch(() => undefined);
+    }
+    if (this.countActiveProcesses() > 0) {
+      log.error("runtime.shutdown_shard_sleep_skipped", { reason: "session_process_still_stopping", count: this.countActiveProcesses() });
+      return;
     }
     await this.shards.sleepAll();
   }

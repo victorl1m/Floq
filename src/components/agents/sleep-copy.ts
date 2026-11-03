@@ -3,13 +3,15 @@ import type { ProviderId } from "@/lib/runtime/types";
 /**
  * Plain-language wording for `SessionSummary.sleepReason`.
  * Values are the ones the runtime writes: manager.ts sleepSession() callers
- * ("idle", "lifetime", "shutdown", "logout", "manual") and shards.ts startup recovery ("restart").
+ * ("idle", "lifetime", "shutdown", "logout", "manual", "self-restart", "self-restart-failed") and shards.ts startup recovery ("restart").
  */
 const SLEEP_REASON_COPY: Record<string, string> = {
     idle: "It went to sleep after being idle.",
     lifetime: "It reached its maximum running time.",
     logout: "It stopped when you signed out.",
     manual: "It was put to sleep.",
+    "self-restart": "It is restarting to load updated session configuration.",
+    "self-restart-failed": "It could not restart safely. Its conversation is preserved; try Resume after the process stops.",
     shutdown: "It stopped when the server shut down.",
     restart: "It stopped when the server restarted.",
 };

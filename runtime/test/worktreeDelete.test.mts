@@ -266,6 +266,10 @@ function managerFor(f, { rows, sessions = [], updates = [], live = new Map() }) 
   const manager = Object.create(SessionManager.prototype);
   manager.projectBranchLocks = new Map();
   manager.live = live;
+  manager.stoppingSessions = new Map();
+  manager.restartTasks = new Map();
+  manager.resumeTasks = new Map();
+  manager.intentionalSleep = new Set();
   manager.pool = { async query(sql, values) {
     if (sql.includes("SELECT w.cwd,w.is_worktree")) return { rows: rows.filter((r) => r.user === values[2] && r.id === values[0] && r.project === values[1]) };
     if (sql.includes("FROM agent_sessions WHERE user_id=$1 AND workspace_id=$2")) return { rows: sessions };
@@ -353,6 +357,9 @@ test("manager: server-side recheck refuses dirty state even if the dialog was st
 test("resuming a session whose worktree was deleted is refused with a clear message", async () => {
   const manager = Object.create(SessionManager.prototype);
   manager.live = new Map();
+  manager.stoppingSessions = new Map();
+  manager.restartTasks = new Map();
+  manager.resumeTasks = new Map();
   manager.assertLifecycleOpen = () => {};
   manager.row = async () => ({ id: "s1", workspace_id: "ws-gone" });
   manager.pool = { async query(sql, values) {

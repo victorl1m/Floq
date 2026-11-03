@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // floq: agent-to-agent orchestration from inside a Floq terminal.
 //   floq list                              agents you can talk to
+//   floq session restart                    restart this agent after replying to reload its configuration
 //   floq ask <UUID|Name> "prompt" [--timeout S] send a message to another agent and wait for its reply
 //   floq check <UUID|Name> [--chars N]          read another agent's recent terminal output
 //   floq note list | read N | write N TEXT | append N TEXT
@@ -21,6 +22,7 @@ const help = `Floq agent coordination
 
 Commands:
   floq list
+  floq session restart                   restart this agent to reload its current configuration
   floq models [--provider claude|codex]
   floq ask <UUID|Name> "prompt" [--timeout SECONDS]
   floq check <UUID|Name> [--chars N]
@@ -55,7 +57,7 @@ This is a rule for you; the CLI cannot enforce it. Skills and MCP servers defaul
 project (else global); --global writes to your whole home. A stdio MCP server runs its command with the agent's permissions.
 Secret values are never taken as arguments: "floq secrets add NAME" reads the value from stdin or prompts without echo.
 Secrets added this way are tool-only (usable through floq-vault run, not readable) and cannot be changed or deleted by agents.
-New MCP servers and skills load when a session starts or resumes; running sessions need a restart or resume.`;
+New MCP servers and skills load when a session starts or resumes. After the change is approved and your current work is saved, run "floq session restart" to reload this agent; it resumes the same conversation after replying. Authentication is separate: a restart does not complete MCP OAuth or prove that tools loaded.`;
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
@@ -142,6 +144,7 @@ const usage = (): never => {
 
 const allowedOptions: Record<string, string[]> = {
   list: [], models: ["provider"], ask: ["timeout"], check: ["chars"],
+  session: [],
   recruit: ["provider", "model", "cwd", "role", "isolated"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
@@ -163,6 +166,14 @@ switch (command) {
   case "list": {
     const { agents } = await call<{ agents: AgentEntry[] }>("agents/list");
     for (const a of agents) console.log(formatAgentListEntry(a));
+    break;
+  }
+  case "session": {
+    const [sub, ...args] = positional;
+    if (sub !== "restart" || args.length) usage();
+    const result = await call<{ scheduled: boolean; restartDelayMs: number }>("agents/restart");
+    console.log(`Restart scheduled in about ${result.restartDelayMs} ms. Floq will resume this same session and conversation with current configuration.`);
+    console.log("A restart reloads configuration; it does not authenticate an MCP server or prove its tools are available.");
     break;
   }
   case "models": {
@@ -238,7 +249,7 @@ switch (command) {
         const r = await call<SkillResponse>("skills/add", { ...ref, provider, scope: scope.scope, projectId: scope.projectId });
         console.log("installed skill \"" + r.skill.name + "\" for " + r.skill.provider + (r.scope === "project" ? " in project " + r.projectId : " in your home") + " (" + r.skill.location + ")");
         console.log("files: " + r.files.map((file) => file.path).join(", "));
-        console.log("It loads when a session starts or resumes; running sessions need a restart or resume.");
+        console.log("It loads when a session starts or resumes; run `floq session restart` after saving your work to reload this agent.");
       }
     } else if (sub === "create" && (args.length === 1 || (args.length === 2 && args[1] === "-"))) {
       // The content comes from exactly one place: a directory, an instructions file, or stdin ("-").
@@ -255,7 +266,7 @@ switch (command) {
       console.log((r.dryRun ? "Would create" : "Created") + " skill \"" + r.skill.name + "\" for " + r.skill.provider + (r.scope === "project" ? " in project " + r.projectId : " in your home") + " at " + r.skill.location);
       console.log("description: " + r.skill.description);
       console.log("files: " + r.files.map((file) => file.path + " (" + file.size + " bytes)").join(", "));
-      console.log(r.dryRun ? "dry run: nothing was written" : "It loads when a session starts or resumes; running sessions need a restart or resume.");
+      console.log(r.dryRun ? "dry run: nothing was written" : "It loads when a session starts or resumes; run `floq session restart` after saving your work to reload this agent.");
     } else if (sub === "remove" && args.length === 1) {
       const r = await call<{ matched: number }>("skills/remove", { name: args[0], provider: providerOrExit(named.provider, false) });
       console.log("removed " + args[0] + " (" + r.matched + " match" + (r.matched === 1 ? "" : "es") + ")");
@@ -292,12 +303,12 @@ switch (command) {
       if (r.dryRun) console.log("dry run: nothing was changed");
       else {
         console.log("installed for: " + r.servers.map((server) => server.provider).join(", "));
-        console.log("It loads when a session starts or resumes; running sessions need a restart or resume.");
+        console.log("Run `floq session restart` after saving your work to reload this agent; authentication and tool availability must be checked separately.");
       }
     } else if (sub === "remove" && args.length === 1) {
       const r = await call<ScopeResponse>("mcp/remove", { ...scope, provider: providerOrExit(named.provider, false), name: args[0] });
       console.log("removed MCP server \"" + args[0] + "\" (" + scopeLabel(r) + ")");
-      console.log("Running sessions keep it until they restart or resume.");
+      console.log("Run `floq session restart` after saving your work to reload this agent; authentication and tool availability must be checked separately.");
     } else usage();
     break;
   }

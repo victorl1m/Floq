@@ -28,6 +28,7 @@ import { registerWithInvitation } from "./invitationRegistration.js";
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
 const MAX_WS_PAYLOAD = 256 * 1024;
+const SELF_RESTART_DELAY_MS = 750;
 
 interface Deps {
   config: Config;
@@ -50,6 +51,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
+  const scheduledAgentRestarts = new Set<string>();
 
   function rateLimitSetup(req: IncomingMessage): void {
     const forwarded = req.headers["x-forwarded-for"];
@@ -195,6 +197,29 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         }
         case "agents/list":
           return send(res, 200, { agents: await orchestrator.list(userId, sessionId) });
+        case "agents/restart": {
+          if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Session restart requires POST");
+          if (Object.keys(body).length) throw badRequest("Session restart takes no target or options; it can only restart the calling agent", "invalid_restart");
+          await orchestrator.toolkitCaller(userId, sessionId, false);
+          await manager.assertSelfRestartable(userId, sessionId);
+          const profile = await settings.profile(userId);
+          const restartKey = userId + ":" + sessionId;
+          if (scheduledAgentRestarts.has(restartKey)) return send(res, 202, { scheduled: true, restartDelayMs: SELF_RESTART_DELAY_MS });
+          scheduledAgentRestarts.add(restartKey);
+          let responseFinished = false;
+          res.once("finish", () => {
+            responseFinished = true;
+            const timer = setTimeout(() => {
+              void manager.restartSelf(userId, profile, sessionId)
+                .then(() => log.info("agent.self_restart_complete", { userId, sessionId }))
+                .catch((error) => log.error("agent.self_restart_failed", { userId, sessionId, error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }))
+                .finally(() => scheduledAgentRestarts.delete(restartKey));
+            }, SELF_RESTART_DELAY_MS);
+            timer.unref();
+          });
+          res.once("close", () => { if (!responseFinished) scheduledAgentRestarts.delete(restartKey); });
+          return send(res, 202, { scheduled: true, restartDelayMs: SELF_RESTART_DELAY_MS });
+        }
         case "agents/models": {
           const requested = body.provider;
           if (requested !== undefined && requested !== "claude" && requested !== "codex") throw badRequest("provider must be claude or codex");
