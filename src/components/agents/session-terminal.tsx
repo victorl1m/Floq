@@ -17,47 +17,24 @@ import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { canReadClipboard, copyText, readClipboardImagePng, readClipboardText } from "@/lib/clipboard";
 import { parseOsc52 } from "@/lib/osc52";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, invalidUploadName, uploadBatch, type UploadItem } from "./upload-toast";
 
 const MAX_INPUT_CHARS = 20_000;
-const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
-const MAX_UPLOAD_COUNT = 20;
-const MAX_UPLOAD_TOTAL_BYTES = 16 * 1024 * 1024;
 
 function shellQuote(value: string): string {
     return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
-function base64FromBytes(bytes: Uint8Array): string {
-    let binary = "";
-    const chunkSize = 0x8000;
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-    }
-    return btoa(binary);
-}
-
-async function readBrowserFiles(files: File[], onReady: (items: Array<{ name: string; bytes: Uint8Array }>) => void) {
-    const selected = files.slice(0, MAX_UPLOAD_COUNT);
+/** Browser files are streamed from the Blob; nothing is read into memory here. */
+function browserUploadItems(files: File[], onReady: (items: UploadItem[]) => void) {
     if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
-    let total = 0;
-    const ready: Array<{ name: string; bytes: Uint8Array }> = [];
-    for (const file of selected) {
-        if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || /[\u0000-\u001f\u007f]/.test(file.name)) {
-            toast.error(`Could not upload ${file.name || "file"}`, { description: "Files must be between 1 byte and 4 MiB, with no control characters in the name." });
+    const ready: UploadItem[] = [];
+    for (const file of files.slice(0, MAX_UPLOAD_COUNT)) {
+        if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || invalidUploadName(file.name)) {
+            toast.error(`Could not upload ${file.name || "file"}`, { description: file.size < 1 ? "The file is empty." : file.size > MAX_UPLOAD_BYTES ? "The file is larger than the 8 GiB limit." : "The name contains control characters." });
             continue;
         }
-        if (total + file.size > MAX_UPLOAD_TOTAL_BYTES) {
-            toast.error(`${file.name} exceeds the 16 MiB total limit`);
-            continue;
-        }
-        try {
-            const bytes = new Uint8Array(await file.arrayBuffer());
-            if (bytes.byteLength !== file.size) throw new Error("File changed while it was being read");
-            ready.push({ name: file.name, bytes });
-            total += bytes.byteLength;
-        } catch {
-            toast.error(`Could not read ${file.name}`);
-        }
+        ready.push({ name: file.name, size: file.size, blob: file });
     }
     onReady(ready);
 }
@@ -147,7 +124,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     providerRef.current = session?.provider;
     const sessionIdRef = useRef(sessionId);
     sessionIdRef.current = sessionId;
-    const uploadFilesRef = useRef<(files: Array<{ name: string; bytes: Uint8Array }>) => void>(() => undefined);
+    const uploadFilesRef = useRef<(files: UploadItem[]) => void>(() => undefined);
     const uploadingRef = useRef(false);
     const canUploadRef = useRef(false);
 
@@ -161,48 +138,28 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchText, setSearchText] = useState("");
     const [searchMessage, setSearchMessage] = useState("");
-    const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; name: string } | null>(null);
+    const [uploading, setUploading] = useState(false);
     const [dropHover, setDropHover] = useState(false);
     canUploadRef.current = Boolean(!embedded && live && termReady && busy === null && active);
 
-    async function uploadFiles(files: Array<{ name: string; bytes: Uint8Array }>) {
+    async function uploadFiles(files: UploadItem[]) {
         if (!client || !files.length || !canUploadRef.current || uploadingRef.current) return;
         uploadingRef.current = true;
+        setUploading(true);
         const picked = files.slice(0, MAX_UPLOAD_COUNT);
         if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
-        if (picked.reduce((sum, file) => sum + file.bytes.byteLength, 0) > MAX_UPLOAD_TOTAL_BYTES) {
-            toast.error("Files exceed the 16 MiB total limit");
-            uploadingRef.current = false;
-            return;
-        }
         const originalTerm = termRef.current;
         const originalSocket = wsRef.current;
         const originalSessionId = sessionId;
-        const uploadedPaths: string[] = [];
-        let failures = 0;
         try {
-            for (let index = 0; index < picked.length; index += 1) {
-                const file = picked[index];
-                if (file.bytes.byteLength === 0 || file.bytes.byteLength > MAX_UPLOAD_BYTES || /[\u0000-\u001f\u007f]/.test(file.name)) {
-                    failures += 1;
-                    toast.error(`Could not upload ${file.name || "file"}`, { description: "Files must be between 1 byte and 4 MiB, with no control characters in the name." });
-                    continue;
-                }
-                setUploadProgress({ current: index + 1, total: picked.length, name: file.name });
-                try {
-                    const result = await client.uploadSessionAttachment(originalSessionId, file.name, base64FromBytes(file.bytes));
-                    uploadedPaths.push(shellQuote(result.path));
-                } catch (error) {
-                    failures += 1;
-                    toast.error(`Could not upload ${file.name}`, { description: errorMessage(error) });
-                }
-            }
+            // One toast per batch shows progress, speed and ETA, and can cancel (deleting the partial file).
+            const { paths } = await uploadBatch(client, originalSessionId, picked);
+            const uploadedPaths = paths.map(shellQuote);
             const socket = wsRef.current;
             const canPaste = uploadedPaths.length && canUploadRef.current && originalTerm && termRef.current === originalTerm && sessionIdRef.current === originalSessionId && originalSocket && socket === originalSocket && socket.readyState === WebSocket.OPEN;
             if (canPaste) {
                 originalTerm.paste(uploadedPaths.join(" ") + " ");
                 originalTerm.focus();
-                if (failures < picked.length) toast.success(`Uploaded ${uploadedPaths.length} ${uploadedPaths.length === 1 ? "file" : "files"}`);
             } else if (uploadedPaths.length) {
                 toast.error("Files uploaded, but the terminal disconnected", {
                     description: "Copy the saved paths and paste them after reconnecting.",
@@ -211,7 +168,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             }
         } finally {
             uploadingRef.current = false;
-            setUploadProgress(null);
+            setUploading(false);
         }
     }
     uploadFilesRef.current = (files) => { void uploadFiles(files); };
@@ -236,15 +193,17 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             setDropHover(false);
             if (event.payload.type !== "drop" || !inside) return;
             if (event.payload.paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
-            void invoke<Array<{ name: string; bytes: number[] | null; error: string | null }>>("read_dropped_files", { paths: event.payload.paths.slice(0, MAX_UPLOAD_COUNT) })
-                .then((dropped) => {
-                    const files = dropped.flatMap((file) => {
-                        if (!file.bytes) { toast.error(`Could not read ${file.name}`, { description: file.error ?? "This file cannot be uploaded." }); return []; }
-                        return [{ name: file.name, bytes: Uint8Array.from(file.bytes) }];
-                    });
-                    uploadFilesRef.current(files);
-                })
-                .catch((error: unknown) => toast.error("Could not read dropped files", { description: typeof error === "string" ? error : "Could not read the dropped files." }));
+            // Files are streamed from disk by the Tauri side; only name and size are read here.
+            void Promise.all(event.payload.paths.slice(0, MAX_UPLOAD_COUNT).map(async (path) => {
+                try {
+                    const info = await invoke<{ name: string; size: number }>("inspect_dropped_file", { path });
+                    if (invalidUploadName(info.name)) throw "The name contains control characters.";
+                    return [{ name: info.name, size: info.size, path }] as UploadItem[];
+                } catch (error) {
+                    toast.error(`Could not read ${path.split(/[\\/]/).pop() || "file"}`, { description: typeof error === "string" ? error : "This file cannot be uploaded." });
+                    return [] as UploadItem[];
+                }
+            })).then((groups) => uploadFilesRef.current(groups.flat()));
         }).then((off) => { if (disposed) off(); else unlisten = off; }).catch(() => undefined);
         return () => { disposed = true; unlisten?.(); };
     }, [embedded]);
@@ -358,7 +317,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         // runtime host, not this one. So an image on the local clipboard is uploaded and its path pasted.
         const imagePasteProvider = () => providerRef.current === "claude" || providerRef.current === "codex";
         const uploadClipboardImage = (bytes: Uint8Array) => {
-            uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.png`, bytes }]);
+            uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.png`, size: bytes.byteLength, blob: new Blob([bytes as BlobPart], { type: "image/png" }) }]);
         };
         const pasteFromClipboard = async () => {
             try {
@@ -383,7 +342,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             event.stopPropagation();
             void file.arrayBuffer().then((buffer) => {
                 const extension = file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
-                uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.${extension}`, bytes: new Uint8Array(buffer) }]);
+                uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.${extension}`, size: buffer.byteLength, blob: new Blob([buffer], { type: file.type }) }]);
             });
         };
         host.addEventListener("paste", onPasteCapture, true);
@@ -716,7 +675,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     if (!Array.from(event.dataTransfer.types).includes("Files")) return;
                     event.preventDefault();
                     setDropHover(false);
-                    void readBrowserFiles(Array.from(event.dataTransfer.files), (items) => uploadFilesRef.current(items));
+                    browserUploadItems(Array.from(event.dataTransfer.files), (items) => uploadFilesRef.current(items));
                 }}
             >
                 <div ref={hostRef} className="absolute inset-2" />
@@ -732,18 +691,18 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                         onChange={(event) => {
                             const files = Array.from(event.currentTarget.files ?? []);
                             event.currentTarget.value = "";
-                            void readBrowserFiles(files, (items) => uploadFilesRef.current(items));
+                            browserUploadItems(files, (items) => uploadFilesRef.current(items));
                         }}
                     />
                     <div className="absolute top-2 right-11 z-10 flex items-center gap-1">
-                        {uploadProgress && <span role="status" aria-live="polite" className="max-w-36 truncate rounded-md bg-black/70 px-2 py-1 text-xs text-zinc-200">Uploading {uploadProgress.current}/{uploadProgress.total}: {uploadProgress.name}</span>}
+                        {uploading && <span role="status" aria-live="polite" className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1 text-xs text-zinc-200"><Spinner className="size-3" />Uploading</span>}
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <Button variant="ghost" size="icon-sm" aria-label="Upload files to terminal" disabled={!canUploadRef.current || uploadingRef.current} onClick={() => fileInputRef.current?.click()}>
                                     <IconUpload />
                                 </Button>
                             </TooltipTrigger>
-                                <TooltipContent>Upload files (up to 4 MiB each, 16 MiB total, 20 files)</TooltipContent>
+                                <TooltipContent>Upload files (up to 8 GiB each, 50 files)</TooltipContent>
                         </Tooltip>
                     </div>
                 </>}

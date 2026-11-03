@@ -1,6 +1,6 @@
-const NODE_WIDTH = 240;
-const GAP_X = 40;
-const GAP_Y = 120;
+export const DEFAULT_NODE_SIZE = { width: 520, height: 320 };
+const GAP_X = 60;
+const GAP_Y = 80;
 
 export interface LayoutItem {
   id: string;
@@ -8,7 +8,10 @@ export interface LayoutItem {
 }
 
 /** Layered tree layout: one row per depth, each parent centred over its children. Roots sit side by side. */
-export function layoutTree(items: LayoutItem[]): Record<string, { x: number; y: number }> {
+export function layoutTree(
+  items: LayoutItem[],
+  size: { width: number; height: number } = DEFAULT_NODE_SIZE,
+): Record<string, { x: number; y: number }> {
   const ids = new Set(items.map((item) => item.id));
   const children = new Map<string, string[]>();
   const roots: string[] = [];
@@ -19,7 +22,7 @@ export function layoutTree(items: LayoutItem[]): Record<string, { x: number; y: 
 
   const positions: Record<string, { x: number; y: number }> = {};
   const placed = new Set<string>();
-  const slot = NODE_WIDTH + GAP_X;
+  const slot = size.width + GAP_X;
   let nextLeaf = 0;
 
   // Returns the node's centre in leaf-slot units; `placed` also guards against parent cycles.
@@ -28,7 +31,7 @@ export function layoutTree(items: LayoutItem[]): Record<string, { x: number; y: 
     const kids = (children.get(id) ?? []).filter((child) => !placed.has(child));
     const centres = kids.map((child) => place(child, depth + 1));
     const centre = centres.length ? (centres[0] + centres[centres.length - 1]) / 2 : nextLeaf++;
-    positions[id] = { x: centre * slot, y: depth * (GAP_Y + 90) };
+    positions[id] = { x: centre * slot, y: depth * (size.height + GAP_Y) };
     return centre;
   }
 

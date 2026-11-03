@@ -136,12 +136,21 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, provider)
     );
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'agent_links' AND column_name = 'a_id') THEN
+        DROP TABLE agent_links; -- legacy unused undirected schema
+      END IF;
+    END $$;
     CREATE TABLE IF NOT EXISTS agent_links (
-      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
-      a_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
-      b_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
-      PRIMARY KEY (a_id, b_id),
-      CHECK (a_id < b_id)
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id UUID,
+      from_session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      to_session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('recruit','message','manual')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_message_at TIMESTAMPTZ,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (from_session_id, to_session_id)
     );
     CREATE TABLE IF NOT EXISTS agent_notes (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,

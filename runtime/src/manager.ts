@@ -9,6 +9,8 @@ import type { Config, ModelEntry } from "./config.js";
 import { badRequest, conflict, notFound, tooMany, unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
+import { streamToFile, validAttachmentName } from "./attachments.js";
+import type { Readable } from "node:stream";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { buildSessionEnv, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
@@ -865,7 +867,7 @@ export class SessionManager {
   /** Save an explicitly selected terminal attachment outside the checkout and return its container path. */
   async uploadSessionAttachment(id: string, userId: string, name: unknown, encoded: unknown): Promise<{ path: string; size: number }> {
     this.getLive(id, userId);
-    if (typeof name !== "string" || !name || name === "." || name === ".." || /[\\/\u0000-\u001f\u007f]/.test(name) || Buffer.byteLength(name, "utf8") > 255) {
+    if (!validAttachmentName(name)) {
       throw badRequest("Choose a file with a valid name", "invalid_attachment_name");
     }
     if (typeof encoded !== "string" || encoded.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
@@ -876,26 +878,53 @@ export class SessionManager {
       throw badRequest("File must be between 1 byte and 4 MiB", "invalid_attachment");
     }
     return this.withUserShardActivity(userId, async (handle) => {
-      const directoryId = randomUUID();
-      const relativeDirectory = `.floq/attachments/${directoryId}`;
-      const hostDirectory = this.shards.driver.hostPath(handle, relativeDirectory);
-      const home = resolve(handle.mountPath);
-      let current = home;
-      for (const part of [".floq", "attachments", directoryId]) {
-        current = join(current, part);
-        try {
-          const stat = lstatSync(current);
-          if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          mkdirSync(current, { mode: 0o700 });
-          lchownSync(current, handle.uid, handle.uid);
-        }
-      }
+      const { hostDirectory, relativeDirectory } = this.prepareAttachmentDirectory(handle);
       const destination = join(hostDirectory, name);
       writeFileSync(destination, contents, { flag: "wx", mode: 0o600 });
       lchownSync(destination, handle.uid, handle.uid);
       return { path: join(this.shards.driver.homePath(handle), relativeDirectory, name), size: contents.length };
+    });
+  }
+
+  /** Create a fresh private `.floq/attachments/<uuid>` directory owned by the user, refusing symlinked parents. */
+  private prepareAttachmentDirectory(handle: ShardHandle): { hostDirectory: string; relativeDirectory: string; directoryPath: string } {
+    const directoryId = randomUUID();
+    const relativeDirectory = `.floq/attachments/${directoryId}`;
+    const hostDirectory = this.shards.driver.hostPath(handle, relativeDirectory);
+    const home = resolve(handle.mountPath);
+    let current = home;
+    for (const part of [".floq", "attachments", directoryId]) {
+      current = join(current, part);
+      try {
+        const stat = lstatSync(current);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        mkdirSync(current, { mode: 0o700 });
+        lchownSync(current, handle.uid, handle.uid);
+      }
+    }
+    return { hostDirectory, relativeDirectory, directoryPath: current };
+  }
+
+  /** Stream a raw request body into the same attachment location without buffering it in memory. */
+  async uploadSessionAttachmentStream(id: string, userId: string, name: unknown, source: Readable, options: { maxBytes: number; contentLength: number | null }): Promise<{ path: string; size: number }> {
+    this.getLive(id, userId);
+    if (!validAttachmentName(name)) throw badRequest("Choose a file with a valid name", "invalid_attachment_name");
+    return this.withUserShardActivity(userId, async (handle) => {
+      const { hostDirectory, relativeDirectory, directoryPath } = this.prepareAttachmentDirectory(handle);
+      const destination = join(hostDirectory, name);
+      const partial = join(hostDirectory, `.upload-${randomUUID()}.part`);
+      try {
+        const size = await streamToFile(source, partial, options.maxBytes, options.contentLength);
+        lchownSync(partial, handle.uid, handle.uid);
+        renameSync(partial, destination);
+        return { path: join(this.shards.driver.homePath(handle), relativeDirectory, name), size };
+      } catch (error) {
+        rmSync(partial, { force: true });
+        rmSync(directoryPath, { recursive: true, force: true });
+        throw error;
+      }
     });
   }
 

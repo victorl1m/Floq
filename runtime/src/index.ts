@@ -11,6 +11,7 @@ import { createShardDriver } from "./shard.js";
 import { ShardService } from "./shards.js";
 import { createRuntimeServer } from "./server.js";
 import { SettingsStore } from "./settings.js";
+import { AgentLinks } from "./links.js";
 import { Orchestrator } from "./orchestrator.js";
 import { Vault } from "./vault.js";
 import { SkillsService } from "./skills.js";
@@ -46,11 +47,12 @@ const claudeOauth = new ClaudeOAuth(config, credentials);
 claudeOauth.onConnected = (userId, data) => void manager.distribute(userId, "claude", data).catch(() => undefined);
 credentials.start();
 const usage = new UsageService(credentials);
-const orchestrator = new Orchestrator(pool, manager, settings);
+const agentLinks = new AgentLinks(pool);
+const orchestrator = new Orchestrator(pool, manager, settings, agentLinks);
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
 
 await server.listen();
 log.info("runtime.listening", {
