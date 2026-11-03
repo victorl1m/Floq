@@ -10,7 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { AgentRole, CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ModelSelect, { normalizeModels } from "./model-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { loadComposerPrefs } from "@/lib/prefs";
@@ -21,6 +21,7 @@ import ProjectPicker from "@/components/projects/project-picker";
 import CloneDialog from "@/components/home/clone-dialog";
 
 const FORM_ID = "new-agent-form";
+const GENERALIST = "__generalist__";
 
 export default function NewAgentDialog() {
     const { client, info, newAgentOpen, newAgentOrigin, setNewAgentOpen, upsertSession, openSession, refresh, projects, projectsLoading, activeProjectId, activeWorkspaceId, selectProject, createProject } = useRuntime();
@@ -188,12 +189,22 @@ export default function NewAgentDialog() {
                 {roles.length > 0 && usable.length > 0 && (
                     <div className="flex flex-col gap-2">
                         <Label htmlFor="agent-role">Role</Label>
-                        <NativeSelect id="agent-role" className="w-full" value={role} disabled={busy} onChange={(event) => setRole(event.target.value)}>
-                            <NativeSelectOption value="">Generalist</NativeSelectOption>
-                            {roles.map((r) => (
-                                <NativeSelectOption key={r.id} value={r.id}>{r.label} - {r.summary}</NativeSelectOption>
-                            ))}
-                        </NativeSelect>
+                        <Select value={role || GENERALIST} disabled={busy} onValueChange={(value) => setRole(value === GENERALIST ? "" : value)}>
+                            <SelectTrigger id="agent-role" className="w-full">
+                                <SelectValue>{roles.find((r) => r.id === role)?.label ?? "Generalist"}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent className="max-w-[min(var(--radix-select-content-available-width),28rem)]">
+                                <SelectItem value={GENERALIST}>Generalist</SelectItem>
+                                {roles.map((r) => (
+                                    <SelectItem key={r.id} value={r.id} textValue={r.label}>
+                                        <span className="flex min-w-0 flex-col items-start gap-0.5">
+                                            <span>{r.label}</span>
+                                            <span className="text-xs font-normal text-muted-foreground">{r.summary}</span>
+                                        </span>
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                         {role && !model && <p className="text-xs text-muted-foreground">Model: Auto, chosen for this role ({roles.find((r) => r.id === role)?.capability}).</p>}
                     </div>
                 )}

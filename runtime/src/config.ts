@@ -8,6 +8,7 @@ const DEFAULTS = {
   maxSessions: 256,
   outputBufferBytes: 4 * 1024 * 1024,
   maxBodyBytes: 64 * 1024,
+  maxUploadBytes: 8 * 1024 * 1024 * 1024,
   defaultCols: 120,
   defaultRows: 32,
   idleTimeoutMs: 0,
@@ -94,6 +95,8 @@ export interface Config {
   maxLifetimeMs: number;
   outputBufferBytes: number;
   maxBodyBytes: number;
+  /** Per-file cap for streamed terminal attachments. */
+  maxUploadBytes: number;
   passHostEnv: boolean;
   sessionEnvAllow: string[];
   providers: ProviderBinConfig;
@@ -199,6 +202,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       256 * 1024 * 1024,
     ),
     maxBodyBytes: readInt(env.FLOQ_MAX_BODY_BYTES, DEFAULTS.maxBodyBytes, 1024, 8 * 1024 * 1024),
+    maxUploadBytes: readInt(env.FLOQ_MAX_UPLOAD_BYTES, DEFAULTS.maxUploadBytes, 1, 1024 ** 4),
     passHostEnv: readBool(env.FLOQ_PASS_ENV, false),
     sessionEnvAllow: readList(env.FLOQ_SESSION_ENV_ALLOW, []),
     providers: {

@@ -16,7 +16,7 @@ export function ActivityIndicator({ session, className }: { session: Pick<Sessio
   if (activity === "waiting") return <span role="status" title="Waiting for input" aria-label="Waiting for input" className={cn("size-1.5 shrink-0 rounded-full bg-amber-400", className)} />;
   return (
     <span role="status" title="Working" aria-label="Working" className={cn("inline-flex shrink-0 items-end gap-[2px]", className)}>
-      {[0, 1, 2].map((index) => <span key={index} className="size-1 rounded-full bg-emerald-500 animate-bounce motion-reduce:animate-none" style={{ animationDelay: `${index * 150}ms`, animationDuration: "900ms" }} />)}
+      {[0, 1, 2].map((index) => <span key={index} className="size-1 rounded-full bg-sky-500 animate-bounce motion-reduce:animate-none" style={{ animationDelay: `${index * 150}ms`, animationDuration: "900ms" }} />)}
     </span>
   );
 }

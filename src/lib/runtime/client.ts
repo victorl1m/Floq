@@ -1,5 +1,6 @@
 import type {
   AgentLink,
+  AgentMessageEvent,
   AgentRole,
   AuthUser,
   CreateSessionInput,
@@ -363,6 +364,49 @@ export class RuntimeClient {
     return this.call("POST", `/v1/sessions/${encodeURIComponent(id)}/attachments`, { name, data }, { timeoutMs: 90_000 });
   }
 
+  /** Raw-body streaming upload endpoint (PUT); used for any size, with no JSON/base64 in memory. */
+  attachmentStreamUrl(id: string, name: string): string {
+    return `${this.baseUrl}/v1/sessions/${encodeURIComponent(id)}/attachments?name=${encodeURIComponent(name)}`;
+  }
+
+  /** Upload a Blob/File with progress (XHR: fetch cannot report upload progress). Aborting `signal` cancels and the runtime deletes the partial file. */
+  uploadSessionAttachmentStream(
+    id: string,
+    file: Blob,
+    name: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<{ path: string; size: number }> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new RuntimeError(0, "aborted", "Upload cancelled"));
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", this.attachmentStreamUrl(id, name));
+      if (this.token) xhr.setRequestHeader("Authorization", "Bearer " + this.token);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.responseType = "text";
+      const onAbort = () => xhr.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const done = () => signal?.removeEventListener("abort", onAbort);
+      xhr.upload.onprogress = (event) => onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
+      xhr.onerror = () => { done(); reject(new RuntimeError(0, "network", "Runtime unreachable or the connection dropped during upload")); };
+      xhr.ontimeout = () => { done(); reject(new RuntimeError(408, "timeout", "The upload timed out")); };
+      xhr.onabort = () => { done(); reject(new RuntimeError(0, "aborted", "Upload cancelled")); };
+      xhr.onload = () => {
+        done();
+        let data: { path?: string; size?: number; error?: { code?: string; message?: string } | string; message?: string } | null = null;
+        try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch { data = null; }
+        if (xhr.status >= 200 && xhr.status < 300 && data?.path) {
+          onProgress?.(file.size, file.size);
+          return resolve({ path: data.path, size: data.size ?? file.size });
+        }
+        if (xhr.status === 401 && this.token) this.onUnauthorized?.();
+        const error = typeof data?.error === "object" ? data.error : null;
+        reject(new RuntimeError(xhr.status, error?.code ?? "http_" + xhr.status, error?.message ?? data?.message ?? (typeof data?.error === "string" ? data.error : xhr.status === 413 ? "File is too large for the server or its proxy" : xhr.statusText || "Upload failed")));
+      };
+      xhr.send(file);
+    });
+  }
+
   async interrupt(id: string): Promise<void> {
     await this.call("POST", `/v1/sessions/${id}/interrupt`, {});
   }
@@ -490,16 +534,31 @@ export class RuntimeClient {
 
   // --- agent links ---
 
-  async links(): Promise<AgentLink[]> {
-    return (await this.call<{ links: AgentLink[] }>("GET", "/v1/links")).links;
+  /** Wires of one project (project UUID, or "none" for sessions outside a registered project). */
+  async projectLinks(projectId: string): Promise<AgentLink[]> {
+    return (await this.call<{ links: AgentLink[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/links`)).links;
   }
 
-  async link(a: string, b: string): Promise<AgentLink[]> {
-    return (await this.call<{ links: AgentLink[] }>("POST", "/v1/links", { a, b })).links;
+  /** Manual wire (idempotent). */
+  async createLink(fromSessionId: string, toSessionId: string): Promise<AgentLink> {
+    return this.call<AgentLink>("POST", "/v1/links", { fromSessionId, toSessionId });
   }
 
-  async unlink(a: string, b: string): Promise<AgentLink[]> {
-    return (await this.call<{ links: AgentLink[] }>("DELETE", "/v1/links", { a, b })).links;
+  async deleteLink(linkId: string): Promise<void> {
+    await this.call("DELETE", `/v1/links/${encodeURIComponent(linkId)}`);
+  }
+
+  /** Recent agent-to-agent messages of a project, oldest first (server keeps ~200 in memory). */
+  async projectEvents(projectId: string, limit = 50): Promise<AgentMessageEvent[]> {
+    return (await this.call<{ events: AgentMessageEvent[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/events?limit=${limit}`)).events;
+  }
+
+  /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
+  eventsUrl(): string {
+    const url = new URL(this.baseUrl + "/v1/events");
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (this.token) url.searchParams.set("token", this.token);
+    return url.toString();
   }
 
   // --- GitHub device flow ---

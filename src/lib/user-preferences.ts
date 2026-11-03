@@ -10,6 +10,8 @@ export interface UserPreferences {
     hiddenSessionIds: Record<string, boolean>;
     /** Dragged Agent Canvas node positions: project id -> session id -> position. */
     canvasPositions: Record<string, Record<string, { x: number; y: number }>>;
+    /** Resized Agent Canvas node sizes: project id -> session id -> size. */
+    canvasSizes: Record<string, Record<string, { width: number; height: number }>>;
     /** Project whose Agent Canvas was open last; restored after a reload. */
     lastCanvasProjectId: string | null;
 }
@@ -26,6 +28,7 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     folderNavExpanded: {},
     hiddenSessionIds: {},
     canvasPositions: {},
+    canvasSizes: {},
     lastCanvasProjectId: null,
 };
 
@@ -40,6 +43,21 @@ function positionMaps(value: unknown): UserPreferences["canvasPositions"] {
             if (typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
         }
         result[project] = positions;
+    }
+    return result;
+}
+
+function sizeMaps(value: unknown): UserPreferences["canvasSizes"] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: UserPreferences["canvasSizes"] = {};
+    for (const [project, nodes] of Object.entries(value)) {
+        if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) continue;
+        const sizes: Record<string, { width: number; height: number }> = {};
+        for (const [id, size] of Object.entries(nodes)) {
+            const { width, height } = (size ?? {}) as { width?: unknown; height?: unknown };
+            if (typeof width === "number" && typeof height === "number" && Number.isFinite(width) && Number.isFinite(height) && width >= 100 && height >= 60 && width <= 4000 && height <= 4000) sizes[id] = { width, height };
+        }
+        result[project] = sizes;
     }
     return result;
 }
@@ -77,6 +95,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             folderNavExpanded: booleanMap(parsed.folderNavExpanded),
             hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),
             canvasPositions: positionMaps(parsed.canvasPositions),
+            canvasSizes: sizeMaps(parsed.canvasSizes),
             lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }

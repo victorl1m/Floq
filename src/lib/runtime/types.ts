@@ -230,9 +230,28 @@ export interface SecretInfo {
   lastUsedAt: string | null;
 }
 
+/** A wire between two agent sessions on the Canvas (directed from -> to). */
 export interface AgentLink {
-  a: string;
-  b: string;
+  id: string;
+  projectId: string | null;
+  fromSessionId: string;
+  toSessionId: string;
+  kind: "recruit" | "message" | "manual";
+  createdAt: string;
+  lastMessageAt: string | null;
+  messageCount: number;
+}
+
+/** Live frame on the `/v1/events` socket and items of GET /v1/projects/:id/events. */
+export interface AgentMessageEvent {
+  type: "agent-message";
+  linkId: string;
+  fromSessionId: string;
+  toSessionId: string;
+  projectId: string | null;
+  kind: "ask" | "reply" | "recruit";
+  preview: string;
+  at: string;
 }
 
 export interface DeviceFlow {

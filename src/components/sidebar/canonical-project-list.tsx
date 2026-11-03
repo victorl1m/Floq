@@ -2,7 +2,18 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import {
   IconChevronRight,
   IconCopy,
+  IconChevronsDown,
+  IconChevronsUp,
   IconDots,
+  IconExternalLink,
+  IconEye,
+  IconEyeOff,
+  IconFiles,
+  IconFolderOpen,
+  IconGitCompare,
+  IconLayoutKanban,
+  IconTerminal2,
+  IconX,
   IconFolder,
   IconFolderPlus,
   IconGitBranch,
@@ -21,22 +32,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuAction, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub, SidebarMenuSubItem } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
 import { ProviderIcon, isLive } from "@/components/agents/provider";
-import { ActivityIndicator } from "@/components/agents/activity-indicator";
+import { ActivityIndicator, agentActivity } from "@/components/agents/activity-indicator";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, removeProjectFolder, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
 import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
 import { copyText } from "@/lib/clipboard";
+import { openRightSidebar } from "@/lib/right-sidebar";
+import { isTauri } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { RuntimeProject, SessionState, SessionSummary } from "@/lib/runtime/types";
 import { cn } from "cn";
 
+const CTX = "w-56";
+const ROW_OPEN = "rounded-md data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground";
 const MENU = "w-48 min-w-[192px] whitespace-nowrap";
 const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES = 32 * 1024;
@@ -81,7 +98,7 @@ function StateDot({ state }: { state: SessionState }) {
 type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, activeProjectId, activeWorkspaceId, view, canvasProjectId, openCanvas, openSession, activateSession, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
+  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, openSession, activateSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   const projectMeta = useCanonicalProjectMeta(scope);
@@ -258,10 +275,40 @@ export default function CanonicalProjectList() {
     finally { setRenameSaving(false); }
   }
 
+  function copy(text: string, label: string) {
+    void copyText(text).then(() => toast.success(`${label} copied`)).catch(() => toast.error(`Could not copy ${label.toLowerCase()}`));
+  }
+  function reveal(path: string) {
+    revealItemInDir(path).catch((error) => toast.error("Could not open the folder", { description: errorMessage(error) }));
+  }
+  async function openTerminalHere(projectId: string, workspaceId: string) {
+    if (!client) return;
+    try {
+      const session = await client.createSession({ provider: "shell", title: "Terminal", projectId, workspaceId });
+      upsertSession(session);
+      openSession(session, "agent");
+    } catch (error) { toast.error("Could not open a terminal", { description: errorMessage(error) }); }
+  }
+  function setAllWorkspaces(project: RuntimeProject, open: boolean) {
+    const next = { ...userPreferences.workspaceNavExpanded };
+    for (const workspace of project.workspaces ?? []) next[`${project.id}:${workspace.id}`] = open;
+    updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: true }, workspaceNavExpanded: next });
+  }
+  function hideSession(session: SessionSummary) {
+    closeTab(session.id);
+    updateUserPreferences({ hiddenSessionIds: { ...userPreferences.hiddenSessionIds, [session.id]: true } });
+  }
+  function restoreSession(session: SessionSummary) {
+    const { [session.id]: _removed, ...rest } = userPreferences.hiddenSessionIds;
+    updateUserPreferences({ hiddenSessionIds: rest });
+  }
+
   function renderAgent(session: SessionSummary) {
-    return <SidebarMenuSubItem key={session.id} className="group/agent-row relative">
+    const hidden = !!userPreferences.hiddenSessionIds[session.id];
+    const live = isLive(session.state);
+    return <ContextMenu key={session.id}><ContextMenuTrigger asChild><SidebarMenuSubItem className={cn("group/agent-row relative", ROW_OPEN)}>
       <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={(view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
-        <StateDot state={session.state} /><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span><ActivityIndicator session={session} className="ml-1" />
+        <span className="flex h-3 w-4 shrink-0 items-center justify-center">{agentActivity(session) ? <ActivityIndicator session={session} /> : <StateDot state={session.state} />}</span><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>
       </SidebarMenuButton>
       <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1 text-muted-foreground md:opacity-0 md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className={MENU}>
@@ -272,7 +319,21 @@ export default function CanonicalProjectList() {
           <DropdownMenuItem variant="destructive" onClick={() => setDeleting(session)}><IconTrash />Delete</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-    </SidebarMenuSubItem>;
+    </SidebarMenuSubItem></ContextMenuTrigger>
+      <ContextMenuContent className={CTX}>
+        <ContextMenuItem onClick={() => activateSession(session)}><IconExternalLink />Open</ContextMenuItem>
+        {session.projectId && <ContextMenuItem onClick={() => openCanvas(session.projectId!, session.worktreeId)}><IconLayoutKanban />Open in canvas</ContextMenuItem>}
+        {!live && <ContextMenuItem onClick={() => void resume(session)}><IconPlayerPlay />{session.state === "sleeping" ? "Resume" : "Restart"}</ContextMenuItem>}
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => { setRenaming(session); setRenameTitle(session.title); setRenameError(null); }}><IconPencil />Rename conversation</ContextMenuItem>
+        <ContextMenuItem onClick={() => copy(session.title, "Title")}><IconCopy />Copy title</ContextMenuItem>
+        <ContextMenuItem onClick={() => copy(session.id, "Agent ID")}><IconCopy />Copy agent ID</ContextMenuItem>
+        <ContextMenuSeparator />
+        {hidden
+          ? <ContextMenuItem onClick={() => restoreSession(session)}><IconEye />Restore to sidebar</ContextMenuItem>
+          : <ContextMenuItem disabled={live} onClick={() => hideSession(session)}><IconEyeOff />{live ? "Hide (agent is running)" : "Hide from sidebar"}</ContextMenuItem>}
+        <ContextMenuItem variant="destructive" onClick={() => setDeleting(session)}><IconTrash />Delete</ContextMenuItem>
+      </ContextMenuContent></ContextMenu>;
   }
 
   function renderProject(project: RuntimeProject) {
@@ -280,7 +341,7 @@ export default function CanonicalProjectList() {
     const projectExpanded = userPreferences.projectNavExpanded[project.id] ?? true;
     return <SidebarMenuItem key={project.id}>
       <Collapsible open={projectExpanded} onOpenChange={(open) => updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: open } })} className="group/project">
-        <div className="group/project-row relative">
+        <ContextMenu><ContextMenuTrigger asChild><div className={cn("group/project-row relative", ROW_OPEN)}>
           <SidebarMenuButton isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium" title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
             <ProjectMark project={project} className="text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
           </SidebarMenuButton>
@@ -293,7 +354,27 @@ export default function CanonicalProjectList() {
               {!!folderByProject.get(project.id) && <DropdownMenuItem onClick={() => updateCanonicalProjectMeta(project.id, { folderId: null }, scope)}><IconFolder />Move to root</DropdownMenuItem>}
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
+        </div></ContextMenuTrigger>
+          <ContextMenuContent className={CTX}>
+            <ContextMenuItem onClick={() => openCanvas(project.id)}><IconLayoutKanban />Open canvas</ContextMenuItem>
+            <ContextMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent in this project</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={() => openProjectEdit(project)}><IconPencil />Rename / project settings</ContextMenuItem>
+            <ContextMenuItem onClick={() => copy(project.displayName?.trim() || project.name, "Project name")}><IconCopy />Copy project name</ContextMenuItem>
+            <ContextMenuItem onClick={() => copy(project.cwd, "Path")}><IconCopy />Copy path</ContextMenuItem>
+            <ContextMenuItem disabled={!isTauri()} onClick={() => reveal(project.cwd)}><IconFolderOpen />{isTauri() ? "Reveal in file explorer" : "Reveal (desktop app only)"}</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, true)}><IconChevronsDown />Expand all workspaces</ContextMenuItem>
+            <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, false)}><IconChevronsUp />Collapse all workspaces</ContextMenuItem>
+            <ContextMenuItem disabled={projectsLoading} onClick={() => void retryProjects().catch(() => {})}><IconRefresh />Refresh projects</ContextMenuItem>
+            {(folders.filter((folder) => folder.id !== folderByProject.get(project.id)).length > 0 || !!folderByProject.get(project.id)) && <>
+              <ContextMenuSeparator />
+              <ContextMenuSub><ContextMenuSubTrigger><IconFolder />Move to folder</ContextMenuSubTrigger><ContextMenuSubContent>
+                {folders.filter((folder) => folder.id !== folderByProject.get(project.id)).map((folder) => <ContextMenuItem key={folder.id} onClick={() => updateCanonicalProjectMeta(project.id, { folderId: folder.id }, scope)}><IconFolder />{folder.name}</ContextMenuItem>)}
+                {!!folderByProject.get(project.id) && <ContextMenuItem onClick={() => updateCanonicalProjectMeta(project.id, { folderId: null }, scope)}><IconX />Root</ContextMenuItem>}
+              </ContextMenuSubContent></ContextMenuSub>
+            </>}
+          </ContextMenuContent></ContextMenu>
         <CollapsibleContent>
           <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-2 pr-0">
             {workspaces.map((workspace) => {
@@ -303,10 +384,10 @@ export default function CanonicalProjectList() {
               const workspaceExpanded = userPreferences.workspaceNavExpanded[workspaceKey] ?? true;
               return <SidebarMenuSubItem key={workspace.id} className="relative">
                 <Collapsible open={workspaceExpanded} onOpenChange={(open) => updateUserPreferences({ workspaceNavExpanded: { ...userPreferences.workspaceNavExpanded, [workspaceKey]: open } })} className="group/workspace">
-                  <div className="group/workspace-row relative">
-                    <SidebarMenuButton isActive={view === "home" && activeProjectId === project.id && activeWorkspaceId === workspace.id} className={cn("h-8 gap-1.5 text-[13px] text-muted-foreground", workspace.isWorktree ? "pr-20!" : "pr-14!")} title={`${label} · ${workspace.cwd}`} onClick={() => { selectProject(project.id, workspace.id); navigate("home"); }}>
+                  <ContextMenu><ContextMenuTrigger asChild><div className={cn("group/workspace-row relative", ROW_OPEN)}>
+                    <CollapsibleTrigger asChild><SidebarMenuButton className={cn("h-8 gap-1.5 text-[13px] text-muted-foreground", workspace.isWorktree ? "pr-20!" : "pr-14!")} title={`${label} · ${workspace.cwd}`}>
                       <IconGitBranch /><span className="min-w-0 truncate">{label}</span>
-                    </SidebarMenuButton>
+                    </SidebarMenuButton></CollapsibleTrigger>
                     <Tooltip><TooltipTrigger asChild><SidebarMenuAction className={cn("top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100 md:aria-expanded:opacity-100", workspace.isWorktree ? "right-14!" : "right-7!")} aria-label={`New agent in ${label}`} onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus /></SidebarMenuAction></TooltipTrigger><TooltipContent>New agent in {label}</TooltipContent></Tooltip>
                     <CollapsibleTrigger asChild><SidebarMenuAction className={cn("top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:focus-visible:opacity-100", workspace.isWorktree && "right-7!")} aria-label={`Toggle agents in ${label}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/workspace:rotate-90" /></SidebarMenuAction></CollapsibleTrigger>
                     {workspace.isWorktree && <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for worktree ${label}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
@@ -314,7 +395,20 @@ export default function CanonicalProjectList() {
                         <DropdownMenuItem variant="destructive" onClick={() => setDeletingWorktree({ project, workspace })}><IconTrash />Delete worktree</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>}
-                  </div>
+                  </div></ContextMenuTrigger>
+                    <ContextMenuContent className={CTX}>
+                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus />New agent here</ContextMenuItem>
+                      <ContextMenuItem disabled={!client} onClick={() => void openTerminalHere(project.id, workspace.id)}><IconTerminal2 />Open terminal here</ContextMenuItem>
+                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); navigate("home"); }}><IconExternalLink />Open workspace</ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); openRightSidebar("changes"); }}><IconGitCompare />Show changes</ContextMenuItem>
+                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); openRightSidebar("files"); }}><IconFiles />Show files</ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem disabled={!workspace.branch} onClick={() => copy(workspace.branch ?? "", "Branch name")}><IconGitBranch />{workspace.branch ? "Copy branch name" : "Copy branch name (no branch)"}</ContextMenuItem>
+                      <ContextMenuItem onClick={() => copy(workspace.cwd, "Path")}><IconCopy />Copy path</ContextMenuItem>
+                      <ContextMenuItem disabled={!isTauri()} onClick={() => reveal(workspace.cwd)}><IconFolderOpen />{isTauri() ? "Reveal in file explorer" : "Reveal (desktop app only)"}</ContextMenuItem>
+                      {workspace.isWorktree && <><ContextMenuSeparator /><ContextMenuItem variant="destructive" onClick={() => setDeletingWorktree({ project, workspace })}><IconTrash />Delete worktree</ContextMenuItem></>}
+                    </ContextMenuContent></ContextMenu>
                   <CollapsibleContent>
                     <SidebarMenuSub className="mx-0 translate-x-0 gap-1 border-0 py-1 pl-3 pr-0">{agents.length ? agents.map(renderAgent) : <SidebarMenuSubItem><span className="block px-2 py-1 text-xs text-muted-foreground">No agents</span></SidebarMenuSubItem>}</SidebarMenuSub>
                   </CollapsibleContent>

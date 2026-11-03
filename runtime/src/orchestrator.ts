@@ -7,6 +7,7 @@ import type { Session } from "./session.js";
 import { agentStatus, DEFAULT_REPLY_CHARS, truncateReply, type AgentStatus, type TranscriptTurn } from "./turn.js";
 import type { SettingsStore } from "./settings.js";
 import { getAgentRole, GENERALIST_ID } from "./roles.js";
+import type { AgentLinks } from "./links.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -79,6 +80,7 @@ export class Orchestrator {
     private readonly pool: pg.Pool,
     private readonly manager: SessionManager,
     private readonly settings: SettingsStore,
+    private readonly links?: AgentLinks,
   ) {}
 
   private async rows(userId: string) {
@@ -230,13 +232,15 @@ export class Orchestrator {
 
   /** Block until an agent finishes its current turn, then return its full last reply (`floq wait`). */
   async wait(userId: string, sessionId: string, name: unknown, timeoutSec?: number, chars?: number, full = false) {
-    const { other } = await this.target(userId, sessionId, name);
+    const { me, other } = await this.target(userId, sessionId, name);
     const live = this.manager.findLive(other.id, userId);
     if (!live) return { id: other.id, name: other.title, status: "asleep", source: "none", output: "(agent is asleep; use ask to wake it)", truncated: 0 };
     const timeoutMs = Math.min(Math.max((timeoutSec ?? DEFAULT_TIMEOUT_MS / 1000) * 1000, 10_000), MAX_TIMEOUT_MS);
     // An idle agent satisfies "prompts > afterPrompts" at once; a working one only when its open turn completes.
     const afterPrompts = Math.max(0, (this.manager.readAgentTurn(other.id, userId)?.prompts ?? 0) - 1);
+    await this.links?.upsert(me.id, other.id, "message", "none").catch(() => undefined); // wire only; no event until a message moves
     const { why, turn } = await this.awaitTurn(live, userId, afterPrompts, timeoutMs, 0);
+    if (why === "done" && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", turn.reply);
     return this.turnResult(other, live, why, turn, chars, full);
   }
 
@@ -263,8 +267,10 @@ export class Orchestrator {
       target.write("[Message from agent " + me.title + "] " + body);
       await new Promise((r) => setTimeout(r, 300));
       target.write("\r");
+      await this.links?.record(userId, me.id, other.id, "message", "message", "ask", body);
       if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0 };
       const { why, turn } = await this.awaitTurn(target, userId, afterPrompts, timeoutMs, Date.now());
+      if ((why === "done" || why === "quiet") && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", turn.reply);
       return this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim());
     } finally {
       unsubscribe();
@@ -347,6 +353,7 @@ export class Orchestrator {
         setTimeout(() => live?.write("\r"), 300);
       }, 6_000).unref();
     }
+    await this.links?.record(userId, me.id, created.id, "recruit", "none", "recruit", roleText || "Recruited " + name + (provider === "codex" ? " (codex)" : ""));
     return { id: created.id, name, provider, model: created.model ?? "default", state: created.state };
   }
 

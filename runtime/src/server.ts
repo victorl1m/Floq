@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { DEFAULT_MAX_UPLOAD_BYTES } from "./attachments.js";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { WebSocketServer, type WebSocket } from "ws";
 import type pg from "pg";
@@ -14,6 +15,7 @@ import { log } from "./logger.js";
 import type { SessionManager } from "./manager.js";
 import type { GithubLinker } from "./github.js";
 import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles.js";
+import type { AgentLinks } from "./links.js";
 import { selectableAgentModels, type Orchestrator } from "./orchestrator.js";
 import type { PatchSecret, PutSecret, Vault } from "./vault.js";
 import { listProviders } from "./providers.js";
@@ -43,6 +45,7 @@ interface Deps {
   github: GithubLinker;
   vault: Vault;
   orchestrator: Orchestrator;
+  links: AgentLinks;
   pool: pg.Pool;
   credentials: CredentialBroker;
   claudeOauth: ClaudeOAuth;
@@ -53,7 +56,7 @@ interface Deps {
   tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
@@ -593,6 +596,22 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       }
     }
 
+    const linksMatch = /^\/v1\/projects\/([\w-]+)\/(links|events)$/.exec(url.pathname);
+    if (linksMatch && method === "GET") {
+      if (linksMatch[2] === "links") return send(res, 200, { links: await links.list(userId, linksMatch[1]) });
+      const limit = clampInt(Number(url.searchParams.get("limit")) || 50, 1, 200);
+      return send(res, 200, { events: links.hub.recent(userId, linksMatch[1], limit) });
+    }
+    if (url.pathname === "/v1/links" && method === "POST") {
+      const body = await readJson<{ fromSessionId?: unknown; toSessionId?: unknown }>(req);
+      return send(res, 200, await links.createManual(userId, body.fromSessionId, body.toSessionId));
+    }
+    const linkMatch = /^\/v1\/links\/([\w-]+)$/.exec(url.pathname);
+    if (linkMatch && method === "DELETE") {
+      await links.remove(userId, linkMatch[1]);
+      return send(res, 200, { ok: true });
+    }
+
     if (url.pathname === "/v1/projects") {
       if (method === "GET") return send(res, 200, { projects: await manager.listProjects(userId) });
       if (method === "POST") {
@@ -687,6 +706,12 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     }
 
     const attachmentMatch = /^\/v1\/sessions\/([\w-]+)\/attachments$/.exec(url.pathname);
+    if (attachmentMatch && method === "PUT") {
+      // Raw binary body streamed to disk; name in the query string, size capped by FLOQ_MAX_UPLOAD_BYTES.
+      const length = req.headers["content-length"];
+      const contentLength = length !== undefined && /^\d+$/.test(length) ? Number(length) : null;
+      return send(res, 201, await manager.uploadSessionAttachmentStream(attachmentMatch[1], userId, url.searchParams.get("name"), req, { maxBytes: config.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES, contentLength }));
+    }
     if (attachmentMatch && method === "POST") {
       const body = await readJson<{ name?: unknown; data?: unknown }>(req, 6 * 1024 * 1024);
       return send(res, 201, await manager.uploadSessionAttachment(attachmentMatch[1], userId, body.name, body.data));
@@ -754,6 +779,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       }
     });
   });
+  // Large attachment uploads can take longer than Node's default 5 minute whole-request limit; headersTimeout still applies.
+  server.requestTimeout = 0;
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
   type TaskPeer = { ws: WebSocket; boardId: string; userId: string; name: string; x: number; y: number; activeAt: number; sentAt: number; cursorVisible: boolean };
@@ -797,6 +824,19 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         const members = await tasks.members(userId, organizationId);
         const self = members.find((member) => member.id === userId);
         wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Member"));
+        return;
+      }
+      if (url.pathname === "/v1/events") {
+        if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
+        const token = url.searchParams.get("token");
+        const headers = { ...req.headers };
+        if (token) headers.authorization = "Bearer " + token;
+        const userId = await userFor(headers);
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
+          ws.on("close", off);
+          ws.on("error", off);
+        });
         return;
       }
       const tunnel = /^\/v1\/sessions\/([\w-]+)\/ports\/(\d{1,5})\/tunnel$/.exec(url.pathname);
