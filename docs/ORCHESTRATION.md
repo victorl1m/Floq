@@ -4,7 +4,9 @@ Status: architecture proposal for automated orchestration. The manual `floq recr
 
 ## Implemented manual isolation
 
-Lead agents can opt in to a separate branch and worktree for a recruited agent with `floq recruit "Builder" --isolated`. The default recruit still shares the lead's working directory. Isolated workers remain in the same logical project for `floq list`, `ask`, `connect`, and `dismiss`. Worktrees start from committed `HEAD`; the source's uncommitted changes are left in place and are not copied. Floq does not commit, push, prune, or remove a worktree when its agent is dismissed. Isolation requires a Git repository in the user's shard.
+Only the orchestrator can recruit. A session is an orchestrator when `agent_sessions.role = 'orchestrator'`, set by the user with `PATCH /v1/sessions/:id/role {role}` (UI: right-click an agent > Set as orchestrator; several per project are allowed). `/internal` (the per-session agent token used by the `floq` CLI) has no route to change roles, so an agent cannot promote itself. A non-orchestrator calling `floq recruit` gets 403 `not_orchestrator` naming the project's orchestrator(s); it must instead `floq ask <orchestrator> "Please recruit a <role> agent to <task>"` with the role, task and context, and the orchestrator recruits and reports back. Creating an agent from the UI is not a recruit and is unaffected. Orchestrators with the generated role preset are told this in their first message.
+
+Orchestrators can opt in to a separate branch and worktree for a recruited agent with `floq recruit "Builder" --isolated`. The default recruit still shares the lead's working directory. Isolated workers remain in the same logical project for `floq list`, `ask`, `connect`, and `dismiss`. Worktrees start from committed `HEAD`; the source's uncommitted changes are left in place and are not copied. Floq does not commit, push, prune, or remove a worktree when its agent is dismissed. Isolation requires a Git repository in the user's shard.
 
 ## Reliable ask / wait / check
 

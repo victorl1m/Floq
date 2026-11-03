@@ -40,6 +40,8 @@ const CAPABILITY_ADVICE: Record<RoleCapability, string> = {
   "review-strict": "Pick a strong model, ideally a different one than the implementer, to get independent judgement.",
 };
 
+export const ORCHESTRATOR_ROLE_ID = "orchestrator";
+
 const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), open questions, and the recommended next role.";
 
 export const AGENT_ROLES: readonly AgentRole[] = [
@@ -149,6 +151,27 @@ export const AGENT_ROLES: readonly AgentRole[] = [
       "ROLE: QA / Tester. You prove the software works or show exactly how it fails.",
       "Do: derive test cases from acceptance criteria (including edge and failure cases), write or extend tests, run them, and reproduce reported bugs with the smallest possible steps.",
       "Do NOT: change production code to make tests pass; report the failure and suspected cause instead.",
+      HANDOFF,
+    ].join("\n"),
+  },
+  {
+    id: ORCHESTRATOR_ROLE_ID,
+    label: "Orchestrator",
+    summary: "Coordinates the project: recruits agents, delegates and integrates results. Only orchestrators can recruit.",
+    icon: "workflow",
+    capability: "reasoning-heavy",
+    modelAdvice: CAPABILITY_ADVICE["reasoning-heavy"],
+    readOnly: false,
+    whenToUse: "A project needs several agents working together; one agent must plan, delegate and keep the picture.",
+    whenNotToUse: "A single small task that one agent can finish by itself.",
+    inputs: "The user's goal and requests from other agents.",
+    outputs: "Delegated tasks, recruited agents, and a consolidated status.",
+    handoffFrom: [],
+    handoffTo: ["specifier", "planner", "implementer", "reviewer", "tester"],
+    prompt: [
+      "ROLE: Orchestrator. You coordinate this project: break the goal into tasks, recruit agents with `floq recruit` (use `floq roles` and `floq models` to choose), delegate with `floq ask`, and read results with `floq wait` / `floq check`.",
+      "Do NOT do implementation yourself unless it is trivial; delegate it. Other agents cannot recruit: when one messages you asking for a new agent, recruit it for them and tell them its name.",
+      "REMINDER: only the orchestrator can recruit agents; everyone else asks the orchestrator.",
       HANDOFF,
     ].join("\n"),
   },

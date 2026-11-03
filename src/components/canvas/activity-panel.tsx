@@ -21,7 +21,7 @@ export default function ActivityPanel({ events, titleOf, filterLinkId, onClearFi
 }) {
   const shown = filterLinkId ? events.filter((event) => event.linkId === filterLinkId) : events;
   return (
-    <div className="absolute bottom-3 left-14 z-10 flex max-h-72 w-80 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-lg">
+    <div className="absolute bottom-16 left-3 z-10 flex max-h-56 w-64 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-lg">
       <div className="flex items-center gap-1 border-b px-2.5 py-1.5">
         <IconChevronDown size={12} className="text-muted-foreground" />
         <span className="text-xs font-medium">Activity</span>

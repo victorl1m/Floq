@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -17,27 +17,9 @@ import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { canReadClipboard, copyText, readClipboardImagePng, readClipboardText } from "@/lib/clipboard";
 import { parseOsc52 } from "@/lib/osc52";
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, invalidUploadName, uploadBatch, type UploadItem } from "./upload-toast";
+import { MAX_UPLOAD_COUNT, browserUploadItems, shellQuote, tauriDropItems, uploadBatch, type UploadItem } from "./upload-toast";
 
 const MAX_INPUT_CHARS = 20_000;
-
-function shellQuote(value: string): string {
-    return "'" + value.replace(/'/g, "'\\''") + "'";
-}
-
-/** Browser files are streamed from the Blob; nothing is read into memory here. */
-function browserUploadItems(files: File[], onReady: (items: UploadItem[]) => void) {
-    if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
-    const ready: UploadItem[] = [];
-    for (const file of files.slice(0, MAX_UPLOAD_COUNT)) {
-        if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || invalidUploadName(file.name)) {
-            toast.error(`Could not upload ${file.name || "file"}`, { description: file.size < 1 ? "The file is empty." : file.size > MAX_UPLOAD_BYTES ? "The file is larger than the 8 GiB limit." : "The name contains control characters." });
-            continue;
-        }
-        ready.push({ name: file.name, size: file.size, blob: file });
-    }
-    onReady(ready);
-}
 
 export const STATE_DOT: Record<SessionState, string> = {
     running: "bg-emerald-500",
@@ -192,18 +174,8 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             }
             setDropHover(false);
             if (event.payload.type !== "drop" || !inside) return;
-            if (event.payload.paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
             // Files are streamed from disk by the Tauri side; only name and size are read here.
-            void Promise.all(event.payload.paths.slice(0, MAX_UPLOAD_COUNT).map(async (path) => {
-                try {
-                    const info = await invoke<{ name: string; size: number }>("inspect_dropped_file", { path });
-                    if (invalidUploadName(info.name)) throw "The name contains control characters.";
-                    return [{ name: info.name, size: info.size, path }] as UploadItem[];
-                } catch (error) {
-                    toast.error(`Could not read ${path.split(/[\\/]/).pop() || "file"}`, { description: typeof error === "string" ? error : "This file cannot be uploaded." });
-                    return [] as UploadItem[];
-                }
-            })).then((groups) => uploadFilesRef.current(groups.flat()));
+            void tauriDropItems(event.payload.paths).then((items) => uploadFilesRef.current(items));
         }).then((off) => { if (disposed) off(); else unlisten = off; }).catch(() => undefined);
         return () => { disposed = true; unlisten?.(); };
     }, [embedded]);

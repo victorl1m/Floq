@@ -6,7 +6,8 @@ import type { SessionManager } from "./manager.js";
 import type { Session } from "./session.js";
 import { agentStatus, DEFAULT_REPLY_CHARS, truncateReply, type AgentStatus, type TranscriptTurn } from "./turn.js";
 import type { SettingsStore } from "./settings.js";
-import { getAgentRole, GENERALIST_ID } from "./roles.js";
+import { getAgentRole, GENERALIST_ID, ORCHESTRATOR_ROLE_ID } from "./roles.js";
+import type { Keychains } from "./keychains.js";
 import type { AgentLinks } from "./links.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
@@ -75,22 +76,52 @@ export function agentProjectIdentity(agent: { cwd: string | null; git_url?: stri
   return "legacy:scratch";
 }
 
+type RecruitRow = { id: string; title: string; role: string | null; cwd: string | null; git_url?: string | null; project_cwd?: string | null };
+
+/** Only an orchestrator may recruit. Pure so it can be tested; `sameProject` scopes the orchestrator list to the caller's project. */
+export function assertCanRecruit(me: RecruitRow, all: RecruitRow[], sameProject: (a: RecruitRow, b: RecruitRow) => boolean): void {
+  if (me.role === ORCHESTRATOR_ROLE_ID) return;
+  const orchestrators = all.filter((r) => r.role === ORCHESTRATOR_ROLE_ID && r.id !== me.id && sameProject(me, r));
+  const base = "Only the orchestrator can recruit agents. ";
+  if (!orchestrators.length) {
+    throw new HttpError(403, "not_orchestrator", base + "This project has no orchestrator yet: ask the user to mark one (right-click an agent > Set as orchestrator), then message it with what you need.");
+  }
+  const first = orchestrators[0];
+  const others = orchestrators.slice(1).map((o) => o.title + " (" + o.id + ")");
+  throw new HttpError(
+    403,
+    "not_orchestrator",
+    base + "Ask " + first.title + " (" + first.id + ") to recruit for you: floq ask " + first.id + ' "Please recruit a <role> agent to <task>"' + (others.length ? ". Other orchestrators: " + others.join(", ") : "") + ".",
+  );
+}
+
 export class Orchestrator {
   constructor(
     private readonly pool: pg.Pool,
     private readonly manager: SessionManager,
     private readonly settings: SettingsStore,
     private readonly links?: AgentLinks,
+    private readonly secrets?: Keychains,
   ) {}
 
+  /** Redact the secret values of the given sessions from text the runtime generates for other agents or the UI. */
+  private async scrub(userId: string, ids: string[], text: string): Promise<string> {
+    return this.secrets ? this.secrets.redact(userId, ids, text) : text;
+  }
+
+  private async scrubResult<T extends { output: string }>(userId: string, ids: string[], result: T): Promise<T> {
+    return this.secrets ? { ...result, output: await this.scrub(userId, ids, result.output) } : result;
+  }
+
   private async rows(userId: string) {
-    return (await this.pool.query("SELECT id, title, provider, model, state, lead, cwd, git_url, project_cwd, project_id, workspace_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell'", [userId])).rows as Array<{
+    return (await this.pool.query("SELECT id, title, provider, model, state, lead, role, cwd, git_url, project_cwd, project_id, workspace_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell'", [userId])).rows as Array<{
       id: string;
       title: string;
       provider: ProviderId;
       model: string | null;
       state: string;
       lead: boolean;
+      role: string | null;
       cwd: string | null;
       git_url: string | null;
       project_cwd: string | null;
@@ -184,7 +215,11 @@ export class Orchestrator {
 
   /** Read another agent's status and last reply. A finished turn returns the full reply from its transcript. */
   async check(userId: string, sessionId: string, name: unknown, chars?: number, full = false) {
-    const { other } = await this.target(userId, sessionId, name);
+    const { me, other } = await this.target(userId, sessionId, name);
+    return this.scrubResult(userId, [other.id, me.id], await this.checkRaw(userId, other, chars, full));
+  }
+
+  private async checkRaw(userId: string, other: { id: string; title: string; state: string }, chars: number | undefined, full: boolean) {
     const live = this.manager.findLive(other.id, userId);
     if (!live) return { id: other.id, name: other.title, state: other.state, status: "asleep" as AgentStatus, source: "none", output: "(agent is asleep; use ask to wake it)", truncated: 0 };
     const { turn, status } = this.snapshot(live, userId);
@@ -240,8 +275,8 @@ export class Orchestrator {
     const afterPrompts = Math.max(0, (this.manager.readAgentTurn(other.id, userId)?.prompts ?? 0) - 1);
     await this.links?.upsert(me.id, other.id, "message", "none").catch(() => undefined); // wire only; no event until a message moves
     const { why, turn } = await this.awaitTurn(live, userId, afterPrompts, timeoutMs, 0);
-    if (why === "done" && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", turn.reply);
-    return this.turnResult(other, live, why, turn, chars, full);
+    if (why === "done" && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", await this.scrub(userId, [other.id, me.id], turn.reply));
+    return this.scrubResult(userId, [other.id, me.id], this.turnResult(other, live, why, turn, chars, full));
   }
 
   /** Type a message into another agent's terminal; by default wait for its turn to finish and return the full reply. */
@@ -267,11 +302,11 @@ export class Orchestrator {
       target.write("[Message from agent " + me.title + "] " + body);
       await new Promise((r) => setTimeout(r, 300));
       target.write("\r");
-      await this.links?.record(userId, me.id, other.id, "message", "message", "ask", body);
+      await this.links?.record(userId, me.id, other.id, "message", "message", "ask", await this.scrub(userId, [other.id, me.id], body));
       if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0 };
       const { why, turn } = await this.awaitTurn(target, userId, afterPrompts, timeoutMs, Date.now());
-      if ((why === "done" || why === "quiet") && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", turn.reply);
-      return this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim());
+      if ((why === "done" || why === "quiet") && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", await this.scrub(userId, [other.id, me.id], turn.reply));
+      return this.scrubResult(userId, [other.id, me.id], this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim()));
     } finally {
       unsubscribe();
     }
@@ -292,7 +327,7 @@ export class Orchestrator {
 
   async recruit(userId: string, sessionId: string, input: { name?: unknown; provider?: unknown; model?: unknown; cwd?: unknown; role?: unknown; isolated?: unknown }) {
     const me = await this.caller(userId, sessionId);
-    if (!me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can recruit agents");
+    assertCanRecruit(me, await this.rows(userId), (a, b) => this.sameProject(a, b));
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name || name.length > 60) throw badRequest("name required (max 60 chars)");
     if ((await this.rows(userId)).some((r) => r.title.toLowerCase() === name.toLowerCase())) throw conflict('An agent named "' + name + '" already exists');

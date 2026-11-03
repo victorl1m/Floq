@@ -122,6 +122,11 @@ interface RuntimeContextValue {
   /** One-shot resume request raised by activateSession; the session's terminal consumes it. */
   resumeRequest: { id: string; seq: number } | null;
   consumeResumeRequest: (seq: number) => void;
+  /** Show a session on its project's Agent Canvas: selects and highlights its node (never resumes it). `dialog` also opens its terminal dialog. */
+  focusOnCanvas: (session: Pick<SessionSummary, "id" | "projectId" | "worktreeId" | "provider" | "state"> & Partial<Pick<SessionSummary, "cwd">>, options?: { dialog?: boolean }) => void;
+  /** One-shot request raised by focusOnCanvas; the canvas consumes it. */
+  canvasFocus: { id: string; seq: number; dialog: boolean } | null;
+  consumeCanvasFocus: (seq: number) => void;
   closeTab: (id: string, area?: "agent" | "terminal") => void;
   agentTabIds: string[];
   terminalTabIds: string[];
@@ -664,6 +669,21 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     },
     [openSession],
   );
+  const [canvasFocus, setCanvasFocus] = useState<{ id: string; seq: number; dialog: boolean } | null>(null);
+  const canvasFocusSeq = useRef(0);
+  const consumeCanvasFocus = useCallback((seq: number) => setCanvasFocus((request) => (request && request.seq === seq ? null : request)), []);
+  const focusOnCanvas = useCallback<RuntimeContextValue["focusOnCanvas"]>((session, options) => {
+    if (!session.projectId) { activateSession(session); return; }
+    // A hidden session comes back into the sidebar, like any other open.
+    const hidden = userPreferencesRef.current.hiddenSessionIds;
+    if (hidden[session.id]) {
+      const { [session.id]: _removed, ...rest } = hidden;
+      updateUserPreferences({ hiddenSessionIds: rest });
+    }
+    setSelectedId(session.id);
+    openCanvas(session.projectId, session.worktreeId);
+    setCanvasFocus({ id: session.id, seq: ++canvasFocusSeq.current, dialog: !!options?.dialog });
+  }, [activateSession, openCanvas, updateUserPreferences]);
   // Read through refs so a close that finishes after an await (agent tabs sleep first) never
   // writes back a tab list from before the await.
   const agentTabsRef = useRef(agentTabIds);
@@ -751,6 +771,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       activateSession,
       resumeRequest,
       consumeResumeRequest,
+      focusOnCanvas,
+      canvasFocus,
+      consumeCanvasFocus,
       closeTab,
       selectShell,
       selectSession,
@@ -817,6 +840,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       activateSession,
       resumeRequest,
       consumeResumeRequest,
+      focusOnCanvas,
+      canvasFocus,
+      consumeCanvasFocus,
       closeTab,
       selectShell,
       selectSession,

@@ -69,7 +69,7 @@ function UploadBody({ snapshot }: { snapshot: Snapshot }) {
     );
 }
 
-async function uploadTauriPath(client: RuntimeClient, sessionId: string, item: UploadItem, uploadId: string, onProgress: (loaded: number, total: number) => void, signal: AbortSignal) {
+export async function uploadTauriPath(client: RuntimeClient, sessionId: string, item: UploadItem, uploadId: string, onProgress: (loaded: number, total: number) => void, signal: AbortSignal) {
     const off = await listen<{ id: string; loaded: number; total: number }>("floq-upload-progress", (event) => {
         if (event.payload.id === uploadId) onProgress(event.payload.loaded, event.payload.total);
     });
@@ -156,4 +156,39 @@ export async function uploadBatch(client: RuntimeClient, sessionId: string, item
         toast.success(label, { id: toastId, duration: 4000, action: undefined });
     }
     return { paths, failures: errors.length, cancelled };
+}
+
+
+export function shellQuote(value: string): string {
+    return "'" + value.replace(/'/g, "'\''") + "'";
+}
+
+/** Browser files are streamed from the Blob; nothing is read into memory here. */
+export function browserUploadItems(files: File[], onReady: (items: UploadItem[]) => void) {
+    if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+    const ready: UploadItem[] = [];
+    for (const file of files.slice(0, MAX_UPLOAD_COUNT)) {
+        if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || invalidUploadName(file.name)) {
+            toast.error(`Could not upload ${file.name || "file"}`, { description: file.size < 1 ? "The file is empty." : file.size > MAX_UPLOAD_BYTES ? "The file is larger than the 8 GiB limit." : "The name contains control characters." });
+            continue;
+        }
+        ready.push({ name: file.name, size: file.size, blob: file });
+    }
+    onReady(ready);
+}
+
+/** Tauri drops give absolute paths; the Rust side reads name and size and later streams the file from disk. */
+export async function tauriDropItems(paths: string[]): Promise<UploadItem[]> {
+    if (paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+    const groups = await Promise.all(paths.slice(0, MAX_UPLOAD_COUNT).map(async (path) => {
+        try {
+            const info = await invoke<{ name: string; size: number }>("inspect_dropped_file", { path });
+            if (invalidUploadName(info.name)) throw "The name contains control characters.";
+            return [{ name: info.name, size: info.size, path }] as UploadItem[];
+        } catch (error) {
+            toast.error(`Could not read ${path.split(/[\/]/).pop() || "file"}`, { description: typeof error === "string" ? error : "This file cannot be uploaded." });
+            return [] as UploadItem[];
+        }
+    }));
+    return groups.flat();
 }

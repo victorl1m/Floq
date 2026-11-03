@@ -16,6 +16,8 @@ import type { SessionManager } from "./manager.js";
 import type { GithubLinker } from "./github.js";
 import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles.js";
 import type { AgentLinks } from "./links.js";
+import type { CanvasNotes } from "./notes.js";
+import type { Keychain, Keychains } from "./keychains.js";
 import { selectableAgentModels, type Orchestrator } from "./orchestrator.js";
 import type { PatchSecret, PutSecret, Vault } from "./vault.js";
 import { listProviders } from "./providers.js";
@@ -46,6 +48,8 @@ interface Deps {
   vault: Vault;
   orchestrator: Orchestrator;
   links: AgentLinks;
+  notes: CanvasNotes;
+  keychains: Keychains;
   pool: pg.Pool;
   credentials: CredentialBroker;
   claudeOauth: ClaudeOAuth;
@@ -56,7 +60,7 @@ interface Deps {
   tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
@@ -205,6 +209,9 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const names = Array.isArray(body.names) ? body.names.filter((n): n is string => typeof n === "string") : null;
           return send(res, 200, { secrets: await vault.reveal(userId, names, null, sessionId) });
         }
+        // Global vault secrets exposed as env (expose="env") for floq secret get/list; tool-only entries are never returned.
+        case "secrets/global":
+          return send(res, 200, { secrets: await vault.reveal(userId, null, "env", sessionId) });
         case "agents/list":
           return send(res, 200, { agents: await orchestrator.list(userId, sessionId) });
         case "agents/restart": {
@@ -602,6 +609,63 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const limit = clampInt(Number(url.searchParams.get("limit")) || 50, 1, 200);
       return send(res, 200, { events: links.hub.recent(userId, linksMatch[1], limit) });
     }
+    const notesMatch = /^\/v1\/projects\/([\w-]+)\/notes$/.exec(url.pathname);
+    if (notesMatch && method === "GET") return send(res, 200, { notes: await notes.list(userId, notesMatch[1]) });
+    if (notesMatch && method === "POST") return send(res, 200, await notes.create(userId, notesMatch[1], await readJson(req)));
+    const noteMatch = /^\/v1\/notes\/([\w-]+)$/.exec(url.pathname);
+    if (noteMatch && method === "PATCH") return send(res, 200, await notes.patch(userId, noteMatch[1], await readJson(req)));
+    if (noteMatch && method === "DELETE") {
+      await notes.remove(userId, noteMatch[1]);
+      return send(res, 200, { ok: true });
+    }
+
+    // Keychains: write-only wallets linked to agents. No endpoint returns a secret value.
+    const touch = async (kc: Keychain, sessionIds: string[]) => {
+      let live = false;
+      for (const id of new Set(sessionIds)) live = (await manager.syncSessionSecrets(userId, id)) || live;
+      return { ...kc, appliesOnNextStart: live };
+    };
+    if (url.pathname === "/v1/keychains" && method === "GET") return send(res, 200, { keychains: await keychains.listAll(userId) });
+    const kcList = /^\/v1\/projects\/([\w-]+)\/keychains$/.exec(url.pathname);
+    if (kcList && method === "GET") return send(res, 200, { keychains: await keychains.list(userId, kcList[1]) });
+    if (kcList && method === "POST") return send(res, 200, await keychains.create(userId, kcList[1], await readJson(req)));
+    const kcOne = /^\/v1\/keychains\/([\w-]+)$/.exec(url.pathname);
+    if (kcOne && method === "PATCH") return send(res, 200, await keychains.patch(userId, kcOne[1], await readJson(req)));
+    if (kcOne && method === "DELETE") {
+      const sessions = await keychains.remove(userId, kcOne[1]);
+      for (const id of sessions) await manager.syncSessionSecrets(userId, id);
+      return send(res, 200, { ok: true });
+    }
+    const kcSecret = /^\/v1\/keychains\/([\w-]+)\/secrets\/([^/]{1,64})$/.exec(url.pathname);
+    if (kcSecret && method === "PUT") {
+      const body = await readJson<{ value?: unknown }>(req, 64 * 1024);
+      const kc = await keychains.putSecret(userId, kcSecret[1], kcSecret[2], body.value);
+      return send(res, 200, await touch(kc, kc.linkedSessionIds));
+    }
+    if (kcSecret && method === "DELETE") {
+      const kc = await keychains.removeSecret(userId, kcSecret[1], kcSecret[2]);
+      return send(res, 200, await touch(kc, kc.linkedSessionIds));
+    }
+    const kcLink = /^\/v1\/keychains\/([\w-]+)\/links(?:\/([\w-]+))?$/.exec(url.pathname);
+    if (kcLink && method === "POST" && !kcLink[2]) {
+      const body = await readJson<{ sessionId?: unknown }>(req);
+      const kc = await keychains.link(userId, kcLink[1], body.sessionId);
+      return send(res, 200, await touch(kc, [body.sessionId as string]));
+    }
+    if (kcLink && method === "DELETE" && kcLink[2]) {
+      const kc = await keychains.unlink(userId, kcLink[1], kcLink[2]);
+      return send(res, 200, await touch(kc, [kcLink[2]]));
+    }
+
+    // Marking an orchestrator is a user decision: only reachable with the user's own auth (/v1), never with an agent's
+    // per-session token (/internal has no such route).
+    const sessionRoleMatch = /^\/v1\/sessions\/([\w-]+)\/role$/.exec(url.pathname);
+    if (sessionRoleMatch && method === "PATCH") {
+      const body = await readJson<{ role?: unknown }>(req);
+      if (!("role" in body)) throw badRequest("role is required (a preset id or null)", "invalid_role");
+      return send(res, 200, await manager.setRole(userId, sessionRoleMatch[1], body.role));
+    }
+
     if (url.pathname === "/v1/links" && method === "POST") {
       const body = await readJson<{ fromSessionId?: unknown; toSessionId?: unknown }>(req);
       return send(res, 200, await links.createManual(userId, body.fromSessionId, body.toSessionId));

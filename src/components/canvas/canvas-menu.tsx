@@ -1,15 +1,19 @@
 import {
-  IconArrowsExchange, IconArrowsMaximize, IconCopy, IconEyeOff, IconFocus2, IconFocusCentered, IconLayoutDistributeHorizontal, IconLink, IconLinkOff,
-  IconMap, IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconTerminal2, IconTextResize,
-  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure,
+  IconArrowsExchange, IconArrowsMaximize, IconCopy, IconLayoutDistributeHorizontal, IconLink, IconLinkOff,
+  IconMap, IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconRefresh, IconWindowMaximize, IconTextResize,
+  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconKey, IconNote, IconLock, IconCrown, IconCrownOff,
 } from "@tabler/icons-react";
 import {
-  ContextMenuCheckboxItem, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuShortcut, ContextMenuSub,
+  ContextMenuCheckboxItem, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuSub,
   ContextMenuSubContent, ContextMenuSubTrigger,
 } from "@/components/ui/context-menu";
+import { Keys } from "./canvas-kbd";
 import { isLive } from "@/components/agents/provider";
+import { isOrchestrator } from "@/lib/runtime/orchestrator";
 import type { SessionSummary } from "@/lib/runtime/types";
-import type { CanvasLink } from "./canvas-data";
+import type { CanvasLink, NoteColor } from "./canvas-data";
+import { COLORS, COLOR_KEYS } from "./canvas-notes";
+import { isKeychainId, isKeychainLinkId } from "./canvas-keychains";
 
 export type MenuTarget =
   | { kind: "pane"; flow: { x: number; y: number } }
@@ -29,6 +33,18 @@ export interface MenuApi {
   showActivity: boolean;
   linkMode: boolean;
   newAgentHere: (flow: { x: number; y: number }) => void;
+  addNoteHere: (flow: { x: number; y: number }) => void;
+  keychainName: (nodeId: string) => string | undefined;
+  addKeychainHere: (flow: { x: number; y: number }) => void;
+  renameKeychain: (nodeId: string) => void;
+  manageKeychain: (nodeId: string) => void;
+  deleteKeychain: (nodeId: string) => void;
+  recolorKeychain: (nodeId: string, color: NoteColor) => void;
+  keychainEdge: (edgeId: string) => { keychain: string; agent: string } | undefined;
+  unlinkKeychain: (edgeId: string) => void;
+  nodeCount: number;
+  deleteAgent: (session: SessionSummary) => void;
+  setOrchestrator: (session: SessionSummary, on: boolean) => void;
   toggleLinkMode: () => void;
   relayout: () => void;
   fit: () => void;
@@ -45,7 +61,6 @@ export interface MenuApi {
   toggleCollapse: (id: string) => void;
   resize: (id: string, preset: SizePreset) => void;
   bringToFront: (id: string) => void;
-  hide: (session: SessionSummary) => void;
   deleteLink: (link: CanvasLink) => void;
   reverseLink: (link: CanvasLink) => void;
   showWire: (link: CanvasLink) => void;
@@ -55,6 +70,8 @@ const danger = "text-destructive focus:text-destructive [&_svg]:text-destructive
 
 export default function CanvasMenuContent({ target, api }: { target: MenuTarget; api: MenuApi }) {
   if (target.kind === "pane") return <PaneMenu flow={target.flow} api={api} />;
+  if (target.kind === "node" && isKeychainId(target.id)) return <KeychainMenu id={target.id} api={api} />;
+  if (target.kind === "edge" && isKeychainLinkId(target.id)) return <KeychainLinkMenu id={target.id} api={api} />;
   if (target.kind === "node") {
     const session = api.sessionById(target.id);
     return session ? <NodeMenu session={session} api={api} /> : null;
@@ -64,15 +81,22 @@ export default function CanvasMenuContent({ target, api }: { target: MenuTarget;
 }
 
 function PaneMenu({ flow, api }: { flow: { x: number; y: number }; api: MenuApi }) {
+  const hasNodes = api.nodeCount > 0;
   return (
-    <ContextMenuContent className="w-56">
+    <ContextMenuContent className="min-w-56">
       <ContextMenuItem onSelect={() => api.newAgentHere(flow)}><IconPlus />New agent here</ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuCheckboxItem checked={api.linkMode} onSelect={api.toggleLinkMode}><IconLink />Link mode<ContextMenuShortcut>L</ContextMenuShortcut></ContextMenuCheckboxItem>
-      <ContextMenuItem onSelect={api.relayout}><IconLayoutDistributeHorizontal />Re-layout</ContextMenuItem>
-      <ContextMenuItem onSelect={api.selectAll}><IconSelectAll />Select all<ContextMenuShortcut>Ctrl A</ContextMenuShortcut></ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuItem onSelect={api.fit}><IconArrowsMaximize />Fit view<ContextMenuShortcut>F</ContextMenuShortcut></ContextMenuItem>
+      <ContextMenuItem onSelect={() => api.addNoteHere(flow)}><IconNote />Add note here<Keys keys="N" /></ContextMenuItem>
+      <ContextMenuItem onSelect={() => api.addKeychainHere(flow)}><IconKey />Add keychain here<Keys keys="K" /></ContextMenuItem>
+      {hasNodes && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={api.toggleLinkMode}><IconLink />{api.linkMode ? "Exit link mode" : "Link mode"}<Keys keys="L" /></ContextMenuItem>
+          <ContextMenuItem onSelect={api.relayout}><IconLayoutDistributeHorizontal />Re-layout</ContextMenuItem>
+          <ContextMenuItem onSelect={api.selectAll}><IconSelectAll />Select all<Keys keys="Ctrl A" /></ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={api.fit}><IconArrowsMaximize />Fit view<Keys keys="F" /></ContextMenuItem>
+        </>
+      )}
       <ContextMenuItem onSelect={api.resetZoom}><IconZoomReset />Reset zoom</ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuCheckboxItem checked={api.showMiniMap} onSelect={api.toggleMiniMap}><IconMap />Mini map</ContextMenuCheckboxItem>
@@ -86,19 +110,18 @@ function NodeMenu({ session, api }: { session: SessionSummary; api: MenuApi }) {
   const links = api.linksOf(session.id).filter((link) => !link.synthetic);
   const collapsed = api.collapsed(session.id);
   return (
-    <ContextMenuContent className="w-60">
+    <ContextMenuContent className="min-w-60">
       <ContextMenuLabel className="truncate">{session.title}</ContextMenuLabel>
-      <ContextMenuItem onSelect={() => api.focus(session)}><IconTerminal2 />Open full terminal<ContextMenuShortcut>Dbl-click</ContextMenuShortcut></ContextMenuItem>
+      {!live && <ContextMenuItem onSelect={() => api.resume(session)}>{session.state === "sleeping" ? <IconPlayerPlay /> : <IconRefresh />}{session.state === "sleeping" ? "Wake agent" : "Restart agent"}</ContextMenuItem>}
+      <ContextMenuItem onSelect={() => api.focus(session)}><IconWindowMaximize />Open terminal<Keys keys="Dbl-click" /></ContextMenuItem>
       <ContextMenuItem onSelect={() => api.startLink(session.id)}><IconLink />Link to…</ContextMenuItem>
       <ContextMenuItem onSelect={() => api.rename(session)}><IconPencil />Rename</ContextMenuItem>
-      <ContextMenuItem disabled={live} onSelect={() => api.resume(session)}>
-        <IconPlayerPlay />{session.state === "sleeping" ? "Resume" : "Restart"}{live && <ContextMenuShortcut>Already running</ContextMenuShortcut>}
-      </ContextMenuItem>
+      {isOrchestrator(session)
+        ? <ContextMenuItem onSelect={() => api.setOrchestrator(session, false)}><IconCrownOff />Remove orchestrator role</ContextMenuItem>
+        : <ContextMenuItem title="Only the orchestrator can recruit agents; other agents must ask it." onSelect={() => api.setOrchestrator(session, true)}><IconCrown />Set as orchestrator</ContextMenuItem>}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => api.copyId(session.id)}><IconCopy />Copy session id</ContextMenuItem>
-      <ContextMenuItem disabled={!api.hasMirrorText(session.id)} onSelect={() => api.copyOutput(session.id)}>
-        <IconCopy />Copy last output{!api.hasMirrorText(session.id) && <ContextMenuShortcut>Not live</ContextMenuShortcut>}
-      </ContextMenuItem>
+      {api.hasMirrorText(session.id) && <ContextMenuItem onSelect={() => api.copyOutput(session.id)}><IconCopy />Copy last output</ContextMenuItem>}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => api.toggleCollapse(session.id)}>
         {collapsed ? <IconChevronsDown /> : <IconChevronsUp />}{collapsed ? "Expand mirror" : "Collapse mirror"}
@@ -114,17 +137,17 @@ function NodeMenu({ session, api }: { session: SessionSummary; api: MenuApi }) {
       </ContextMenuSub>
       <ContextMenuItem onSelect={() => api.bringToFront(session.id)}><IconSquareArrowUp />Bring to front</ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuSub>
-        <ContextMenuSubTrigger disabled={links.length === 0}><IconLinkOff />{links.length ? "Delete links" : "No links to delete"}</ContextMenuSubTrigger>
-        <ContextMenuSubContent className="w-60">
+      {links.length > 0 && <ContextMenuSub>
+        <ContextMenuSubTrigger><IconLinkOff />Delete links</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="min-w-60">
           {links.map((link) => {
             const outgoing = link.fromSessionId === session.id;
             const other = api.titleOf(outgoing ? link.toSessionId : link.fromSessionId);
             return <ContextMenuItem key={link.id} className={danger} onSelect={() => api.deleteLink(link)}><IconLinkOff /><span className="truncate">{outgoing ? "to" : "from"} {other}</span></ContextMenuItem>;
           })}
         </ContextMenuSubContent>
-      </ContextMenuSub>
-      <ContextMenuItem onSelect={() => api.hide(session)}><IconEyeOff />Close tab (hide from sidebar)</ContextMenuItem>
+      </ContextMenuSub>}
+      <ContextMenuItem className={danger} title="Del deletes selected agents instantly, without confirmation" onSelect={() => api.deleteAgent(session)}><IconTrash />Delete agent<Keys keys="Del" /></ContextMenuItem>
     </ContextMenuContent>
   );
 }
@@ -132,19 +155,51 @@ function NodeMenu({ session, api }: { session: SessionSummary; api: MenuApi }) {
 function EdgeMenu({ link, api }: { link: CanvasLink; api: MenuApi }) {
   const from = api.sessionById(link.fromSessionId);
   const to = api.sessionById(link.toSessionId);
-  const reason = link.synthetic ? "Inferred" : undefined;
+  const real = !link.synthetic;
   return (
-    <ContextMenuContent className="w-60">
+    <ContextMenuContent className="min-w-60">
       <ContextMenuLabel className="truncate">{api.titleOf(link.fromSessionId)} → {api.titleOf(link.toSessionId)}</ContextMenuLabel>
-      <ContextMenuItem onSelect={() => api.showWire(link)}><IconMessages />Show recent messages</ContextMenuItem>
-      <ContextMenuItem disabled={!from} onSelect={() => from && api.focus(from)}><IconFocus2 />Focus from-agent</ContextMenuItem>
-      <ContextMenuItem disabled={!to} onSelect={() => to && api.focus(to)}><IconFocusCentered />Focus to-agent</ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuItem disabled={link.synthetic} onSelect={() => api.reverseLink(link)}><IconArrowsExchange />Reverse direction{reason && <ContextMenuShortcut>{reason}</ContextMenuShortcut>}</ContextMenuItem>
-      <ContextMenuItem disabled={link.synthetic} className={danger} onSelect={() => api.deleteLink(link)}>
-        <IconTrash />Delete link{reason ? <ContextMenuShortcut>{reason}</ContextMenuShortcut> : <ContextMenuShortcut>Del</ContextMenuShortcut>}
-      </ContextMenuItem>
+      {link.messageCount > 0 && <ContextMenuItem onSelect={() => api.showWire(link)}><IconMessages />Show recent messages</ContextMenuItem>}
+      {from && <ContextMenuItem onSelect={() => api.focus(from)}><IconWindowMaximize />Open from-agent terminal</ContextMenuItem>}
+      {to && <ContextMenuItem onSelect={() => api.focus(to)}><IconWindowMaximize />Open to-agent terminal</ContextMenuItem>}
+      {real && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => api.reverseLink(link)}><IconArrowsExchange />Reverse direction</ContextMenuItem>
+          <ContextMenuItem className={danger} onSelect={() => api.deleteLink(link)}><IconTrash />Delete link<Keys keys="Del" /></ContextMenuItem>
+        </>
+      )}
     </ContextMenuContent>
   );
 }
 
+function KeychainMenu({ id, api }: { id: string; api: MenuApi }) {
+  const name = api.keychainName(id);
+  if (name === undefined) return null;
+  return (
+    <ContextMenuContent className="min-w-56">
+      <ContextMenuLabel className="truncate">{name}</ContextMenuLabel>
+      <ContextMenuItem onSelect={() => api.manageKeychain(id)}><IconLock />Manage secrets</ContextMenuItem>
+      <ContextMenuItem onSelect={() => api.renameKeychain(id)}><IconPencil />Rename</ContextMenuItem>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger><IconKey />Color</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="w-36">
+          {COLOR_KEYS.map((key) => <ContextMenuItem key={key} onSelect={() => api.recolorKeychain(id, key)}><span className={`size-3 rounded-full ${COLORS[key].dot}`} />{COLORS[key].label}</ContextMenuItem>)}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+      <ContextMenuSeparator />
+      <ContextMenuItem className={danger} onSelect={() => api.deleteKeychain(id)}><IconTrash />Delete keychain<Keys keys="Del" /></ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+function KeychainLinkMenu({ id, api }: { id: string; api: MenuApi }) {
+  const info = api.keychainEdge(id);
+  if (!info) return null;
+  return (
+    <ContextMenuContent className="min-w-56">
+      <ContextMenuLabel className="truncate">{info.keychain} → {info.agent}</ContextMenuLabel>
+      <ContextMenuItem className={danger} onSelect={() => api.unlinkKeychain(id)}><IconLinkOff />Unlink<Keys keys="Del" /></ContextMenuItem>
+    </ContextMenuContent>
+  );
+}

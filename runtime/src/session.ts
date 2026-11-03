@@ -46,7 +46,7 @@ export class Session {
   readonly createdAt: number;
   readonly resumeCount: number;
   readonly model: string | null;
-  readonly role: string | null;
+  role: string | null;
   readonly parentSessionId: string | null;
 
   private _state: SessionState = "starting";

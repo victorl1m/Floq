@@ -35,7 +35,7 @@ Run `floq list` to see sessions you can reach. Each row includes its immutable F
 
 ## Delegate a bounded task
 
-Prefer `ask` (it waits for the reply) or `check` with sessions already listed. Give a worker the goal, relevant paths, constraints, and a concrete completion report. Split work only where outputs can progress independently; do ordinary focused work in the current session. Do not recruit agents automatically just because a task is large or multi-step. Recruit only when the user or task instructions authorize it and this session is a lead.
+Prefer `ask` (it waits for the reply) or `check` with sessions already listed. Give a worker the goal, relevant paths, constraints, and a concrete completion report. Split work only where outputs can progress independently; do ordinary focused work in the current session. Do not recruit agents automatically just because a task is large or multi-step. Recruit only when the user or task instructions authorize it and this session is the orchestrator.
 
 ```sh
 # Copy the exact UUID for Reviewer from `floq list`.
@@ -64,7 +64,7 @@ Notes are shared among the user's agents. Keep them concise and update or append
 
 ## Lead-only session management
 
-Only a lead session may recruit or dismiss agents. Recruitment can select `claude` or `codex` and optionally a working directory and role; recruited sessions start in the lead's project directory by default. User authorization still governs whether to create extra sessions.
+Only the **orchestrator** (a session the user marked with the orchestrator role) may recruit agents; connect and dismiss need a lead session. If you are NOT the orchestrator, never try to recruit: the call is refused with HTTP 403. Instead message the orchestrator with what you need (role, task, context): `floq ask <orchestrator-uuid> "Please recruit a <role> agent to <task>"`. The orchestrator recruits, then reports the new agent's name back to you. If the project has no orchestrator, tell the user to mark one (right-click an agent > Set as orchestrator). Orchestrators coordinate, delegate and read results with `ask`/`wait`/`check`; they do not do implementation themselves unless it is trivial. Recruitment can select `claude` or `codex` and optionally a working directory and role; recruited sessions start in the lead's project directory by default. User authorization still governs whether to create extra sessions.
 
 ```sh
 # `floq recruit` prints the new session's UUID; use those returned UUIDs below.
@@ -77,7 +77,7 @@ floq dismiss "$BUILDER_UUID"
 
 ## Recruit by role
 
-Floq ships role presets (specifier, planner, implementer, reviewer, tester; no `--role` means a generalist). Before recruiting, compare and read them, then choose provider and model yourself:
+Floq ships role presets (orchestrator, specifier, planner, implementer, reviewer, tester; no `--role` means a generalist). Before recruiting, compare and read them, then choose provider and model yourself:
 
 ```sh
 floq roles                 # one line per role: id, capability hint, read-only/read-write, summary
@@ -96,6 +96,10 @@ Agent display names and roles do not choose a model. Check the accepted IDs with
 Use `connect` only when sessions need direct reachability; it is a no-op for agents already in the same project and cannot connect across projects. Dismiss only when the worker is no longer needed and doing so is within the user's instructions.
 
 `--isolated` is opt-in; without it, a recruited agent starts in the lead's current directory as before. Isolation requires the lead's directory to be inside a Git repository. Floq creates a `floq/<session-id>` branch and a worktree from committed `HEAD`; uncommitted and untracked changes in the source directory are not copied and remain untouched. The worktree stays in the user's encrypted home after the agent is dismissed, and Floq does not commit, push, prune, or delete its files.
+
+## Secrets from linked keychains
+
+The user links keychains (secret wallets drawn on the canvas) to this agent; global vault entries exposed as env are readable too. They are available as environment variables of your process (set at start) and as files read with `floq secret get NAME`; `floq secret list` prints names only. Use them, but never print, log, echo, paste into chat or replies, write into files, or commit a secret value. Prefer the env var (`$NAME`) in commands. Floq redacts exact values from agent-to-agent previews and replies as `[secret:NAME]`, which is a safety net, not a licence to print them. Orchestrated children do not inherit your secrets.
 
 ## Install skills, MCP servers and secrets
 

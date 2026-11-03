@@ -202,5 +202,50 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
     ALTER TABLE github_credentials ADD COLUMN IF NOT EXISTS gh_id BIGINT;
     ALTER TABLE github_credentials ADD COLUMN IF NOT EXISTS gh_name TEXT;
+    CREATE TABLE IF NOT EXISTS canvas_notes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      project_id UUID,
+      text TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT 'yellow',
+      x REAL NOT NULL,
+      y REAL NOT NULL,
+      w REAL NOT NULL DEFAULT 240,
+      h REAL NOT NULL DEFAULT 160,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS canvas_notes_user_project_idx ON canvas_notes(user_id, project_id);
+    CREATE TABLE IF NOT EXISTS keychains (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      project_id UUID,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT 'yellow',
+      x REAL NOT NULL,
+      y REAL NOT NULL,
+      w REAL NOT NULL DEFAULT 240,
+      h REAL NOT NULL DEFAULT 160,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS keychains_user_project_idx ON keychains(user_id, project_id);
+    CREATE TABLE IF NOT EXISTS keychain_secrets (
+      keychain_id UUID NOT NULL REFERENCES keychains(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      value_enc BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (keychain_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS keychain_links (
+      keychain_id UUID NOT NULL REFERENCES keychains(id) ON DELETE CASCADE,
+      session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (keychain_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS keychain_links_session_idx ON keychain_links(session_id);
   `);
 }

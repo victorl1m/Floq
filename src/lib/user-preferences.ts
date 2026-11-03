@@ -12,6 +12,8 @@ export interface UserPreferences {
     canvasPositions: Record<string, Record<string, { x: number; y: number }>>;
     /** Resized Agent Canvas node sizes: project id -> session id -> size. */
     canvasSizes: Record<string, Record<string, { width: number; height: number }>>;
+    /** Last Agent Canvas viewport per project, restored on open instead of re-fitting. */
+    canvasViewports: Record<string, { x: number; y: number; zoom: number }>;
     /** Project whose Agent Canvas was open last; restored after a reload. */
     lastCanvasProjectId: string | null;
     /** Ports last forwarded by hand, per session id (most recent first), offered as one-click chips. */
@@ -31,6 +33,7 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     hiddenSessionIds: {},
     canvasPositions: {},
     canvasSizes: {},
+    canvasViewports: {},
     lastCanvasProjectId: null,
     recentForwardPorts: {},
 };
@@ -75,6 +78,16 @@ function sizeMaps(value: unknown): UserPreferences["canvasSizes"] {
     return result;
 }
 
+function viewportMap(value: unknown): UserPreferences["canvasViewports"] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: UserPreferences["canvasViewports"] = {};
+    for (const [project, view] of Object.entries(value)) {
+        const { x, y, zoom } = (view ?? {}) as { x?: unknown; y?: unknown; zoom?: unknown };
+        if (typeof x === "number" && typeof y === "number" && typeof zoom === "number" && Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(zoom) && zoom > 0 && zoom <= 8) result[project] = { x, y, zoom };
+    }
+    return result;
+}
+
 function booleanMap(value: unknown): Record<string, boolean> {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
@@ -109,6 +122,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),
             canvasPositions: positionMaps(parsed.canvasPositions),
             canvasSizes: sizeMaps(parsed.canvasSizes),
+            canvasViewports: viewportMap(parsed.canvasViewports),
             lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
             recentForwardPorts: portListMap(parsed.recentForwardPorts),
         };

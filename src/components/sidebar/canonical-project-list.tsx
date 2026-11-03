@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { ORCHESTRATOR_HINT, ORCHESTRATOR_TEXT, isOrchestrator, orchestratorLabel, recruitCounts, setOrchestrator } from "@/lib/runtime/orchestrator";
 import {
   IconChevronRight,
+  IconCrown,
   IconCopy,
   IconChevronsDown,
   IconChevronsUp,
@@ -98,7 +100,7 @@ function StateDot({ state }: { state: SessionState }) {
 type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, openSession, activateSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
+  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, focusOnCanvas, openSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   const projectMeta = useCanonicalProjectMeta(scope);
@@ -116,6 +118,7 @@ export default function CanonicalProjectList() {
   const [saving, setSaving] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [removeFolder, setRemoveFolder] = useState<ProjectFolder | null>(null);
+  const recruits = useMemo(() => recruitCounts(sessions), [sessions]);
   const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [deletingWorktree, setDeletingWorktree] = useState<WorktreeDeleteTarget | null>(null);
   const [renaming, setRenaming] = useState<SessionSummary | null>(null);
@@ -306,9 +309,10 @@ export default function CanonicalProjectList() {
   function renderAgent(session: SessionSummary) {
     const hidden = !!userPreferences.hiddenSessionIds[session.id];
     const live = isLive(session.state);
+    const recruited = recruits.get(session.id);
     return <ContextMenu key={session.id}><ContextMenuTrigger asChild><SidebarMenuSubItem className={cn("group/agent-row relative", ROW_OPEN)}>
-      <SidebarMenuButton title={`${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={(view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)} className="h-7 gap-1.5 pr-7 text-[13px] font-normal" onClick={() => activateSession(session)}>
-        <span className="flex h-3 w-4 shrink-0 items-center justify-center">{agentActivity(session) ? <ActivityIndicator session={session} /> : <StateDot state={session.state} />}</span><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>
+      <SidebarMenuButton title={`${recruited !== undefined ? `${orchestratorLabel(recruited)} · ` : ""}${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={((view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)) || (view === "canvas" && session.id === selectedId)} className={cn("h-7 gap-1.5 pr-7 text-[13px] font-normal", recruited !== undefined && "bg-violet-500/10 shadow-[inset_2px_0_0_0_rgb(139_92_246)] hover:bg-violet-500/15")} onClick={() => focusOnCanvas(session)}>
+        <span className="flex h-3 w-4 shrink-0 items-center justify-center">{agentActivity(session) ? <ActivityIndicator session={session} /> : <StateDot state={session.state} />}</span><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>{recruited !== undefined && <IconCrown className={cn("size-3.5 shrink-0", ORCHESTRATOR_TEXT)} aria-label={orchestratorLabel(recruited)} />}
       </SidebarMenuButton>
       <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1 text-muted-foreground md:opacity-0 md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className={MENU}>
@@ -321,11 +325,14 @@ export default function CanonicalProjectList() {
       </DropdownMenu>
     </SidebarMenuSubItem></ContextMenuTrigger>
       <ContextMenuContent className={CTX}>
-        <ContextMenuItem onClick={() => activateSession(session)}><IconExternalLink />Open</ContextMenuItem>
-        {session.projectId && <ContextMenuItem onClick={() => openCanvas(session.projectId!, session.worktreeId)}><IconLayoutKanban />Open in canvas</ContextMenuItem>}
+        <ContextMenuItem onClick={() => focusOnCanvas(session, { dialog: true })}><IconExternalLink />Open</ContextMenuItem>
+        {session.projectId && <ContextMenuItem onClick={() => focusOnCanvas(session)}><IconLayoutKanban />Open in canvas</ContextMenuItem>}
         {!live && <ContextMenuItem onClick={() => void resume(session)}><IconPlayerPlay />{session.state === "sleeping" ? "Resume" : "Restart"}</ContextMenuItem>}
         <ContextMenuSeparator />
         <ContextMenuItem onClick={() => { setRenaming(session); setRenameTitle(session.title); setRenameError(null); }}><IconPencil />Rename conversation</ContextMenuItem>
+        {isOrchestrator(session)
+          ? <ContextMenuItem onClick={() => client && void setOrchestrator(client, session, false, upsertSession, toast)}><IconCrown />Remove orchestrator role</ContextMenuItem>
+          : <ContextMenuItem title={ORCHESTRATOR_HINT} onClick={() => client && void setOrchestrator(client, session, true, upsertSession, toast)}><IconCrown />Set as orchestrator</ContextMenuItem>}
         <ContextMenuItem onClick={() => copy(session.title, "Title")}><IconCopy />Copy title</ContextMenuItem>
         <ContextMenuItem onClick={() => copy(session.id, "Agent ID")}><IconCopy />Copy agent ID</ContextMenuItem>
         <ContextMenuSeparator />

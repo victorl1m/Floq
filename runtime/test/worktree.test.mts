@@ -112,7 +112,7 @@ test("project membership groups isolated workers with their parent and separates
 test("recruit forwards an explicit configured model and returns the canonical Floq id", async () => {
   const leadId = "00000000-0000-4000-8000-000000000011";
   const workerId = "00000000-0000-4000-8000-000000000012";
-  const rows = [{ id: leadId, title: "Lead", provider: "claude", model: null, state: "running", lead: true, cwd: "workspace/repo", git_url: null, project_cwd: "workspace/repo", project_id: null, workspace_id: null }];
+  const rows = [{ id: leadId, title: "Lead", provider: "claude", model: null, state: "running", lead: true, role: "orchestrator", cwd: "workspace/repo", git_url: null, project_cwd: "workspace/repo", project_id: null, workspace_id: null }];
   let createdInput;
   const manager = { create: async (_user, _profile, input) => { createdInput = input; return { id: workerId, model: input.model, state: "running" }; }, findLive: () => null };
   const settings = { profile: async () => ({}) };
@@ -126,7 +126,7 @@ test("recruit forwards an explicit configured model and returns the canonical Fl
 test("recruit maps --cwd to a registered workspace and rejects unregistered paths", async () => {
   const leadId = "00000000-0000-4000-8000-000000000021";
   const workerId = "00000000-0000-4000-8000-000000000022";
-  const lead = { id: leadId, title: "Lead", provider: "claude", model: null, state: "running", lead: true, cwd: ".floq/worktrees/current", git_url: "https://example.test/repo.git", project_cwd: "workspace/repo", project_id: "project-id", workspace_id: "worktree-id" };
+  const lead = { id: leadId, title: "Lead", provider: "claude", model: null, state: "running", lead: true, role: "orchestrator", cwd: ".floq/worktrees/current", git_url: "https://example.test/repo.git", project_cwd: "workspace/repo", project_id: "project-id", workspace_id: "worktree-id" };
   const workspaces = [
     { id: "main-id", cwd: "workspace/repo" },
     { id: "worktree-id", cwd: ".floq/worktrees/current" },
