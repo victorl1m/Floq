@@ -55,9 +55,15 @@ async function harness(t) {
   const pool = { query: async (sql, params) => (await extra(sql, params)) ?? { rows: [] }, connect: async () => { throw new Error("unused"); } };
   const vault = new Vault(pool, { encryptionKey: key });
   const orchestrator = new Orchestrator(pool, {}, {});
+  const restartCalls = [];
+  const manager = {
+    activeCount: 0,
+    async assertSelfRestartable(userId, sessionId) { restartCalls.push({ kind: "preflight", userId, sessionId }); },
+    async restartSelf(userId, profile, sessionId) { restartCalls.push({ kind: "restart", userId, profile, sessionId }); },
+  };
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "info" };
-  const server = createRuntimeServer({ config, manager: {}, auth: { handler() {} }, settings: {}, github: {}, vault, orchestrator, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
+  const server = createRuntimeServer({ config, manager, auth: { handler() {} }, settings: { async profile(userId) { return { userId }; } }, github: {}, vault, orchestrator, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
   await server.listen();
   t.after(async () => { await server.close(); rmSync(f.temp, { recursive: true, force: true }); });
   const tokens = Object.fromEntries(SESSIONS.map((s) => [s.id, vault.issueToken(s.user_id, s.id)]));
@@ -67,7 +73,7 @@ async function harness(t) {
     const text = await response.text();
     return { status: response.status, text, json: JSON.parse(text) };
   };
-  return { f, call, vaultRows, audits, statements, port, tokens, vault };
+  return { f, call, vaultRows, audits, statements, port, tokens, vault, restartCalls };
 }
 
 function captureLogs(t) {
@@ -82,11 +88,31 @@ function captureLogs(t) {
 
 test("an invalid or missing token is rejected on every toolkit route", async (t) => {
   const h = await harness(t);
-  for (const path of ["skills/list", "mcp/list", "mcp/add", "mcp/remove", "secrets/add", "skills/remove"]) {
+  for (const path of ["skills/list", "mcp/list", "mcp/add", "mcp/remove", "secrets/add", "skills/remove", "agents/restart"]) {
     assert.equal((await h.call("s-lead", path, {}, "not-a-token")).status, 401, path);
   }
   const bare = await fetch(`http://127.0.0.1:${h.port}/internal/mcp/list`, { method: "POST", body: "{}" });
   assert.equal(bare.status, 401);
+});
+
+test("session restart is self-scoped, available to non-leads, and starts only after the response flushes", async (t) => {
+  const h = await harness(t);
+  const get = await fetch(`http://127.0.0.1:${h.port}/internal/agents/restart`, { method: "GET", headers: { Authorization: "Bearer " + h.tokens["s-member"] } });
+  assert.equal(get.status, 405, "the restart endpoint cannot be triggered by a GET request");
+  assert.equal(h.restartCalls.length, 0);
+  const wrongTarget = await h.call("s-member", "agents/restart", { sessionId: "s-lead" });
+  assert.equal(wrongTarget.status, 400);
+  assert.equal(h.restartCalls.length, 0);
+
+  const shell = await h.call("shell", "agents/restart");
+  assert.equal(shell.status, 404, "plain shell tokens cannot restart an agent session");
+  const response = await h.call("s-member", "agents/restart");
+  assert.equal(response.status, 202);
+  assert.equal(response.json.scheduled, true);
+  assert.equal(h.restartCalls.filter((call) => call.kind === "restart").length, 0, "restart is deferred until after the HTTP response");
+  assert.deepEqual(h.restartCalls[0], { kind: "preflight", userId: "owner", sessionId: "s-member" });
+  await new Promise((resolve) => setTimeout(resolve, response.json.restartDelayMs + 100));
+  assert.deepEqual(h.restartCalls[1], { kind: "restart", userId: "owner", profile: { userId: "owner" }, sessionId: "s-member" });
 });
 
 test("changes need a lead session; reading and dry runs do not", async (t) => {
@@ -260,6 +286,18 @@ function runFloq(h, args, { input, token, tty } = {}) {
   });
 }
 
+test("floq session restart explains the delayed same-session restart", async (t) => {
+  const h = await harness(t);
+  const result = await runFloq(h, ["session", "restart"], { token: h.tokens["s-member"] });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Restart scheduled/);
+  assert.match(result.stdout, /same session and conversation/);
+  assert.match(result.stdout, /does not authenticate an MCP server/);
+  assert.equal(h.restartCalls.filter((call) => call.kind === "restart").length, 0, "the CLI exits before its own PTY restart begins");
+  const invalid = await runFloq(h, ["session", "restart", "s-lead"]);
+  assert.equal(invalid.code, 2, "CLI does not accept a target session ID");
+});
+
 test("floq secrets add reads the value from stdin, refuses it as an argument, and never echoes it", async (t) => {
   const h = await harness(t);
   const ok = await runFloq(h, ["secrets", "add", "DB_PASSWORD", "--description", "prod db"], { input: SECRET + "\n" });
@@ -309,7 +347,7 @@ test("floq mcp add shows exactly what runs, masks env values, and --dry-run chan
   assert.ok(!listed.stdout.includes(SECRET));
   const removed = await runFloq(h, ["mcp", "remove", "api", "--global", "--provider", "claude"]);
   assert.equal(removed.code, 0, removed.stderr);
-  assert.match(removed.stdout, /restart or resume/);
+  assert.match(removed.stdout, /floq session restart/);
   const protectedRemove = await runFloq(h, ["mcp", "remove", "context7", "--global", "--provider", "claude"]);
   assert.equal(protectedRemove.code, 1);
   assert.match(protectedRemove.stderr, /bundled/);

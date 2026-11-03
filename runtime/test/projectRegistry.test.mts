@@ -72,6 +72,8 @@ function fakeManager(home) {
     shardActivityCounts: new Map(),
     shardActivities: new Set(),
     live: new Map(),
+    stoppingSessions: new Map(),
+    intentionalSleep: new Set(),
     lockTimers: new Map(),
     shuttingDown: false,
     shards: { driver: { name: "local", hostPath: (_handle, rel) => resolve(home, rel) }, wake: async () => handle, awakeHandle: () => null },

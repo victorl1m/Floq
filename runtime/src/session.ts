@@ -64,6 +64,9 @@ export class Session {
 
   private readonly listeners = new Set<SessionListener>();
   private disposed = false;
+  private exitedPromise: Promise<void>;
+  private resolveExited!: () => void;
+  private ptyExited = false;
   /** Login terminals keep one wide size so tokens are never hard-wrapped. */
   fixedSize = false;
 
@@ -86,9 +89,14 @@ export class Session {
     this.outputBufferBytes = options.outputBufferBytes;
     this.pty = options.pty;
     this._pid = options.pty.pid ?? null;
+    this.exitedPromise = new Promise((resolve) => { this.resolveExited = resolve; });
 
     this.pty.onData((data) => this.handleData(data));
-    this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal ?? null));
+    this.pty.onExit(({ exitCode, signal }) => {
+      this.ptyExited = true;
+      this.handleExit(exitCode, signal ?? null);
+      this.resolveExited();
+    });
 
     this._state = "running";
     this._startedAt = Date.now();
@@ -137,6 +145,14 @@ export class Session {
 
   get isAlive(): boolean {
     return this._state === "starting" || this._state === "running";
+  }
+
+  get hasExited(): boolean {
+    return this.ptyExited;
+  }
+
+  whenExited(): Promise<void> {
+    return this.exitedPromise;
   }
 
   private handleData(data: string): void {
@@ -245,6 +261,32 @@ export class Session {
     this.kill("SIGTERM");
     this.disposed = true;
     this.listeners.clear();
+  }
+
+  /** Stop the PTY and wait for its process to exit before a same-ID session is resumed. */
+  async disposeAndWait(graceMs = 5_000, killWaitMs = 2_000): Promise<boolean> {
+    if (!this.disposed) this.kill("SIGTERM");
+    let exited = await this.waitForExit(graceMs);
+    if (!exited && !this.disposed) {
+      try { this.pty.kill("SIGKILL"); } catch { /* The process may have exited while escalating. */ }
+      exited = await this.waitForExit(killWaitMs);
+    }
+    this.disposed = true;
+    this.listeners.clear();
+    return exited;
+  }
+
+  private async waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.ptyExited || this._state === "exited" || this._state === "failed") return true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.exitedPromise.then(() => true),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   toSummary(): SessionSummary {

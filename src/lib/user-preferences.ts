@@ -3,6 +3,9 @@ export interface UserPreferences {
     activeTeamId: string | null;
     sidebarOpen: boolean;
     taskNavigatorOpen: boolean;
+    projectNavExpanded: Record<string, boolean>;
+    workspaceNavExpanded: Record<string, boolean>;
+    folderNavExpanded: Record<string, boolean>;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
@@ -12,7 +15,15 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     activeTeamId: null,
     sidebarOpen: true,
     taskNavigatorOpen: true,
+    projectNavExpanded: {},
+    workspaceNavExpanded: {},
+    folderNavExpanded: {},
 };
+
+function booleanMap(value: unknown): Record<string, boolean> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
+}
 
 function storage(): Storage | null {
     try { return localStorage; } catch { return null; }
@@ -36,6 +47,9 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             activeTeamId: typeof parsed.activeTeamId === "string" ? parsed.activeTeamId : null,
             sidebarOpen: typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : true,
             taskNavigatorOpen: typeof parsed.taskNavigatorOpen === "boolean" ? parsed.taskNavigatorOpen : true,
+            projectNavExpanded: booleanMap(parsed.projectNavExpanded),
+            workspaceNavExpanded: booleanMap(parsed.workspaceNavExpanded),
+            folderNavExpanded: booleanMap(parsed.folderNavExpanded),
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
 }

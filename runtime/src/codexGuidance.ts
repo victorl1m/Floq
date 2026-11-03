@@ -12,6 +12,8 @@ export const FLOQ_CODEX_GUIDANCE = [
   "In Floq sessions, use the floq CLI for agent coordination and for inspecting Floq-installed skills, MCP servers, and secrets. Run floq --help when unsure of a command. On coordination requests, read the floq-orchestrate skill and use floq list to see visible sessions; do not use native subagents unless the user asks for them. For MCP discovery or troubleshooting, use floq mcp list --provider codex or claude for the current project/scope, and distinguish configured servers from authenticated servers and tools loaded into this session. A configured server is not proof that it is connected.",
   "",
   "If the user asks to use an MCP integration and its tools are available, use those tools directly. For Codex-native status, run codex mcp list --json in this session's current CODEX_HOME; /mcp shows tools available to the running TUI. If status says not_logged_in, explain that the user needs codex mcp login NAME --no-browser in the matching project/session context. Do not claim it works until its tools are available. Do not use an external plugin catalog to determine Floq-installed MCP state; use catalogs only when the user wants a new integration that is not configured. Never expose secret values in logs, tool output, or chat; `floq secrets list` shows names and descriptions only.",
+  "",
+  "After a user-approved MCP config change and after saving current work, run `floq session restart` to reload this session. It targets only the calling Claude or Codex session, resumes the same conversation, and does not authenticate the MCP server or guarantee its tools loaded; verify availability after the session resumes.",
   FLOQ_GUIDANCE_END,
 ].join("\n");
 
@@ -62,8 +64,8 @@ export function syncCodexManagedGuidance(codeHome: string, uid?: number): string
 }
 
 /** Update bundled Floq skill files in a private CODEX_HOME without following user-created links. */
-export function syncProtectedCodexSkill(codeHome: string, sourceSkillDir: string, uid?: number): void {
-  const root = realpathSync(codeHome);
+export function syncProtectedFloqSkill(agentHome: string, sourceSkillDir: string, uid?: number): void {
+  const root = realpathSync(agentHome);
   const source = realpathSync(sourceSkillDir);
   const skillRoot = ensureDirectory(root, ["skills", "floq-orchestrate"], uid);
   const files: string[] = [];

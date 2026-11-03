@@ -30,6 +30,24 @@ test('partial patches retain current values even when storage reads and writes f
   } finally { globalThis.localStorage = original; }
 });
 
+test('navigation expansion patches retain runtime/user scope and ignore malformed map entries', () => {
+  const baseUrl = 'https://runtime.example';
+  const userId = 'nav-user';
+  const first = prefs.saveUserPreferences(baseUrl, userId, {
+    projectNavExpanded: { 'project-a': false },
+    workspaceNavExpanded: { 'project-a:branch-a': false },
+  });
+  const next = prefs.saveUserPreferences(baseUrl, userId, {
+    folderNavExpanded: { 'folder-a': false },
+  }, first);
+  assert.deepEqual(next.projectNavExpanded, { 'project-a': false });
+  assert.deepEqual(next.workspaceNavExpanded, { 'project-a:branch-a': false });
+  assert.equal(prefs.loadUserPreferences(baseUrl, userId).folderNavExpanded['folder-a'], false);
+  const key = prefs.userPreferenceKey(baseUrl, userId);
+  values.set(key, JSON.stringify({ version: 1, projectNavExpanded: { valid: false, invalid: 'no' } }));
+  assert.deepEqual(prefs.loadUserPreferences(baseUrl, userId).projectNavExpanded, { valid: false });
+});
+
 test('malformed preference JSON falls back to defaults without affecting another scope', () => {
   const key = prefs.userPreferenceKey('https://runtime.example', 'broken-user');
   values.set(key, '{');
