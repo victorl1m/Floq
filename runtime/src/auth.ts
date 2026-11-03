@@ -4,6 +4,7 @@ import { bearer } from "better-auth/plugins";
 import type pg from "pg";
 import type { Config } from "./config.js";
 import { log } from "./logger.js";
+import { registerBootstrapAdmin } from "./bootstrapRegistration.js";
 
 export function createAuth(config: Config, pool: pg.Pool) {
   return betterAuth({
@@ -69,17 +70,12 @@ export async function createBootstrapAdmin(
   email: string,
   password: string,
   name: string,
+  companyName?: string,
 ): Promise<boolean> {
   if (!(await setupAvailable(pool, config, email))) return false;
   const ctx = await auth.$context;
-  const hash = await ctx.password.hash(password);
-  try {
-    const user = await ctx.internalAdapter.createUser({ email, name, emailVerified: true }, {} as never);
-    await ctx.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: hash });
-  } catch (error) {
-    if (!(await setupAvailable(pool, config, email))) return false; // lost a race: the account now exists
-    throw error;
-  }
+  const created = await registerBootstrapAdmin(pool, { email, password, name, companyName }, (value) => ctx.password.hash(value));
+  if (!created) return false;
   log.info("auth.bootstrap_admin", { email });
   return true;
 }

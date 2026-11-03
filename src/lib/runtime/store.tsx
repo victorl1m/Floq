@@ -11,7 +11,8 @@ import {
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
-import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary } from "./types";
+import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
+import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, TaskTeam } from "./types";
 
 const STORAGE_KEY = "floq.connection";
 
@@ -99,8 +100,16 @@ interface RuntimeContextValue {
   openedIds: string[];
   signIn: (input: SignInInput) => Promise<void>;
   lookup: (baseUrl: string, email: string) => Promise<"setup" | "password">;
-  setupAdmin: (input: SignInInput & { name?: string }) => Promise<void>;
+  setupAdmin: (input: SignInInput & { name?: string; companyName?: string }) => Promise<void>;
   signOut: () => Promise<void>;
+  teams: TaskTeam[];
+  teamsLoading: boolean;
+  teamsError: string | null;
+  refreshTeams: (preferredTeamId?: string) => Promise<void>;
+  activeTeamId: string | null;
+  selectTeam: (teamId: string) => void;
+  userPreferences: UserPreferences;
+  updateUserPreferences: (patch: UserPreferencePatch) => void;
   refresh: () => Promise<boolean>;
   upsertSession: (session: SessionSummary) => void;
   /** Select a session and make sure its terminal is opened. */
@@ -188,6 +197,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [online, setOnline] = useState(true);
+  const [teams, setTeams] = useState<TaskTeam[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(() => connection !== null);
+  const [teamsError, setTeamsError] = useState<string | null>(null);
+  const teamsRequest = useRef(0);
+  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
+  const activeTeamIdRef = useRef(activeTeamId);
+  activeTeamIdRef.current = activeTeamId;
+  const [preferencesState, setPreferencesState] = useState<{ scope: string | null; value: UserPreferences }>({ scope: null, value: USER_PREFERENCE_DEFAULTS });
   const [history, setHistory] = useState<{ stack: HistoryEntry[]; index: number }>({
     stack: [{ view: "home", arg: null }],
     index: 0,
@@ -257,6 +274,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setNewAgentOpen(false);
     setSearchOpen(false);
     setSettingsOpen(false);
+    setTeams([]);
+    setTeamsLoading(false);
+    setTeamsError(null);
+    setActiveTeamId(null);
+    activeTeamIdRef.current = null;
     setHistory({ stack: [{ view: "home", arg: null }], index: 0 });
     setReady(true);
   }, []);
@@ -272,6 +294,19 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   );
   const clientRef = useRef(client);
   clientRef.current = client;
+  const preferenceBaseUrl = connection?.baseUrl ?? null;
+  const preferenceUserId = connection?.user.id ?? null;
+  const preferenceScope = userPreferenceKey(preferenceBaseUrl, preferenceUserId);
+  const userPreferences = preferenceScope && preferencesState.scope === preferenceScope
+    ? preferencesState.value
+    : loadUserPreferences(preferenceBaseUrl, preferenceUserId);
+  const userPreferencesRef = useRef(userPreferences);
+  userPreferencesRef.current = userPreferences;
+  const updateUserPreferences = useCallback((patch: UserPreferencePatch) => {
+    const next = saveUserPreferences(preferenceBaseUrl, preferenceUserId, patch, userPreferencesRef.current);
+    userPreferencesRef.current = next;
+    setPreferencesState({ scope: preferenceScope, value: next });
+  }, [preferenceBaseUrl, preferenceUserId, preferenceScope]);
 
   // Validate the stored token once at startup.
   useEffect(() => {
@@ -381,6 +416,57 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const signedIn = client !== null && ready;
 
+  const refreshTeams = useCallback(async (preferredTeamId?: string) => {
+    const requestedClient = client;
+    const requestedBaseUrl = preferenceBaseUrl;
+    const requestedUserId = preferenceUserId;
+    const requestId = ++teamsRequest.current;
+    if (!requestedClient || !signedIn) {
+      setTeams([]); setTeamsError(null); setTeamsLoading(false);
+      setActiveTeamId(null); activeTeamIdRef.current = null;
+      return;
+    }
+    setTeamsLoading(true);
+    setTeamsError(null);
+    try {
+      const loaded = await requestedClient.teams();
+      if (teamsRequest.current !== requestId || clientRef.current !== requestedClient) return;
+      setTeams(loaded);
+      const savedTeamId = loadUserPreferences(requestedBaseUrl, requestedUserId).activeTeamId;
+      const currentTeamId = activeTeamIdRef.current;
+      const nextTeamId = preferredTeamId && loaded.some((team) => team.id === preferredTeamId)
+        ? preferredTeamId
+        : loaded.some((team) => team.id === currentTeamId)
+          ? currentTeamId
+          : loaded.some((team) => team.id === savedTeamId)
+            ? savedTeamId
+            : loaded[0]?.id ?? null;
+      activeTeamIdRef.current = nextTeamId;
+      setActiveTeamId(nextTeamId);
+      if (nextTeamId !== savedTeamId) updateUserPreferences({ activeTeamId: nextTeamId });
+    } catch (reason) {
+      if (teamsRequest.current === requestId && clientRef.current === requestedClient) setTeamsError(errorMessage(reason));
+    } finally {
+      if (teamsRequest.current === requestId && clientRef.current === requestedClient) setTeamsLoading(false);
+    }
+  }, [client, preferenceBaseUrl, preferenceUserId, signedIn, updateUserPreferences]);
+
+  const selectTeam = useCallback((teamId: string) => {
+    if (!teams.some((team) => team.id === teamId)) return;
+    activeTeamIdRef.current = teamId;
+    setActiveTeamId(teamId);
+    updateUserPreferences({ activeTeamId: teamId });
+  }, [teams, updateUserPreferences]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      setTeams([]); setTeamsError(null); setTeamsLoading(false);
+      setActiveTeamId(null); activeTeamIdRef.current = null;
+      return;
+    }
+    void refreshTeams();
+  }, [signedIn, client, refreshTeams]);
+
   useEffect(() => {
     if (!client || !signedIn) return;
     let cancelled = false;
@@ -446,6 +532,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+    setTeams([]);
+    setTeamsLoading(true);
+    setTeamsError(null);
+    setActiveTeamId(null);
+    activeTeamIdRef.current = null;
     setConnection(next);
     setChangeServer(false);
     setReady(true);
@@ -458,10 +549,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setupAdmin = useCallback(
-    async (input: SignInInput & { name?: string }) => {
+    async (input: SignInInput & { name?: string; companyName?: string }) => {
       const baseUrl = normalizeBaseUrl(input.baseUrl);
       if (!baseUrl) throw new Error("Enter the runtime URL");
-      await new RuntimeClient(baseUrl).setupAdmin(input.email, input.password, input.name);
+      await new RuntimeClient(baseUrl).setupAdmin(input.email, input.password, input.name, input.companyName);
       await signIn(input);
     },
     [signIn],
@@ -614,6 +705,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       lookup,
       setupAdmin,
       signOut,
+      teams,
+      teamsLoading,
+      teamsError,
+      refreshTeams,
+      activeTeamId,
+      selectTeam,
+      userPreferences,
+      updateUserPreferences,
       refresh,
       upsertSession,
       openSession,
@@ -670,6 +769,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       lookup,
       setupAdmin,
       signOut,
+      teams,
+      teamsLoading,
+      teamsError,
+      refreshTeams,
+      activeTeamId,
+      selectTeam,
+      userPreferences,
+      updateUserPreferences,
       refresh,
       upsertSession,
       openSession,

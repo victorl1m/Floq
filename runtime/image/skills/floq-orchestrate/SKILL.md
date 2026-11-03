@@ -1,6 +1,6 @@
 ---
 name: floq-orchestrate
-description: Coordinate Claude Code and Codex sessions in the same Floq project using Floq's built-in agent CLI. Use when asking another session to review or implement work, checking its progress, sharing handoff notes, or (for a lead session) recruiting and connecting agents.
+description: Use Floq's CLI to inspect installed MCP servers, skills, and secrets or coordinate agents. Use for Floq integration discovery and troubleshooting; not for adding unrelated external services.
 ---
 
 # Floq orchestration
@@ -8,6 +8,16 @@ description: Coordinate Claude Code and Codex sessions in the same Floq project 
 Use Floq's `floq` CLI from an agent terminal to coordinate sessions in the same project. It provides messaging, session coordination, and optional isolated Git worktrees for recruited agents. It does not start shell workers or provide automated task graphs. Keep one session responsible for integrating results and reporting completion.
 
 For design inspiration only, see [references/inspiration.md](references/inspiration.md); Floq-specific behavior below is verified against its own CLI and runtime.
+
+## Discover configured MCP servers and skills
+
+When asked to use or troubleshoot an integration in a Floq session, inspect Floq's installed configuration first:
+
+1. Run `floq --help`, then `floq mcp list --provider codex` or `floq mcp list --provider claude` for the current project and scope. Use `floq skills list` for installed skills. A listed MCP server is configured; that alone does not mean it is authenticated or its tools are loaded.
+2. For Codex, check native status with `codex mcp list --json` in the current session's `CODEX_HOME`; `/mcp` shows tools available to the running TUI. Distinguish `not_logged_in` from a configuration or loading failure. If authentication is required, tell the user the supported command is `codex mcp login NAME --no-browser` in the matching project/session context. Do not report a connection until the server's tools are available.
+3. Use external plugin catalogs only when the user asks to add an integration that is not already configured in Floq. A catalog does not report Floq's installed MCP state.
+
+MCP servers added to a session's private Codex home are applied at session start or resume. Do not restart an active user session just to refresh an MCP server unless the user asks.
 
 Before making claims about Floq recruitment capabilities, inspect `floq --help` and this skill. Recruitment supports `--cwd` for an allowed directory in the current project and `--isolated` for a managed Git worktree. It does not provide standalone worktree management commands.
 
