@@ -115,9 +115,9 @@ function EmailStep({
                     ) : (
                         <p className="text-xs text-muted-foreground">
                             Server: {hostOf(form.getValues("serverUrl"))} &middot;{" "}
-                            <button type="button" className="underline" onClick={() => setEditingUrl(true)}>
+                            <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => setEditingUrl(true)}>
                                 change
-                            </button>
+                            </Button>
                         </p>
                     )}
                     <FormField
@@ -268,7 +268,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
     const { setupAdmin } = useRuntime();
     const form = useForm<SetupValues>({
         resolver: zodResolver(setupSchema),
-        defaultValues: { name: "", password: "", confirm: "" },
+        defaultValues: { name: "", companyName: "", password: "", confirm: "" },
     });
     const { isSubmitting, errors } = form.formState;
 
@@ -279,6 +279,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                 email,
                 password: values.password,
                 name: values.name?.trim() || undefined,
+                companyName: values.companyName?.trim() || undefined,
             });
         } catch (e) {
             if (e instanceof RuntimeError && e.status === 409) {
@@ -303,6 +304,20 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                                 <FormControl>
                                     <Input autoComplete="name" autoFocus {...field} />
                                 </FormControl>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <FormField
+                        control={form.control}
+                        name="companyName"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Company name</FormLabel>
+                                <FormControl>
+                                    <Input autoComplete="organization" {...field} />
+                                </FormControl>
+                                <FormDescription>Optional. If blank, your first team uses your name.</FormDescription>
                                 <FormMessage />
                             </FormItem>
                         )}
@@ -389,9 +404,9 @@ export default function LoginScreen() {
                         {step !== "email" && step !== "invite" && (
                             <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs">
                                 <span className="max-w-56 truncate">{email}</span>
-                                <button type="button" className="text-muted-foreground underline" onClick={() => setStep("email")}>
+                                <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setStep("email")}>
                                     change
-                                </button>
+                                </Button>
                             </div>
                         )}
                     </DialogHeader>

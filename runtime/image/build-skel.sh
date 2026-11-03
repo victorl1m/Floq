@@ -17,6 +17,7 @@ When the user asks you to recruit, delegate to, or coordinate another agent/sess
 Before coordinating, read `~/.claude/skills/floq-orchestrate/SKILL.md` and check `floq --help`. Follow its authorization rules: the user's request must authorize recruitment, and only a lead session can recruit or dismiss. For ordinary single-agent work, stay in the current session.
 
 Use the immutable Floq session UUID printed by `floq list` or `floq recruit` in later commands. Display titles can change, and provider conversation IDs are only for provider resume; do not confuse either with the Floq UUID. Agent names and roles do not select a model: check `floq models` and pass an exact ID with `floq recruit --model ID`. Recruitment supports `--cwd` and `--isolated` as documented in the skill.
+
 EOF
 
 # Codex reads ~/.codex/AGENTS.md as global startup instructions. This is the
@@ -29,6 +30,14 @@ When the user asks you to recruit, delegate to, or coordinate another agent/sess
 Before coordinating, read `~/.codex/skills/floq-orchestrate/SKILL.md` and check `floq --help`. Follow the skill's authorization rules: the user's request must authorize recruitment, and only a lead session can recruit or dismiss. For ordinary single-agent work, stay in the current session.
 
 Use the immutable Floq session UUID printed by `floq list` or `floq recruit` in later commands. Display titles can change, and provider conversation IDs are only for provider resume; do not confuse either with the Floq UUID. Agent names and roles do not select a model: check `floq models` and pass an exact ID with `floq recruit --model ID`. Recruitment supports `--cwd` and `--isolated` as documented in the skill.
+
+<!-- FLOQ MANAGED GUIDANCE: BEGIN -->
+## Floq CLI and MCP
+
+In Floq sessions, use the floq CLI for agent coordination and for inspecting Floq-installed skills, MCP servers, and secrets. Run floq --help when unsure of a command. On coordination requests, read the floq-orchestrate skill and use floq list to see visible sessions; do not use native subagents unless the user asks for them. For MCP discovery or troubleshooting, use floq mcp list --provider codex or claude for the current project/scope, and distinguish configured servers from authenticated servers and tools loaded into this session. A configured server is not proof that it is connected.
+
+If the user asks to use an MCP integration and its tools are available, use those tools directly. For Codex-native status, run codex mcp list --json in this session's current CODEX_HOME; /mcp shows tools available to the running TUI. If status says not_logged_in, explain that the user needs codex mcp login NAME --no-browser in the matching project/session context. Do not claim it works until its tools are available. Do not use an external plugin catalog to determine Floq-installed MCP state; use catalogs only when the user wants a new integration that is not configured. Never expose secret values in logs, tool output, or chat; `floq secrets list` shows names and descriptions only.
+<!-- FLOQ MANAGED GUIDANCE: END -->
 EOF
 
 # --- Superpowers (obra/superpowers): skills for Claude Code and Codex ---

@@ -1,31 +1,58 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
-import { IconArrowRight, IconCheck, IconChecklist, IconCopy, IconPlus, IconTrash, IconUsers } from "@tabler/icons-react";
+import { IconArrowRight, IconChecklist, IconCopy, IconDots, IconMenu2, IconPlus, IconTrash, IconUsers } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Spinner } from "@/components/ui/spinner";
+import { Label } from "@/components/ui/label";
+import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { copyText } from "@/lib/clipboard";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { TaskBoard, TaskCard, TaskTeam } from "@/lib/runtime/types";
+import type { TaskBoard, TaskCard } from "@/lib/runtime/types";
+import TaskBoardNavigator from "./task-board-navigator";
+import TaskCardDialog from "./task-card-dialog";
 
 type Cursor = { userId: string; name: string; x: number; y: number };
 type RealtimeFrame = { type: "hello" | "board"; board: TaskBoard } | { type: "presence"; userId: string; name: string; x: number; y: number } | { type: "presence-left"; userId: string };
+type BoardNavigationPreferences = { favorites: string[]; recent: string[] };
+
+function readBoardNavigationPreferences(key: string): BoardNavigationPreferences {
+  if (!key) return { favorites: [], recent: [] };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "null") as { version?: number; favorites?: unknown; recent?: unknown } | null;
+    if (parsed?.version !== 1) return { favorites: [], recent: [] };
+    return {
+      favorites: Array.isArray(parsed.favorites) ? parsed.favorites.filter((id): id is string => typeof id === "string") : [],
+      recent: Array.isArray(parsed.recent) ? parsed.recent.filter((id): id is string => typeof id === "string").slice(0, 12) : [],
+    };
+  } catch { return { favorites: [], recent: [] }; }
+}
+
+function formatTaskDueDate(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+  if (!year || !month || !day) return "Due date";
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 export default function TasksPage() {
-  const { client, user } = useRuntime();
-  const [teams, setTeams] = useState<TaskTeam[]>([]);
-  const [teamId, setTeamId] = useState("");
+  const { client, user, teams, teamsLoading, teamsError, refreshTeams, activeTeamId, selectTeam: selectActiveTeam, userPreferences, updateUserPreferences } = useRuntime();
+  const teamId = activeTeamId ?? "";
   const [boards, setBoards] = useState<Omit<TaskBoard, "lists">[]>([]);
   const [board, setBoard] = useState<TaskBoard | null>(null);
   const [boardId, setBoardId] = useState("");
   const [cursors, setCursors] = useState<Cursor[]>([]);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
@@ -35,65 +62,110 @@ export default function TasksPage() {
   const [inviteToken, setInviteToken] = useState("");
   const [acceptToken, setAcceptToken] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ title: string; description: string; action: () => Promise<void> } | null>(null);
+  const [dialog, setDialog] = useState<"team" | "board" | "invite" | "join" | "rename" | null>(null);
+  const [activeCard, setActiveCard] = useState<TaskCard | null>(null);
+  const [mobileNavigatorOpen, setMobileNavigatorOpen] = useState(false);
+  const desktopNavigatorOpen = userPreferences.taskNavigatorOpen;
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const [dropTargetListId, setDropTargetListId] = useState<string | null>(null);
+  const [navigationPreferences, setNavigationPreferences] = useState<{ scope: string; value: BoardNavigationPreferences }>({ scope: "", value: { favorites: [], recent: [] } });
   const [addingCardTo, setAddingCardTo] = useState<string | null>(null);
   const [newCardTitle, setNewCardTitle] = useState("");
   const [newCardDescription, setNewCardDescription] = useState("");
   const boardSurface = useRef<HTMLDivElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const boardRequest = useRef(0);
+  const currentBoardId = useRef(boardId);
+  currentBoardId.current = boardId;
+  const currentTeamId = useRef(teamId);
+  currentTeamId.current = teamId;
+  const navigationScope = client && user && teamId
+    ? `floq.tasks.navigation.v1:${encodeURIComponent(client.baseUrl)}:${encodeURIComponent(user.id)}:${encodeURIComponent(teamId)}`
+    : "";
+  const activeNavigationPreferences = navigationPreferences.scope === navigationScope ? navigationPreferences.value : { favorites: [], recent: [] };
   const selectedTeam = teams.find((team) => team.id === teamId) ?? null;
 
-  const loadTeams = useCallback(async (preferred?: string) => {
-    if (!client) return;
-    const loaded = await client.teams();
-    setTeams(loaded);
-    setTeamId((current) => preferred && loaded.some((team) => team.id === preferred) ? preferred : loaded.some((team) => team.id === current) ? current : loaded[0]?.id ?? "");
-  }, [client]);
+  useEffect(() => {
+    setNavigationPreferences({ scope: navigationScope, value: readBoardNavigationPreferences(navigationScope) });
+  }, [navigationScope]);
 
   useEffect(() => {
-    let live = true;
-    setLoading(true);
-    client?.teams().then((loaded) => {
-      if (!live) return;
-      setTeams(loaded);
-      setTeamId(loaded[0]?.id ?? "");
-      setError(null);
-    }).catch((reason) => live && setError(errorMessage(reason))).finally(() => live && setLoading(false));
-    return () => { live = false; };
-  }, [client]);
+    if (!navigationScope || navigationPreferences.scope !== navigationScope) return;
+    try { localStorage.setItem(navigationScope, JSON.stringify({ version: 1, ...navigationPreferences.value })); }
+    catch { /* Favorites and recents are optional if storage is unavailable or full. */ }
+  }, [navigationScope, navigationPreferences]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLocaleLowerCase() !== "b" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']"))) return;
+      if (document.querySelector("[role='dialog'], [role='alertdialog']")) return;
+      event.preventDefault();
+      if (window.matchMedia("(min-width: 768px)").matches) {
+        updateUserPreferences({ taskNavigatorOpen: true });
+        window.requestAnimationFrame(() => [...document.querySelectorAll<HTMLInputElement>("[data-task-board-search='true']")].find((input) => input.getClientRects().length > 0)?.focus());
+      } else {
+        setMobileNavigatorOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [updateUserPreferences]);
+
+  useEffect(() => {
+    if (!mobileNavigatorOpen) return;
+    const frame = window.requestAnimationFrame(() => [...document.querySelectorAll<HTMLInputElement>("[data-task-board-search='true']")].find((input) => input.getClientRects().length > 0)?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [mobileNavigatorOpen]);
 
   useEffect(() => {
     if (!client || !teamId) { setBoards([]); setBoard(null); setBoardId(""); return; }
     let live = true;
-    setBoard(null);
+    setBoards([]); setBoard(null); setBoardId(""); setCursors([]); setActiveCard(null); setAddingCardTo(null); setDraggingCardId(null); setDropTargetListId(null);
     client.teamBoards(teamId).then((loaded) => {
       if (!live) return;
       setBoards(loaded);
-      setBoardId((current) => loaded.some((item) => item.id === current) ? current : loaded[0]?.id ?? "");
+      const boardIds = new Set(loaded.map((item) => item.id));
+      const saved = readBoardNavigationPreferences(navigationScope);
+      const validFavorites = saved.favorites.filter((id) => boardIds.has(id));
+      const validRecent = saved.recent.filter((id) => boardIds.has(id));
+      setNavigationPreferences({ scope: navigationScope, value: { favorites: validFavorites, recent: validRecent } });
+      setBoardId((current) => loaded.some((item) => item.id === current) ? current : validRecent[0] ?? loaded[0]?.id ?? "");
       setError(null);
     }).catch((reason) => live && setError(errorMessage(reason)));
     return () => { live = false; };
-  }, [client, teamId]);
+  }, [client, teamId, navigationScope]);
 
   const refreshBoard = useCallback(async () => {
     if (!client || !boardId) return;
-    setBoard(await client.taskBoard(boardId));
+    const request = ++boardRequest.current;
+    const next = await client.taskBoard(boardId);
+    if (request === boardRequest.current && currentBoardId.current === boardId && next.id === boardId) setBoard(next);
   }, [client, boardId]);
 
   const retryLoad = async () => {
     if (!client) return;
+    const requestedTeamId = teamId;
+    const requestedBoardId = boardId;
     setError(null);
     try {
-      if (!teams.length || !teamId) { await loadTeams(); return; }
+      if (teamsError || !teams.length || !teamId) { await refreshTeams(); return; }
       const loaded = await client.teamBoards(teamId);
+      if (currentTeamId.current !== requestedTeamId) return;
       setBoards(loaded);
       const nextBoardId = loaded.some((item) => item.id === boardId) ? boardId : loaded[0]?.id ?? "";
       setBoardId(nextBoardId);
-      setBoard(nextBoardId ? await client.taskBoard(nextBoardId) : null);
+      const nextBoard = nextBoardId ? await client.taskBoard(nextBoardId) : null;
+      if (currentTeamId.current === requestedTeamId && (currentBoardId.current === requestedBoardId || currentBoardId.current === nextBoardId)) setBoard(nextBoard);
     } catch (reason) { setError(errorMessage(reason)); }
   };
 
   useEffect(() => {
-    if (!client || !boardId) { setBoard(null); setCursors([]); return; }
+    if (!client || !boardId) { boardRequest.current++; setBoard(null); setCursors([]); return; }
+    boardRequest.current++;
+    setCursors([]);
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
@@ -103,9 +175,10 @@ export default function TasksPage() {
       catch (reason) { setError(errorMessage(reason)); return; }
       socketRef.current = socket;
       socket.onmessage = (event) => {
+        if (closed || currentBoardId.current !== boardId) return;
         try {
           const frame = JSON.parse(String(event.data)) as RealtimeFrame;
-          if (frame.type === "hello" || frame.type === "board") setBoard(frame.board);
+          if ((frame.type === "hello" || frame.type === "board") && frame.board.id === currentBoardId.current) setBoard(frame.board);
           if (frame.type === "presence") setCursors((items) => [...items.filter((item) => item.userId !== frame.userId), frame]);
           if (frame.type === "presence-left") setCursors((items) => items.filter((item) => item.userId !== frame.userId));
         } catch { /* Ignore malformed runtime frames; reconnect retrieves a fresh snapshot. */ }
@@ -125,32 +198,72 @@ export default function TasksPage() {
   }, [client, boardId]);
 
   const members = selectedTeam?.members ?? [];
-  const doMutation = async (action: () => Promise<unknown>, success?: string) => {
+  const doMutation = async (action: () => Promise<unknown>, success?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
-    try { await action(); if (success) toast.success(success); }
-    catch (reason) { setError(errorMessage(reason)); }
+    try { await action(); if (success) toast.success(success); return true; }
+    catch (reason) { setError(errorMessage(reason)); return false; }
     finally { setBusy(false); }
   };
+  const updateNavigationPreferences = (update: (current: BoardNavigationPreferences) => BoardNavigationPreferences) => {
+    if (!navigationScope) return;
+    setNavigationPreferences((current) => ({
+      scope: navigationScope,
+      value: update(current.scope === navigationScope ? current.value : readBoardNavigationPreferences(navigationScope)),
+    }));
+  };
+  const selectBoard = (nextBoardId: string) => {
+    setError(null);
+    setMobileNavigatorOpen(false);
+    updateNavigationPreferences((current) => ({ ...current, recent: [nextBoardId, ...current.recent.filter((id) => id !== nextBoardId)].slice(0, 12) }));
+    if (nextBoardId === boardId) return;
+    setActiveCard(null);
+    setAddingCardTo(null);
+    setDraggingCardId(null); setDropTargetListId(null);
+    setBoard(null);
+    setCursors([]);
+    setBoardId(nextBoardId);
+  };
+  const toggleFavorite = (favoriteBoardId: string) => updateNavigationPreferences((current) => ({
+    ...current,
+    favorites: current.favorites.includes(favoriteBoardId)
+      ? current.favorites.filter((id) => id !== favoriteBoardId)
+      : [favoriteBoardId, ...current.favorites],
+  }));
+  const changeTeam = (nextTeamId: string) => {
+    if (nextTeamId === teamId) return;
+    setActiveCard(null); setAddingCardTo(null);
+    setDraggingCardId(null); setDropTargetListId(null);
+    setBoards([]); setBoard(null); setBoardId(""); setCursors([]); selectActiveTeam(nextTeamId);
+  };
+  const pageError = error ?? teamsError;
   const onCreateTeam = async (event: FormEvent) => {
     event.preventDefault();
     if (!teamName.trim() || !client) return;
-    await doMutation(async () => { const team = await client.createTeam(teamName); setTeamName(""); await loadTeams(team.id); }, "Team created");
+    if (await doMutation(async () => { const team = await client.createTeam(teamName); setTeamName(""); await refreshTeams(team.id); }, "Team created")) setDialog(null);
   };
   const onCreateBoard = async (event: FormEvent) => {
     event.preventDefault();
     if (!boardName.trim() || !client || !teamId) return;
-    await doMutation(async () => { const created = await client.createTaskBoard(teamId, boardName); setBoardName(""); setBoards(await client.teamBoards(teamId)); setBoardId(created.id); setBoard(created); }, "Board created");
+    const requestedTeamId = teamId;
+    if (await doMutation(async () => {
+      const created = await client.createTaskBoard(requestedTeamId, boardName);
+      if (currentTeamId.current !== requestedTeamId) return;
+      setBoardName("");
+      const loaded = await client.teamBoards(requestedTeamId);
+      if (currentTeamId.current !== requestedTeamId) return;
+      setBoards(loaded); selectBoard(created.id); setBoard(created);
+    }, "Board created")) setDialog(null);
   };
   const onInvite = async (event: FormEvent) => {
     event.preventDefault();
     if (!inviteEmail.trim() || !client || !teamId) return;
-    await doMutation(async () => { const invite = await client.createTeamInvitation(teamId, inviteEmail); setInviteToken(invite.token); setInviteEmail(""); }, "Invitation created");
+    await doMutation(async () => { const invite = await client.createTeamInvitation(teamId, inviteEmail); setInviteToken(invite.token); }, "Invitation created");
   };
   const onAccept = async (event: FormEvent) => {
     event.preventDefault();
     if (!acceptToken.trim() || !client) return;
-    await doMutation(async () => { const accepted = await client.acceptTeamInvitation(acceptToken.trim()); setAcceptToken(""); await loadTeams(accepted.teamId); }, "You joined the team");
+    if (await doMutation(async () => { const accepted = await client.acceptTeamInvitation(acceptToken.trim()); setAcceptToken(""); await refreshTeams(accepted.teamId); }, "You joined the team")) setDialog(null);
   };
   const onCreateList = async (event: FormEvent) => {
     event.preventDefault();
@@ -165,16 +278,35 @@ export default function TasksPage() {
       setNewCardTitle(""); setNewCardDescription(""); setAddingCardTo(null); await refreshBoard();
     }, "Card created");
   };
-  const moveCard = async (card: TaskCard, listId: string) => {
-    if (!client || !boardId || listId === board?.lists.find((list) => list.cards.some((item) => item.id === card.id))?.id) return;
-    await doMutation(async () => { await client.saveTaskCard(boardId, card.id, { listId, title: card.title, description: card.description, position: card.position, assigneeId: card.assigneeId, dueAt: card.dueAt }); await refreshBoard(); }, "Card moved");
+  const saveCard = async (card: TaskCard, input: { listId: string; title: string; description: string; position: number; assigneeId: string | null; dueAt: string | null }) => {
+    if (!client || !boardId) return false;
+    return doMutation(async () => {
+      await client.saveTaskCard(boardId, card.id, input);
+      await refreshBoard();
+    }, "Card updated");
+  };
+  const moveCardToList = async (cardId: string, targetListId: string) => {
+    const sourceList = board?.lists.find((list) => list.cards.some((card) => card.id === cardId));
+    const source = sourceList?.cards.find((card) => card.id === cardId);
+    const target = board?.lists.find((list) => list.id === targetListId);
+    if (!source || !target || sourceList?.id === targetListId || !client || !boardId) return;
+    const position = target.cards.reduce((max, card) => Math.max(max, card.position), -1) + 1;
+    await doMutation(async () => {
+      await client.saveTaskCard(boardId, source.id, { listId: target.id, title: source.title, description: source.description, position, assigneeId: source.assigneeId, dueAt: source.dueAt });
+      await refreshBoard();
+    }, "Card moved");
+    setDraggingCardId(null); setDropTargetListId(null);
+  };
+  const requestCardDelete = (card: TaskCard) => {
+    setPendingDelete({ title: `Delete “${card.title}”?`, description: "This permanently removes the card from the board.", action: async () => { await client?.deleteTaskCard(boardId, card.id); await refreshBoard(); setActiveCard((current) => current?.id === card.id ? null : current); } });
+    setDeleteOpen(true);
   };
   const updateBoard = async (event: FormEvent) => {
     event.preventDefault();
     if (!board || !client) return;
     const title = boardName.trim();
     if (!title) return;
-    await doMutation(async () => { await client.saveTaskBoard(board.id, title); await refreshBoard(); setBoardName(""); }, "Board renamed");
+    if (await doMutation(async () => { await client.saveTaskBoard(board.id, title); await refreshBoard(); setBoardName(""); }, "Board renamed")) setDialog(null);
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const rect = boardSurface.current?.getBoundingClientRect();
@@ -183,113 +315,121 @@ export default function TasksPage() {
     socket.send(JSON.stringify({ type: "cursor", x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }));
   };
 
-  const completedCount = useMemo(() => board?.lists[board.lists.length - 1]?.cards.length ?? 0, [board]);
-  if (loading) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
+  const cardCount = useMemo(() => board?.lists.reduce((total, list) => total + list.cards.length, 0) ?? 0, [board]);
+  if (teamsLoading) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-4">
-        <div className="mr-auto min-w-48">
-          <p className="text-[11px] font-medium uppercase tracking-[0.13em] text-muted-foreground">Team workspace</p>
-          <h1 className="mt-0.5 text-xl font-semibold tracking-tight">Tasks</h1>
-        </div>
-        <label className="sr-only" htmlFor="task-team">Choose team</label>
-        <select id="task-team" className="h-8 min-w-40 max-w-56 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50" value={teamId} onChange={(event) => setTeamId(event.target.value)}>
-          {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-          {!teams.length && <option value="">No teams yet</option>}
-        </select>
-        {selectedTeam && <Badge variant="outline"><IconUsers />{members.length} {members.length === 1 ? "member" : "members"}</Badge>}
-        <label className="sr-only" htmlFor="task-board">Choose board</label>
-        <select id="task-board" className="h-8 min-w-40 max-w-56 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50" value={boardId} disabled={!boards.length} onChange={(event) => setBoardId(event.target.value)}>
-          {boards.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-          {!boards.length && <option value="">No boards yet</option>}
-        </select>
-      </header>
+    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1">
+        {desktopNavigatorOpen && <aside id="task-board-navigator" className="hidden w-56 shrink-0 border-r bg-muted/10 md:flex">
+          <TaskBoardNavigator
+            key={teamId}
+            teams={teams}
+            teamId={teamId}
+            boards={boards}
+            boardId={boardId}
+            favorites={activeNavigationPreferences.favorites}
+            recent={activeNavigationPreferences.recent}
+            onTeamChange={changeTeam}
+            onBoardChange={selectBoard}
+            onFavoriteToggle={toggleFavorite}
+            onCreateTeam={() => { setError(null); setMobileNavigatorOpen(false); setDialog("team"); }}
+            onCreateBoard={() => { setError(null); setBoardName(""); setDialog(teams.length ? "board" : "team"); }}
+            className="w-full"
+          />
+        </aside>}
+        <Sheet open={mobileNavigatorOpen} onOpenChange={setMobileNavigatorOpen}>
+          <SheetContent side="left" className="w-[min(20rem,88vw)] gap-0 p-0 sm:max-w-sm">
+            <SheetHeader className="border-b pr-12">
+              <SheetTitle>Task boards</SheetTitle>
+              <SheetDescription>Choose a team and board.</SheetDescription>
+            </SheetHeader>
+            <TaskBoardNavigator
+              key={teamId}
+              teams={teams}
+              teamId={teamId}
+              boards={boards}
+              boardId={boardId}
+              favorites={activeNavigationPreferences.favorites}
+              recent={activeNavigationPreferences.recent}
+            onTeamChange={changeTeam}
+              onBoardChange={selectBoard}
+              onFavoriteToggle={toggleFavorite}
+              onCreateTeam={() => { setError(null); setMobileNavigatorOpen(false); setDialog("team"); }}
+              onCreateBoard={() => { setError(null); setBoardName(""); setMobileNavigatorOpen(false); setDialog(teams.length ? "board" : "team"); }}
+              className="min-h-0 flex-1"
+            />
+          </SheetContent>
+        </Sheet>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5 sm:px-5">
+            <Button className="shrink-0 md:hidden" size="icon-sm" variant="outline" aria-label="Open board navigator" aria-expanded={mobileNavigatorOpen} aria-controls="mobile-task-board-navigator" onClick={() => setMobileNavigatorOpen(true)}><IconMenu2 /></Button>
+            <Button className="hidden shrink-0 md:flex" size="icon-sm" variant="outline" aria-label={desktopNavigatorOpen ? "Hide board navigator" : "Show board navigator"} aria-expanded={desktopNavigatorOpen} aria-controls="task-board-navigator" onClick={() => updateUserPreferences({ taskNavigatorOpen: !desktopNavigatorOpen })}><IconMenu2 /></Button>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{selectedTeam?.name ?? "Team workspace"}</p>
+              <h1 className="truncate text-base font-semibold">{board?.title ?? (teams.length ? "Choose a board" : "Tasks")}</h1>
+            </div>
+            {selectedTeam && <div className="hidden items-center gap-2 sm:flex" aria-label="Team members">
+              <AvatarGroup>{members.slice(0, 4).map((member) => {
+                const name = member.name || member.email;
+                const initials = name.split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+                return <Tooltip key={member.id}><TooltipTrigger asChild><Avatar size="sm" tabIndex={0} aria-label={name} className="focus-visible:ring-2 focus-visible:ring-ring"><AvatarFallback>{initials}</AvatarFallback></Avatar></TooltipTrigger><TooltipContent>{name}{member.role === "owner" ? " · owner" : ""}</TooltipContent></Tooltip>;
+              })}{members.length > 4 && <Tooltip><TooltipTrigger asChild><AvatarGroupCount tabIndex={0} aria-label={members.length - 4 + " more team members"} className="focus-visible:ring-2 focus-visible:ring-ring">+{members.length - 4}</AvatarGroupCount></TooltipTrigger><TooltipContent>{members.slice(4).map((member) => (member.name || member.email) + (member.role === "owner" ? " · owner" : "")).join(", ")}</TooltipContent></Tooltip>}</AvatarGroup>
+              <Badge variant="outline"><IconUsers />{members.length}</Badge>
+            </div>}
+            {board && <Badge variant="secondary">{cardCount} {cardCount === 1 ? "card" : "cards"}</Badge>}
+            <Button size="sm" onClick={() => { setError(null); setBoardName(""); setTeamName(""); setDialog(teams.length ? "board" : "team"); }}><IconPlus /><span className="hidden sm:inline">{teams.length ? "New board" : "Create team"}</span></Button>
+            <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="outline" aria-label="Team and board actions"><IconDots /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onSelect={() => { setError(null); setTeamName(""); setDialog("team"); }}><IconPlus />Create team</DropdownMenuItem>
+              {selectedTeam?.role === "owner" && <DropdownMenuItem onSelect={() => { setError(null); setInviteToken(""); setInviteEmail(""); setDialog("invite"); }}><IconUsers />Invite teammate</DropdownMenuItem>}
+              <DropdownMenuItem onSelect={() => { setError(null); setDialog("join"); }}><IconArrowRight />Join with token</DropdownMenuItem>
+              {board && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => { setBoardName(board.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
+                {selectedTeam?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + board.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(board.id); const remaining = await client?.teamBoards(teamId) ?? []; setBoards(remaining); setBoardId(remaining[0]?.id ?? ""); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
+            </DropdownMenuContent></DropdownMenu>
+          </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        {error && <div role="alert" className="mx-6 mt-4 flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"><span>{error}</span><Button size="sm" variant="outline" onClick={() => void retryLoad()}>Retry</Button></div>}
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+        {pageError && <div className="px-4 pt-3 sm:px-6"><ErrorBanner>{pageError}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void retryLoad()}>Retry</Button></ErrorBanner></div>}
         {!teams.length ? (
-          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-6 py-12">
-            <span className="mb-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Start together</span>
-            <h2 className="max-w-lg text-3xl font-semibold tracking-tight">Give the work a place to move.</h2>
-            <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">Create a team to share boards, assign work, and see teammates working on the same board in real time.</p>
-            <form className="mt-7 flex max-w-md gap-2" noValidate onSubmit={onCreateTeam}>
-              <label className="sr-only" htmlFor="new-team">Team name</label><Input id="new-team" maxLength={80} placeholder="Team name" value={teamName} onChange={(event) => setTeamName(event.target.value)} />
-              <Button disabled={busy || !teamName.trim()}><IconPlus />Create team</Button>
-            </form>
-            <form className="mt-8 flex max-w-md items-center gap-2 border-t pt-5" noValidate onSubmit={onAccept}>
-              <label className="sr-only" htmlFor="accept-invite">Invitation token</label><Input id="accept-invite" placeholder="Invitation token" value={acceptToken} onChange={(event) => setAcceptToken(event.target.value)} />
-              <Button variant="outline" disabled={busy || !acceptToken.trim()}>Join team</Button>
-            </form>
-            <p className="mt-2 text-xs text-muted-foreground">Already invited? Sign in with the invited email, then paste the token here.</p>
-          </div>
+          <Empty className="m-auto max-w-lg border-0">
+            <EmptyHeader><EmptyMedia variant="icon"><IconUsers /></EmptyMedia><EmptyTitle>Create a team to get started</EmptyTitle><EmptyDescription>Share task boards and invite people to work together.</EmptyDescription></EmptyHeader>
+            <EmptyContent className="flex-row justify-center"><Button size="sm" onClick={() => setDialog("team")}><IconPlus />Create team</Button><Button size="sm" variant="outline" onClick={() => setDialog("join")}>Join with token</Button></EmptyContent>
+          </Empty>
         ) : (
           <>
-            <div className="flex flex-wrap items-end gap-3 border-b px-6 py-3">
-              <form className="flex min-w-52 flex-1 gap-2" noValidate onSubmit={onCreateBoard}>
-                <label className="sr-only" htmlFor="new-board">New board name</label><Input id="new-board" maxLength={120} placeholder="New board name" value={boardName} onChange={(event) => setBoardName(event.target.value)} />
-                <Button size="sm" disabled={busy || !boardName.trim()}><IconPlus />Create board</Button>
-              </form>
-              {selectedTeam?.role === "owner" && <form className="flex min-w-64 flex-1 gap-2" noValidate onSubmit={onInvite}>
-                <label className="sr-only" htmlFor="invite-email">Teammate email</label><Input id="invite-email" type="email" maxLength={254} placeholder="Teammate email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} />
-                <Button size="sm" variant="outline" disabled={busy || !inviteEmail.trim()}><IconUsers />Invite</Button>
-              </form>}
-              {inviteToken && <div className="flex min-w-0 basis-full items-center gap-2 rounded-lg bg-muted/60 p-2 text-xs sm:basis-auto"><span className="shrink-0 font-medium">Invite token</span><code className="max-w-48 truncate font-mono text-muted-foreground">{inviteToken}</code><Button size="icon-xs" variant="ghost" aria-label="Copy invitation token" onClick={() => void copyText(inviteToken).then(() => toast.success("Invitation token copied")).catch(() => toast.error("Could not copy token"))}><IconCopy /></Button></div>}
-            </div>
-
-            {selectedTeam && <div className="flex flex-wrap items-center gap-2 border-b px-6 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">People</span>
-              {members.map((member) => <span key={member.id} className="rounded-full border px-2 py-1">{member.name || member.email}{member.role === "owner" ? " · owner" : ""}</span>)}
-              <form className="ml-auto flex min-w-56 gap-1.5" noValidate onSubmit={onAccept}>
-                <label className="sr-only" htmlFor="accept-team-token">Invitation token</label><Input className="h-7 max-w-52 text-xs" id="accept-team-token" placeholder="Paste invite token" value={acceptToken} onChange={(event) => setAcceptToken(event.target.value)} />
-                <Button size="sm" variant="ghost" disabled={busy || !acceptToken.trim()}>Join<IconArrowRight /></Button>
-              </form>
-            </div>}
-
             {!board ? (
-              <div className="flex flex-1 flex-col items-center justify-center px-6 py-14 text-center">
-                <div className="grid size-12 place-items-center rounded-xl border bg-muted/40"><IconChecklist className="size-6 text-muted-foreground" /></div>
-                <h2 className="mt-4 text-base font-semibold">{boards.length ? "Choose a board" : "No boards on this team yet"}</h2>
-                <p className="mt-1 max-w-sm text-sm text-muted-foreground">{boards.length ? "Select a board above to see its lists and cards." : "Create a board to organize the next pieces of work."}</p>
-              </div>
+                <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this team."}</EmptyDescription></EmptyHeader>{!boards.length && <EmptyContent><Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button></EmptyContent>}</Empty>
             ) : (
-              <div className="relative flex min-h-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
+              <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
-                <div className="flex flex-wrap items-center gap-3 border-b px-6 py-3">
-                  <div className="min-w-48 flex-1"><p className="text-[11px] uppercase tracking-widest text-muted-foreground">{selectedTeam?.name}</p><h2 className="text-lg font-semibold">{board.title}</h2></div>
-                  <form className="flex gap-1.5" noValidate onSubmit={updateBoard}><label className="sr-only" htmlFor="rename-board">Rename board</label><Input className="h-7 w-40" id="rename-board" maxLength={120} placeholder="Rename board" value={boardName} onChange={(event) => setBoardName(event.target.value)} /><Button size="sm" variant="outline" disabled={busy || !boardName.trim()}>Save name</Button></form>
-                  {selectedTeam?.role === "owner" && <Button size="icon-sm" variant="ghost" aria-label="Delete board" onClick={() => setDeleteOpen(true)}><IconTrash className="text-destructive" /></Button>}
-                  <Badge variant="secondary"><IconCheck />{completedCount} done</Badge>
-                </div>
                 <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" aria-label={`${board.title} board`}>
-                  {board.lists.map((list) => <section key={list.id} className="flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30" aria-labelledby={`list-${list.id}`}>
-                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => void doMutation(async () => { await client?.deleteTaskList(board.id, list.id); await refreshBoard(); }, "List deleted")}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
+                  {board.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
+                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, action: async () => { await client?.deleteTaskList(board.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
                     <div className="min-h-10 space-y-2 overflow-y-auto p-2.5">
-                      {list.cards.map((card) => <article key={card.id} className="rounded-lg border bg-card p-3 shadow-sm">
-                        <h4 className="text-sm font-medium leading-5">{card.title}</h4>
-                        {card.description && <p className="mt-1.5 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{card.description}</p>}
-                        <div className="mt-3 flex items-center gap-1.5">
-                          <label className="sr-only" htmlFor={`move-${card.id}`}>Move {card.title} to list</label>
-                          <select id={`move-${card.id}`} aria-label={`Move ${card.title} to list`} className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 text-xs" value={list.id} onChange={(event) => void moveCard(card, event.target.value)}>
-                            {board.lists.map((target) => <option key={target.id} value={target.id}>{target.title}</option>)}
-                          </select>
-                          {card.assigneeId && <Badge variant="outline" className="max-w-24 truncate">{members.find((item) => item.id === card.assigneeId)?.name || "Assigned"}</Badge>}
-                          <Button size="icon-xs" variant="ghost" aria-label={`Delete ${card.title}`} onClick={() => void doMutation(async () => { await client?.deleteTaskCard(board.id, card.id); await refreshBoard(); }, "Card deleted")}><IconTrash className="size-3 text-muted-foreground" /></Button>
-                        </div>
-                      </article>)}
-                    </div>
+                      {list.cards.map((card) => <Card key={card.id} size="sm" className={`gap-0 rounded-lg p-2.5 py-2.5 shadow-sm transition-colors hover:bg-accent/40 ${draggingCardId === card.id ? "opacity-50" : ""}`}>
+                        <Button type="button" variant="ghost" draggable aria-description="Drag to move this card, or open details and change its list with the keyboard." aria-label={"Open card: " + card.title} className="h-auto w-full cursor-grab flex-col items-stretch gap-2 whitespace-normal rounded-md p-0 text-left active:cursor-grabbing" onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); setDraggingCardId(card.id); }} onDragEnd={() => { setDraggingCardId(null); setDropTargetListId(null); }} onClick={() => setActiveCard(card)}>
+                          <span className="text-sm font-medium leading-5">{card.title}</span>
+                          {card.description && <span className="line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{card.description}</span>}
+                          {(card.assigneeId || card.dueAt) && <span className="flex flex-wrap items-center gap-1.5">
+                            {card.assigneeId && <Badge variant="outline" className="max-w-32 truncate">{members.find((item) => item.id === card.assigneeId)?.name || "Assigned"}</Badge>}
+                            {card.dueAt && <Badge variant="secondary">Due {formatTaskDueDate(card.dueAt)}</Badge>}
+                          </span>}
+                        </Button>
+                      </Card>)}                </div>
                     {addingCardTo === list.id ? <form className="space-y-2 border-t p-2.5" noValidate onSubmit={(event) => void onCreateCard(event, list.id)}>
-                      <label className="sr-only" htmlFor={`card-title-${list.id}`}>Card title</label><Input autoFocus id={`card-title-${list.id}`} maxLength={200} placeholder="What needs doing?" value={newCardTitle} onChange={(event) => setNewCardTitle(event.target.value)} />
-                      <label className="sr-only" htmlFor={`card-description-${list.id}`}>Card details</label><Textarea id={`card-description-${list.id}`} maxLength={5000} className="min-h-14 resize-none text-xs" placeholder="Add a note (optional)" value={newCardDescription} onChange={(event) => setNewCardDescription(event.target.value)} />
+                      <Label htmlFor={`card-title-${list.id}`}>Card title</Label><Input autoFocus id={`card-title-${list.id}`} maxLength={200} placeholder="What needs doing?" value={newCardTitle} onChange={(event) => setNewCardTitle(event.target.value)} />
+                      <Label htmlFor={`card-description-${list.id}`}>Card details</Label><Textarea id={`card-description-${list.id}`} maxLength={5000} className="min-h-14 resize-none text-xs" placeholder="Add a note (optional)" value={newCardDescription} onChange={(event) => setNewCardDescription(event.target.value)} />
                       <div className="flex justify-end gap-1.5"><Button size="sm" variant="ghost" type="button" onClick={() => setAddingCardTo(null)}>Cancel</Button><Button size="sm" disabled={busy || !newCardTitle.trim()}>Add card</Button></div>
                     </form> : <Button className="m-2 mt-0 justify-start text-muted-foreground" size="sm" variant="ghost" onClick={() => setAddingCardTo(list.id)}><IconPlus />Add a card</Button>}
                   </section>)}
-                  <form className="flex w-60 shrink-0 gap-1.5 rounded-xl border border-dashed p-2" noValidate onSubmit={onCreateList}><label className="sr-only" htmlFor="new-list">New list name</label><Input id="new-list" maxLength={80} placeholder="Add a list" value={listName} onChange={(event) => setListName(event.target.value)} /><Button size="icon-sm" variant="outline" aria-label="Create list" disabled={busy || !listName.trim()}><IconPlus /></Button></form>
+                  <form className="flex w-60 shrink-0 gap-1.5 rounded-xl border border-dashed p-2" noValidate onSubmit={onCreateList}><Label className="sr-only" htmlFor="new-list">New list name</Label><Input id="new-list" maxLength={80} placeholder="Add a list" value={listName} onChange={(event) => setListName(event.target.value)} /><Button size="icon-sm" variant="outline" aria-label="Create list" disabled={busy || !listName.trim()}><IconPlus /></Button></form>
                 </div>
-                <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!busy) setDeleteOpen(open); }}>
                   <AlertDialogContent>
-                    <AlertDialogHeader><AlertDialogTitle>Delete “{board.title}”?</AlertDialogTitle><AlertDialogDescription>This permanently deletes the board, its lists, and every card. Team members will lose access immediately.</AlertDialogDescription></AlertDialogHeader>
-                    <AlertDialogFooter><AlertDialogCancel>Keep board</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void doMutation(async () => { await client?.deleteTaskBoard(board.id); const remaining = await client?.teamBoards(teamId) ?? []; setBoards(remaining); setBoardId(remaining[0]?.id ?? ""); setBoard(null); }, "Board deleted")}>Delete board</AlertDialogAction></AlertDialogFooter>
+                    <AlertDialogHeader><AlertDialogTitle>{pendingDelete?.title}</AlertDialogTitle><AlertDialogDescription>{pendingDelete?.description}</AlertDialogDescription></AlertDialogHeader>
+                    {error && <ErrorBanner>{error}</ErrorBanner>}
+                    <AlertDialogFooter><AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy} onClick={async (event) => { event.preventDefault(); if (pendingDelete && await doMutation(pendingDelete.action, "Deleted")) { setDeleteOpen(false); setPendingDelete(null); } }}>Delete</AlertDialogAction></AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
               </div>
@@ -297,6 +437,24 @@ export default function TasksPage() {
           </>
         )}
       </div>
+        </main>
+      </div>
+      <AppDialog open={dialog === "team"} onOpenChange={(open) => { if (!busy) setDialog(open ? "team" : null); }} icon={<IconUsers />} title="Create a team" description="Start a shared space for boards and teammates." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="create-team-form" disabled={busy || !teamName.trim()}><IconPlus />Create team</Button></>}>
+        <form id="create-team-form" className="space-y-2" noValidate onSubmit={onCreateTeam}><Label htmlFor="new-team">Team name</Label><Input id="new-team" autoFocus maxLength={80} value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="e.g. Product" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
+      </AppDialog>
+      <AppDialog open={dialog === "board"} onOpenChange={(open) => { if (!busy) setDialog(open ? "board" : null); }} icon={<IconChecklist />} title="Create a board" description={`Add a board to ${selectedTeam?.name ?? "your team"}.`} footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="create-board-form" disabled={busy || !boardName.trim()}><IconPlus />Create board</Button></>}>
+        <form id="create-board-form" className="space-y-2" noValidate onSubmit={onCreateBoard}><Label htmlFor="new-board">Board name</Label><Input id="new-board" autoFocus maxLength={120} value={boardName} onChange={(event) => setBoardName(event.target.value)} placeholder="e.g. Product roadmap" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
+      </AppDialog>
+      <AppDialog open={dialog === "invite"} onOpenChange={(open) => { if (!busy) setDialog(open ? "invite" : null); }} icon={<IconUsers />} title="Invite a teammate" description={inviteToken ? `Invitation for ${inviteEmail}` : "Create a one-time invitation for a teammate."} footer={inviteToken ? undefined : <><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="invite-form" disabled={busy || !inviteEmail.trim()}><IconUsers />Create invite</Button></>}>
+        {inviteToken ? <div className="space-y-3"><p className="text-sm text-muted-foreground">Share the token below. New teammates choose “Join with an invitation” at sign-in; existing users paste it under Tasks → Join with token.</p><div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-3"><code className="min-w-0 flex-1 break-all font-mono text-sm">{inviteToken}</code><Button size="icon-sm" variant="outline" aria-label="Copy invitation token" onClick={() => void copyText(inviteToken).then(() => toast.success("Invitation token copied")).catch(() => toast.error("Could not copy token"))}><IconCopy /></Button></div><Button variant="outline" onClick={() => { setInviteToken(""); setInviteEmail(""); setDialog(null); }}>Close</Button></div> : <form id="invite-form" className="space-y-2" noValidate onSubmit={onInvite}><Label htmlFor="invite-email">Teammate email</Label><Input id="invite-email" type="email" autoFocus maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="name@example.com" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>}
+      </AppDialog>
+      <AppDialog open={dialog === "join"} onOpenChange={(open) => { if (!busy) setDialog(open ? "join" : null); }} icon={<IconArrowRight />} title="Join a team" description="Paste the invitation token shared with you." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="join-team-form" disabled={busy || !acceptToken.trim()}>Join team</Button></>}>
+        <form id="join-team-form" className="space-y-2" noValidate onSubmit={onAccept}><Label htmlFor="accept-invite">Invitation token</Label><Input id="accept-invite" autoFocus value={acceptToken} onChange={(event) => setAcceptToken(event.target.value)} placeholder="Paste invitation token" />{error && <ErrorBanner>{error}</ErrorBanner>}<p className="text-xs text-muted-foreground">Sign in with the email address the invitation was created for.</p></form>
+      </AppDialog>
+      <AppDialog open={dialog === "rename"} onOpenChange={(open) => { if (!busy) setDialog(open ? "rename" : null); }} title="Rename board" description="Choose a clear name for this board." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="rename-board-form" disabled={busy || !boardName.trim()}>Save name</Button></>}>
+        <form id="rename-board-form" className="space-y-2" noValidate onSubmit={updateBoard}><Label htmlFor="rename-board">Board name</Label><Input id="rename-board" autoFocus maxLength={120} value={boardName} onChange={(event) => setBoardName(event.target.value)} />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
+      </AppDialog>
+      {board && <TaskCardDialog open={!!activeCard} onOpenChange={(open) => { if (!busy && !open) setActiveCard(null); }} board={board} card={activeCard} members={members} busy={busy} error={error} onSave={saveCard} onDelete={requestCardDelete} />}
     </section>
   );
 }

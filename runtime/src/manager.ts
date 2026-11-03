@@ -21,6 +21,7 @@ import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { readClaudeNativeTitle, readCodexNativeTitle } from "./nativeTitle.js";
+import { syncCodexManagedGuidance, syncProtectedCodexSkill } from "./codexGuidance.js";
 import { mkdirOwned, safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
@@ -918,6 +919,16 @@ export class SessionManager {
       mkdirOwned(handle.mountPath, codexHome, handle.uid);
       this.shards.seed(codexHome, ".codex", handle.uid, await loadRemovedSkills(this.pool, row.user_id).catch(() => null));
       this.syncGlobalCodexMcp(handle, codexHome);
+      try {
+        syncProtectedCodexSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid);
+      } catch (error) {
+        log.warn("codex.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
+      try {
+        syncCodexManagedGuidance(codexHome, handle.uid);
+      } catch (error) {
+        log.warn("codex.managed_guidance_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
       const cred = await this.freshCredential(row.user_id, "codex");
       if (cred) this.writeCredFile(handle, this.codexAuthPath(handle, row.id), JSON.stringify(cred));
     }

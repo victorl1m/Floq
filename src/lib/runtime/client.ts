@@ -148,8 +148,8 @@ export class RuntimeClient {
   }
 
   /** Unauthenticated: creates the first administrator. 409 setup_unavailable if already done. */
-  async setupAdmin(email: string, password: string, name?: string): Promise<void> {
-    await this.request("POST", "/v1/setup/admin", { email, password, ...(name ? { name } : {}) });
+  async setupAdmin(email: string, password: string, name?: string, companyName?: string): Promise<void> {
+    await this.request("POST", "/v1/setup/admin", { email, password, ...(name ? { name } : {}), ...(companyName ? { companyName } : {}) });
   }
 
   async signUp(name: string, email: string, password: string): Promise<{ token: string; user: AuthUser }> {

@@ -298,7 +298,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     if (method === "POST" && (url.pathname === "/v1/setup/lookup" || url.pathname === "/v1/setup/admin")) {
       rateLimitSetup(req);
-      const body = await readJson<{ email?: unknown; password?: unknown; name?: unknown }>(req);
+      const body = await readJson<{ email?: unknown; password?: unknown; name?: unknown; companyName?: unknown }>(req);
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       if (url.pathname === "/v1/setup/lookup") {
         return send(res, 200, { step: (await setupAvailable(pool, config, email)) ? "setup" : "password" });
@@ -307,8 +307,12 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (typeof password !== "string" || password.length < 12 || password.length > 128) {
         throw badRequest("password must be 12-128 characters");
       }
-      const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 100) : "Admin";
-      if (!(await createBootstrapAdmin(auth, pool, config, email, password, name))) {
+      const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Admin";
+      if (name.length > 100) throw badRequest("Name must be 100 characters or fewer");
+      if (body.companyName !== undefined && typeof body.companyName !== "string") throw badRequest("Company name must be text");
+      const companyName = typeof body.companyName === "string" ? body.companyName.trim() : undefined;
+      if ((companyName?.length ?? 0) > 80) throw badRequest("Company name must be 80 characters or fewer");
+      if (!(await createBootstrapAdmin(auth, pool, config, email, password, name, companyName))) {
         throw conflict("Setup is not available", "setup_unavailable");
       }
       return send(res, 200, { ok: true });

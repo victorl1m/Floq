@@ -30,6 +30,7 @@ export const MIN_PASSWORD = 12;
 export const setupSchema = z
     .object({
         name: z.string().trim().max(100, "Name is too long").optional(),
+        companyName: z.string().trim().max(80, "Company name is too long").optional(),
         password: z
             .string()
             .min(MIN_PASSWORD, `At least ${MIN_PASSWORD} characters.`)
