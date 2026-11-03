@@ -36,7 +36,7 @@ export default function AccountsSection() {
     }
 
     return (
-        <SettingsPage title="Accounts" description="Agents sign in with your own subscriptions. No API keys needed.">
+        <SettingsPage title="LLM Providers" description="Agents sign in with your own subscriptions. No API keys needed.">
             {unsupported && <p className="text-sm text-muted-foreground">Your runtime doesn't support this yet.</p>}
             <SettingsGroup>
                 {PROVIDERS.map((p) => {

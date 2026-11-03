@@ -62,7 +62,7 @@ export function safeRelative(input: string): string {
  * gocryptfs (root, allow_other) performs every operation as the calling uid, so anything root creates inside a
  * mounted home is root-owned and unwritable for the user. These helpers hand such paths to the user's uid.
  */
-export function ownTree(path: string, uid: number): void {
+export function ownTree(path: string, uid: number, maxDepth = Infinity): void {
   let stat;
   try {
     stat = lstatSync(path);
@@ -70,7 +70,7 @@ export function ownTree(path: string, uid: number): void {
     return;
   }
   if (stat.uid !== uid || stat.gid !== uid) lchownSync(path, uid, uid);
-  if (stat.isDirectory()) for (const entry of readdirSync(path)) ownTree(join(path, entry), uid);
+  if (stat.isDirectory() && maxDepth > 0) for (const entry of readdirSync(path)) ownTree(join(path, entry), uid, maxDepth - 1);
 }
 
 /** mkdir -p inside a mounted home, creating every missing segment owned by the user. */

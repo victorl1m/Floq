@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { useRuntime } from "@/lib/runtime/store";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import UpdatesGroup from "./updates-group";
 
 export default function RuntimeSection() {
     const { baseUrl, info, online, requestServerChange } = useRuntime();
@@ -55,6 +56,8 @@ export default function RuntimeSection() {
                     </SettingsGroup>
                 </>
             )}
+
+            <UpdatesGroup />
         </SettingsPage>
     );
 }

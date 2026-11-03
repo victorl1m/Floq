@@ -75,7 +75,7 @@ Other graphs: issue triage (GitHub webhook -> plan -> PR), "fix failing CI", sch
 3. **Spec-driven**: Spec Kit artifacts are first-class graph inputs, so plans are reviewed before code is written.
 4. **Policy and budgets**: per-user auto-approve policy per harness (already a setting), spend caps per workflow, allowed-path rules enforced by the sandbox.
 5. **Event-driven**: GitHub webhooks and schedules start graphs, not just a human typing.
-6. **Team-ready**: server-side identity and isolated shards allow shared workflows later.
+6. **Organization-ready**: server-side identity and isolated shards allow shared workflows later.
 7. Keep parity features: diff review UI, GitHub PR/issues, usage display, push/mobile notifications when a gate needs a human.
 
 ## 7. Risks

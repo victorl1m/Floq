@@ -98,8 +98,8 @@ test("repository import clones before returning a persistent selectable project 
     const originalClone = manager.clone;
     manager.clone = async (...args) => { clones++; return originalClone(...args); };
     const [first, concurrent] = await Promise.all([
-      manager.createProject("user-a", {}, "https://example.test/team/repo.git"),
-      manager.createProject("user-a", {}, "https://example.test/team/repo.git"),
+      manager.createProject("user-a", {}, "https://example.test/organization/repo.git"),
+      manager.createProject("user-a", {}, "https://example.test/organization/repo.git"),
     ]);
     assert.equal(clones, 1);
     assert.equal(first.id, concurrent.id);
@@ -109,7 +109,7 @@ test("repository import clones before returning a persistent selectable project 
     assert.equal(first.workspaces[0].cwd, first.cwd);
     assert.equal(readFileSync(join(home, first.cwd, ".git", "HEAD"), "utf8").trim(), "ref: refs/heads/main");
 
-    const duplicate = await manager.createProject("user-a", {}, "https://EXAMPLE.test/team/repo");
+    const duplicate = await manager.createProject("user-a", {}, "https://EXAMPLE.test/organization/repo");
     assert.equal(duplicate.id, first.id);
     assert.equal(clones, 1);
   } finally {
@@ -122,8 +122,8 @@ test("repository identity and visibility stay scoped to the authenticated user",
   try {
     mkdirSync(join(home, ".floq", "projects"), { recursive: true });
     const { manager } = fakeManager(home);
-    const a = await manager.createProject("user-a", {}, "https://example.test/team/repo.git");
-    const b = await manager.createProject("user-b", {}, "https://example.test/team/repo.git");
+    const a = await manager.createProject("user-a", {}, "https://example.test/organization/repo.git");
+    const b = await manager.createProject("user-b", {}, "https://example.test/organization/repo.git");
     assert.notEqual(a.id, b.id);
     assert.equal((await manager.listProjects("user-a")).length, 1);
     assert.equal((await manager.listProjects("user-b")).length, 1);
@@ -137,7 +137,7 @@ test("repository URLs with embedded HTTPS credentials are rejected before clone"
   try {
     mkdirSync(join(home, ".floq", "projects"), { recursive: true });
     const { manager } = fakeManager(home);
-    await assert.rejects(manager.createProject("user-a", {}, "https://token@example.test/team/repo.git"), { code: "invalid_git_url" });
+    await assert.rejects(manager.createProject("user-a", {}, "https://token@example.test/organization/repo.git"), { code: "invalid_git_url" });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -264,12 +264,12 @@ test("a response failure after commit preserves the checkout and retry returns i
       return originalProject.apply(manager, args);
     };
 
-    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/team/repo.git"), /simulated project response failure/);
+    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/organization/repo.git"), /simulated project response failure/);
     assert.equal(projects.length, 1, "database commit remains durable after response load fails");
     const cwd = projects[0].cwd;
     assert.equal(readFileSync(join(home, cwd, ".git", "HEAD"), "utf8").trim(), "ref: refs/heads/main");
 
-    const retry = await manager.createProject("user-a", {}, "https://example.test/team/repo.git");
+    const retry = await manager.createProject("user-a", {}, "https://example.test/organization/repo.git");
     assert.equal(retry.id, projects[0].id);
     assert.equal(clones, 1, "retry reuses the committed checkout");
     assert.equal(readFileSync(join(home, cwd, ".git", "HEAD"), "utf8").trim(), "ref: refs/heads/main");
@@ -287,7 +287,7 @@ test("a symlinked project storage parent is rejected before clone", async () => 
     let clones = 0;
     const originalClone = manager.clone;
     manager.clone = async (...args) => { clones++; return originalClone(...args); };
-    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/team/repo.git"), { code: "unsafe_project_path" });
+    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/organization/repo.git"), { code: "unsafe_project_path" });
     assert.equal(clones, 0, "the unsafe parent is rejected before invoking clone");
     assert.deepEqual((await import("node:fs")).readdirSync(outside), [], "no project data is written outside the shard");
   } finally {
@@ -315,7 +315,7 @@ test("project clone holds a real shard activity until completion and schedules l
       writeFileSync(join(destination, ".git", "HEAD"), "ref: refs/heads/main\n");
     };
 
-    const creating = manager.createProject("user-a", {}, "https://example.test/team/repo.git");
+    const creating = manager.createProject("user-a", {}, "https://example.test/organization/repo.git");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
     assert.equal(clones, 0, "real idle lock timer does not sleep the shard during clone");
     assert.equal(manager.shardActivityCounts.get("user-a"), 1);

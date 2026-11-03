@@ -55,9 +55,9 @@ export interface RuntimeProject {
 
 export interface TaskCard { id: string; title: string; description: string; position: number; assigneeId: string | null; dueAt: string | null; createdAt: string; updatedAt: string }
 export interface TaskList { id: string; title: string; position: number; cards: TaskCard[] }
-export interface TaskBoard { id: string; teamId: string; title: string; createdAt: string; lists: TaskList[] }
-export interface TeamMember { id: string; name: string; email: string; role: "owner" | "member" }
-export interface TaskTeam { id: string; name: string; role: "owner" | "member"; members: TeamMember[] }
+export interface TaskBoard { id: string; organizationId: string; title: string; createdAt: string; lists: TaskList[] }
+export interface OrganizationMember { id: string; name: string; email: string; role: "owner" | "member" }
+export interface Organization { id: string; name: string; role: "owner" | "member"; members: OrganizationMember[] }
 
 /** What deleting a Floq-created worktree would lose (read-only; GET .../delete-status). */
 export interface WorktreeDeleteStatus {

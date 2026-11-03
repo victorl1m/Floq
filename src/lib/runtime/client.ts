@@ -27,10 +27,11 @@ import type {
   SessionSummary,
   SettingsPatch,
   UserSettings,
-  TaskTeam,
+  Organization,
   TaskBoard,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
+import type { AdminUser, UpdateResult, UpdatesStatus, UpdateTarget, UserRole } from "./admin-types";
 
 function skillFileParams(skill: { scope: string; projectId?: string | null; provider: string; source: string; location: string }, path?: string): URLSearchParams {
   const params = new URLSearchParams({ scope: skill.scope, provider: skill.provider, source: skill.source, location: skill.location });
@@ -172,32 +173,36 @@ export class RuntimeClient {
     await this.call("POST", "/api/auth/update-user", { name });
   }
 
-  async teams(): Promise<TaskTeam[]> {
-    return (await this.call<{ teams: TaskTeam[] }>("GET", "/v1/teams")).teams;
+  async organizations(): Promise<Organization[]> {
+    return (await this.call<{ organizations: Organization[] }>("GET", "/v1/organizations")).organizations;
   }
 
-  async createTeam(name: string): Promise<TaskTeam> {
-    return (await this.call<{ team: TaskTeam }>("POST", "/v1/teams", { name })).team;
+  async createOrganization(name: string): Promise<Organization> {
+    return (await this.call<{ organization: Organization }>("POST", "/v1/organizations", { name })).organization;
   }
 
-  async createTeamInvitation(teamId: string, email: string): Promise<{ token: string; expiresAt: string }> {
-    return (await this.call<{ invitation: { token: string; expiresAt: string } }>("POST", `/v1/teams/${encodeURIComponent(teamId)}/invitations`, { email })).invitation;
+  async renameOrganization(organizationId: string, name: string): Promise<void> {
+    await this.call("PATCH", `/v1/organizations/${encodeURIComponent(organizationId)}`, { name });
   }
 
-  async acceptTeamInvitation(token: string): Promise<{ teamId: string }> {
-    return this.call("POST", "/v1/team-invitations/accept", { token });
+  async createOrganizationInvitation(organizationId: string, email: string): Promise<{ token: string; expiresAt: string }> {
+    return (await this.call<{ invitation: { token: string; expiresAt: string } }>("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations`, { email })).invitation;
   }
 
-  async registerWithTeamInvitation(input: { token: string; email: string; name: string; password: string }): Promise<{ teamId: string }> {
-    return this.call("POST", "/v1/team-invitations/register", input);
+  async acceptOrganizationInvitation(token: string): Promise<{ organizationId: string }> {
+    return this.call("POST", "/v1/organization-invitations/accept", { token });
   }
 
-  async teamBoards(teamId: string): Promise<Omit<TaskBoard, "lists">[]> {
-    return (await this.call<{ boards: Omit<TaskBoard, "lists">[] }>("GET", `/v1/teams/${encodeURIComponent(teamId)}/boards`)).boards;
+  async registerWithOrganizationInvitation(input: { token: string; email: string; name: string; password: string }): Promise<{ organizationId: string }> {
+    return this.call("POST", "/v1/organization-invitations/register", input);
   }
 
-  async createTaskBoard(teamId: string, title: string): Promise<TaskBoard> {
-    return (await this.call<{ board: TaskBoard }>("POST", `/v1/teams/${encodeURIComponent(teamId)}/boards`, { title })).board;
+  async organizationBoards(organizationId: string): Promise<Omit<TaskBoard, "lists">[]> {
+    return (await this.call<{ boards: Omit<TaskBoard, "lists">[] }>("GET", `/v1/organizations/${encodeURIComponent(organizationId)}/boards`)).boards;
+  }
+
+  async createTaskBoard(organizationId: string, title: string): Promise<TaskBoard> {
+    return (await this.call<{ board: TaskBoard }>("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/boards`, { title })).board;
   }
 
   async taskBoard(boardId: string): Promise<TaskBoard> {
@@ -257,6 +262,19 @@ export class RuntimeClient {
 
   health = () => this.call<{ ok: boolean }>("GET", "/healthz");
   info = () => this.call<RuntimeInfo>("GET", "/v1/info");
+
+  // --- administration (admin-only on the server) ---
+
+  async myRole(): Promise<UserRole> {
+    return (await this.call<{ role: UserRole }>("GET", "/v1/me/role")).role;
+  }
+  checkUpdates = (refresh = false) => this.call<UpdatesStatus>("GET", `/v1/admin/updates${refresh ? "?refresh=1" : ""}`, undefined, { timeoutMs: 90_000 });
+  applyUpdate = (target: UpdateTarget, force = false) =>
+    this.call<UpdateResult>("POST", "/v1/admin/updates/apply", { target, force }, { timeoutMs: 11 * 60_000 });
+  async adminUsers(): Promise<AdminUser[]> {
+    return (await this.call<{ users: AdminUser[] }>("GET", "/v1/admin/users")).users;
+  }
+  setUserRole = (id: string, role: UserRole) => this.call<{ id: string; role: UserRole }>("PATCH", `/v1/admin/users/${encodeURIComponent(id)}`, { role });
 
   async sessions(): Promise<SessionSummary[]> {
     return (await this.call<{ sessions: SessionSummary[] }>("GET", "/v1/sessions")).sessions;
@@ -318,6 +336,10 @@ export class RuntimeClient {
   /** Plain input to the PTY (no bracketed paste). */
   async sendInput(id: string, data: string): Promise<void> {
     await this.call("POST", `/v1/sessions/${id}/input`, { data });
+  }
+
+  async uploadSessionAttachment(id: string, name: string, data: string): Promise<{ path: string; size: number }> {
+    return this.call("POST", `/v1/sessions/${encodeURIComponent(id)}/attachments`, { name, data }, { timeoutMs: 90_000 });
   }
 
   async interrupt(id: string): Promise<void> {

@@ -151,7 +151,9 @@ export function resolveModel(config: Config, provider: ProviderId, requested: un
  * never recorded. A user's `/tui` relaunch clears it for that process only.
  */
 export function forcedSessionEnv(provider: ProviderId): Record<string, string> {
-  return provider === "claude" ? { CLAUDE_CODE_NO_FLICKER: "1" } : {};
+  // DISABLE_AUTOUPDATER=1 is Claude Code's documented switch: the managed image's install is read-only for the
+  // per-user uid, so self-update could only fail ("Auto-update failed"). Floq ships the CLI version itself.
+  return provider === "claude" ? { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1" } : {};
 }
 
 export function buildSessionEnv(

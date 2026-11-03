@@ -22,7 +22,7 @@ import { listProjectBranches, switchProjectBranch, type GitCommandResult } from 
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { readClaudeNativeTitle, readCodexNativeTitle } from "./nativeTitle.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
-import { mkdirOwned, safeRelative, type ShardHandle } from "./shard.js";
+import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
 import type { RuntimeProfile } from "./settings.js";
@@ -34,6 +34,7 @@ const REAP_INTERVAL_MS = 15_000;
 const RESUME_FALLBACK_MS = 8_000;
 const CODEX_ID_POLL_MS = 3_000;
 const CODEX_MODEL_TIMEOUT_MS = 20_000;
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const ROLLOUT = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 
 /** Every Codex session gets a private CODEX_HOME, so the only rollout file in it belongs to that session. */
@@ -811,6 +812,43 @@ export class SessionManager {
     return summaryFromRow(await this.row(id, userId));
   }
 
+  /** Save an explicitly selected terminal attachment outside the checkout and return its container path. */
+  async uploadSessionAttachment(id: string, userId: string, name: unknown, encoded: unknown): Promise<{ path: string; size: number }> {
+    this.getLive(id, userId);
+    if (typeof name !== "string" || !name || name === "." || name === ".." || /[\\/\u0000-\u001f\u007f]/.test(name) || Buffer.byteLength(name, "utf8") > 255) {
+      throw badRequest("Choose a file with a valid name", "invalid_attachment_name");
+    }
+    if (typeof encoded !== "string" || encoded.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+      throw badRequest("File data is invalid or exceeds the 4 MiB limit", "invalid_attachment");
+    }
+    const contents = Buffer.from(encoded, "base64");
+    if (!contents.length || contents.length > MAX_ATTACHMENT_BYTES || contents.toString("base64") !== encoded) {
+      throw badRequest("File must be between 1 byte and 4 MiB", "invalid_attachment");
+    }
+    return this.withUserShardActivity(userId, async (handle) => {
+      const directoryId = randomUUID();
+      const relativeDirectory = `.floq/attachments/${directoryId}`;
+      const hostDirectory = this.shards.driver.hostPath(handle, relativeDirectory);
+      const home = resolve(handle.mountPath);
+      let current = home;
+      for (const part of [".floq", "attachments", directoryId]) {
+        current = join(current, part);
+        try {
+          const stat = lstatSync(current);
+          if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          mkdirSync(current, { mode: 0o700 });
+          lchownSync(current, handle.uid, handle.uid);
+        }
+      }
+      const destination = join(hostDirectory, name);
+      writeFileSync(destination, contents, { flag: "wx", mode: 0o600 });
+      lchownSync(destination, handle.uid, handle.uid);
+      return { path: join(this.shards.driver.homePath(handle), relativeDirectory, name), size: contents.length };
+    });
+  }
+
   /** Run a helper as the user's uid (setpriv) so what it creates in the mounted home is theirs. */
   private asUser(handle: ShardHandle, file: string, args: string[]): [string, string[]] {
     if (this.shards.driver.name !== "linux") return [file, args];
@@ -943,6 +981,14 @@ export class SessionManager {
     if (row.provider === "claude") {
       const claudeHome = this.shards.driver.hostPath(handle, ".claude");
       mkdirOwned(handle.mountPath, claudeHome, handle.uid);
+      // Anything root left behind in ~/.claude (or ~/.claude.json) makes Claude Code's transcript/todo/snapshot
+      // writes fail with EACCES. Repair a shallow slice (config dir, projects/<slug>, ...) on every start.
+      try {
+        ownTree(claudeHome, handle.uid, 2);
+        for (const name of [".claude.json", ".claude.json.backup"]) ownTree(this.shards.driver.hostPath(handle, name), handle.uid, 0);
+      } catch (error) {
+        log.warn("claude.ownership_repair_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
       try {
         syncProtectedFloqSkill(claudeHome, join(this.config.skelDir, ".claude/skills/floq-orchestrate"), handle.uid);
       } catch (error) {
