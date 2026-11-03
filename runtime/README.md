@@ -14,6 +14,10 @@ Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, e
 
 There is no password in the environment. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL`; when that email has no account yet, the app asks for it, `POST /v1/setup/lookup` answers `{"step":"setup"}`, and the admin chooses a password (12-128 chars) via `POST /v1/setup/admin`, then signs in normally. Once the account exists (and for every other email) lookup answers `{"step":"password"}` and setup returns 409 `setup_unavailable`, so it cannot be used to discover accounts or take over. Both routes are unauthenticated and rate limited per IP (10/min).
 
+## Joining a team
+
+Public signup stays off unless `FLOQ_ALLOW_SIGNUP=1`. A person without an account can use the login screen's **Join with an invitation** flow with the 7-day single-use token, the invited email, a name, and a 12-128 character password. Registration creates a member account only when the invitation is valid and the email matches; creating the account, membership, and consuming the token happen in one database transaction. The runtime does not email invitations: the team owner shares the raw token with the invited person. Existing accounts sign in with the invited email and accept the token in Floq. A token is never included in a URL.
+
 ## Subscription logins and git identity
 
 - Agents use the user's Claude / ChatGPT subscription, not API keys. `POST /v1/providers/:claude|codex/login` opens a login terminal (`claude auth login` / `codex login --device-auth`) in the user's sandbox with a throwaway config dir; the resulting OAuth credential is imported into Postgres (AES-GCM, AAD `<userId>:<provider>_oauth`) and the temp dir is deleted.
@@ -89,6 +93,7 @@ Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/e
 | GET | `/v1/teams/:id` | list team members (members only) |
 | POST | `/v1/teams/:id/invitations` | create a 7-day, email-bound, single-use member invitation; raw token is returned once |
 | POST | `/v1/team-invitations/accept` | accept an invitation while signed into its invited email |
+| POST | `/v1/team-invitations/register` | create a member account and accept a valid matching invitation while public signup is off; rate limited per IP |
 | GET/POST | `/v1/teams/:id/boards` | list/create team boards |
 | GET/PATCH/DELETE | `/v1/task-boards/:id` | read, rename, or owner-delete a board |
 | POST/PATCH/DELETE | `/v1/task-boards/:id/lists[/listId]` | create, rename/reorder, or delete a list |

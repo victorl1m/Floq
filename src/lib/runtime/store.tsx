@@ -67,6 +67,8 @@ export interface SignInInput {
   baseUrl: string;
   email: string;
   password: string;
+  /** Kept in login state only; accepted with the new session before it is saved. */
+  invitationToken?: string;
 }
 
 interface RuntimeContextValue {
@@ -434,7 +436,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async (input: SignInInput) => {
     const baseUrl = normalizeBaseUrl(input.baseUrl);
     if (!baseUrl) throw new Error("Enter the runtime URL");
-    const { token, user } = await new RuntimeClient(baseUrl).signIn(input.email, input.password);
+    const runtime = new RuntimeClient(baseUrl);
+    const { token, user } = await runtime.signIn(input.email, input.password);
+    if (input.invitationToken) await runtime.withToken(token).acceptTeamInvitation(input.invitationToken);
     const next: Connection = { baseUrl, token, user };
     saveConnection(next);
     try {

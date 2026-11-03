@@ -23,6 +23,7 @@ import type { GitReview } from "./gitReview.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
 import { expireStaleCursors } from "./taskPresence.js";
+import { registerWithInvitation } from "./invitationRegistration.js";
 
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
@@ -311,6 +312,21 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         throw conflict("Setup is not available", "setup_unavailable");
       }
       return send(res, 200, { ok: true });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/team-invitations/register") {
+      rateLimitSetup(req);
+      const body = await readJson<{ token?: unknown; email?: unknown; name?: unknown; password?: unknown }>(req);
+      const token = typeof body.token === "string" ? body.token.trim() : "";
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const password = body.password;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw badRequest("Enter a valid email address");
+      if (!name || name.length > 100) throw badRequest("Name must be 1-100 characters");
+      if (typeof password !== "string" || password.length < 12 || password.length > 128) throw badRequest("Password must be 12-128 characters", "invalid_password");
+      const context = await auth.$context;
+      const registered = await registerWithInvitation(pool, { token, email, name, password }, (value) => context.password.hash(value));
+      return send(res, 201, { ok: true, teamId: registered.teamId });
     }
 
     const userId = await userFor(req.headers);

@@ -188,6 +188,10 @@ export class RuntimeClient {
     return this.call("POST", "/v1/team-invitations/accept", { token });
   }
 
+  async registerWithTeamInvitation(input: { token: string; email: string; name: string; password: string }): Promise<{ teamId: string }> {
+    return this.call("POST", "/v1/team-invitations/register", input);
+  }
+
   async teamBoards(teamId: string): Promise<Omit<TaskBoard, "lists">[]> {
     return (await this.call<{ boards: Omit<TaskBoard, "lists">[] }>("GET", `/v1/teams/${encodeURIComponent(teamId)}/boards`)).boards;
   }
