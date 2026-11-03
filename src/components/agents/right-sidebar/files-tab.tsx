@@ -7,6 +7,10 @@ import type { RuntimeClient } from "@/lib/runtime/client";
 import type { FileContent, FileEntry, FileListing } from "@/lib/runtime/workspace-files";
 import { errorMessage } from "@/lib/runtime/store";
 import { FileIcon, FolderIcon } from "./file-icons";
+import { useHighlighter } from "@/hooks/use-highlighter";
+import { languageForPath } from "@/lib/runtime/language";
+import { buildTreeStatus, hasGitChanges, publishGitChanges, STATUS_BADGE_TONE, STATUS_NAME_TONE, useGitChanges } from "./git-status";
+import { GROUP_LETTER, type ChangeGroup } from "./diff-parse";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 import type { WorkspaceTarget } from "./changes-tab";
 
@@ -27,6 +31,8 @@ const INDENT = 12;
 const BASE_PAD = 8;
 const SPLIT_MIN_WIDTH = 560;
 const MAX_PREVIEW_LINES = 5000;
+const MAX_HIGHLIGHT_BYTES = 300 * 1024;
+const MAX_HIGHLIGHT_LINE = 2000;
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -35,6 +41,16 @@ function formatSize(bytes: number): string {
 /** Folders first, then files, each alphabetical. */
 function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) : a.type === "dir" ? -1 : 1));
+}
+
+function nameTone(status: ChangeGroup | "dir" | null): string {
+  return status === null ? "" : status === "dir" ? "text-amber-700/90 dark:text-amber-300/90" : STATUS_NAME_TONE[status];
+}
+
+function StatusMark({ status }: { status: ChangeGroup | "dir" | null }) {
+  if (status === null) return null;
+  if (status === "dir") return <span aria-label="Contains changes" title="Contains changes" className="size-1.5 shrink-0 rounded-full bg-amber-500 dark:bg-amber-400" />;
+  return <span aria-hidden className={cn("w-3 shrink-0 text-center font-mono text-[10px] font-semibold", STATUS_BADGE_TONE[status])}>{GROUP_LETTER[status]}</span>;
 }
 
 function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
@@ -93,6 +109,13 @@ function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeCl
   const lines = useMemo(() => (file && !file.binary && !file.tooLarge ? file.content.replace(/\n$/, "").split("\n") : null), [file]);
   const shown = lines && lines.length > MAX_PREVIEW_LINES ? lines.slice(0, MAX_PREVIEW_LINES) : lines;
 
+  const highlightable = !!shown && !!file && file.size <= MAX_HIGHLIGHT_BYTES && shown.every((line) => line.length <= MAX_HIGHLIGHT_LINE);
+  const highlighter = useHighlighter(languageForPath(path), highlightable);
+  const colored = useMemo(() => {
+    if (!highlighter || !shown) return null;
+    try { return highlighter.highlight(shown.join("\n")).lines; } catch { return null; }
+  }, [highlighter, shown]);
+
   async function copyPath() {
     try { await navigator.clipboard.writeText(path); setCopied(true); } catch { /* clipboard may be unavailable */ }
   }
@@ -113,7 +136,7 @@ function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeCl
           : shown && (
             <div className="flex w-max min-w-full font-mono text-[11px] leading-[18px]">
               <pre aria-hidden className="sticky left-0 shrink-0 select-none border-r border-border bg-background px-2 text-right text-muted-foreground/70 tabular-nums">{shown.map((_, index) => index + 1).join("\n")}</pre>
-              <pre aria-label={`Contents of ${file.path}`} className="min-w-0 flex-1 px-3 whitespace-pre">{shown.join("\n") || " "}{lines && lines.length > shown.length ? `\n\n… ${(lines.length - shown.length).toLocaleString()} more lines not shown` : ""}</pre>
+              <pre aria-label={`Contents of ${file.path}`} className="min-w-0 flex-1 px-3 whitespace-pre">{colored ? colored.map((line, index) => <span key={index}>{line}{"\n"}</span>) : (shown.join("\n") || " ")}{lines && lines.length > shown.length ? `\n\n… ${(lines.length - shown.length).toLocaleString()} more lines not shown` : ""}</pre>
             </div>
           )}
       </div>
@@ -136,6 +159,15 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
   expandedRef.current = expanded;
   const generation = useRef(0);
   const split = width >= SPLIT_MIN_WIDTH;
+  const gitChanges = useGitChanges();
+  const statusByTarget = useMemo(() => new Map(targets.map((target) => [target.id, buildTreeStatus(gitChanges.get(target.id))])), [targets, gitChanges]);
+  /** Git status of a tree node: file group, or "dir" when a folder contains changes. */
+  const statusOf = (item: FileEntry): ChangeGroup | "dir" | null => {
+    const { id, rel } = splitTreePath(item.path);
+    const status = statusByTarget.get(id);
+    if (!status) return null;
+    return item.type === "dir" ? (status.dirs.has(rel) ? "dir" : null) : status.files.get(rel) ?? null;
+  };
 
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
@@ -170,7 +202,11 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
     // Several project folders: each is a top-level node, opened by default.
     setExpanded(roots.length > 1 ? Object.fromEntries(roots.map((root) => [root, true])) : {});
     for (const root of roots) load(root);
-  }, [load, signature]);
+    for (const target of targetsRef.current) {
+      if (hasGitChanges(target.id)) continue;
+      client.gitChanges(target.sessionId).then((result) => publishGitChanges(target.id, result)).catch(() => { /* not a git repository: no status colors */ });
+    }
+  }, [load, signature, client]);
 
   function toggle(path: string, force?: boolean) {
     const open = force ?? !expandedRef.current[path];
@@ -182,6 +218,7 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
     const open = Object.keys(expandedRef.current).filter((path) => expandedRef.current[path]);
     const roots = targets.map((target) => treePath(target.id, ""));
     for (const path of new Set([...roots, ...open])) load(path, true);
+    for (const target of targets) client.gitChanges(target.sessionId).then((result) => publishGitChanges(target.id, result)).catch(() => {});
   }
 
   function openFile(path: string) {
@@ -309,7 +346,7 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
                 return (
                   <div key={item.path} id={`files-row-${index}`} role="treeitem" aria-selected={selected === item.path} title={splitTreePath(item.path).rel || item.name} onClick={() => activate(item)} className={cn("flex h-6 min-w-0 cursor-pointer items-center gap-1.5 px-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}>
                     {item.type === "dir" ? <FolderIcon /> : <FileIcon name={item.name} />}
-                    <span className="min-w-0 truncate">{item.name}</span>
+                    <span className={cn("min-w-0 truncate", nameTone(statusOf(item)))}>{item.name}</span>
                     {dir && <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{dir}</span>}
                   </div>
                 );
@@ -347,7 +384,8 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
                   {Array.from({ length: depth }, (_, guide) => <span key={guide} aria-hidden className="absolute inset-y-0 border-l border-border/60" style={{ left: BASE_PAD + guide * INDENT + 6 }} />)}
                   {isDir ? <IconChevronRight aria-hidden className={cn("size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", open && "rotate-90")} /> : <span aria-hidden className="size-3 shrink-0" />}
                   {isDir ? <FolderIcon open={open} /> : <FileIcon name={item.name} />}
-                  <span className="min-w-0 truncate">{item.name}</span>
+                  <span className={cn("min-w-0 flex-1 truncate", nameTone(statusOf(item)))}>{item.name}</span>
+                  <StatusMark status={statusOf(item)} />
                 </div>
               );
             });

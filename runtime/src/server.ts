@@ -29,7 +29,7 @@ import { TasksService } from "./tasks.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
-import { listSessionPorts, pipeTunnel, tunnelTarget } from "./ports.js";
+import { databasePort, listSessionPorts, MANUAL_DENY_PORTS, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
 const startedAt = new Date().toISOString();
@@ -849,7 +849,9 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         const userId = await userFor(headers);
         const session = manager.getLive(tunnel[1], userId);
         // Only ports this session's own processes listen on: no SSRF into the host or other sessions.
-        const target = tunnelTarget(await listSessionPorts(session.pid), Number(tunnel[2]));
+        // ?manual=1 additionally allows an undetected loopback port >= 1024 that is not the runtime's own or a database port.
+        const manual = url.searchParams.get("manual") === "1" ? { denyPorts: [...MANUAL_DENY_PORTS, config.port, databasePort(config.databaseUrl)] } : undefined;
+        const target = tunnelTarget(await listSessionPorts(session.pid), Number(tunnel[2]), manual);
         if (!target) return reject(404, "Not Found");
         wss.handleUpgrade(req, socket, head, (ws) => { pipeTunnel(ws, target); });
         return;

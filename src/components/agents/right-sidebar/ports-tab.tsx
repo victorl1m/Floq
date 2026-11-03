@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import { portForwardingSupported, setSessionPorts, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
+import { ManualForwardForm } from "@/components/window/manual-forward-form";
 import { PanelEmpty } from "./panel-states";
 
 const POLL_MS = 3000;
@@ -57,12 +58,21 @@ export default function PortsTab({ client, sessionId }: { client: RuntimeClient;
   if (!portForwardingSupported) {
     return <PanelEmpty icon={<IconPlugConnected />} title="Forwarding needs the desktop app" hint="Open Floq's desktop app to reach ports from this session on your computer." />;
   }
-  if (!list.length) {
-    return <PanelEmpty icon={<IconPlugConnected />} title="No listening ports" hint="Ports the agent opens (dev servers, OAuth callbacks) show up here." />;
+  const manualForm = <div className="border-t border-border p-3"><ManualForwardForm client={client} sessionId={sessionId} /></div>;
+  const manualOnly = Object.entries(forwarded).filter(([port, owner]) => owner === sessionId && !list.some((item) => item.port === Number(port))).map(([port]) => Number(port));
+  if (!list.length && !manualOnly.length) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="min-h-0 flex-1"><PanelEmpty icon={<IconPlugConnected />} title="No listening ports" hint="Ports the agent opens (dev servers, OAuth callbacks) show up here." /></div>
+        {manualForm}
+      </div>
+    );
   }
+  const rows = [...list.map(({ port }) => port), ...manualOnly].sort((a, b) => a - b);
   return (
-    <ul className="flex flex-col gap-0.5 p-2">
-      {list.map(({ port }) => {
+    <div className="flex h-full flex-col">
+    <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+      {rows.map((port) => {
         const owner = forwarded[port];
         const active = owner === sessionId;
         return (
@@ -87,6 +97,8 @@ export default function PortsTab({ client, sessionId }: { client: RuntimeClient;
         );
       })}
     </ul>
+    {manualForm}
+    </div>
   );
 }
 

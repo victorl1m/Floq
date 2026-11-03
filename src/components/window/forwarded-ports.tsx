@@ -1,39 +1,100 @@
-import { IconPlugConnected, IconX } from "@tabler/icons-react";
+import { useState } from "react";
+import { IconCopy, IconExternalLink, IconPlugConnected, IconX } from "@tabler/icons-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { cn } from "cn";
 import { toast } from "sonner";
-import { stopForward, usePortForwarding } from "@/lib/port-forwarding";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
+import { ManualForwardForm, useActiveForwardSession } from "@/components/window/manual-forward-form";
+import { errorMessage } from "@/lib/runtime/store";
+import { portForwardingSupported, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
 
-/** Footer chips for ports currently forwarded to this machine; renders nothing when there are none. */
+function copyUrl(port: number) {
+    navigator.clipboard.writeText(`http://localhost:${port}`).then(
+        () => toast.success("URL copied"),
+        () => toast.error("Could not copy the URL"),
+    );
+}
+
+/** Footer indicator with the count of forwarded ports; its popover lists them and offers manual forwarding. */
 export function ForwardedPorts() {
-    const { forwarded } = usePortForwarding();
-    const ports = Object.keys(forwarded).map(Number).sort((a, b) => a - b);
-    if (ports.length === 0) return null;
+    const [open, setOpen] = useState(false);
+    const { forwarded, ports } = usePortForwarding();
+    const { client, sessionId } = useActiveForwardSession();
+    const forwardedPorts = Object.keys(forwarded).map(Number).sort((a, b) => a - b);
+    const count = forwardedPorts.length;
+    const detected = (sessionId ? ports[sessionId] ?? [] : []).filter(({ port }) => !forwarded[port]);
+    const label = `${count} forwarded port${count === 1 ? "" : "s"}`;
 
     return (
-        <div className="ml-3 flex min-w-0 items-center gap-1.5" title="Forwarded ports">
-            <IconPlugConnected size={12} stroke={1.5} className="shrink-0" />
-            {ports.map((port) => (
-                <span key={port} className="inline-flex h-4 items-center rounded bg-muted/60 text-[11px] tabular-nums">
-                    <button
-                        type="button"
-                        title={`Open localhost:${port} in browser`}
-                        aria-label={`Open localhost:${port} in browser`}
-                        onClick={() => void openUrl(`http://localhost:${port}`)}
-                        className="h-4 cursor-pointer rounded-l pr-0.5 pl-1.5 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                        :{port}
-                    </button>
-                    <button
-                        type="button"
-                        title={`Stop forwarding :${port}`}
-                        aria-label={`Stop forwarding port ${port}`}
-                        onClick={() => void stopForward(port).then(() => toast.success(`Stopped forwarding localhost:${port}`))}
-                        className="flex h-4 cursor-pointer items-center rounded-r px-1 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                        <IconX size={10} />
-                    </button>
-                </span>
-            ))}
-        </div>
+        <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    className={cn(
+                        "-mr-2 ml-2 inline-flex h-6 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] tabular-nums transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                        count === 0 && "opacity-60",
+                        open && "bg-muted text-foreground",
+                    )}
+                >
+                    <IconPlugConnected size={12} stroke={1.5} />
+                    <span>{count}</span>
+                </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" side="top" sideOffset={8} className="w-80 gap-3 p-3">
+                <div className="space-y-0.5">
+                    <p className="text-xs font-medium">Port forwarding</p>
+                    <p className="text-[10px] text-muted-foreground">Reach ports from a session on this computer.</p>
+                </div>
+                {!portForwardingSupported ? (
+                    <p className="text-[10px] text-muted-foreground">Forwarding needs the Floq desktop app.</p>
+                ) : (
+                    <>
+                        {count > 0 && (
+                            <div className="flex flex-col gap-0.5">
+                                <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">Forwarded</p>
+                                {forwardedPorts.map((port) => (
+                                    <div key={port} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                                        <span className="min-w-0 flex-1 truncate font-medium tabular-nums">:{port} <span className="font-normal text-muted-foreground">→ localhost:{port}</span></span>
+                                        <Button type="button" variant="ghost" size="icon-xs" title="Open in browser" aria-label={`Open localhost:${port} in browser`} onClick={() => void openUrl(`http://localhost:${port}`)}>
+                                            <IconExternalLink />
+                                        </Button>
+                                        <Button type="button" variant="ghost" size="icon-xs" title="Copy URL" aria-label={`Copy URL for port ${port}`} onClick={() => copyUrl(port)}>
+                                            <IconCopy />
+                                        </Button>
+                                        <Button type="button" variant="ghost" size="icon-xs" title="Stop forwarding" aria-label={`Stop forwarding port ${port}`} onClick={() => void stopForward(port).then(() => toast.success(`Stopped forwarding localhost:${port}`))}>
+                                            <IconX />
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {detected.length > 0 && client && sessionId && (
+                            <div className="flex flex-col gap-0.5">
+                                <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">Detected</p>
+                                {detected.map(({ port }) => (
+                                    <div key={port} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                                        <span className="min-w-0 flex-1 truncate font-medium tabular-nums">:{port}</span>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="xs"
+                                            onClick={() => void startForward(client, sessionId, port).then(() => toast.success(`Forwarding localhost:${port}`), (error) => toast.error(errorMessage(error)))}
+                                        >
+                                            Forward
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {(count > 0 || detected.length > 0) && <Separator />}
+                        <ManualForwardForm client={client} sessionId={sessionId} />
+                    </>
+                )}
+            </PopoverContent>
+        </Popover>
     );
 }

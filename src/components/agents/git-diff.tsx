@@ -1,10 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { useHighlighter } from "@/hooks/use-highlighter";
+import { languageForPath } from "@/lib/runtime/language";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import type { GitFileDiff } from "@/lib/runtime/git-review";
 import { parseDiff, type DiffLine, type ParsedDiff } from "./right-sidebar/diff-parse";
 
 const PAGE_ROWS = 400;
+const MAX_HIGHLIGHT_CHARS = 150_000;
+const MAX_HIGHLIGHT_LINE = 1000;
 
 const ROW_TONE: Record<DiffLine["kind"], string> = {
   add: "bg-emerald-500/10",
@@ -37,6 +41,17 @@ export function DiffView({ parsed, path, wrap }: { parsed: ParsedDiff; path: str
   }
   const hidden = Math.max(0, parsed.rows - limit);
 
+  // Syntax colors per visible hunk (lines tokenized in order, +/- tinting stays on the row). Plain text past the caps.
+  const highlighter = useHighlighter(languageForPath(path));
+  const colored = useMemo<(ReactNode[] | null)[]>(() => {
+    if (!highlighter) return [];
+    let chars = 0;
+    for (const hunk of hunks) for (const line of hunk.lines) { chars += line.text.length; if (line.text.length > MAX_HIGHLIGHT_LINE) return []; }
+    if (chars > MAX_HIGHLIGHT_CHARS) return [];
+    try { return hunks.map((hunk) => (hunk.lines.length ? highlighter.highlight(hunk.lines.map((line) => line.text).join("\n")).lines : null)); } catch { return []; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlighter, parsed, limit]);
+
   return (
     <div role="region" aria-label={`Diff for ${path}`} className={cn("font-mono text-[11px] leading-[18px]", !wrap && "overflow-x-auto")}>
       <div className={cn(!wrap && "w-max min-w-full")}>
@@ -51,7 +66,7 @@ export function DiffView({ parsed, path, wrap }: { parsed: ParsedDiff; path: str
                 <Gutter value={line.oldNo} tone={GUTTER_TONE[line.kind]} />
                 <Gutter value={line.newNo} tone={GUTTER_TONE[line.kind]} />
                 <span aria-hidden className={cn("w-4 shrink-0 select-none text-center", line.kind === "add" && "text-emerald-600 dark:text-emerald-400", line.kind === "del" && "text-destructive")}>{SIGN[line.kind]}</span>
-                <span className={cn("min-w-0 flex-1 pr-2", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre")}>{line.text || " "}</span>
+                <span className={cn("min-w-0 flex-1 pr-2", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre")}>{colored[index]?.[lineIndex] ?? (line.text || " ")}</span>
               </div>
             ))}
           </div>

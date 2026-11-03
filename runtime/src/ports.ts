@@ -22,6 +22,9 @@ interface RawListener extends ListeningPort {
 
 const TCP_LISTEN = "0A";
 const HIGH_WATER = 1024 * 1024;
+const MIN_MANUAL_PORT = 1024;
+/** Never tunnel these on a manual request: the database default, plus the runtime's own listen port (added by the caller). */
+export const MANUAL_DENY_PORTS: readonly number[] = [5432];
 
 function hexToIpv4(hex: string): string {
   const n = Number.parseInt(hex, 16);
@@ -66,10 +69,23 @@ export function selectSessionPorts(listeners: RawListener[], inodes: ReadonlySet
   return [...byPort.values()].sort((a, b) => a.port - b.port);
 }
 
+/** Port of a postgres connection string, or 0 when it has none or cannot be parsed. */
+export function databasePort(databaseUrl: string): number {
+  try { return Number.parseInt(new URL(databaseUrl).port, 10) || 0; } catch { return 0; }
+}
+
 /** Where the runtime should connect to reach a listener, or null when the port is not a detected listener. */
-export function tunnelTarget(ports: ListeningPort[], port: number): { host: string; port: number } | null {
+export function tunnelTarget(
+  ports: ListeningPort[],
+  port: number,
+  manual?: { denyPorts: readonly number[] },
+): { host: string; port: number } | null {
   const found = ports.find((p) => p.port === port);
-  if (!found) return null;
+  if (!found) {
+    // Explicit user request for a port detection has not seen (yet): loopback only, unprivileged, never a Floq internal port.
+    if (!manual || !Number.isInteger(port) || port < MIN_MANUAL_PORT || port > 65535 || manual.denyPorts.includes(port)) return null;
+    return { host: "127.0.0.1", port };
+  }
   const host = found.address === "0.0.0.0" ? "127.0.0.1" : found.address === "::" ? "::1" : found.address;
   return { host, port };
 }

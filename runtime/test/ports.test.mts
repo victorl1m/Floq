@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
-import { listSessionPorts, parseProcNetTcp, pipeTunnel, selectSessionPorts, tunnelTarget } from "../dist/ports.js";
+import { databasePort, listSessionPorts, parseProcNetTcp, pipeTunnel, selectSessionPorts, tunnelTarget } from "../dist/ports.js";
 
 const HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
 const V4 = HEADER +
@@ -31,6 +31,26 @@ test("tunnel target is rejected for ports the session is not listening on", () =
   const ports = [{ port: 8080, address: "0.0.0.0" }];
   assert.deepEqual(tunnelTarget(ports, 8080), { host: "127.0.0.1", port: 8080 });
   assert.equal(tunnelTarget(ports, 22), null);
+});
+
+test("manual tunnel allows undetected unprivileged loopback ports only", () => {
+  const manual = { denyPorts: [5432, 8787] };
+  assert.deepEqual(tunnelTarget([], 3000, manual), { host: "127.0.0.1", port: 3000 });
+  assert.equal(tunnelTarget([], 3000), null); // not manual
+  assert.equal(tunnelTarget([], 1023, manual), null); // privileged
+  assert.equal(tunnelTarget([], 22, manual), null);
+  assert.equal(tunnelTarget([], 5432, manual), null); // deny list
+  assert.equal(tunnelTarget([], 8787, manual), null); // runtime's own port
+  assert.equal(tunnelTarget([], 65536, manual), null);
+  assert.equal(tunnelTarget([], 3000.5, manual), null);
+  // A detected port keeps its detected host.
+  assert.deepEqual(tunnelTarget([{ port: 3000, address: "::1" }], 3000, manual), { host: "::1", port: 3000 });
+});
+
+test("databasePort reads the port from a connection string", () => {
+  assert.equal(databasePort("postgres://u:p@localhost:5544/db"), 5544);
+  assert.equal(databasePort("postgres://u:p@localhost/db"), 0);
+  assert.equal(databasePort("nonsense"), 0);
 });
 
 test("listSessionPorts degrades to empty without a pid", async () => {
