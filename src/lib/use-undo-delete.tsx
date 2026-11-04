@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { IconTrash } from "@tabler/icons-react";
 import { DEFAULT_GRACE_MS, PendingDeletes, describeBatch, type PendingBatch, type PendingItem } from "./undo-delete";
 import type { SessionSummary } from "./runtime/types";
 
@@ -64,8 +65,12 @@ export function useUndoDelete({ performDelete, sendOnUnload, signedIn, allSessio
 
   const showToast = useCallback((batch: PendingBatch) => {
     const { title } = describeBatch(batch.items);
+    const names = batch.items.map((item) => item.label).filter(Boolean);
+    const shown = names.slice(0, 3).join(", ") + (names.length > 3 ? ` and ${names.length - 3} more` : "");
     toast(title, {
       id: batch.key,
+      icon: <IconTrash size={16} aria-hidden="true" />,
+      description: `${batch.items.length > 1 && shown ? `${shown}. ` : ""}It will be removed for good in a few seconds. Undo with Ctrl+Z.`,
       duration: Math.max(1000, batch.deadline - Date.now()),
       action: { label: "Undo", onClick: () => undoBatch(batch.key) },
       onDismiss: () => { void registry.dismiss(batch.key); },

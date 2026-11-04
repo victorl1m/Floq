@@ -34,6 +34,9 @@ import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
 import { PortRequests } from "./portRequests.js";
+import { Approvals } from "./approvals.js";
+import { neutralizeDeep } from "./approvalText.js";
+import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 import { databasePort, listSessionPorts, MANUAL_DENY_PORTS, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
@@ -76,6 +79,20 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     isDenied: (port) => port === config.port || port === databasePort(config.databaseUrl) || MANUAL_DENY_PORTS.includes(port),
     isAlive: (userId, sessionId) => { try { manager.getLive(sessionId, userId); return true; } catch { return false; } },
   });
+  // User approvals for irreversible actions. Agents can request/verify; ONLY the user's app session (GET/POST /v1/approvals) can grant.
+  const approvals = new Approvals({
+    pool,
+    scrub: (userId, ids, text) => (keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text)),
+    isAlive: (userId, sessionId) => { try { manager.getLive(sessionId, userId); return true; } catch { return false; } },
+    // The runtime itself types the user's decision into the agent's terminal (trusted marker; agent text can never carry it).
+    deliver: async (userId, sessionId, text) => {
+      const live = manager.findLive(sessionId, userId);
+      if (!live || !live.isAlive || live.provider === "shell") return false;
+      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: live.provider === "claude" || live.provider === "codex", trusted: true }));
+      return true;
+    },
+  });
+  void approvals.init();
   const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
   function rateLimitSetup(req: IncomingMessage): void {
@@ -203,6 +220,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     return subagents;
   }
 
+  const sendPlain = send;
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://runtime");
     const method = req.method ?? "GET";
@@ -218,6 +237,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       // `floq skills create --from DIR` may carry a whole skill package (up to 512 KiB of text), so that one route gets a larger body limit.
       const body = method === "POST" ? await readJson<Record<string, unknown>>(req, url.pathname === "/internal/skills/create" ? 1.5 * 1024 * 1024 : config.maxBodyBytes) : {};
       const path = url.pathname.slice("/internal/".length);
+      // Anything an agent receives from another agent (notes, replies, inbox, ...) is stripped of forged `[FLOQ APPROVAL` markers.
+      const send = (r: ServerResponse, status: number, payload: unknown): void => sendPlain(r, status, path.startsWith("vault/") || path.startsWith("secrets/") ? payload : neutralizeDeep(payload));
       switch (path) {
         case "vault/secrets":
           return send(res, 200, { secrets: (await vault.list(userId)).map((s) => ({ name: s.name, description: s.description })) });
@@ -249,6 +270,16 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           res.once("close", () => { if (!res.writableEnded) pendingRequest.abandon(); });
           return send(res, 200, await pendingRequest.promise);
         }
+        case "approvals/request": {
+          const parties = await orchestrator.approvalParties(userId, sessionId, body.target);
+          return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, ttlSec: body.timeoutSec }));
+        }
+        case "approvals/status":
+          return send(res, 200, await approvals.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));
+        case "approvals/verify":
+          return send(res, 200, await approvals.verify(userId, sessionId, body.id, { consume: body.consume === true, action: body.action }));
+        case "approvals/cancel":
+          return send(res, 200, await approvals.cancel(userId, sessionId, body.id));
         case "agents/restart": {
           if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Session restart requires POST");
           if (Object.keys(body).length) throw badRequest("Session restart takes no target or options; it can only restart the calling agent", "invalid_restart");
@@ -288,6 +319,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         }
         case "agents/ask":
           return send(res, 200, await orchestrator.ask(userId, sessionId, body.name, body.prompt, Number(body.timeoutSec) || undefined, body.wait !== false, Number(body.chars) || undefined, body.full === true));
+        case "inbox/list":
+          return send(res, 200, await orchestrator.inboxList(userId, sessionId));
+        case "inbox/read":
+          return send(res, 200, await orchestrator.inboxRead(userId, sessionId, body.id));
         case "agents/check":
           return send(res, 200, await orchestrator.check(userId, sessionId, body.name, Number(body.chars) || undefined, body.full === true));
         case "agents/wait":
@@ -877,6 +912,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, { status });
     }
 
+    // User-only: authenticated above by the user's app session (userFor). The per-session agent token of `floq` is not accepted here.
+    if (url.pathname === "/v1/approvals" && method === "GET") return send(res, 200, { approvals: approvals.list(userId) });
+    const approvalAnswer = /^\/v1\/approvals\/([A-Z2-7]{26})\/resolve$/.exec(url.pathname);
+    if (approvalAnswer && method === "POST") {
+      const body = await readJson<{ decision?: unknown }>(req);
+      return send(res, 200, await approvals.resolve(userId, approvalAnswer[1], body.decision));
+    }
+
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
     if (portsMatch && method === "GET") {
       return send(res, 200, { ports: await listSessionPorts(manager.getLive(portsMatch[1], userId).pid) });
@@ -1012,7 +1055,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         wss.handleUpgrade(req, socket, head, (ws) => {
           const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
           const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
-          const offAll = () => { off(); offPorts(); };
+          const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offAll = () => { off(); offPorts(); offApprovals(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });

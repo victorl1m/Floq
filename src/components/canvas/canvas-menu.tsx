@@ -44,7 +44,6 @@ export interface MenuApi {
   keychainEdge: (edgeId: string) => { keychain: string; agent: string } | undefined;
   unlinkKeychain: (edgeId: string) => void;
   noteInfo: (nodeId: string) => { linked: number } | undefined;
-  recolorNote: (nodeId: string, color: NoteColor) => void;
   deleteNote: (nodeId: string) => void;
   unlinkNoteAgents: (nodeId: string) => void;
   noteEdge: (edgeId: string) => { agent: string } | undefined;
@@ -208,14 +207,7 @@ function NoteMenu({ id, api }: { id: string; api: MenuApi }) {
   return (
     <ContextMenuContent className="min-w-56">
       <ContextMenuLabel>Note</ContextMenuLabel>
-      <ContextMenuSub>
-        <ContextMenuSubTrigger><IconNote />Color</ContextMenuSubTrigger>
-        <ContextMenuSubContent className="w-36">
-          {COLOR_KEYS.map((key) => <ContextMenuItem key={key} onSelect={() => api.recolorNote(id, key)}><span className={`size-3 rounded-full ${COLORS[key].dot}`} />{COLORS[key].label}</ContextMenuItem>)}
-        </ContextMenuSubContent>
-      </ContextMenuSub>
-      {info.linked > 0 && <ContextMenuItem onSelect={() => api.unlinkNoteAgents(id)}><IconLinkOff />Unlink {info.linked === 1 ? "agent" : `${info.linked} agents`}</ContextMenuItem>}
-      <ContextMenuSeparator />
+      {info.linked > 0 && <><ContextMenuItem onSelect={() => api.unlinkNoteAgents(id)}><IconLinkOff />Unlink {info.linked === 1 ? "agent" : `${info.linked} agents`}</ContextMenuItem><ContextMenuSeparator /></>}
       <ContextMenuItem className={danger} onSelect={() => api.deleteNote(id)}><IconTrash />Delete note<Keys keys="Del" /></ContextMenuItem>
     </ContextMenuContent>
   );

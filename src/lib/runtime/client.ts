@@ -13,6 +13,7 @@ import type {
   ClaudeOAuthStart,
   DevicePoll,
   PortRequest,
+  ApprovalRequest,
   GithubRepoPage,
   Exposure,
   RuntimeInfo,
@@ -638,6 +639,13 @@ export class RuntimeClient {
   /** Answer a port request. Rejects (404) once the runtime has expired or cancelled it. */
   resolvePortRequest = (id: string, body: { decision: "allow" | "deny" } | { decision: "error"; message: string }) =>
     this.call<{ status: string }>("POST", `/v1/port-requests/${encodeURIComponent(id)}/resolve`, body);
+
+  /** Approvals agents are waiting on (re-fetched after a reconnect). */
+  approvals = async () => (await this.call<{ approvals: ApprovalRequest[] }>("GET", "/v1/approvals")).approvals;
+
+  /** The user's decision on an approval. Only the signed-in user can do this; rejects once it expired. */
+  resolveApproval = (id: string, decision: "allow" | "deny") =>
+    this.call<{ status: string }>("POST", `/v1/approvals/${encodeURIComponent(id)}/resolve`, { decision });
 
   /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
   eventsUrl(): string {

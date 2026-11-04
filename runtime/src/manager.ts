@@ -38,6 +38,7 @@ import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
 import type { RuntimeProfile } from "./settings.js";
 import { PROVIDER_IDS, type CreateSessionInput, type ProviderId, type RuntimeProject, type ProjectWorkspace, type SessionState, type SessionSummary } from "./types.js";
+import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[\w.@:/~+-]+$/;
 const REAP_INTERVAL_MS = 15_000;
@@ -1955,9 +1956,7 @@ export class SessionManager {
     const text = buildWiredNotice(added, removed, block);
     if (!text) return false;
     try {
-      live.write(text);
-      await new Promise((r) => setTimeout(r, 300));
-      live.write(String.fromCharCode(13));
+      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: live.provider === "claude" || live.provider === "codex" }));
       return true;
     } catch { return false; }
   }

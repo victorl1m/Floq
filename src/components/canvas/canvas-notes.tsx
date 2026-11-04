@@ -1,7 +1,7 @@
 // Sticky notes on the canvas: a React Flow node type plus the hook that keeps them in sync with the runtime.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useConnection, BaseEdge, EdgeLabelRenderer, Handle, NodeResizer, Position, useNodesState, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { IconLink, IconNote, IconTrash, IconX } from "@tabler/icons-react";
+import { IconLink, IconNote, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -69,6 +69,63 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
   const palette = COLORS[note.color] ?? COLORS.yellow;
   const [text, setText] = useState(note.text);
   const [flash, setFlash] = useState(false);
+  // Controlled so we can close it on any outside click: React Flow's pane/node drag handling stops the
+  // pointer events Radix relies on for its own outside-click dismissal.
+  const [colorOpen, setColorOpen] = useState(false);
+  useEffect(() => {
+    if (!colorOpen) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-note-color-picker]")) return;
+      setColorOpen(false);
+    };
+    // Capture phase so nothing in the canvas can swallow the event before we see it.
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [colorOpen]);
+  // Deselecting the note (clicking the pane or another node) also closes it.
+  useEffect(() => { if (!selected) setColorOpen(false); }, [selected]);
+  // Title editing: double-click the note (anywhere but the text), F2, or Enter on the title button.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draft, setDraft] = useState("");
+  const titleInput = useRef<HTMLInputElement>(null);
+  const titleButton = useRef<HTMLButtonElement>(null);
+  const titleDone = useRef(false);
+  const restoreFocus = useRef(false);
+  const startTitleEdit = useCallback(() => {
+    titleDone.current = false;
+    setDraft(note.title ?? "");
+    setEditingTitle(true);
+    ctx.setEditing(note.id, true);
+  }, [ctx, note.id, note.title]);
+  const finishTitleEdit = (save: boolean, refocus: boolean) => {
+    if (titleDone.current) return;
+    titleDone.current = true;
+    restoreFocus.current = refocus;
+    const next = draft.trim();
+    if (save && next !== (note.title ?? "")) {
+      if (!next && note.agentNoteName) toast.error("This note needs a name", { description: "Agents read it with floq note, so type a new name instead of clearing it." });
+      else ctx.patch(note.id, { title: next || null });
+    }
+    setEditingTitle(false);
+    ctx.setEditing(note.id, false);
+  };
+  useEffect(() => {
+    if (editingTitle) { titleInput.current?.focus(); titleInput.current?.select(); return; }
+    if (restoreFocus.current) { restoreFocus.current = false; titleButton.current?.focus(); }
+  }, [editingTitle]);
+  useEffect(() => {
+    if (!selected || editingTitle) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "F2") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable]")) return;
+      event.preventDefault();
+      startTitleEdit();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected, editingTitle, startTitleEdit]);
   const focused = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const dirty = useRef<string | null>(null);
@@ -108,7 +165,12 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
   const linked = note.linkedSessionIds;
 
   return (
-    <div className="group/note relative size-full">
+    <div className="group/note nopan relative size-full" onDoubleClick={(event) => {
+      const target = event.target as Element;
+      if (editingTitle || target.closest("textarea, input, [data-note-color-picker], button:not([data-note-title])")) return;
+      event.stopPropagation();
+      startTitleEdit();
+    }}>
       <NodeResizer
         isVisible={selected}
         minWidth={NOTE_MIN.width}
@@ -131,13 +193,13 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
         <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
         <div className={cn("note-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1 border-b px-1.5 active:cursor-grabbing", palette.border)}>
           <IconNote size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <Popover>
+          <Popover open={colorOpen} onOpenChange={setColorOpen}>
             <PopoverTrigger asChild>
-              <button type="button" className="nodrag nopan flex size-6 items-center justify-center rounded hover:bg-foreground/10" aria-label="Note color" title="Color">
+              <button type="button" data-note-color-picker className="nodrag nopan flex size-6 items-center justify-center rounded hover:bg-foreground/10" aria-label="Note color" title="Color">
                 <span className={cn("size-3 rounded-full", palette.dot)} />
               </button>
             </PopoverTrigger>
-            <PopoverContent className="flex w-auto gap-1.5 p-2" side="bottom" align="start">
+            <PopoverContent data-note-color-picker className="flex w-auto gap-1.5 p-2" side="bottom" align="start">
               {COLOR_KEYS.map((key) => (
                 <button
                   key={key}
@@ -150,7 +212,38 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
               ))}
             </PopoverContent>
           </Popover>
-          {note.title && <span className="min-w-0 truncate text-[12px] font-medium" title={`Agent note: ${note.title}`}>{note.title}</span>}
+          {editingTitle ? (
+            <input
+              ref={titleInput}
+              value={draft}
+              maxLength={80}
+              aria-label="Note title"
+              placeholder="Add a title"
+              spellCheck={false}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => finishTitleEdit(true, false)}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); finishTitleEdit(true, true); }
+                else if (event.key === "Escape") { event.preventDefault(); finishTitleEdit(false, true); }
+              }}
+              className="nodrag nopan nowheel h-6 min-w-0 flex-1 rounded border border-primary/50 bg-background/80 px-1.5 text-[12px] font-medium outline-none focus:ring-2 focus:ring-primary/40"
+            />
+          ) : (
+            <button
+              ref={titleButton}
+              type="button"
+              data-note-title
+              aria-keyshortcuts="F2"
+              aria-label={note.title ? `Note title: ${note.title}. Press Enter to rename` : "Add a title"}
+              title={note.title ? (note.agentNoteName ? `Agent note: ${note.title} (double-click to rename)` : "Note title (double-click to rename)") : "Add a title (double-click the note or press F2)"}
+              onClick={(event) => { if (event.detail === 0) startTitleEdit(); }}
+              className={cn("flex h-6 min-w-0 items-center gap-1 rounded px-1 text-[12px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-primary/50", !note.title && "text-muted-foreground/70 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/note:opacity-100")}
+            >
+              <span className="min-w-0 truncate">{note.title || "Add a title"}</span>
+              <IconPencil size={11} aria-hidden="true" className="shrink-0 opacity-0 transition-opacity group-hover/note:opacity-60" />
+            </button>
+          )}
           {linked.length > 0 && (
             <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 tabular-nums dark:text-teal-300" title={`Agents that can read and edit this note: ${linked.map(ctx.titleOf).join(", ")}`}>
               <IconLink size={11} />{linked.length}
@@ -270,7 +363,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     if (known.current) {
       for (const note of server) {
         if (known.current.has(note.id) || created.current.has(note.id)) continue;
-        if (!note.title) continue;
+        if (!note.agentNoteName) continue;
         const who = note.linkedSessionIds[0] ? titleOfRef.current(note.linkedSessionIds[0]) : "An agent";
         toast(`${who} created note ${note.title}`, { action: { label: "Show on canvas", onClick: () => revealRef.current(note.id) } });
       }
@@ -316,7 +409,10 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     apply(id, change);
     pending.current.set(id, (pending.current.get(id) ?? 0) + 1);
     updateNoteRequest(client, id, change)
-      .then((saved) => { if (saved?.updatedAt) apply(id, { updatedAt: saved.updatedAt }); })
+      .then((saved) => {
+        if (!saved?.updatedAt) return;
+        apply(id, { updatedAt: saved.updatedAt, ...("title" in change ? { title: saved.title ?? null, agentNoteName: saved.agentNoteName ?? null } : {}) });
+      })
       .catch((error) => {
         const revert: Partial<CanvasNote> = {};
         for (const key of Object.keys(change) as (keyof NotePatch)[]) Object.assign(revert, { [key]: before[key as keyof CanvasNote] });
@@ -357,7 +453,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
   revealRef.current = reveal;
   useEffect(() => () => clearTimeout(highlightTimer.current), []);
 
-  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; w?: number; h?: number; agentNoteName?: string }) => {
+  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; w?: number; h?: number; agentNoteName?: string; title?: string }) => {
     if (!client || !projectId) return;
     try {
       const note = await createNoteRequest(client, projectId, { w: NOTE_DEFAULT.width, h: NOTE_DEFAULT.height, ...input });
@@ -380,10 +476,10 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     deleteNoteRequest(client, id).then(() => {
       if (gone?.text.trim() || gone?.title) {
         toast(gone.title ? `Note ${gone.title} deleted` : "Note deleted", {
-          description: gone.title ? "Agents can no longer read it with floq note." : undefined,
+          description: gone.agentNoteName ? "Agents can no longer read it with floq note." : undefined,
           action: {
             label: "Undo",
-            onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, agentNoteName: gone.title ?? undefined }).then((restored) => {
+            onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, agentNoteName: gone.agentNoteName ?? undefined, title: gone.agentNoteName ? undefined : gone.title ?? undefined }).then((restored) => {
               if (restored && client) for (const sid of gone.linkedSessionIds) void linkNote(client, restored.id, sid).catch(() => {});
             }),
           },

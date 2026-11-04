@@ -143,6 +143,9 @@ function AgentCanvas() {
   const [terminalId, setTerminalId] = useState<string | null>(null);
   const [sentIds, setSentIds] = useState<Set<string>>(new Set());
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
+  const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const composerFocus = useRef<(() => void) | null>(null);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -485,6 +488,10 @@ function AgentCanvas() {
     })));
   }, [notes.notes, projectSessions, selectedEdgeId]);
   const allEdges = useMemo(() => [...edges, ...kcEdges, ...noteEdges] as Edge[], [edges, kcEdges, noteEdges]);
+  const hotIds = useMemo(() => {
+    const edge = allEdges.find((item) => item.id === (hoverEdgeId ?? selectedEdgeId));
+    return edge ? new Set([edge.source, edge.target]) : new Set<string>();
+  }, [allEdges, hoverEdgeId, selectedEdgeId]);
   const noteCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const note of notes.notes) for (const sid of note.linkedSessionIds) counts[sid] = (counts[sid] ?? 0) + 1;
@@ -690,7 +697,6 @@ function AgentCanvas() {
     },
     unlinkKeychain: (edgeId) => { const [kcId, sid] = edgeId.slice(KCLINK_PREFIX_LEN).split(":"); keychains.unlink(kcId, sid); },
     noteInfo: (id) => { const note = notes.notes.find((item) => NOTE_PREFIX + item.id === id); return note ? { linked: note.linkedSessionIds.length } : undefined; },
-    recolorNote: (id, color) => notes.patch(id.slice(NOTE_PREFIX.length), { color }),
     deleteNote: (id) => notes.remove(id.slice(NOTE_PREFIX.length)),
     unlinkNoteAgents: (id) => notes.unlinkAll(id.slice(NOTE_PREFIX.length)),
     noteEdge: (edgeId) => { const [, sid] = edgeId.slice(NOTELINK_PREFIX_LEN).split(":"); return { agent: titleOf(sid) }; },
@@ -732,6 +738,8 @@ function AgentCanvas() {
     deleteLink: (link) => void deleteLink(link),
     keychainCounts,
     noteCounts,
+    hotIds,
+    flashIds,
   };
 
   // A sidebar click lands here: select + center the agent's node, flash it, and (for "Open") open its terminal dialog. Never resumes.
@@ -754,6 +762,10 @@ function AgentCanvas() {
 
   // Agent-to-agent drags create AgentLinks; a keychain or note and an agent create that kind of link (either direction); anything else is refused.
   const connectNodes = useCallback((a: string, b: string) => {
+    // One-shot halo pulse on both ends (cleared after the animation).
+    setFlashIds(new Set([a, b]));
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlashIds(new Set()), 600);
     const aKey = isKeychainId(a), bKey = isKeychainId(b);
     const aNote = isNoteId(a), bNote = isNoteId(b);
     if (aKey || bKey || aNote || bNote) {
@@ -861,8 +873,8 @@ function AgentCanvas() {
     );
   }
 
-  const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode) => (
-    <Button type="button" variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
+  const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
+    <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
 
   return (
@@ -877,10 +889,11 @@ function AgentCanvas() {
           <div
             ref={wrapRef}
             data-canvas-theme={canvasTheme}
+            data-canvas-tool={linkMode ? "link" : tool}
             tabIndex={-1}
             onKeyDown={onKeyDown}
             onContextMenuCapture={(event) => setMenuTarget({ kind: "pane", flow: screenToFlowPosition({ x: event.clientX, y: event.clientY }) })}
-            className={cn("canvas-chrome size-full outline-none", canvasTheme === "dark" ? "canvas-chrome-dark" : "canvas-chrome-light", linkMode && "[&_.react-flow__pane]:cursor-crosshair")}
+            className={cn("canvas-chrome size-full outline-none", canvasTheme === "dark" ? "canvas-chrome-dark" : "canvas-chrome-light")}
           >
             <ReactFlow
               nodes={allNodes}
@@ -900,6 +913,8 @@ function AgentCanvas() {
                 else if (linkMode.from !== node.id) { connectNodes(linkMode.from, node.id); setLinkMode(null); }
               }}
               onNodeContextMenu={(_, node) => { setMenuTarget({ kind: "node", id: node.id }); setSelectedEdgeId(null); selectNodes(new Set([node.id])); }}
+              onEdgeMouseEnter={(_, edge) => setHoverEdgeId(edge.id)}
+              onEdgeMouseLeave={() => setHoverEdgeId(null)}
               onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
               onEdgeContextMenu={(_, edge) => { setMenuTarget({ kind: "edge", id: edge.id }); setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
               onPaneClick={() => setSelectedEdgeId(null)}
@@ -908,7 +923,7 @@ function AgentCanvas() {
               isValidConnection={isValidConnection}
               connectionMode={ConnectionMode.Loose}
               connectionRadius={40}
-              connectionLineStyle={{ stroke: "var(--primary-text)", strokeWidth: 2.5, strokeDasharray: "6 4" }}
+              connectionLineStyle={{ stroke: "var(--primary-text)", strokeWidth: 2.5, strokeDasharray: "6 4", strokeLinecap: "round", filter: "drop-shadow(0 0 3px color-mix(in oklab, var(--primary-text) 45%, transparent))" }}
               nodesConnectable
               edgesFocusable={false}
               deleteKeyCode={null}
@@ -979,8 +994,8 @@ function AgentCanvas() {
                       </div>
                       <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
                       <div role="group" aria-label="Add to canvas" className="flex shrink-0 items-center gap-0.5">
-                        <ShortcutTip label="Add note" keys="N">{toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Add note" keys="N">{toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />, "add-note")}</ShortcutTip>
+                        <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />, "add-keychain")}</ShortcutTip>
                       </div>
                       <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
                       <div role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">

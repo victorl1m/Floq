@@ -12,7 +12,7 @@ export interface SkillSummary { provider: string; name: string; source: string; 
 export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
   const named: NamedArgs = {};
-  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here"]);
+  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here", "consume"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
       positional.push(args[i]);
@@ -173,7 +173,35 @@ export function readSkillDirectory(root: string): Record<string, string> {
   return files;
 }
 
-export interface AgentReply { status: string; output: string; truncated?: number; source?: string }
+export interface Delivery { mode: "full" | "inbox"; chars: number; sha256: string; inboxId?: string }
+export interface AgentReply { status: string; output: string; truncated?: number; source?: string; delivery?: Delivery }
+
+/** Longest message accepted as command-line text. Longer ones must come from a file or stdin, where no shell, TUI or argv limit can cut them. */
+export const MAX_ARGV_MESSAGE_CHARS = 4_000;
+
+/** Where `floq ask` takes the message from: argv words, `-` (stdin) or `--file PATH`. Never mixes sources. */
+export function messageSource(positional: string[], named: NamedArgs): { kind: "argv"; text: string } | { kind: "stdin" } | { kind: "file"; path: string } {
+  const words = positional.slice(1);
+  if (named.file !== undefined) {
+    if (typeof named.file !== "string" || !named.file) throw new Error("--file takes a path");
+    if (words.length) throw new Error("use either message text or --file, not both");
+    return { kind: "file", path: named.file };
+  }
+  if (words.length === 1 && words[0] === "-") return { kind: "stdin" };
+  const text = words.join(" ");
+  if (text.length > MAX_ARGV_MESSAGE_CHARS) {
+    throw new Error("the message is " + text.length + " chars, too long to pass as a command-line argument (max " + MAX_ARGV_MESSAGE_CHARS + "); a long argument can be cut off by your terminal. Write it to a file and run: floq ask <agent> --file PATH   (or pipe it: floq ask <agent> -  < PATH)");
+  }
+  return { kind: "argv", text };
+}
+
+/** One receipt line for stderr after a message was typed into the other agent's terminal. */
+export function formatDelivery(d: Delivery | undefined): string {
+  if (!d) return "";
+  return d.mode === "full"
+    ? "delivered " + d.chars + " chars (full, sha256 " + d.sha256 + ")"
+    : "delivered preview + inbox id " + d.inboxId + " (" + d.chars + " chars, sha256 " + d.sha256 + "); the receiver reads it with: floq inbox read " + d.inboxId;
+}
 
 /**
  * Render a check/ask/wait response: an explicit `status:` first line, then the reply. Exit codes: 0 finished or

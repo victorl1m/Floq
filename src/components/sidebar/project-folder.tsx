@@ -99,6 +99,12 @@ export function ProjectDnd({ layout, onLayout, isFolderExpanded, onExpandFolder,
   const expandTimer = useRef<number | null>(null);
   const clearTimer = () => { if (expandTimer.current !== null) { window.clearTimeout(expandTimer.current); expandTimer.current = null; } };
   useEffect(() => clearTimer, []);
+  useEffect(() => {
+    const root = document.documentElement;
+    if (ui.activeId) root.setAttribute("data-dnd-dragging", "");
+    else root.removeAttribute("data-dnd-dragging");
+    return () => root.removeAttribute("data-dnd-dragging");
+  }, [ui.activeId]);
 
   const setHint = useCallback((hint: Hint | null) => {
     const prev = hintRef.current;

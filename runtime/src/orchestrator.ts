@@ -11,6 +11,8 @@ import type { Keychains } from "./keychains.js";
 import type { AgentLinks } from "./links.js";
 import { CrossProjectGuard, buildProvenance, buildReplyHint } from "./crossProject.js";
 import { log } from "./logger.js";
+import { neutralizeApprovalMarker } from "./approvalText.js";
+import { MessageInbox, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -109,7 +111,28 @@ export class Orchestrator {
     private readonly links?: AgentLinks,
     private readonly secrets?: Keychains,
     private readonly cross: CrossProjectGuard = new CrossProjectGuard(),
+    private readonly inbox: MessageInbox = new MessageInbox(pool),
   ) {}
+
+  /** Whether the target TUI takes bracketed paste: what it announced in its output, else yes for the agent TUIs (both enable it). */
+  private bracketed(live: Session): boolean {
+    try {
+      const seen = bracketedPasteState(live.replaySince(0).chunks.map((c) => c.data).join(""));
+      if (seen !== undefined) return seen;
+    } catch { /* fall through */ }
+    return live.provider === "claude" || live.provider === "codex";
+  }
+
+  async inboxList(userId: string, sessionId: string) {
+    await this.caller(userId, sessionId);
+    return { messages: await this.inbox.list(userId, sessionId) };
+  }
+
+  async inboxRead(userId: string, sessionId: string, id: unknown) {
+    await this.caller(userId, sessionId);
+    const m = await this.inbox.read(userId, sessionId, id);
+    return { ...m, body: await this.scrub(userId, [sessionId, m.from], m.body) };
+  }
 
   private async crossAllowed(userId: string): Promise<boolean> {
     try { return (await this.settings.get(userId)).allowCrossProjectAgents !== false; } catch { return true; }
@@ -121,11 +144,12 @@ export class Orchestrator {
 
   /** Redact the secret values of the given sessions from text the runtime generates for other agents or the UI. */
   private async scrub(userId: string, ids: string[], text: string): Promise<string> {
-    return this.secrets ? this.secrets.redact(userId, ids, text) : text;
+    // Agent-authored text never carries a forged `[FLOQ APPROVAL ...]` marker to another agent.
+    return neutralizeApprovalMarker(this.secrets ? await this.secrets.redact(userId, ids, text) : text);
   }
 
   private async scrubResult<T extends { output: string }>(userId: string, ids: string[], result: T): Promise<T> {
-    return this.secrets ? { ...result, output: await this.scrub(userId, ids, result.output) } : result;
+    return { ...result, output: await this.scrub(userId, ids, result.output) };
   }
 
   private async rows(userId: string) {
@@ -182,6 +206,21 @@ export class Orchestrator {
     const me = await this.caller(userId, sessionId);
     if (requireLead && !me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can install or remove skills and MCP servers or create secrets");
     return { id: me.id, name: me.title, projectId: me.project_id, provider: me.provider as "claude" | "codex" };
+  }
+
+  /**
+   * The two agents of an approval request: the caller (requester) and the target (another agent of this user, or
+   * the caller itself with "self"/omitted). Cross-project targets follow the same setting as `floq ask`.
+   */
+  async approvalParties(userId: string, sessionId: string, targetRef: unknown) {
+    const me = await this.caller(userId, sessionId);
+    const view = (r: typeof me) => ({ id: r.id, name: r.title, provider: r.provider as "claude" | "codex", projectId: r.project_id, projectName: r.project_id ? this.projectName(r) : null });
+    if (targetRef === undefined || targetRef === null || targetRef === "" || (typeof targetRef === "string" && targetRef.trim().toLowerCase() === "self")) return { requester: view(me), target: view(me) };
+    const other = await this.resolve(userId, targetRef);
+    if (other.id !== me.id && !this.sameProject(me, other) && !(await this.crossAllowed(userId))) {
+      throw new HttpError(403, "cross_project_disabled", '"' + other.title + '" is in a different project and the user turned off "Allow agents to talk across projects" in Settings > Agents');
+    }
+    return { requester: view(me), target: view(other) };
   }
 
   private async target(userId: string, sessionId: string, name: unknown) {
@@ -326,22 +365,28 @@ export class Orchestrator {
     const collected: string[] = [];
     const unsubscribe = target.subscribe((frame) => { if (frame.type === "output") collected.push(frame.data); });
     try {
+      const original = prompt;
       const body = prompt.replace(/\r?\n/g, " ").trim();
-      if (cross) {
-        const from = { id: me.id, title: me.title, projectName: this.projectName(me) };
-        const text = await this.scrub(userId, [other.id, me.id], buildProvenance(from, hop) + " " + body + buildReplyHint(from, wait));
-        target.write(text);
-        log.info("agent.cross_project_message", { userId, fromSessionId: me.id, toSessionId: other.id, fromProjectId: me.project_id, toProjectId: other.project_id, chars: body.length, hop, wait });
-      } else {
-        target.write("[Message from agent " + me.title + "] " + body);
+      const from = { id: me.id, title: me.title, projectName: this.projectName(me) };
+      // Long bodies are never typed into a terminal (the tail survives, the head is lost): the full text goes to the receiver's inbox.
+      let typedBody = body;
+      let delivery: { mode: "full" | "inbox"; chars: number; sha256: string; inboxId?: string } = { mode: "full", chars: body.length, sha256: sha256Prefix(body) };
+      if (needsInbox(body)) {
+        const stored = await this.inbox.store(userId, from, other.id, await this.scrub(userId, [other.id, me.id], original));
+        typedBody = inboxPointer(body, stored.id, stored.chars);
+        delivery = { mode: "inbox", chars: stored.chars, sha256: stored.sha256, inboxId: stored.id };
       }
-      await new Promise((r) => setTimeout(r, 300));
-      target.write("\r");
+      const typed = await this.scrub(userId, [other.id, me.id], cross
+        ? buildProvenance(from, hop) + " " + typedBody + buildReplyHint(from, wait)
+        : "[Message from agent " + me.title + "] " + typedBody);
+      await serialPerTarget(other.id, () => typeMessage((d) => target.write(d), typed, { bracketed: this.bracketed(target) }));
+      if (cross) log.info("agent.cross_project_message", { userId, fromSessionId: me.id, toSessionId: other.id, fromProjectId: me.project_id, toProjectId: other.project_id, chars: body.length, hop, wait });
+      log.info("agent.message_delivered", { userId, fromSessionId: me.id, toSessionId: other.id, mode: delivery.mode, chars: delivery.chars, typedChars: typed.length, sha256: delivery.sha256, inboxId: delivery.inboxId, cross });
       await this.links?.record(userId, me.id, other.id, "message", "message", "ask", await this.scrub(userId, [other.id, me.id], body), cross ? { fromTitle: me.title, toTitle: other.title, fromProject: this.projectName(me), toProject: this.projectName(other), toProjectId: other.project_id } : undefined);
-      if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0 };
+      if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0, delivery };
       const { why, turn } = await this.awaitTurn(target, userId, afterPrompts, timeoutMs, Date.now());
       if ((why === "done" || why === "quiet") && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", await this.scrub(userId, [other.id, me.id], turn.reply));
-      return this.scrubResult(userId, [other.id, me.id], this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim()));
+      return this.scrubResult(userId, [other.id, me.id], { ...this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim()), delivery });
     } finally {
       unsubscribe();
     }

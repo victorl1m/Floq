@@ -3,6 +3,9 @@ import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "next-themes";
 import App from "@/App";
 import "@/index.css";
+import { applyCursorPreference } from "@/lib/cursor-preference";
+
+applyCursorPreference();
 import Titlebar from "@/components/window/titlebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import Footer from "@/components/window/footer";

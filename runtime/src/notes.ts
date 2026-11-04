@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { HttpError, badRequest, notFound } from "./errors.js";
+import { HttpError, badRequest, conflict, notFound } from "./errors.js";
 import { log } from "./logger.js";
 
 export const NOTE_COLORS = ["yellow", "blue", "green", "pink", "purple", "gray"] as const;
@@ -16,8 +16,10 @@ export interface CanvasNote {
   h: number;
   /** Agents wired to this note: they read and edit it, and create new notes, through `floq sticky`. */
   linkedSessionIds: string[];
-  /** Name of the `floq note` this card mirrors (shown as its title); null for plain canvas notes. */
+  /** Shown in the header: the `floq note` name for a mirrored card, else the title the user typed; null when none. */
   title: string | null;
+  /** Name of the `floq note` this card mirrors; null for plain canvas notes. Renaming such a card renames the agent note. */
+  agentNoteName: string | null;
   /** False until the canvas has chosen a spot for a note created by an agent or backfilled; the UI then places and persists it. */
   placed: boolean;
   createdAt: string;
@@ -30,7 +32,8 @@ export const NOTE_MAX_SIZE = 2000;
 export const NOTE_MAX_COORD = 1e7;
 export const MAX_NOTES_PER_PROJECT = 500;
 
-export interface NoteFields { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string }
+export interface NoteFields { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
+export const NOTE_MAX_TITLE = 80;
 const AGENT_NOTE_NAME = /^[\w .-]{1,80}$/;
 
 export function finite(name: string, value: unknown, min: number, max: number): number {
@@ -61,11 +64,22 @@ export function parseNoteFields(body: unknown, needPosition: boolean): NoteField
     if (typeof b.agentNoteName !== "string" || !AGENT_NOTE_NAME.test(b.agentNoteName)) throw badRequest("agentNoteName must be 1-80 chars of letters, digits, space, . _ -", "invalid_note");
     out.agentNoteName = b.agentNoteName;
   }
+  if (b.title !== undefined) {
+    if (b.title === null) out.title = null;
+    else {
+      if (typeof b.title !== "string") throw badRequest("title must be a string or null", "invalid_note");
+      // eslint-disable-next-line no-control-regex
+      if (/[\x00-\x1f\x7f]/.test(b.title)) throw badRequest("title must not contain control characters", "invalid_note");
+      const t = b.title.trim();
+      if (t.length > NOTE_MAX_TITLE) throw badRequest("title must be at most " + NOTE_MAX_TITLE + " characters", "invalid_note");
+      out.title = t || null;
+    }
+  }
   return out;
 }
 
 const UUID = /^[0-9a-f-]{36}$/i;
-const COLS = `n.id, n.project_id, n.text, n.color, n.x, n.y, n.w, n.h, n.agent_note_name, n.placed, n.created_at, n.updated_at,
+const COLS = `n.id, n.project_id, n.text, n.color, n.x, n.y, n.w, n.h, n.agent_note_name, n.user_title, n.placed, n.created_at, n.updated_at,
     COALESCE((SELECT array_agg(l.session_id::text ORDER BY l.created_at) FROM canvas_note_links l WHERE l.note_id = n.id), '{}') AS linked`;
 
 function toNote(r: Record<string, unknown>): CanvasNote {
@@ -79,7 +93,8 @@ function toNote(r: Record<string, unknown>): CanvasNote {
     w: Number(r.w),
     h: Number(r.h),
     linkedSessionIds: (r.linked as string[]) ?? [],
-    title: (r.agent_note_name as string | null) ?? null,
+    title: (r.agent_note_name as string | null) ?? (r.user_title as string | null) ?? null,
+    agentNoteName: (r.agent_note_name as string | null) ?? null,
     placed: r.placed !== false,
     createdAt: new Date(r.created_at as string).toISOString(),
     updatedAt: new Date(r.updated_at as string).toISOString(),
@@ -160,8 +175,8 @@ export class CanvasNotes {
     const count = await this.pool.query("SELECT count(*)::int AS n FROM canvas_notes WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2::uuid", [userId, project]);
     if (count.rows[0].n >= MAX_NOTES_PER_PROJECT) throw badRequest("Note limit reached (" + MAX_NOTES_PER_PROJECT + ")", "too_many_notes");
     const r = await this.pool.query(
-      "INSERT INTO canvas_notes (user_id, project_id, text, color, x, y, w, h, agent_note_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
-      [userId, project, f.text ?? "", f.color ?? "yellow", f.x, f.y, f.w ?? 240, f.h ?? 160, f.agentNoteName ?? null],
+      "INSERT INTO canvas_notes (user_id, project_id, text, color, x, y, w, h, agent_note_name, user_title) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+      [userId, project, f.text ?? "", f.color ?? "yellow", f.x, f.y, f.w ?? 240, f.h ?? 160, f.agentNoteName ?? null, f.agentNoteName ? null : (f.title ?? null)],
     ).catch((e) => { throw f.agentNoteName && (e as { code?: string }).code === "23505" ? badRequest("A note named " + f.agentNoteName + " is already on this canvas", "duplicate_note") : e; });
     if (f.agentNoteName) await this.pushToAgentNote(userId, f.agentNoteName, f.text ?? "");
     return this.get(userId, r.rows[0].id);
@@ -177,6 +192,22 @@ export class CanvasNotes {
   async patch(userId: string, id: string, body: unknown): Promise<CanvasNote> {
     if (!UUID.test(id)) throw notFound("Note not found");
     const f = parseNoteFields(body, false);
+    if (f.agentNoteName !== undefined) delete f.agentNoteName; // a card never changes which agent note it mirrors
+    const current = f.title !== undefined ? await this.get(userId, id) : undefined;
+    let renamed = false;
+    if (f.title !== undefined && current) {
+      if (current.agentNoteName) {
+        // The title of a mirrored card IS the `floq note` name: renaming it renames the agent note and every mirror.
+        if (!f.title) throw badRequest("A note shared with agents needs a name; type a new name instead of clearing it", "invalid_note");
+        if (!AGENT_NOTE_NAME.test(f.title)) throw badRequest("A note shared with agents is named with 1-80 letters, digits, spaces, . _ -", "invalid_note");
+        if (f.title !== current.agentNoteName) {
+          const taken = await this.pool.query("SELECT 1 FROM agent_notes WHERE user_id = $1 AND name = $2", [userId, f.title]);
+          const taken2 = await this.pool.query("SELECT 1 FROM canvas_notes WHERE user_id = $1 AND agent_note_name = $2", [userId, f.title]);
+          if (taken.rowCount || taken2.rowCount) throw conflict("A note named " + f.title + " already exists", "duplicate_note");
+          renamed = true;
+        }
+      }
+    }
     const cols = { text: "text", color: "color", x: "x", y: "y", w: "w", h: "h" } as const;
     const sets: string[] = [];
     const values: unknown[] = [id, userId];
@@ -186,12 +217,17 @@ export class CanvasNotes {
       sets.push(cols[key] + " = $" + values.length);
     }
     if (f.x !== undefined || f.y !== undefined) sets.push("placed = true");
+    if (f.title !== undefined && current && !current.agentNoteName) { values.push(f.title); sets.push("user_title = $" + values.length); }
+    if (renamed && current?.agentNoteName && f.title) {
+      await this.pool.query("UPDATE agent_notes SET name = $3, updated_at = now() WHERE user_id = $1 AND name = $2", [userId, current.agentNoteName, f.title]);
+      await this.pool.query("UPDATE canvas_notes SET agent_note_name = $3, updated_at = now() WHERE user_id = $1 AND agent_note_name = $2", [userId, current.agentNoteName, f.title]);
+    }
     if (sets.length) {
       const r = await this.pool.query(`UPDATE canvas_notes SET ${sets.join(", ")}, updated_at = now() WHERE id = $1 AND user_id = $2`, values);
       if (!r.rowCount) throw notFound("Note not found");
     }
     const saved = await this.get(userId, id);
-    if (f.text !== undefined && saved.title) await this.pushToAgentNote(userId, saved.title, saved.text, id);
+    if (f.text !== undefined && saved.agentNoteName) await this.pushToAgentNote(userId, saved.agentNoteName, saved.text, id);
     return saved;
   }
 
@@ -211,10 +247,10 @@ export class CanvasNotes {
     const note = await this.get(userId, id);
     const r = await this.pool.query("DELETE FROM canvas_notes WHERE id = $1 AND user_id = $2", [id, userId]);
     if (!r.rowCount) throw notFound("Note not found");
-    if (note.title) {
+    if (note.agentNoteName) {
       // Deleting the card deletes the note itself (otherwise it would be adopted again); undo recreates it with its title.
-      await this.pool.query("DELETE FROM canvas_notes WHERE user_id = $1 AND agent_note_name = $2", [userId, note.title]);
-      await this.pool.query("DELETE FROM agent_notes WHERE user_id = $1 AND name = $2", [userId, note.title]);
+      await this.pool.query("DELETE FROM canvas_notes WHERE user_id = $1 AND agent_note_name = $2", [userId, note.agentNoteName]);
+      await this.pool.query("DELETE FROM agent_notes WHERE user_id = $1 AND name = $2", [userId, note.agentNoteName]);
     }
     return note.linkedSessionIds;
   }
