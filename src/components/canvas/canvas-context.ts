@@ -37,6 +37,8 @@ export interface CanvasCtxValue {
   deleteLink: (link: CanvasLink) => void;
   /** Number of keychains linked to each agent. */
   keychainCounts: Record<string, number>;
+  /** Number of canvas notes linked to each agent. */
+  noteCounts: Record<string, number>;
   savePlacement: (id: string, rect: { x: number; y: number; width: number; height: number }) => void;
 }
 

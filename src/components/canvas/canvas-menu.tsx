@@ -14,6 +14,7 @@ import type { SessionSummary } from "@/lib/runtime/types";
 import type { CanvasLink, NoteColor } from "./canvas-data";
 import { COLORS, COLOR_KEYS } from "./canvas-notes";
 import { isKeychainId, isKeychainLinkId } from "./canvas-keychains";
+import { isNoteId, isNoteLinkId } from "./canvas-notes";
 
 export type MenuTarget =
   | { kind: "pane"; flow: { x: number; y: number } }
@@ -42,6 +43,12 @@ export interface MenuApi {
   recolorKeychain: (nodeId: string, color: NoteColor) => void;
   keychainEdge: (edgeId: string) => { keychain: string; agent: string } | undefined;
   unlinkKeychain: (edgeId: string) => void;
+  noteInfo: (nodeId: string) => { linked: number } | undefined;
+  recolorNote: (nodeId: string, color: NoteColor) => void;
+  deleteNote: (nodeId: string) => void;
+  unlinkNoteAgents: (nodeId: string) => void;
+  noteEdge: (edgeId: string) => { agent: string } | undefined;
+  unlinkNote: (edgeId: string) => void;
   nodeCount: number;
   deleteAgent: (session: SessionSummary) => void;
   setOrchestrator: (session: SessionSummary, on: boolean) => void;
@@ -70,6 +77,8 @@ const danger = "text-destructive focus:text-destructive [&_svg]:text-destructive
 
 export default function CanvasMenuContent({ target, api }: { target: MenuTarget; api: MenuApi }) {
   if (target.kind === "pane") return <PaneMenu flow={target.flow} api={api} />;
+  if (target.kind === "node" && isNoteId(target.id)) return <NoteMenu id={target.id} api={api} />;
+  if (target.kind === "edge" && isNoteLinkId(target.id)) return <NoteLinkMenu id={target.id} api={api} />;
   if (target.kind === "node" && isKeychainId(target.id)) return <KeychainMenu id={target.id} api={api} />;
   if (target.kind === "edge" && isKeychainLinkId(target.id)) return <KeychainLinkMenu id={target.id} api={api} />;
   if (target.kind === "node") {
@@ -189,6 +198,36 @@ function KeychainMenu({ id, api }: { id: string; api: MenuApi }) {
       </ContextMenuSub>
       <ContextMenuSeparator />
       <ContextMenuItem className={danger} onSelect={() => api.deleteKeychain(id)}><IconTrash />Delete keychain<Keys keys="Del" /></ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+function NoteMenu({ id, api }: { id: string; api: MenuApi }) {
+  const info = api.noteInfo(id);
+  if (!info) return null;
+  return (
+    <ContextMenuContent className="min-w-56">
+      <ContextMenuLabel>Note</ContextMenuLabel>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger><IconNote />Color</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="w-36">
+          {COLOR_KEYS.map((key) => <ContextMenuItem key={key} onSelect={() => api.recolorNote(id, key)}><span className={`size-3 rounded-full ${COLORS[key].dot}`} />{COLORS[key].label}</ContextMenuItem>)}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+      {info.linked > 0 && <ContextMenuItem onSelect={() => api.unlinkNoteAgents(id)}><IconLinkOff />Unlink {info.linked === 1 ? "agent" : `${info.linked} agents`}</ContextMenuItem>}
+      <ContextMenuSeparator />
+      <ContextMenuItem className={danger} onSelect={() => api.deleteNote(id)}><IconTrash />Delete note<Keys keys="Del" /></ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+function NoteLinkMenu({ id, api }: { id: string; api: MenuApi }) {
+  const info = api.noteEdge(id);
+  if (!info) return null;
+  return (
+    <ContextMenuContent className="min-w-56">
+      <ContextMenuLabel className="truncate">Note → {info.agent}</ContextMenuLabel>
+      <ContextMenuItem className={danger} onSelect={() => api.unlinkNote(id)}><IconLinkOff />Unlink<Keys keys="Del" /></ContextMenuItem>
     </ContextMenuContent>
   );
 }

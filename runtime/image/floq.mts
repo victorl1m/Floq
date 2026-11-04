@@ -6,6 +6,7 @@
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
 //   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
 //   floq note list | read N | write N TEXT | append N TEXT
+//   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | new [TEXT|-] [--color C]   canvas notes wired to this agent
 //   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
@@ -35,6 +36,11 @@ Commands:
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
+  floq sticky list                       canvas notes the user wired to this agent (id, color, first line)
+  floq sticky read ID                    print a linked note's text
+  floq sticky write ID TEXT|-            replace its text ("-" reads stdin)
+  floq sticky append ID TEXT|-           add to the end of its text
+  floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--x N --y N]   create a note; it is wired to you and appears on the canvas
   floq skills list [--project [UUID] | --global]
   floq skills search QUERY
   floq skills preview OWNER/REPO SKILL_ID   |   floq skills preview URL
@@ -108,6 +114,17 @@ function scopeOrExit(options: NamedArgs): ScopeResult {
 }
 function providerOrExit(value: string | boolean | undefined, allowBoth: boolean) {
   try { return checkProvider(value, allowBoth); } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
+}
+
+async function readStdinText(): Promise<string> {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > 100_000) { console.error("floq: text is too large"); process.exit(1); }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8").replace(/\n$/, "");
 }
 
 async function readSecretValue(name: string): Promise<string> {
@@ -256,6 +273,29 @@ switch (command) {
       console.log((await call<{ content: string }>("notes/read", { name })).content);
     } else if ((sub === "write" || sub === "append") && name) {
       await call("notes/write", { name, content: text.join(" "), append: sub === "append" });
+    } else usage();
+    break;
+  }
+  case "sticky": {
+    // Canvas notes wired to this agent on the canvas (separate from the named shared notes of "floq note").
+    const [sub, id, ...words] = positional;
+    const textOf = async (parts: string[]) => (parts.join(" ") === "-" ? await readStdinText() : parts.join(" "));
+    type Sticky = { id: string; color: string; text: string };
+    if (sub === "list") {
+      const { notes } = await call<{ notes: Sticky[] }>("sticky/list");
+      for (const n of notes) console.log(n.id + "  " + n.color + "  " + (n.text.split("\n")[0].slice(0, 60) || "(empty)"));
+      if (!notes.length) console.log("no notes are linked to this agent; ask the user to wire one on the canvas, or run: floq sticky new TEXT");
+    } else if (sub === "read" && id && words.length === 0) {
+      process.stdout.write((await call<Sticky>("sticky/read", { id })).text + "\n");
+    } else if ((sub === "write" || sub === "append") && id && words.length) {
+      await call("sticky/write", { id, text: await textOf(words), append: sub === "append" });
+      console.log("ok");
+    } else if (sub === "new") {
+      const parts = id === undefined ? [] : [id, ...words];
+      const text = await textOf(parts);
+      const num = (v: string | boolean | undefined) => (typeof v === "string" ? Number(v) : undefined);
+      const note = await call<Sticky>("sticky/create", { text, color: typeof named.color === "string" ? named.color : undefined, x: num(named.x), y: num(named.y) });
+      console.log(note.id);
     } else usage();
     break;
   }

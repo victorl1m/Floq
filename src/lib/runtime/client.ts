@@ -553,6 +553,13 @@ export class RuntimeClient {
   async deleteNote(noteId: string): Promise<void> {
     await this.call("DELETE", `/v1/notes/${encodeURIComponent(noteId)}`);
   }
+  /** Idempotent; the agent must be in the note's project. */
+  async linkNote(noteId: string, sessionId: string): Promise<CanvasNote> {
+    return this.call<CanvasNote>("POST", `/v1/notes/${encodeURIComponent(noteId)}/links`, { sessionId });
+  }
+  async unlinkNote(noteId: string, sessionId: string): Promise<CanvasNote> {
+    return this.call<CanvasNote>("DELETE", `/v1/notes/${encodeURIComponent(noteId)}/links/${encodeURIComponent(sessionId)}`);
+  }
 
   // Keychains (wallets of secrets linked to agents). Values are write-only.
   /** All of the user's keychains across projects (Secrets screen). */

@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, Position, useInternalNode, useStore, type Edge, type EdgeProps } from "@xyflow/react";
 import { IconArrowsExchange, IconMessage, IconPlugConnected, IconRoute, IconX } from "@tabler/icons-react";
 import { cn } from "cn";
@@ -127,6 +127,10 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
     const same = state.edges.filter((edge) => [edge.source, edge.target].sort().join("|") === pair).map((edge) => edge.id).sort();
     return `${same.indexOf(id)}/${same.length}`;
   });
+  const targetWorking = useStore((state) => {
+    const session = (state.nodeLookup.get(target)?.data as { session?: { state: string; activity?: string | null } } | undefined)?.session;
+    return session?.state === "running" && session.activity === "working";
+  });
   const geometry = useMemo(() => {
     if (!from || !to) return null;
     const others = sig.split("|").filter(Boolean).map((entry) => {
@@ -149,9 +153,10 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
   if (!data || !geometry) return null;
   const link = data.link;
   const path = pathOf(geometry.curve);
-  const color = KIND_COLOR[link.kind];
   const Icon = KIND_ICON[link.kind];
   const live = ctx.live[link.id];
+  // Delegation wires are purple only while a message is in flight or the recruit is working; otherwise neutral.
+  const color = link.kind === "recruit" && !live && !targetWorking ? KIND_COLOR.manual : KIND_COLOR[link.kind];
   const labelAt = geometry.label ?? (selected ? geometry.mid : null);
   const bubbleAt = labelAt ?? geometry.mid;
 
@@ -205,3 +210,14 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
     </>
   );
 });
+
+/** Connection strips run along a whole side but sit entirely outside the border, so they never overlap the resize edge; hovering one (peer/h) makes the card itself glow, so the glow follows its rounded corners. */
+export const SIDE_STRIP_STYLE: Record<Position, CSSProperties> = {
+  top: { top: 0, bottom: "auto", left: 10, right: "auto", width: "calc(100% - 20px)", height: 14, transform: "translateY(-100%)" },
+  bottom: { bottom: 0, top: "auto", left: 10, right: "auto", width: "calc(100% - 20px)", height: 14, transform: "translateY(100%)" },
+  left: { left: 0, right: "auto", top: 10, bottom: "auto", height: "calc(100% - 20px)", width: 14, transform: "translateX(-100%)" },
+  right: { right: 0, left: "auto", top: 10, bottom: "auto", height: "calc(100% - 20px)", width: 14, transform: "translateX(100%)" },
+};
+export const SIDE_STRIP_CLASS = "peer/h cursor-crosshair rounded-none! border-0! bg-transparent! min-h-0! min-w-0!";
+/** Keeps the resize edges and corners above the connection strips. */
+export const RESIZER_ABOVE = { zIndex: 10 } as const;
