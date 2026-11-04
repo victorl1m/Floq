@@ -1,0 +1,117 @@
+/* Floq in-app cursors. CSS `cursor` inside the web view only; never OS-wide.
+ * Artwork + hotspots + variables: scripts/gen-cursors.mjs -> src/assets/cursors/*.svg, cursors-tokens.css
+ * Cursor map (action -> file -> hotspot): docs/redesign/cursors.md
+ * Off switch: <html data-cursors="system"> (Settings > Appearance > Custom cursors). Also off under
+ * forced-colors and coarse pointers, where every --cursor-* resolves to its native keyword.
+ * Terminals (.xterm) deliberately keep native cursors. */
+@import "./cursors-tokens.css";
+
+/* Tailwind cursor utilities -> custom set, so components need no per-file rewrite. */
+@utility cursor-default { cursor: var(--cursor-default); }
+@utility cursor-pointer { cursor: var(--cursor-pointer); }
+@utility cursor-text { cursor: var(--cursor-text); }
+@utility cursor-move { cursor: var(--cursor-move); }
+@utility cursor-grab { cursor: var(--cursor-grab); }
+@utility cursor-grabbing { cursor: var(--cursor-grabbing); }
+@utility cursor-crosshair { cursor: var(--cursor-crosshair); }
+@utility cursor-not-allowed { cursor: var(--cursor-not-allowed); }
+@utility cursor-wait { cursor: var(--cursor-wait); }
+@utility cursor-progress { cursor: var(--cursor-progress); }
+@utility cursor-help { cursor: var(--cursor-help); }
+@utility cursor-copy { cursor: var(--cursor-copy); }
+@utility cursor-context-menu { cursor: var(--cursor-context-menu); }
+@utility cursor-zoom-in { cursor: var(--cursor-zoom-in); }
+@utility cursor-zoom-out { cursor: var(--cursor-zoom-out); }
+@utility cursor-col-resize { cursor: var(--cursor-resize-col); }
+@utility cursor-row-resize { cursor: var(--cursor-resize-row); }
+@utility cursor-ew-resize { cursor: var(--cursor-resize-ew); }
+@utility cursor-ns-resize { cursor: var(--cursor-resize-ns); }
+@utility cursor-nesw-resize { cursor: var(--cursor-resize-nesw); }
+@utility cursor-nwse-resize { cursor: var(--cursor-resize-nwse); }
+@utility cursor-e-resize { cursor: var(--cursor-resize-e); }
+@utility cursor-w-resize { cursor: var(--cursor-resize-w); }
+@utility cursor-none { cursor: var(--cursor-none); }
+/* Floq-only additions */
+@utility cursor-connect { cursor: var(--cursor-connect); }
+@utility cursor-add-note { cursor: var(--cursor-add-note); }
+@utility cursor-add-keychain { cursor: var(--cursor-add-keychain); }
+
+/* Base */
+html { cursor: var(--cursor-default); }
+
+/* Pointer affordance for native and ARIA-backed controls. */
+button:not(:disabled):not([aria-disabled="true"]):not([data-disabled]),
+a[href]:not([aria-disabled="true"]),
+[role="button"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="tab"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="menuitem"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="menuitemcheckbox"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="menuitemradio"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="option"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="checkbox"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="radio"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="switch"]:not([aria-disabled="true"]):not([data-disabled]),
+[role="combobox"]:not([aria-disabled="true"]):not([data-disabled]),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled),
+input[type="range"]:not(:disabled),
+select:not(:disabled),
+label[for],
+summary {
+  cursor: var(--cursor-pointer);
+}
+
+/* Text entry (xterm's own helper textarea is off-screen; the terminal surface keeps native cursors). */
+input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"], [type="color"], [type="file"], [type="image"]),
+textarea:not(.xterm-helper-textarea),
+[contenteditable="true"],
+[contenteditable=""],
+.ProseMirror {
+  cursor: var(--cursor-text);
+}
+
+/* Disabled */
+:is(button, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="combobox"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
+  cursor: var(--cursor-not-allowed);
+}
+
+/* Busy (declared after the pointer rule; one extra :is() ties its specificity so source order wins). */
+html :is(button, [role="button"], [role="status"], [role="progressbar"])[aria-busy="true"]:is(:disabled, :not(:disabled)) {
+  cursor: var(--cursor-progress);
+}
+
+/* Native HTML5 draggable items (tasks board) */
+[draggable="true"] { cursor: var(--cursor-grab); }
+[draggable="true"]:active { cursor: var(--cursor-grabbing); }
+
+/* xterm is intentionally untouched: xterm.css keeps native text / default cursors. */
+
+/* Canvas (React Flow). `:root` raises specificity above @xyflow/react/dist/style.css regardless of import order. */
+:root .react-flow__pane.draggable { cursor: var(--cursor-grab); }
+:root .react-flow__pane.dragging { cursor: var(--cursor-grabbing); }
+:root .react-flow__pane.selection { cursor: var(--cursor-crosshair); }
+:root .react-flow__edge.selectable { cursor: var(--cursor-pointer); }
+:root .react-flow__node { cursor: var(--cursor-default); }
+:root .react-flow__node.selectable { cursor: var(--cursor-pointer); }
+:root .react-flow__node.draggable { cursor: var(--cursor-grab); }
+:root .react-flow__node.draggable.dragging { cursor: var(--cursor-grabbing); }
+:root .react-flow__nodesselection-rect { cursor: var(--cursor-grab); }
+:root .react-flow__handle.connectionindicator { cursor: var(--cursor-connect); }
+:root .react-flow__edgeupdater { cursor: var(--cursor-move); }
+:root .react-flow__controls-button { cursor: var(--cursor-pointer); }
+:root .react-flow__minimap-svg, :root .react-flow__minimap { cursor: var(--cursor-default); }
+:root .react-flow__resize-control.left, :root .react-flow__resize-control.right { cursor: var(--cursor-resize-ew); }
+:root .react-flow__resize-control.top, :root .react-flow__resize-control.bottom { cursor: var(--cursor-resize-ns); }
+:root .react-flow__resize-control.top.left, :root .react-flow__resize-control.bottom.right { cursor: var(--cursor-resize-nwse); }
+:root .react-flow__resize-control.top.right, :root .react-flow__resize-control.bottom.left { cursor: var(--cursor-resize-nesw); }
+/* Tool modes (data-canvas-tool is set on the canvas wrapper). Nodes keep their own grab cursor. */
+:root [data-canvas-tool="link"] .react-flow__pane { cursor: var(--cursor-connect); }
+:root [data-canvas-tool="select"] .react-flow__pane { cursor: var(--cursor-crosshair); }
+:root [data-canvas-tool="select"] .react-flow__pane.dragging { cursor: var(--cursor-crosshair); }
+:root [data-canvas-tool="link"] .react-flow__node.draggable { cursor: var(--cursor-connect); }
+/* Placement buttons: hovering shows what a click will add. */
+html button[data-cursor="add-note"]:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { cursor: var(--cursor-add-note); }
+html button[data-cursor="add-keychain"]:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { cursor: var(--cursor-add-keychain); }
+
+/* Global drag states (sidebar project drag and drop). */
+html[data-dnd-dragging], html[data-dnd-dragging] * { cursor: var(--cursor-grabbing) !important; }

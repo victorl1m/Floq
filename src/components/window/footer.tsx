@@ -1,5 +1,6 @@
 import { UsageMeters } from "@/components/window/usage-meter";
 import { MemoryUsageButton } from "@/components/window/memory-usage";
+import { ApprovalChip } from "@/components/window/approval-requests";
 import { ForwardedPorts } from "@/components/window/forwarded-ports";
 
 export default function Footer() {
@@ -11,6 +12,7 @@ export default function Footer() {
             <UsageMeters />
             <div className="flex min-w-0 items-center">
                 <MemoryUsageButton />
+                <ApprovalChip />
                 <ForwardedPorts />
             </div>
         </footer>

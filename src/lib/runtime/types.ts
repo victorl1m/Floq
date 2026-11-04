@@ -275,14 +275,16 @@ export interface CanvasNote {
   h: number;
   /** Agents wired to the note; they can read and edit it and create notes with `floq sticky`. */
   linkedSessionIds: string[];
-  /** Name of the `floq note` this card mirrors; null for plain canvas notes. */
+  /** Header title: the `floq note` name for a mirrored card, else what the user typed; null when none. */
   title?: string | null;
+  /** Name of the `floq note` this card mirrors; null for plain canvas notes. */
+  agentNoteName?: string | null;
   /** False until the canvas has picked and saved a spot for a note an agent created. */
   placed?: boolean;
   createdAt: string;
   updatedAt: string;
 }
-export interface CanvasNoteInput { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string }
+export interface CanvasNoteInput { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
 /**
  * A canvas wallet of secrets, linked to agents with wires. Names only: values are write-only and never returned.
  * Mutations (secret set/delete, link/unlink) return the updated Keychain with appliesOnNextStart = true when a live
@@ -432,3 +434,22 @@ export interface SessionPort {
   port: number;
   address: string;
 }
+
+/** An agent asking the USER to approve an irreversible or outward-facing action (`floq approval request`). */
+export interface ApprovalAgentRef { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null }
+export interface ApprovalRequest {
+  id: string;
+  requester: ApprovalAgentRef;
+  target: ApprovalAgentRef;
+  action: string;
+  detail: string;
+  irreversible: boolean;
+  createdAt: string;
+  expiresAt: string;
+  /** Time left on the runtime's own clock when this snapshot was taken. */
+  remainingMs: number;
+  timeoutMs: number;
+}
+export type ApprovalFrame =
+  | { type: "approval-request"; approval: ApprovalRequest }
+  | { type: "approval-resolved"; id: string; status: "granted" | "denied" | "expired" | "cancelled" | "consumed"; requesterSessionId: string; targetSessionId: string };

@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { redactSecrets } from "./secrets.js";
 import { log } from "./logger.js";
+import { neutralizeApprovalMarker } from "./approvalText.js";
 
 /**
  * Wired context: what the user has wired to an agent on the canvas (notes, keychains, other agents), turned into a
@@ -41,7 +42,7 @@ const oneLine = (text: string, max: number) => {
 };
 
 /** A note must not be able to forge the block's own markers. */
-const defang = (text: string) => text.split("[FLOQ WIRED CONTEXT").join("[ FLOQ WIRED CONTEXT").split("[/FLOQ WIRED CONTEXT").join("[ /FLOQ WIRED CONTEXT");
+const defang = (text: string) => neutralizeApprovalMarker(text).split("[FLOQ WIRED CONTEXT").join("[ FLOQ WIRED CONTEXT").split("[/FLOQ WIRED CONTEXT").join("[ /FLOQ WIRED CONTEXT");
 
 function clip(text: string, max: number): string {
   return text.length > max ? text.slice(0, Math.max(0, max - 1)).trimEnd() + "…[truncated]" : text;
@@ -117,7 +118,7 @@ export function buildWiredNotice(added: WireRef[], removed: WireRef[], block: st
   const body = block ? "Current block: " + block.replace(/\s+/g, " ") : "Nothing is wired to you now.";
   const room = WIRED_NOTICE_MAX - head.length;
   const text = body.length > room ? body.slice(0, Math.max(0, room - 40)).trimEnd() + "… (run `floq wired` for all)" : body;
-  return (head + text).replace(/[\u0000-\u001f]+/g, " ");
+  return neutralizeApprovalMarker((head + text).replace(/[\u0000-\u001f]+/g, " "));
 }
 
 function digestOf(block: string): string {
@@ -184,7 +185,7 @@ export class WiredContext {
   async collect(userId: string, sessionId: string): Promise<WireItem[]> {
     const items: WireItem[] = [];
     const notes = await this.pool.query(
-      `SELECT n.id, n.text FROM canvas_notes n JOIN canvas_note_links k ON k.note_id = n.id AND k.session_id = $2 WHERE n.user_id = $1 ORDER BY n.created_at`,
+      `SELECT n.id, n.text, COALESCE(n.agent_note_name, n.user_title) AS title FROM canvas_notes n JOIN canvas_note_links k ON k.note_id = n.id AND k.session_id = $2 WHERE n.user_id = $1 ORDER BY n.created_at`,
       [userId, sessionId],
     );
     for (const n of notes.rows) {

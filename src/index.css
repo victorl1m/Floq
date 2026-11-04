@@ -5,25 +5,7 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 
-/* Keep pointer affordances consistent for native and ARIA-backed controls. */
-button:not(:disabled):not([aria-disabled="true"]):not([data-disabled]),
-a[href]:not([aria-disabled="true"]),
-[role="button"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="tab"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="menuitem"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="menuitemcheckbox"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="menuitemradio"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="option"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="checkbox"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="radio"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="switch"]:not([aria-disabled="true"]):not([data-disabled]),
-[role="combobox"]:not([aria-disabled="true"]):not([data-disabled]),
-input[type="checkbox"]:not(:disabled),
-input[type="radio"]:not(:disabled),
-select:not(:disabled),
-summary {
-  cursor: pointer;
-}
+@import "./styles/cursors.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -476,6 +458,7 @@ summary {
   --toast-action-fg: #ffffff;
   --toast-cancel-border: rgb(28 38 54 / 0.22);
   --toast-icon-fill: 11%;
+  --toast-icon-ink: #ffffff;
   --toast-dot-glow: 0 0 5px;
   --toast-success: #15803d;
   --toast-info: #1d4ed8;
@@ -508,6 +491,7 @@ summary {
   --toast-action-fg: #0b0b0d;
   --toast-cancel-border: rgb(255 255 255 / 0.16);
   --toast-icon-fill: 14%;
+  --toast-icon-ink: #0b0b0d;
   --toast-dot-glow: 0 0 8px;
   --toast-success: #4ade80;
   --toast-info: #cbd5e1;
@@ -668,10 +652,11 @@ summary {
   width: var(--toast-icon, 30px);
   height: var(--toast-icon, 30px);
   place-items: center;
-  border: 1px solid color-mix(in oklab, var(--toast-tone) 30%, transparent);
+  /* Solid status badge: tone-filled background, white (light theme) or near-black (dark theme) glyph. */
+  border: 0;
   border-radius: calc(var(--toast-icon, 30px) * 0.35);
-  color: var(--toast-tone);
-  background: color-mix(in oklab, var(--toast-tone) var(--toast-icon-fill), transparent);
+  color: var(--toast-icon-ink, #fff);
+  background: var(--toast-tone);
 }
 
 /* Status tones come from the theme variables (>= 3:1 on the card in both themes). */
@@ -721,7 +706,7 @@ summary {
   color: var(--toast-fg-muted);
   background: transparent;
   padding: 0;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   box-shadow: none;
   transition: color 120ms ease, background-color 120ms ease, scale 120ms ease;
 }
@@ -755,7 +740,7 @@ summary {
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1rem;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, scale 120ms ease;
 }
 
@@ -940,7 +925,7 @@ summary {
 .floq-button.lg-button[data-floq-variant="secondary"] { color: var(--secondary-foreground); }
 .floq-button.lg-button[data-floq-variant="ghost"],
 .floq-button.lg-button[data-floq-variant="link"] { color: var(--foreground); }
-.floq-button.lg-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.floq-button.lg-button:disabled { opacity: 0.5; cursor: var(--cursor-not-allowed); }
 .floq-button.lg-button[data-size="xs"],
 .floq-button.lg-button[data-size="icon-xs"] { height: 1.5rem; border-radius: 8px; }
 .floq-button.lg-button[data-size="xs"] { gap: 0.25rem; padding-inline: 0.5rem; font-size: 0.75rem; line-height: 1rem; }
@@ -1488,12 +1473,12 @@ summary {
   /* Centered on the pane's right edge: 10px hit area, 1-2px visible bar. */
   right: calc(var(--shell-gap) - 5px);
   width: 10px;
-  cursor: col-resize;
+  cursor: var(--cursor-resize-col);
   touch-action: none;
   outline: none;
 }
-.sidebar-resize-handle[data-limit="min"] { cursor: e-resize; }
-.sidebar-resize-handle[data-limit="max"] { cursor: w-resize; }
+.sidebar-resize-handle[data-limit="min"] { cursor: var(--cursor-resize-e); }
+.sidebar-resize-handle[data-limit="max"] { cursor: var(--cursor-resize-w); }
 .sidebar-resize-handle::after {
   content: "";
   position: absolute;
@@ -1508,10 +1493,84 @@ summary {
 .sidebar-resize-handle:focus-visible::after,
 .sidebar-resize-handle[data-dragging="true"]::after { opacity: 0.9; inset-inline: 3px; }
 .sidebar-resize-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
-html[data-sidebar-resizing="true"], html[data-sidebar-resizing="true"] * { user-select: none !important; cursor: col-resize !important; }
+html[data-sidebar-resizing="true"], html[data-sidebar-resizing="true"] * { user-select: none !important; cursor: var(--cursor-resize-col) !important; }
 html[data-sidebar-resizing="true"] [data-slot="sidebar-gap"],
 html[data-sidebar-resizing="true"] [data-slot="sidebar-container"] { transition: none !important; }
 html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] webview { pointer-events: none; }
 @media (max-width: 899px) { .sidebar-resize-handle { display: none; } }
 @media (prefers-reduced-motion: reduce) { .sidebar-resize-handle::after { transition: none; } }
 /* === end sidebar resize handle === */
+
+/* === canvas node halo (link + hover feedback) ===
+   The card's own box-shadow is set by unlayered .canvas-agent-card-material rules, which beat Tailwind's layered
+   ring-/shadow- utilities (that is why they never showed). The halo is a sibling element OUTSIDE the clipped card
+   (overflow:hidden stays on the card) with three opacity-only layers: lift (span), glow (::before), ring (::after).
+   Driven by data-link-state = source | candidate | linked | flash, :hover, [data-selected] and node :focus-visible.
+   Only opacity transitions, so nothing here animates blur radius or layout. */
+.canvas-node-wrap {
+  --halo-accent: var(--provider-accent, var(--primary-text));
+  --halo-lift: 0 0 0 1px color-mix(in oklab, var(--halo-accent) 22%, transparent), var(--shadow-elev-2);
+  --halo-glow: 0 0 22px color-mix(in oklab, var(--halo-accent) 10%, transparent), 0 8px 20px -8px color-mix(in oklab, var(--halo-accent) 18%, transparent);
+  --halo-ring: 0 0 0 1.5px color-mix(in oklab, var(--halo-accent) 88%, transparent), 0 8px 28px color-mix(in oklab, var(--halo-accent) 16%, transparent), var(--shadow-elev-2);
+}
+:is(.dark, .canvas-chrome-dark) .canvas-node-wrap {
+  --halo-lift: 0 0 0 1px color-mix(in oklab, var(--halo-accent) 38%, transparent), 0 0 18px color-mix(in oklab, var(--halo-accent) 9%, transparent), var(--shadow-elev-2);
+  --halo-glow: 0 0 24px color-mix(in oklab, var(--halo-accent) 16%, transparent), 0 6px 20px -6px color-mix(in oklab, var(--halo-accent) 22%, transparent);
+  --halo-ring: 0 0 0 1.5px color-mix(in oklab, var(--halo-accent) 80%, transparent), 0 8px 28px color-mix(in oklab, var(--halo-accent) 22%, transparent), var(--shadow-elev-2);
+}
+.canvas-chrome-light .canvas-node-wrap {
+  --halo-lift: 0 0 0 1px color-mix(in oklab, var(--halo-accent) 22%, transparent), var(--shadow-elev-2);
+  --halo-glow: 0 0 22px color-mix(in oklab, var(--halo-accent) 10%, transparent), 0 8px 20px -8px color-mix(in oklab, var(--halo-accent) 18%, transparent);
+  --halo-ring: 0 0 0 1.5px color-mix(in oklab, var(--halo-accent) 88%, transparent), 0 8px 28px color-mix(in oklab, var(--halo-accent) 16%, transparent), var(--shadow-elev-2);
+}
+:root[data-material="solid"] .canvas-node-wrap {
+  --halo-lift: 0 0 0 1px color-mix(in oklab, var(--halo-accent) 30%, transparent), var(--shadow-elev-1);
+  --halo-glow: 0 0 0 1px color-mix(in oklab, var(--halo-accent) 35%, transparent);
+  --halo-ring: 0 0 0 2px var(--halo-accent), var(--shadow-elev-1);
+}
+.canvas-node-halo, .canvas-node-halo::before, .canvas-node-halo::after {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.canvas-node-halo { border-radius: var(--radius-xl, 0.75rem); box-shadow: var(--halo-lift); }
+.canvas-node-halo::before, .canvas-node-halo::after { border-radius: inherit; }
+.canvas-node-halo::before, .canvas-node-halo::after { content: ""; }
+.canvas-node-halo::before { box-shadow: var(--halo-glow); }
+.canvas-node-halo::after { box-shadow: var(--halo-ring); }
+/* hover and keyboard focus: one elevation step up + a faint accent rim */
+.canvas-node-wrap:hover > .canvas-node-halo,
+.react-flow__node:focus-visible > .canvas-node-wrap > .canvas-node-halo,
+.canvas-node-wrap[data-link-state="source"] > .canvas-node-halo,
+.canvas-node-wrap[data-link-state="linked"] > .canvas-node-halo { opacity: 1; }
+.canvas-node-wrap[data-selected="true"] > .canvas-node-halo::after { opacity: 0.4; }
+/* link in progress (tool on or wire dragged): valid targets glow faintly, the hovered target gets the ring */
+.canvas-node-wrap[data-link-state="candidate"] > .canvas-node-halo::before,
+.canvas-node-wrap[data-link-state="linked"] > .canvas-node-halo::before { opacity: 1; }
+.canvas-node-wrap[data-link-state="candidate"]:hover > .canvas-node-halo::after { opacity: 1; }
+.canvas-node-wrap[data-link-state="source"] > .canvas-node-halo::after { opacity: 0.85; }
+.canvas-node-wrap[data-link-state="linked"] > .canvas-node-halo::after { opacity: 0.7; }
+.react-flow__node:focus-visible { outline: none; }
+.react-flow__node:focus-visible > .canvas-node-wrap > .canvas-node-halo::after { opacity: 1; }
+.canvas-node-wrap[data-link-state="flash"] > .canvas-node-halo { opacity: 1; }
+.canvas-node-wrap[data-link-state="flash"] > .canvas-node-halo::after { animation: canvas-halo-pulse 560ms ease-out both; }
+@keyframes canvas-halo-pulse { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
+/* connection strips: a dot appears on node hover, grows with an accent ring when the strip itself is hovered */
+.canvas-side-strip::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 999px;
+  background: var(--halo-accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--halo-accent) 30%, transparent);
+  opacity: 0; transform: scale(0.6); pointer-events: none; transition: opacity 140ms ease-out, transform 140ms ease-out;
+}
+.canvas-node-wrap:hover .canvas-side-strip::after,
+.canvas-node-wrap[data-link-state="candidate"] .canvas-side-strip::after,
+.canvas-node-wrap[data-link-state="source"] .canvas-side-strip::after { opacity: 0.5; transform: scale(0.85); }
+.canvas-side-strip:hover::after { opacity: 1; transform: scale(1.3); box-shadow: 0 0 0 2px color-mix(in oklab, var(--halo-accent) 55%, transparent), 0 0 10px color-mix(in oklab, var(--halo-accent) 45%, transparent); }
+:root[data-material="solid"] .canvas-side-strip:hover::after { box-shadow: 0 0 0 2px color-mix(in oklab, var(--halo-accent) 55%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .canvas-node-halo, .canvas-node-halo::before, .canvas-node-halo::after, .canvas-side-strip::after { transition: none; }
+  .canvas-node-wrap[data-link-state="flash"] > .canvas-node-halo::after { animation: none; opacity: 1; }
+}
+@media (forced-colors: active) {
+  .canvas-node-halo { display: none; }
+  .canvas-node-wrap:is(:hover, [data-link-state="source"], [data-link-state="linked"]) > .canvas-agent-card-material, .react-flow__node:focus-visible > .canvas-node-wrap > .canvas-agent-card-material { outline: 2px solid Highlight; outline-offset: 1px; }
+}
+/* === end canvas node halo === */

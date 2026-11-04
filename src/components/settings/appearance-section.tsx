@@ -4,12 +4,14 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useTerminalPrefs, type CursorStyle } from "@/lib/prefs";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { useCursorPreference } from "@/lib/cursor-preference";
 import { useMaterialPreference, type MaterialPreference } from "@/lib/material-preference";
 
 export default function AppearanceSection() {
     const { theme = "system", setTheme } = useTheme();
     const [terminal, setTerminal] = useTerminalPrefs();
     const [material, setMaterial] = useMaterialPreference();
+    const [cursors, setCursors] = useCursorPreference();
 
     return (
         <SettingsPage title="Appearance" description="Theme and terminal look. Stored on this device only.">
@@ -31,6 +33,9 @@ export default function AppearanceSection() {
                             <SelectItem value="dark">Dark</SelectItem>
                         </SelectContent>
                     </Select>
+                </SettingRow>
+                <SettingRow label="Custom cursors" htmlFor="appearance-custom-cursors" description="Floq’s own pointer set inside this window only. Turn off to use your system cursors. Terminals always keep the native cursor.">
+                    <Switch id="appearance-custom-cursors" checked={cursors === "custom"} onCheckedChange={(v) => setCursors(v ? "custom" : "system")} />
                 </SettingRow>
             </SettingsGroup>
 

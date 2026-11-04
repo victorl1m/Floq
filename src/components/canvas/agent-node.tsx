@@ -53,12 +53,19 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
   const waking = ctx.waking.has(id);
   const links = ctx.linkInfo[id];
   const barRef = useRef<HTMLTextAreaElement>(null);
+  // Halo feedback (see "canvas node halo" in index.css): source of the wire in progress, valid target, just linked, end of a hovered/selected wire.
+  const isSource = isLinkSource || (connecting && connection.fromNode?.id === id);
+  const flash = ctx.flashIds.has(id) || ctx.highlightId === id || ctx.sentIds.has(id);
+  const linkState = isSource ? "source" : flash ? "flash" : linkPicking || connecting ? "candidate" : ctx.hotIds.has(id) ? "linked" : undefined;
 
   return (
     <div
       {...providerThemeProps(session.provider)}
-      className="group/node relative size-full"
+      data-link-state={linkState}
+      data-selected={selected ? "true" : undefined}
+      className="canvas-node-wrap group/node relative size-full"
     >
+      <span aria-hidden="true" className="canvas-node-halo rounded-xl" />
       <NodeResizer lineStyle={RESIZER_ABOVE} handleStyle={RESIZER_ABOVE} isVisible={selected && !collapsed} minWidth={MIN_SIZE.width} minHeight={MIN_SIZE.height} maxWidth={MAX_SIZE.width} maxHeight={MAX_SIZE.height} onResizeEnd={(_, rect) => ctx.savePlacement(id, rect)} lineClassName="border-(--provider-accent)!" handleClassName="size-2.5! rounded-sm! border-(--provider-accent)! bg-background!" />
       {SIDES.map((side) => (
         <Handle key={side.id} id={side.id} type="source" position={side.position} style={SIDE_STRIP_STYLE[side.position]} isConnectable isConnectableStart isConnectableEnd className={SIDE_STRIP_CLASS} />
@@ -68,15 +75,10 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
           data-selected={selected ? "true" : undefined}
           className={cn(
           "canvas-agent-card-material flex size-full flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-md transition-[border-color,box-shadow]",
-          selected ? "border-(--provider-accent) ring-2 ring-(--provider-accent)/30" : "border-border",
+          selected ? "border-(--provider-accent)" : "border-border",
           isLead && !selected && "border-border",
-          isLinkSource && "border-violet-500 ring-2 ring-violet-500/40",
-          linkPicking && !isLinkSource && "cursor-crosshair hover:border-violet-500 hover:ring-2 hover:ring-violet-500/30",
+          linkPicking && !isLinkSource && "cursor-connect",
           (inactive || sleeping) && "opacity-70",
-          ctx.sentIds.has(id) && "ring-2 ring-emerald-500/60",
-        "peer-hover/h:border-primary peer-hover/h:ring-2 peer-hover/h:ring-primary/50 peer-hover/h:shadow-[0_0_16px_0_var(--primary)]",
-        connecting && !isLinkSource && "group-hover/node:border-emerald-500 group-hover/node:ring-2 group-hover/node:ring-emerald-500/50 group-hover/node:shadow-[0_0_16px_0_var(--color-emerald-500)]",
-        ctx.highlightId === id && "ring-4 ring-primary/50 motion-safe:animate-pulse",
         )}
       >
       <div className="@container/head flex h-10 shrink-0 items-center gap-1 rounded-t-lg border-b bg-muted/40 px-2" style={collapsed ? { borderBottomWidth: 0 } : undefined}>

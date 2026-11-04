@@ -168,7 +168,7 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
         path={path}
         markerEnd={markerEnd}
         interactionWidth={28}
-        style={{ stroke: color, strokeWidth: selected ? 3 : 2, strokeDasharray: link.kind === "manual" ? "6 5" : undefined, opacity: selected || live ? 1 : 0.8 }}
+        style={{ stroke: color, strokeWidth: selected ? 3 : 2, strokeDasharray: link.kind === "manual" ? "6 5" : undefined, opacity: selected || live ? 1 : 0.8, filter: selected ? `drop-shadow(0 0 3px color-mix(in oklab, ${color} 45%, transparent))` : undefined }}
       />
       {!ctx.reducedMotion && live?.pulses.map((pulse) => (
         <circle key={pulse.key} r={5} fill={color} style={{ filter: `drop-shadow(0 0 4px ${color})` }}>
@@ -219,6 +219,6 @@ export const SIDE_STRIP_STYLE: Record<Position, CSSProperties> = {
   left: { left: 0, right: "auto", top: 10, bottom: "auto", height: "calc(100% - 20px)", width: 14, transform: "translateX(-100%)" },
   right: { right: 0, left: "auto", top: 10, bottom: "auto", height: "calc(100% - 20px)", width: 14, transform: "translateX(100%)" },
 };
-export const SIDE_STRIP_CLASS = "peer/h cursor-crosshair rounded-none! border-0! bg-transparent! min-h-0! min-w-0!";
+export const SIDE_STRIP_CLASS = "canvas-side-strip peer/h cursor-connect rounded-none! border-0! bg-transparent! min-h-0! min-w-0!";
 /** Keeps the resize edges and corners above the connection strips. */
 export const RESIZER_ABOVE = { zIndex: 10 } as const;

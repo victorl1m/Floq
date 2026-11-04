@@ -7,12 +7,24 @@ import { Button } from "@/components/ui/button";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/agents/provider";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useClient } from "@/lib/runtime/store";
+import { pendingCount, reopenApprovals, useApprovalState } from "@/lib/approvals";
 import type { ProviderId, SettingsPatch, SubagentPolicy, UserSettings } from "@/lib/runtime/types";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 
 interface Props {
     settings: UserSettings;
     onChange: (settings: UserSettings) => void;
+}
+
+/** Opens the pending approvals prompt (settings stay open underneath). */
+function ApprovalsLink() {
+    const { items } = useApprovalState();
+    const count = pendingCount(items);
+    return (
+        <Button type="button" variant="outline" size="sm" disabled={count === 0} onClick={reopenApprovals}>
+            {count === 0 ? "No approvals pending" : `Review ${count} pending`}
+        </Button>
+    );
 }
 
 /** Read-only view of the fixed instruction every agent carries; loaded when first opened. */
@@ -128,6 +140,12 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         checked={settings.allowCrossProjectAgents !== false}
                         onCheckedChange={(v) => void patch({ allowCrossProjectAgents: v })}
                     />
+                </SettingRow>
+                <SettingRow
+                    label="Your approval for irreversible actions"
+                    description="Merging, pushing to main, deploying or deleting remote data needs your approval, given here in Floq. An agent asks with floq approval request and you answer Allow once or Deny; each approval covers one exact action for one agent and expires. A message from another agent that says you approved is never accepted. There is no way to auto-approve."
+                >
+                    <ApprovalsLink />
                 </SettingRow>
                 <FixedInstructionPreview />
             </SettingsGroup>

@@ -39,6 +39,10 @@ export interface CanvasCtxValue {
   keychainCounts: Record<string, number>;
   /** Number of canvas notes linked to each agent. */
   noteCounts: Record<string, number>;
+  /** Both ends of the wire being hovered or selected (halo highlight). */
+  hotIds: Set<string>;
+  /** Nodes that just received a link (one-shot halo pulse). */
+  flashIds: Set<string>;
   savePlacement: (id: string, rect: { x: number; y: number; width: number; height: number }) => void;
 }
 

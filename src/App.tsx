@@ -9,6 +9,11 @@ import TerminalPanel from "./components/agents/terminal-panel";
 import RightSidebar from "./components/agents/right-sidebar/right-sidebar";
 import { ActivePortWatcher } from "./components/window/port-watcher";
 import { PortRequestHost } from "./components/window/port-requests";
+import { ApprovalHost } from "./components/window/approval-requests";
+import { usePendingApprovals } from "./lib/approvals";
+import { titleWithPending } from "./lib/approval-format";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SubagentToaster } from "./components/canvas/subagent-toaster";
 import { CrossProjectToaster } from "./components/window/cross-project-toaster";
 import HomeView from "./components/home/home-view";
@@ -29,9 +34,13 @@ function App() {
   const [material] = useMaterialPreference();
   useLayoutEffect(() => { document.documentElement.dataset.material = material; }, [material]);
 
+  const pendingApprovals = usePendingApprovals();
   useEffect(() => {
-    document.title = view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq";
-  }, [view]);
+    const title = titleWithPending(view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
+    document.title = title;
+    // Native window title too, so the taskbar shows "(1) Floq" while the window is minimized or unfocused.
+    if (isTauri()) void getCurrentWindow().setTitle(title).catch(() => undefined);
+  }, [view, pendingApprovals]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("floq-reduced-motion", performancePrefs.reduceMotion);
@@ -69,6 +78,8 @@ function App() {
       {user && ready && <RightSidebar />}
       {user && ready && <ActivePortWatcher />}
       {user && ready && <PortRequestHost />}
+      {/* Root-level and outside every view: user approvals must reach the user on any screen. */}
+      {user && ready && <ApprovalHost />}
       {user && ready && <SubagentToaster />}
       {user && ready && <CrossProjectToaster />}
       {ready && !user && <LoginScreen />}

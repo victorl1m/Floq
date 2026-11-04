@@ -161,6 +161,36 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, name)
     );
+    CREATE TABLE IF NOT EXISTS agent_inbox (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      from_session_id UUID NOT NULL,
+      from_title TEXT NOT NULL DEFAULT '',
+      to_session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      chars INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS agent_inbox_to_idx ON agent_inbox (to_session_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_approvals (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      requester_session_id UUID NOT NULL,
+      target_session_id UUID NOT NULL,
+      requester_project_id UUID,
+      target_project_id UUID,
+      action TEXT NOT NULL,
+      action_hash TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('pending','granted','denied','expired','cancelled','consumed')),
+      meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      valid_until TIMESTAMPTZ,
+      decided_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS agent_approvals_user_idx ON agent_approvals (user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS vault_secrets (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
@@ -259,6 +289,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS canvas_note_links_session_idx ON canvas_note_links(session_id);
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS agent_note_name TEXT;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS placed BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS user_title TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS canvas_notes_agent_name_idx ON canvas_notes(user_id, COALESCE(project_id, '00000000-0000-0000-0000-000000000000'::uuid), agent_note_name) WHERE agent_note_name IS NOT NULL;
     CREATE TABLE IF NOT EXISTS agent_wired_memory (
       session_id UUID PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
