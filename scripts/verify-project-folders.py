@@ -3,6 +3,7 @@
 Usage: python scripts/verify-project-folders.py [dark|light] [glass|solid]
 Writes screenshots to docs/redesign/ and prints a JSON report (order after every step + alignment measurements).
 """
+import os
 import importlib.util, json, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -74,7 +75,7 @@ def main():
         page = context.new_page(); errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.route("**/*", ImageFixture().handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000)
         nav = page.locator("#app-navigation-sidebar")
         import atexit; atexit.register(lambda: print(json.dumps(report, indent=1)))

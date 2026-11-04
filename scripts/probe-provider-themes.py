@@ -1,4 +1,5 @@
 """Provider theme probe: home composer, sidebar rows, canvas cards and New agent dialog in light/dark."""
+import os
 import importlib.util, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -13,7 +14,7 @@ with sync_playwright() as p:
         ctx = b.new_context(viewport={"width": 1440, "height": 960})
         ctx.add_init_script(f"localStorage.setItem('theme','{theme}');localStorage.setItem('floq.connection',JSON.stringify({{baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:{json.dumps(FIX.USER)}}}));")
         page = ctx.new_page(); page.route("**/*", FIX.Fixture().handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded")
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded")
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000); page.wait_for_timeout(1500)
         page.screenshot(path=str(OUT / f"{theme}-sidebar-rows.png"))
         rep[theme] = page.evaluate("""()=>[...document.querySelectorAll('svg[data-provider]')].slice(0,6).map(e=>[e.dataset.provider,getComputedStyle(e).color])""")

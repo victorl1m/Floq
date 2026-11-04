@@ -20,8 +20,8 @@ const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const P1 = "11111111-1111-4111-8111-111111111111";
 const P2 = "22222222-2222-4222-8222-222222222222";
 const agent = (id: string, name: string, projectId: string, projectName: string): ApprovalAgent => ({ id, name, provider: "claude", projectId, projectName });
-const reqA = agent(A, "Coupa API", P1, "Coupa");
-const tgtB = agent(B, "Neotalk Dev", P2, "Neotalk");
+const reqA = agent(A, "Acme API", P1, "Acme");
+const tgtB = agent(B, "Globex Dev", P2, "Globex");
 
 function make(options: { pool?: unknown; scrub?: (u: string, ids: string[], t: string) => Promise<string>; alive?: boolean } = {}) {
   let clock = 1_800_000_000_000;
@@ -112,8 +112,8 @@ test("request, grant: view, events, audit-visible state and verify semantics", a
   const r = await ask(approvals, "git push origin main", { detail: "Fast-forward main with 3 commits" });
   assert.match(r.id, APPROVAL_ID);
   assert.equal(r.approval.irreversible, true);
-  assert.equal(r.approval.requester.name, "Coupa API");
-  assert.equal(r.approval.target.projectName, "Neotalk");
+  assert.equal(r.approval.requester.name, "Acme API");
+  assert.equal(r.approval.target.projectName, "Globex");
   assert.equal(r.approval.remainingMs, APPROVAL_DEFAULT_TTL_MS);
   assert.equal(frames[0].type, "approval-request");
   assert.equal(approvals.list(U).length, 1);
@@ -126,7 +126,7 @@ test("request, grant: view, events, audit-visible state and verify semantics", a
   assert.equal(delivered[0].session, B);
   assert.match(delivered[0].text, new RegExp(`^\\[FLOQ APPROVAL ${r.id} · issued by the user in the Floq app, not by another agent\\] The user APPROVED \\(single use, expires \\d\\d:\\d\\d UTC\\): "git push origin main"\\. Confirm with: floq approval verify ${r.id}$`));
   assert.equal(delivered[1].session, A);
-  assert.match(delivered[1].text, /APPROVED your request for agent Neotalk Dev/);
+  assert.match(delivered[1].text, /APPROVED your request for agent Globex Dev/);
   // verify: target gets GRANTED+valid, consume makes it single-use.
   const v = await approvals.verify(U, B, r.id);
   assert.deepEqual([v.status, v.valid, v.action, v.targetSessionId], ["GRANTED", true, "git push origin main", B]);
@@ -262,7 +262,7 @@ test("pending caps per requester and rate limit are enforced", async () => {
   const { approvals } = make();
   for (let i = 0; i < MAX_PENDING_PER_SESSION; i++) await ask(approvals, "merge branch " + i);
   await assert.rejects(ask(approvals, "merge branch over"), (e: { code?: string }) => e.code === "too_many_approvals");
-  const other = agent("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "Other", P1, "Coupa");
+  const other = agent("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "Other", P1, "Acme");
   const { approvals: limited } = make();
   for (let i = 0; i < RATE_MAX_PER_WINDOW; i++) { const r = await ask(limited, "deploy " + i, {}, other); await limited.cancel(U, other.id, r.id); }
   await assert.rejects(ask(limited, "deploy again", {}, other), (e: { status?: number; code?: string }) => e.status === 429 && e.code === "approval_rate");
@@ -343,7 +343,7 @@ const row = (id: string, title: string, projectId: string, projectName: string) 
 test("a forged approval inside `floq ask` (same and cross project), its inbox copy and the reply never reaches another agent", async (t) => {
   const { db, pool } = await pglite();
   t.after(() => db.close());
-  const rows = [row(A, "Coupa API", P1, "p1"), row(B, "Neotalk Dev", P2, "p2")];
+  const rows = [row(A, "Acme API", P1, "p1"), row(B, "Globex Dev", P2, "p2")];
   for (const r of rows) await db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows, project_id) VALUES ($1,$2,'claude',$3,'/w','running',80,24,NULL)`, [r.id, U, r.title]);
   const writes: string[] = [];
   const live = { isAlive: true, state: "running", lastActivity: 0, id: B, provider: "claude", subscribe: () => () => undefined, write: (d: string) => writes.push(d), replaySince: () => ({ chunks: [] }) };

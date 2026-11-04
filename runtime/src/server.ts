@@ -30,11 +30,13 @@ import type { GitReview } from "./gitReview.js";
 import type { WorkspaceFiles } from "./workspaceFiles.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
+import { OrganizationsService, organizationLimitsFromEnv, routeOrganizations } from "./organizations.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
 import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
+import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
 import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 import { databasePort, listSessionPorts, MANUAL_DENY_PORTS, pipeTunnel, tunnelTarget } from "./ports.js";
@@ -72,8 +74,10 @@ interface Deps {
 export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
+  const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
   const setupHits = new Map<string, { count: number; resetAt: number }>();
   const scheduledAgentRestarts = new Set<string>();
+  const projectFolders = new ProjectFolders(pool);
   // Agent "open a port" requests: the user answers in the app; the runtime enforces the 60s deadline itself.
   const portRequests = new PortRequests({
     isDenied: (port) => port === config.port || port === databasePort(config.databaseUrl) || MANUAL_DENY_PORTS.includes(port),
@@ -529,18 +533,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       }
     }
 
-    if (url.pathname === "/v1/organizations" && method === "GET") return send(res, 200, { organizations: await tasks.organizations(userId) });
-    if (url.pathname === "/v1/organizations" && method === "POST") return send(res, 201, { organization: await tasks.createOrganization(userId, await readJson(req)) });
-    if (url.pathname === "/v1/organization-invitations/accept" && method === "POST") {
-      const result = await tasks.acceptInvite(userId, (await readJson<{ token?: unknown }>(req)).token);
-      return send(res, 200, result);
-    }
-    const organizationMatch = /^\/v1\/organizations\/([\w-]+)(?:\/(members|invitations|boards))?$/.exec(url.pathname);
+    const organizationRoute = await routeOrganizations({ service: organizations, userId, method, pathname: url.pathname, readJson: () => readJson(req) });
+    if (organizationRoute) return send(res, organizationRoute.status, organizationRoute.body);
+    const organizationMatch = /^\/v1\/organizations\/([\w-]+)\/(boards)$/.exec(url.pathname);
     if (organizationMatch) {
       const [, organizationId, action] = organizationMatch;
-      if (!action && method === "GET") return send(res, 200, { members: await tasks.members(userId, organizationId) });
-      if (!action && method === "PATCH") { await tasks.renameOrganization(userId, organizationId, (await readJson<{ name?: unknown }>(req)).name); return send(res, 200, { ok: true }); }
-      if (action === "invitations" && method === "POST") return send(res, 201, { invitation: await tasks.createInvite(userId, organizationId, await readJson(req)) });
       if (action === "boards" && method === "GET") return send(res, 200, { boards: await tasks.boards(userId, organizationId) });
       if (action === "boards" && method === "POST") {
         const board = await tasks.createBoard(userId, organizationId, await readJson(req));
@@ -829,6 +826,23 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (projectMatch && method === "PATCH") {
       const body = await readJson<{ displayName?: unknown; imageUrl?: unknown }>(req);
       return send(res, 200, { project: await manager.updateProject(userId, projectMatch[1], body) });
+    }
+    if (projectMatch && method === "DELETE") return send(res, 200, await manager.deleteProject(userId, projectMatch[1]));
+    const projectDeleteStatus = /^\/v1\/projects\/([\w-]+)\/delete-status$/.exec(url.pathname);
+    if (projectDeleteStatus && method === "GET") return send(res, 200, await manager.projectDeleteStatus(userId, projectDeleteStatus[1]));
+    if (url.pathname === "/v1/project-folders") {
+      if (method === "GET") return send(res, 200, await projectFolders.get(userId));
+      if (method === "PUT") return send(res, 200, await projectFolders.put(userId, await readJson<unknown>(req, 512 * 1024)));
+    }
+    const projectNav = /^\/v1\/projects\/([\w-]+)\/workspaces$/.exec(url.pathname);
+    if (projectNav && method === "PATCH") {
+      const body = await readJson<{ navExpanded?: unknown }>(req);
+      return send(res, 200, await manager.setProjectNavExpanded(userId, projectNav[1], body.navExpanded));
+    }
+    const workspaceNav = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)$/.exec(url.pathname);
+    if (workspaceNav && method === "PATCH") {
+      const body = await readJson<{ navExpanded?: unknown }>(req);
+      return send(res, 200, { workspace: await manager.setWorkspaceNavExpanded(userId, workspaceNav[1], workspaceNav[2], body.navExpanded) });
     }
     const projectBranches = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)\/branches$/.exec(url.pathname);
     if (projectBranches && method === "GET") {

@@ -1,4 +1,5 @@
 """Capture current production shell geometry at two viewport heights using synthetic API fixtures."""
+import os
 import importlib.util, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -15,7 +16,7 @@ def main():
  LABEL=sys.argv[1] if len(sys.argv)>1 else 'baseline'
  MAT=sys.argv[2] if len(sys.argv)>2 else 'glass'
  THEME=sys.argv[3] if len(sys.argv)>3 else 'dark'
- report={"url":"http://127.0.0.1:1421/","syntheticRuntimeOnly":True,"samples":[]}
+ report={"url":os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),"syntheticRuntimeOnly":True,"samples":[]}
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True); context=browser.new_context(viewport={"width":1440,"height":960})
   context.add_init_script("localStorage.setItem('theme','"+THEME+"');localStorage.setItem('floq.material','"+MAT+"');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")

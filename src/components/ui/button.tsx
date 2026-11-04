@@ -141,7 +141,7 @@ function MaterialButton({
   }
 
   // Solid is a true rendering fallback: do not mount Glisse's refraction hooks.
-  if (forcedColors || material === "solid" || (material === "system" && prefersReducedTransparency)) {
+  if (forcedColors || material !== "glass" || prefersReducedTransparency) {
     return <button {...dataProps} className={className} {...props} />
   }
 

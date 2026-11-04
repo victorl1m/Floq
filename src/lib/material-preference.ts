@@ -9,9 +9,10 @@ function read(): MaterialPreference {
   if (storageFallback) return storageFallback;
   try {
     const value = localStorage.getItem(KEY);
-    if (value === "solid" || value === "system") return value;
+    if (value === "solid" || value === "system" || value === "glass") return value;
   } catch { /* Device storage is optional. */ }
-  return "glass";
+  // Default is the cheap path: Glisse refraction on every button is opt-in ("glass").
+  return "system";
 }
 
 function subscribe(callback: () => void) {
@@ -39,7 +40,7 @@ export function useForcedColorsPreference() {
 }
 
 export function useMaterialPreference() {
-  const value = useSyncExternalStore(subscribe, read, () => "glass" as const);
+  const value = useSyncExternalStore(subscribe, read, () => "system" as const);
   const setValue = (next: MaterialPreference) => {
     try { localStorage.setItem(KEY, next); storageFallback = null; } catch { storageFallback = next; }
     document.documentElement.dataset.material = next;

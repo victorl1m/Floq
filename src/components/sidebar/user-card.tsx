@@ -1,4 +1,4 @@
-import { IconBuilding, IconChecklist, IconLogout, IconPalette, IconRefresh, IconSelector, IconSettings, IconUser } from "@tabler/icons-react";
+import { IconBuilding, IconLogout, IconMailOpened, IconPalette, IconPlus, IconRefresh, IconSelector, IconSettings, IconUser } from "@tabler/icons-react";
 import { Avatar, AvatarBadge, AvatarFallback } from "@/components/ui/avatar";
 import {
     DropdownMenu,
@@ -17,6 +17,9 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui
 import { Badge } from "@/components/ui/badge";
 import { useIsAdmin } from "@/components/settings/use-admin";
 import { useRuntime } from "@/lib/runtime/store";
+import { OrganizationAvatar } from "@/components/organization/organization-avatar";
+import { OrganizationHost } from "@/components/organization/organization-host";
+import { organizationUi, ROLE_LABEL, useOrganizationUi } from "@/lib/organizations";
 
 function initials(label: string): string {
     const parts = label.split(/[\s@._-]+/).filter(Boolean);
@@ -24,17 +27,20 @@ function initials(label: string): string {
 }
 
 export default function UserCard() {
-    const { user, online, signOut, openSettings, navigate, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId, selectOrganization } = useRuntime();
+    const { user, online, signOut, openSettings, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId, selectOrganization } = useRuntime();
     const isAdmin = useIsAdmin();
+    const { incoming } = useOrganizationUi();
+    const pendingInvites = incoming.length;
     if (!user) return null;
     const name = user.name?.trim() || user.email.split("@")[0];
     const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId);
-    const roleLabel = isAdmin ? "Administrator" : activeOrganization?.role === "owner" ? "Owner" : "Member";
+    const roleLabel = isAdmin ? "Administrator" : activeOrganization ? ROLE_LABEL[activeOrganization.role] : "Member";
     const organizationSubtitle = activeOrganization?.name ?? (organizationsLoading ? "Loading organization…" : organizationsError ? "Organizations unavailable" : "No organization yet");
 
     return (
         <SidebarMenu>
             <SidebarMenuItem>
+                <OrganizationHost />
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <SidebarMenuButton
@@ -45,6 +51,7 @@ export default function UserCard() {
                             <Avatar size="sm" className="size-8">
                                 <AvatarFallback>{initials(name)}</AvatarFallback>
                                 <AvatarBadge className={online ? "bg-emerald-500" : "bg-muted-foreground"} />
+                                {pendingInvites > 0 && <span role="img" aria-label={`${pendingInvites} pending organization invitation${pendingInvites === 1 ? "" : "s"}`} className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-primary ring-2 ring-sidebar" data-testid="invitation-badge" />}
                             </Avatar>
                             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
                                 <span className="truncate text-sm font-semibold">{name}</span>
@@ -74,9 +81,13 @@ export default function UserCard() {
                                 {organizationsLoading && <DropdownMenuItem disabled>Loading organizations…</DropdownMenuItem>}
                                 {!organizationsLoading && organizationsError && <DropdownMenuItem onSelect={() => void refreshOrganizations()}><IconRefresh />Retry loading organizations</DropdownMenuItem>}
                                 {!organizationsLoading && !organizationsError && organizations.length > 0 && <DropdownMenuRadioGroup value={activeOrganizationId ?? ""} onValueChange={selectOrganization}>
-                                    {organizations.map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organization.name} className="min-w-0"><IconChecklist /><span className="truncate">{organization.name}</span></DropdownMenuRadioItem>)}
+                                    {organizations.map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organization.name} className="min-w-0"><OrganizationAvatar name={organization.name} className="size-5 rounded-md text-[0.6rem]" /><span className="truncate">{organization.name}</span></DropdownMenuRadioItem>)}
                                 </DropdownMenuRadioGroup>}
-                                {!organizationsLoading && !organizationsError && organizations.length === 0 && <DropdownMenuItem onSelect={() => navigate("tasks")}><IconChecklist />Create your first organization in Tasks</DropdownMenuItem>}
+                                {!organizationsLoading && !organizationsError && organizations.length === 0 && <DropdownMenuItem disabled>No organizations yet</DropdownMenuItem>}
+                                <DropdownMenuSeparator />
+                                {pendingInvites > 0 && <DropdownMenuItem onSelect={organizationUi.openInbox}><IconMailOpened />Pending invitations<Badge className="ml-auto">{pendingInvites}</Badge></DropdownMenuItem>}
+                                <DropdownMenuItem onSelect={organizationUi.openCreate}><IconPlus />Create organization</DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openSettings("organization")}><IconSettings />Organization settings</DropdownMenuItem>
                             </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuSeparator />

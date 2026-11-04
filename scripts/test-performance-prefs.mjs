@@ -22,15 +22,15 @@ test('automatic profile uses only the coarse device-memory hint and falls back s
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { deviceMemory: 4 } });
   assert.equal(prefs.recommendedScrollback(), 2_500);
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
-  assert.equal(prefs.recommendedScrollback(), 10_000);
+  assert.equal(prefs.recommendedScrollback(), 3_000);
   if (original) Object.defineProperty(globalThis, 'navigator', original);
   else delete globalThis.navigator;
 });
 
 test('persisted performance values are validated and background polling is bounded', () => {
-  localStorage.setItem('floq.performance', JSON.stringify({ mode: 'custom', scrollback: 999_999, reduceMotion: true }));
+  localStorage.setItem('floq.performance', JSON.stringify({ mode: 'custom', scrollback: 999_999, warmTerminals: 99, reduceMotion: true }));
   assert.deepEqual(prefs.loadPerformancePrefs(), {
-    mode: 'custom', scrollback: 20_000, reduceMotion: true, smoothTerminalScrolling: false, reduceBackgroundRefresh: false,
+    mode: 'custom', scrollback: 20_000, warmTerminals: 6, reduceMotion: true, smoothTerminalScrolling: false, reduceBackgroundRefresh: false,
   });
   assert.equal(prefs.runtimePollInterval(false, true), 5_000);
   assert.equal(prefs.runtimePollInterval(true, true), 30_000);

@@ -4,6 +4,7 @@ Checks: dialog appears with agent/port/protocol/purpose, focus lands on Deny, co
 Allow forwards (stubbed Tauri invoke) and tells the runtime, Deny tells the runtime, an expired request disables Allow,
 and the right sidebar no longer has a Ports tab. Run with the dev server on :1421: python scripts/probe-port-requests.py [light|dark]
 """
+import os
 import importlib.util, json, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -63,7 +64,7 @@ def main():
         context.add_init_script(TAURI_STUB + "localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.right-sidebar.v1',JSON.stringify({open:true,width:360,tab:'ports'}));localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fixture = Fixture(); page.route("**/*", fixture.handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)
         dialog = page.get_by_role("dialog", name="Open a port?")
         dialog.wait_for(timeout=10000)
         text = dialog.inner_text()

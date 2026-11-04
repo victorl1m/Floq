@@ -56,6 +56,9 @@ import { cn } from "cn";
 import { addFolder, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
 import { DndButton, DndRow, EmptyFolderDrop, InlineRename, ProjectDnd, RootEndDrop, RowAction, useSavedLayout } from "@/components/sidebar/project-folder";
 import { Skeleton } from "@/components/ui/skeleton";
+import DeleteProjectDialog from "@/components/sidebar/delete-project-dialog";
+import { setFolderExpanded as cacheFolderExpanded, useFolderExpanded } from "@/lib/project-folders-cache";
+import { useProjectFoldersSync } from "@/lib/use-project-folders-sync";
 
 const CTX = "w-56";
 const ROW_OPEN = "rounded-md data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground";
@@ -103,9 +106,11 @@ function StateDot({ state }: { state: SessionState }) {
 type EditState = { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, focusOnCanvas, openSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
+  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, focusOnCanvas, openSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences, setWorkspaceNavExpanded, setProjectNavExpanded } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
+  useProjectFoldersSync();
+  const folderExpanded = useFolderExpanded(scope);
   const projectMeta = useCanonicalProjectMeta(scope);
   const legacyRepos = useRecentRepos(scope);
   const legacyWorkspaceMeta = useWorkspaceProjectMeta(scope);
@@ -124,6 +129,7 @@ export default function CanonicalProjectList() {
   const recruits = useMemo(() => recruitCounts(sessions), [sessions]);
   const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [deletingWorktree, setDeletingWorktree] = useState<WorktreeDeleteTarget | null>(null);
+  const [deletingProject, setDeletingProject] = useState<RuntimeProject | null>(null);
   const [renaming, setRenaming] = useState<SessionSummary | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -148,7 +154,7 @@ export default function CanonicalProjectList() {
     let next = addFolder(layout, id);
     if (withProjectId) next = moveProjectInto(next, withProjectId, id);
     saveLayout(scope, next);
-    updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [id]: true } });
+    cacheFolderExpanded(scope, id, true);
     setRenamingFolder(id);
   }
   function renameFolder(folder: ProjectFolder, value: string) {
@@ -172,7 +178,7 @@ export default function CanonicalProjectList() {
     });
   }
   function moveProject(projectId: string, folderId: string | null) { saveLayout(scope, moveProjectInto(layout, projectId, folderId)); }
-  function setFolderExpanded(folderId: string, open: boolean) { updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [folderId]: open } }); }
+  function setFolderExpanded(folderId: string, open: boolean) { cacheFolderExpanded(scope, folderId, open); }
 
   useEffect(() => {
     if (!loaded || projectsLoading || projectsError || projects.length === 0) return;
@@ -308,11 +314,6 @@ export default function CanonicalProjectList() {
       openSession(session, "agent");
     } catch (error) { toast.error("Could not open a terminal", { description: errorMessage(error) }); }
   }
-  function setAllWorkspaces(project: RuntimeProject, open: boolean) {
-    const next = { ...userPreferences.workspaceNavExpanded };
-    for (const workspace of project.workspaces ?? []) next[`${project.id}:${workspace.id}`] = open;
-    updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: true }, workspaceNavExpanded: next });
-  }
   function hideSession(session: SessionSummary) {
     closeTab(session.id);
     updateUserPreferences({ hiddenSessionIds: { ...userPreferences.hiddenSessionIds, [session.id]: true } });
@@ -361,10 +362,9 @@ export default function CanonicalProjectList() {
 
   function renderProject(project: RuntimeProject) {
     const workspaces = project.workspaces ?? [];
-    const projectExpanded = userPreferences.projectNavExpanded[project.id] ?? true;
     const currentFolder = containerOf(layout, project.id) ?? null;
     return <SidebarMenuItem key={project.id}>
-      <Collapsible open={projectExpanded} onOpenChange={(open) => updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: open } })} className="group/project">
+      <div className="group/project">
         <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row", ROW_OPEN)}>
           <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
             <ProjectMark project={project} className="text-muted-foreground [&:is(img)]:bg-sidebar-accent/40 [&:is(img)]:ring-1 [&:is(img)]:ring-sidebar-border/70" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
@@ -375,9 +375,9 @@ export default function CanonicalProjectList() {
               <DropdownMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent here</DropdownMenuItem>
               {folders.filter((folder) => folder.id !== currentFolder).map((folder) => <DropdownMenuItem key={folder.id} onClick={() => moveProject(project.id, folder.id)}><IconFolder />Move to {folder.name}</DropdownMenuItem>)}
               {currentFolder !== null && <DropdownMenuItem onClick={() => moveProject(project.id, null)}><IconX />Move out of folder</DropdownMenuItem>}
+              <DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => setDeletingProject(project)}><IconTrash />Delete project…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${projectExpanded ? "Collapse" : "Expand"} ${project.displayName || project.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/project:rotate-90" /></RowAction></CollapsibleTrigger>
         </DndRow></ContextMenuTrigger>
           <ContextMenuContent className={CTX}>
             <ContextMenuItem onClick={() => openCanvas(project.id)}><IconLayoutKanban />Open canvas</ContextMenuItem>
@@ -388,8 +388,9 @@ export default function CanonicalProjectList() {
             <ContextMenuItem onClick={() => copy(project.cwd, "Path")}><IconCopy />Copy path</ContextMenuItem>
             <ContextMenuItem disabled={!isTauri()} onClick={() => reveal(project.cwd)}><IconFolderOpen />{isTauri() ? "Reveal in file explorer" : "Reveal (desktop app only)"}</ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, true)}><IconChevronsDown />Expand all workspaces</ContextMenuItem>
-            <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, false)}><IconChevronsUp />Collapse all workspaces</ContextMenuItem>
+            <ContextMenuItem disabled={project.workspaces.every((workspace) => workspace.navExpanded === false)} onClick={() => void setProjectNavExpanded(project.id, false)}><IconChevronsUp />Collapse all workspaces</ContextMenuItem>
+            <ContextMenuItem disabled={project.workspaces.every((workspace) => workspace.navExpanded !== false)} onClick={() => void setProjectNavExpanded(project.id, true)}><IconChevronsDown />Expand all workspaces</ContextMenuItem>
+            <ContextMenuSeparator />
             <ContextMenuItem disabled={projectsLoading} onClick={() => void retryProjects().catch(() => {})}><IconRefresh />Refresh projects</ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuSub><ContextMenuSubTrigger><IconFolder />Move to folder</ContextMenuSubTrigger><ContextMenuSubContent>
@@ -397,16 +398,17 @@ export default function CanonicalProjectList() {
               {currentFolder !== null && <ContextMenuItem onClick={() => moveProject(project.id, null)}><IconX />Move out of folder</ContextMenuItem>}
               <ContextMenuItem onClick={() => createFolder(project.id)}><IconFolderPlus />New folder…</ContextMenuItem>
             </ContextMenuSubContent></ContextMenuSub>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onClick={() => setDeletingProject(project)}><IconTrash />Delete project…</ContextMenuItem>
           </ContextMenuContent></ContextMenu>
-        <CollapsibleContent>
+        <div>
           <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-3 pr-0">
             {workspaces.map((workspace) => {
               const agents = sessionsForWorkspace(project.id, workspace, sessions).filter((session) => session.provider !== "shell" && (!userPreferences.hiddenSessionIds[session.id] || isLive(session.state) || openedIds.includes(session.id)));
               const label = workspace.branch || workspace.name || "Main";
-              const workspaceKey = `${project.id}:${workspace.id}`;
-              const workspaceExpanded = userPreferences.workspaceNavExpanded[workspaceKey] ?? true;
+              const workspaceExpanded = workspace.navExpanded !== false;
               return <SidebarMenuSubItem key={workspace.id} className="relative">
-                <Collapsible open={workspaceExpanded} onOpenChange={(open) => updateUserPreferences({ workspaceNavExpanded: { ...userPreferences.workspaceNavExpanded, [workspaceKey]: open } })} className="group/workspace">
+                <Collapsible open={workspaceExpanded} onOpenChange={(open) => void setWorkspaceNavExpanded(project.id, workspace.id, open)} className="group/workspace">
                   <ContextMenu><ContextMenuTrigger asChild><div className={cn("group/workspace-row relative", ROW_OPEN)}>
                     <CollapsibleTrigger asChild><SidebarMenuButton className={cn("h-8 gap-1.5 text-[13px] text-muted-foreground", workspace.isWorktree ? "pr-20!" : "pr-14!")} title={`${label} · ${workspace.cwd}`}>
                       <IconGitBranch /><span className="min-w-0 truncate">{label}</span>
@@ -440,13 +442,13 @@ export default function CanonicalProjectList() {
             })}
             {workspaces.length === 0 && <SidebarMenuSubItem><span className="block px-2 py-1 text-xs text-muted-foreground">No workspaces</span></SidebarMenuSubItem>}
           </SidebarMenuSub>
-        </CollapsibleContent>
-      </Collapsible>
+        </div>
+      </div>
     </SidebarMenuItem>;
   }
 
   function renderFolder(folder: ProjectFolder) {
-    const expanded = userPreferences.folderNavExpanded[folder.id] ?? true;
+    const expanded = folderExpanded[folder.id] ?? true;
     const members = (layout.folders[folder.id] ?? []).flatMap((id) => projectsById.get(id) ?? []);
     const menu = {
       rename: () => setRenamingFolder(folder.id),
@@ -503,7 +505,7 @@ export default function CanonicalProjectList() {
       </div>
       <SidebarGroupContent>
         {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <div role="status" aria-label="Loading projects" aria-busy="true" className="space-y-1 px-2 py-2">{[0, 1, 2].map((row) => <div key={row} className="flex h-8 items-center gap-2"><Skeleton className="size-4 shrink-0" /><Skeleton className="h-3 flex-1" /></div>)}</div> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
-          <ProjectDnd layout={layout} onLayout={(next) => saveLayout(scope, next)} isFolderExpanded={(id) => userPreferences.folderNavExpanded[id] ?? true} onExpandFolder={(id) => setFolderExpanded(id, true)}
+          <ProjectDnd layout={layout} onLayout={(next) => saveLayout(scope, next)} isFolderExpanded={(id) => folderExpanded[id] ?? true} onExpandFolder={(id) => setFolderExpanded(id, true)}
             labelOf={(kind, id) => kind === "folder" ? foldersById.get(id)?.name ?? "folder" : projectsById.get(id) ? projectLabel(projectsById.get(id)!) : "project"}
             renderOverlay={(kind, id) => <div className="flex h-8 w-56 items-center gap-2 rounded-md border border-sidebar-border bg-popover px-2 text-[13px] font-medium text-popover-foreground shadow-md">
               {kind === "folder" ? <IconFolder className="size-4 shrink-0 text-muted-foreground" /> : projectsById.get(id) ? <ProjectMark project={projectsById.get(id)!} className="text-muted-foreground" /> : null}
@@ -562,6 +564,7 @@ export default function CanonicalProjectList() {
     </AppDialog>
 
     <WorktreeDeleteDialog target={deletingWorktree} onClose={() => setDeletingWorktree(null)} />
+    <DeleteProjectDialog project={deletingProject} onClose={() => setDeletingProject(null)} />
     <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia className="bg-destructive/10 text-destructive"><IconTrash /></AlertDialogMedia><AlertDialogTitle>Delete this agent?</AlertDialogTitle><AlertDialogDescription>“{deleting?.title}” and its terminal session will be removed. You can undo for a few seconds afterwards.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </>;
 }

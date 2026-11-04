@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Victor Lima",
+    "copyright": "Copyright (c) 2026 Victor Lima",
+    "category": "DeveloperTool",
+    "shortDescription": "Run Claude Code and Codex agents on a server you host",
+    "longDescription": "Floq is a desktop workspace for running Claude Code and Codex agents on a self-hosted runtime. Organize agents, notes and secrets on a canvas, group them into projects, and review agent actions before they run.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -14,6 +14,7 @@ import {
   useStore,
   useViewport,
   type Connection,
+  type FitViewOptions,
   type Node,
   type Edge,
   type NodeChange,
@@ -50,7 +51,9 @@ import { sendToTargets, type Attachment } from "./canvas-send";
 import CanvasMenuContent, { type MenuApi, type MenuTarget, type SizePreset } from "./canvas-menu";
 import { CanvasCtx, type CanvasCtxValue, type LiveWire } from "./canvas-context";
 import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
-import { DEFAULT_NODE_SIZE, layoutTree } from "./layout";
+import { DEFAULT_NODE_SIZE, layoutFloors } from "./layout";
+import FloorBands, { type FloorInfo } from "./floor-band";
+import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import { agentActivity } from "@/components/agents/activity-indicator";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
@@ -97,7 +100,7 @@ function CanvasControls() {
   const maxZoom = useStore((state) => state.maxZoom);
   const button = "size-6 rounded-lg";
   return (
-    <Panel position="bottom-left" className="canvas-zoom m-2! flex h-8 items-center gap-0.5 rounded-[10px] border border-[var(--canvas-card-border,var(--border))] bg-card/90 px-1 text-foreground shadow-[var(--shadow-elev-1)] backdrop-blur-sm">
+    <Panel position="bottom-left" className="canvas-zoom m-2! flex h-8 items-center gap-0.5 rounded-[10px] border border-[var(--canvas-card-border,var(--border))] bg-card/90 px-1 text-foreground shadow-[var(--shadow-elev-1)]">
       <ShortcutTip label="Zoom out" keys="Ctrl -">
         <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom out" disabled={zoom <= minZoom + 0.001} onClick={() => void zoomOut({ duration: 200 })}><IconMinus size={14} /></Button>
       </ShortcutTip>
@@ -117,6 +120,8 @@ function CanvasControls() {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+const UNASSIGNED_FLOOR = "__unassigned__";
+
 function AgentCanvas() {
   // Single canvas theme switch: follows the app theme (light/dark/system resolved by next-themes).
   const { resolvedTheme } = useTheme();
@@ -126,6 +131,8 @@ function AgentCanvas() {
     client, upsertSession, canvasFocus, consumeCanvasFocus,
   } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
+  // Fit options: with floors, leave room above the top band's label for the floating toolbar. Updated once the floors are known.
+  const fitOptsRef = useRef<FitViewOptions>({});
   // The canvas is always bound to the project it was opened for, never to a possibly-null active project.
   const activeProjectId = canvasProjectId;
   const project = projects.find((item) => item.id === activeProjectId);
@@ -322,25 +329,58 @@ function AgentCanvas() {
   const [liveIds, setLiveIds] = useState<Set<string>>(new Set());
   const prevHeights = useRef(new Map<string, number>());
 
+  // Floors: one per git workspace. Ground floor = the main checkout (workspace cwd === project cwd); sessions matching no workspace sit on an "Unassigned" floor on top.
+  const orderedWorkspaces = useMemo(() => {
+    const workspaces = project?.workspaces ?? [];
+    const ground = workspaces.find((workspace) => workspace.cwd === project?.cwd);
+    return ground ? [ground, ...workspaces.filter((workspace) => workspace !== ground)] : workspaces;
+  }, [project?.workspaces, project?.cwd]);
+  const groundWorkspaceId = orderedWorkspaces.find((workspace) => workspace.cwd === project?.cwd)?.id;
+  const floorOf = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!activeProjectId || orderedWorkspaces.length === 0) return map;
+    for (const workspace of [...orderedWorkspaces].reverse()) {
+      for (const session of sessionsForWorkspace(activeProjectId, workspace, projectSessions)) map.set(session.id, workspace.id);
+    }
+    for (const session of projectSessions) if (!map.has(session.id)) map.set(session.id, UNASSIGNED_FLOOR);
+    return map;
+  }, [orderedWorkspaces, projectSessions, activeProjectId]);
+  const floorOrder = useMemo(() => [...orderedWorkspaces.map((workspace) => workspace.id), UNASSIGNED_FLOOR], [orderedWorkspaces]);
+  const floorFallback = UNASSIGNED_FLOOR;
+
   const auto = useMemo(() => {
     const parents = new Map<string, string>();
     for (const link of allLinks) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
     const linkedIds = new Set<string>();
     for (const link of allLinks) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
-    return layoutTree(projectSessions.map((session) => ({ id: session.id, parentId: parents.get(session.id) ?? null, linked: linkedIds.has(session.id) || !!session.parentSessionId })));
-  }, [allLinks, projectSessions]);
+    return layoutFloors(projectSessions.map((session) => ({ id: session.id, floorId: floorOf.get(session.id) ?? floorFallback, parentId: parents.get(session.id) ?? null, linked: linkedIds.has(session.id) || !!session.parentSessionId })), floorOrder).positions;
+  }, [allLinks, projectSessions, floorOf, floorOrder, floorFallback]);
 
-  const buildNodes = useCallback((useSaved: boolean): AgentNode[] => projectSessions.map((session) => {
-    const size = (useSaved ? savedRef.current.sizes?.[session.id] : undefined) ?? DEFAULT_NODE_SIZE;
-    return {
-      id: session.id,
-      type: "agent",
-      position: (useSaved ? savedRef.current.positions?.[session.id] : undefined) ?? auto[session.id] ?? { x: 0, y: 0 },
-      width: size.width,
-      height: size.height,
-      data: { session },
-    };
-  }), [projectSessions, auto]);
+  const buildNodes = useCallback((useSaved: boolean): AgentNode[] => {
+    const saved = useSaved ? savedRef.current.positions : undefined;
+    const rects = new Map<string, { x: number; y: number; bottom: number }[]>();
+    const size = (id: string) => (useSaved ? savedRef.current.sizes?.[id] : undefined) ?? DEFAULT_NODE_SIZE;
+    for (const session of projectSessions) {
+      const at = saved?.[session.id];
+      if (!at) continue;
+      const floor = floorOf.get(session.id) ?? floorFallback;
+      rects.set(floor, [...(rects.get(floor) ?? []), { x: at.x, y: at.y, bottom: at.y + size(session.id).height }]);
+    }
+    return projectSessions.map((session) => {
+      const { width, height } = size(session.id);
+      let position = saved?.[session.id];
+      if (!position) {
+        // New agent: land inside its own floor, under that floor's existing agents, rather than at the global auto slot.
+        const floor = floorOf.get(session.id) ?? floorFallback;
+        const peers = rects.get(floor);
+        if (useSaved && peers?.length) {
+          position = { x: Math.min(...peers.map((peer) => peer.x)), y: Math.max(...peers.map((peer) => peer.bottom)) + 80 };
+          rects.set(floor, [...peers, { x: position.x, y: position.y, bottom: position.y + height }]);
+        } else position = auto[session.id] ?? { x: 0, y: 0 };
+      }
+      return { id: session.id, type: "agent", position, width, height, data: { session } } as AgentNode;
+    });
+  }, [projectSessions, auto, floorOf, floorFallback]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<AgentNode>(buildNodes(true));
   const nodesRef = useRef(nodes);
@@ -403,7 +443,7 @@ function AgentCanvas() {
     const frame = requestAnimationFrame(() => {
       const saved = savedViewportRef.current;
       if (saved) void setViewport(saved);
-      else void fitView({ duration: 200 });
+      else void fitView({ duration: 200, ...fitOptsRef.current });
     });
     return () => cancelAnimationFrame(frame);
   }, [activeProjectId, fitView, setViewport]);
@@ -587,17 +627,17 @@ function AgentCanvas() {
     for (const link of linksRef.current) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
     const linkedIds = new Set<string>();
     for (const link of linksRef.current) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
-    const layout = layoutTree(current.map((node) => ({ id: node.id, parentId: parents.get(node.id) ?? null, linked: linkedIds.has(node.id) || !!node.data.session.parentSessionId })), { width: widest, height: tallest });
+    const layout = layoutFloors(current.map((node) => ({ id: node.id, floorId: floorOf.get(node.id) ?? floorFallback, parentId: parents.get(node.id) ?? null, linked: linkedIds.has(node.id) || !!node.data.session.parentSessionId })), floorOrder, { width: widest, height: tallest }).positions;
     savedRef.current = { ...savedRef.current, positions: { ...savedRef.current.positions, ...layout } };
     setNodes((items) => items.map((node) => layout[node.id] ? { ...node, position: layout[node.id] } : node));
     persistMany(layout);
-    requestAnimationFrame(() => void fitView({ duration: 200 }));
-  }, [setNodes, persistMany, fitView]);
+    requestAnimationFrame(() => void fitView({ duration: 200, ...fitOptsRef.current }));
+  }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback]);
 
   const openNewAgent = useCallback(() => {
-    selectProject(activeProjectId, project?.workspaces[0]?.id);
+    selectProject(activeProjectId, groundWorkspaceId ?? project?.workspaces[0]?.id);
     setNewAgentOpen(true);
-  }, [selectProject, activeProjectId, project, setNewAgentOpen]);
+  }, [selectProject, activeProjectId, project, groundWorkspaceId, setNewAgentOpen]);
 
   const resize = useCallback((id: string, preset: SizePreset) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -639,6 +679,22 @@ function AgentCanvas() {
   // ---- notes, secrets, deleting agents ----
   const [kcDeleteAsk, setKcDeleteAsk] = useState<{ id: string; name: string } | null>(null);
   const [deleteAsk, setDeleteAsk] = useState<SessionSummary | null>(null);
+  const floors = useMemo<FloorInfo[]>(() => {
+    const list: FloorInfo[] = orderedWorkspaces.map((workspace) => ({
+      id: workspace.id,
+      label: workspace.branch || workspace.name || "Main",
+      nodeIds: projectSessions.filter((session) => floorOf.get(session.id) === workspace.id).map((session) => session.id),
+    }));
+    list.push({ id: UNASSIGNED_FLOOR, label: "Unassigned", nodeIds: projectSessions.filter((session) => floorOf.get(session.id) === UNASSIGNED_FLOOR).map((session) => session.id) });
+    const used = list.filter((floor) => floor.nodeIds.length > 0);
+    return used.length > 1 ? used : [];
+  }, [orderedWorkspaces, projectSessions, floorOf]);
+  const fitViewOptions = useMemo<FitViewOptions>(
+    () => floors.length > 1 ? { padding: { top: "150px", right: "70px", bottom: "70px", left: "70px" } } : {},
+    [floors.length],
+  );
+  fitOptsRef.current = fitViewOptions;
+
   const allNodes = useMemo(() => [...notes.nodes, ...keychains.nodes, ...nodes] as Node[], [notes.nodes, keychains.nodes, nodes]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
@@ -709,7 +765,7 @@ function AgentCanvas() {
     },
     toggleLinkMode: () => setLinkMode((mode) => mode ? null : { from: null }),
     relayout,
-    fit: () => void fitView({ duration: 200 }),
+    fit: () => void fitView({ duration: 200, ...fitOptsRef.current }),
     selectAll: () => selectNodes("all"),
     toggleMiniMap: () => setShowMiniMap((value) => !value),
     toggleActivity: () => setShowActivity((value) => !value),
@@ -842,7 +898,7 @@ function AgentCanvas() {
     if (event.key.toLowerCase() === "l") setLinkMode((mode) => mode ? null : { from: null });
     else if (event.key.toLowerCase() === "n") addNoteCenter();
     else if (event.key.toLowerCase() === "k") addKeychainCenter();
-    else if (event.key.toLowerCase() === "f") void fitView({ padding: 0.2, duration: 300 });
+    else if (event.key.toLowerCase() === "f") void fitView({ padding: 0.2, duration: 300, ...fitOptsRef.current });
   }
 
   // After a delete the focused element is removed and focus falls back to <body>, where the wrapper's
@@ -931,11 +987,13 @@ function AgentCanvas() {
               panOnDrag={tool === "select" ? [1] : true}
               onlyRenderVisibleElements
               fitView={!savedViewport}
+              fitViewOptions={fitViewOptions}
               minZoom={0.1}
               colorMode={canvasTheme}
               proOptions={{ hideAttribution: true }}
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
+              <FloorBands floors={floors} />
               <CanvasControls />
               {showMiniMap && (
                 <>
@@ -944,7 +1002,7 @@ function AgentCanvas() {
                     zoomable
                     position="bottom-right"
                     style={{ width: 140, height: 90 }}
-                    className="m-2! overflow-hidden rounded-md! border border-border bg-card/80! shadow-sm backdrop-blur-sm"
+                    className="m-2! overflow-hidden rounded-md! border border-border bg-card/95! shadow-sm"
                     nodeColor={minimapColor}
                     nodeStrokeColor={(node) => (recruits.has(node.id) ? "var(--primary-text)" : "transparent")}
                     nodeStrokeWidth={3}
@@ -955,7 +1013,7 @@ function AgentCanvas() {
                     aria-label="Canvas overview"
                   />
                   <Panel position="bottom-right" className="m-2! mb-[98px]! mr-2!">
-                    <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full border border-border bg-card/80 backdrop-blur-sm" aria-label="Hide mini map" title="Hide mini map" onClick={() => setShowMiniMap(false)}><IconX size={10} /></Button>
+                    <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full border border-border bg-card/80" aria-label="Hide mini map" title="Hide mini map" onClick={() => setShowMiniMap(false)}><IconX size={10} /></Button>
                   </Panel>
                 </>
               )}
@@ -1001,7 +1059,7 @@ function AgentCanvas() {
                       <div role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">
                         <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet"); }, <IconNotes size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200 }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200, ...fitOptsRef.current }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Mini map">{toolButton(showMiniMap, "Mini map", () => setShowMiniMap((value) => !value), <IconMap size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Activity">{toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}</ShortcutTip>
                       </div>
@@ -1011,7 +1069,7 @@ function AgentCanvas() {
               </Panel>
 
               {linkMode && (
-                <Panel position="top-center" className="canvas-link-mode-panel mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm backdrop-blur-sm">
+                <Panel position="top-center" className="canvas-link-mode-panel mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm">
                   <IconLink size={12} className="text-violet-500" />
                   <span className="max-w-72 truncate">{linkMode.from ? `Link ${titleOf(linkMode.from)} to…` : "Pick the agent to link from"}</span>
                   <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label="Cancel link mode (Esc)" title="Cancel (Esc)" onClick={() => setLinkMode(null)}><IconX size={11} /></Button>

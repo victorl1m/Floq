@@ -1,4 +1,5 @@
 """Frame-burst probe: click each left-sidebar item, sample screenshots of vertical bands around sidebar/frame edges, report transient column artifacts."""
+import os
 import importlib.util, json, sys, io, time
 from pathlib import Path
 import numpy as np
@@ -15,13 +16,13 @@ def run(p,theme,mat,w,h,dsf,rep):
  b=p.chromium.launch(headless=True); ctx=b.new_context(viewport={"width":w,"height":h},device_scale_factor=dsf)
  ctx.add_init_script("localStorage.setItem('theme','"+theme+"');localStorage.setItem('floq.material','"+mat+"');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")
  page=ctx.new_page(); fx=CANVAS.CanvasFixture(); page.route("**/*",fx.handle)
- page.goto("http://127.0.0.1:1420/",wait_until="domcontentloaded",timeout=15000); page.wait_for_selector('[data-slot="sidebar-inner"]',timeout=15000); page.wait_for_timeout(800)
+ page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1420/"),wait_until="domcontentloaded",timeout=15000); page.wait_for_selector('[data-slot="sidebar-inner"]',timeout=15000); page.wait_for_timeout(800)
 
  SEL='[data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"], [data-slot="sidebar-inner"] [data-slot="sidebar-menu-sub-button"], [data-slot="sidebar-inner"] [role="button"], [data-slot="sidebar-inner"] a'
  def labels():
   return page.evaluate("(sel)=>[...document.querySelectorAll(sel)].map(e=>(e.getAttribute('aria-label')||e.innerText||'').trim().split(String.fromCharCode(10))[0])",SEL)
  def boot():
-  page.goto("http://127.0.0.1:1420/",wait_until="domcontentloaded",timeout=15000); page.wait_for_selector('[data-slot="sidebar-inner"]',timeout=20000); page.wait_for_timeout(900)
+  page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1420/"),wait_until="domcontentloaded",timeout=15000); page.wait_for_selector('[data-slot="sidebar-inner"]',timeout=20000); page.wait_for_timeout(900)
  boot(); names=labels()
  skip=("actions for","toggle","new folder","refresh","add to projects","hide navigation","show navigation")
  idxs=[i for i,n in enumerate(names) if n and not n.lower().startswith(skip)]

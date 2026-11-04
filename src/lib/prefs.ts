@@ -74,6 +74,8 @@ export type PerformanceMode = "automatic" | "balanced" | "low-memory" | "custom"
 export interface PerformancePrefs {
     mode: PerformanceMode;
     scrollback: number;
+    /** Hidden terminal tabs of the current project kept mounted; the rest reload when shown. */
+    warmTerminals: number;
     reduceMotion: boolean;
     smoothTerminalScrolling: boolean;
     reduceBackgroundRefresh: boolean;
@@ -83,16 +85,23 @@ const PERFORMANCE_KEY = "floq.performance";
 const PERFORMANCE_EVENT = "floq:performance-prefs";
 const PERFORMANCE_DEFAULTS: PerformancePrefs = {
     mode: "automatic",
-    scrollback: 10_000,
+    scrollback: 3_000,
+    warmTerminals: 0,
     reduceMotion: false,
     smoothTerminalScrolling: false,
     reduceBackgroundRefresh: false,
 };
+const MAX_WARM_TERMINALS = 6;
 const MIN_SCROLLBACK = 1_000;
 const MAX_SCROLLBACK = 20_000;
 
 let performanceRaw: string | null | undefined;
 let performanceCache: PerformancePrefs = PERFORMANCE_DEFAULTS;
+
+function boundedWarmTerminals(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return PERFORMANCE_DEFAULTS.warmTerminals;
+    return Math.min(MAX_WARM_TERMINALS, Math.max(0, Math.round(value)));
+}
 
 function boundedScrollback(value: unknown): number {
     if (typeof value !== "number" || !Number.isFinite(value)) return PERFORMANCE_DEFAULTS.scrollback;
@@ -112,6 +121,7 @@ export function loadPerformancePrefs(): PerformancePrefs {
         performanceCache = {
             mode,
             scrollback: boundedScrollback(parsed.scrollback),
+            warmTerminals: boundedWarmTerminals(parsed.warmTerminals),
             reduceMotion: parsed.reduceMotion === true,
             smoothTerminalScrolling: parsed.smoothTerminalScrolling === true,
             reduceBackgroundRefresh: parsed.reduceBackgroundRefresh === true,
@@ -125,7 +135,7 @@ export function loadPerformancePrefs(): PerformancePrefs {
 /** Device RAM is intentionally a coarse hint: many desktop WebViews do not expose it. */
 export function recommendedScrollback(): number {
     const memory = typeof navigator !== "undefined" ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined;
-    return typeof memory === "number" && memory > 0 && memory < 8 ? 2_500 : 10_000;
+    return typeof memory === "number" && memory > 0 && memory < 8 ? 2_500 : 3_000;
 }
 
 export function effectiveScrollback(prefs = loadPerformancePrefs()): number {
@@ -155,6 +165,7 @@ export function usePerformancePrefs(): [PerformancePrefs, (patch: Partial<Perfor
             ...current,
             ...patch,
             scrollback: boundedScrollback(patch.scrollback ?? current.scrollback),
+            warmTerminals: boundedWarmTerminals(patch.warmTerminals ?? current.warmTerminals),
         };
         write(PERFORMANCE_KEY, JSON.stringify(next));
         window.dispatchEvent(new Event(PERFORMANCE_EVENT));

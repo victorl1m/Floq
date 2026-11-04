@@ -26,6 +26,8 @@ import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
 import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } from "./claudeSettings.js";
 import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
+import { countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
+import { pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
@@ -41,6 +43,7 @@ import { PROVIDER_IDS, type CreateSessionInput, type ProviderId, type RuntimePro
 import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[\w.@:/~+-]+$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REAP_INTERVAL_MS = 15_000;
 /** If a resumed agent dies this fast with an error, there was nothing to resume: start fresh. */
 const RESUME_FALLBACK_MS = 8_000;
@@ -602,7 +605,7 @@ export class SessionManager {
       if (row.available === false) continue;
       const projectId = String(row.project_id);
       const list = byProject.get(projectId) ?? [];
-      list.push({ id: String(row.id), cwd: String(row.cwd), name: String(row.name), branch: row.branch ? String(row.branch) : null, isWorktree: Boolean(row.is_worktree), sessionIds: (row.session_ids as string[]).map(String) });
+      list.push({ id: String(row.id), cwd: String(row.cwd), name: String(row.name), branch: row.branch ? String(row.branch) : null, isWorktree: Boolean(row.is_worktree), navExpanded: row.nav_expanded !== false, sessionIds: (row.session_ids as string[]).map(String) });
       byProject.set(projectId, list);
     }
     return projects.rows.map((row: Record<string, unknown>) => ({
@@ -615,6 +618,25 @@ export class SessionManager {
   async project(userId: string, id: string): Promise<RuntimeProject | null> {
     const projects = await this.listProjects(userId);
     return projects.find((project) => project.id === id) ?? null;
+  }
+
+  /** Sidebar collapse state of one workspace, saved with the workspace so it follows the user across clients. */
+  async setWorkspaceNavExpanded(userId: string, projectId: string, workspaceId: string, expanded: unknown): Promise<{ id: string; navExpanded: boolean }> {
+    if (typeof expanded !== "boolean") throw badRequest("navExpanded must be a boolean", "invalid_workspace");
+    if (!UUID_PATTERN.test(projectId) || !UUID_PATTERN.test(workspaceId)) throw notFound("Workspace not found");
+    const result = await this.pool.query("UPDATE floq_project_workspaces SET nav_expanded=$4 WHERE id=$1 AND project_id=$2 AND user_id=$3 RETURNING id", [workspaceId, projectId, userId, expanded]);
+    if (!result.rows[0]) throw notFound("Workspace not found");
+    return { id: workspaceId, navExpanded: expanded };
+  }
+
+  /** Collapse or expand every workspace of a project in one write. */
+  async setProjectNavExpanded(userId: string, projectId: string, expanded: unknown): Promise<{ navExpanded: boolean }> {
+    if (typeof expanded !== "boolean") throw badRequest("navExpanded must be a boolean", "invalid_workspace");
+    if (!UUID_PATTERN.test(projectId)) throw notFound("Project not found");
+    const owned = await this.pool.query("SELECT 1 FROM floq_projects WHERE id=$1 AND user_id=$2", [projectId, userId]);
+    if (!owned.rows[0]) throw notFound("Project not found");
+    await this.pool.query("UPDATE floq_project_workspaces SET nav_expanded=$3 WHERE project_id=$1 AND user_id=$2", [projectId, userId, expanded]);
+    return { navExpanded: expanded };
   }
 
   async updateProject(userId: string, id: string, patch: { displayName?: unknown; imageUrl?: unknown }): Promise<RuntimeProject> {
@@ -634,6 +656,131 @@ export class SessionManager {
     const result = await this.pool.query(`UPDATE floq_projects SET ${fields.join(",")} WHERE id=$1 AND user_id=$2 RETURNING id`, values);
     if (!result.rows[0]) throw notFound("Project not found");
     return (await this.project(userId, id))!;
+  }
+
+  /**
+   * Read-only: what deleting this project would remove (sessions, canvas data, Floq-managed checkouts) and which
+   * checkouts have uncommitted work. Mirrors exactly what `deleteProject` acts on.
+   */
+  async projectDeleteStatus(userId: string, projectId: string): Promise<ProjectDeleteStatus> {
+    return this.withShardActivity(userId, async () => {
+      const handle = await this.shards.wake(userId);
+      this.assertLifecycleOpen();
+      return this.projectDeleteSnapshot(userId, projectId, handle);
+    });
+  }
+
+  private async projectDeleteSnapshot(userId: string, projectId: string, handle: ShardHandle): Promise<ProjectDeleteStatus> {
+    if (!UUID_PATTERN.test(projectId)) throw notFound("Project not found");
+    const project = (await this.pool.query("SELECT id,name,display_name FROM floq_projects WHERE id=$1 AND user_id=$2", [projectId, userId])).rows[0] as Record<string, unknown> | undefined;
+    if (!project) throw notFound("Project not found");
+    const workspaces = (await this.pool.query("SELECT id,cwd,is_worktree FROM floq_project_workspaces WHERE project_id=$1 AND user_id=$2 ORDER BY created_at", [projectId, userId])).rows as Array<Record<string, unknown>>;
+    const sessions = (await this.pool.query(
+      `SELECT id,state FROM agent_sessions WHERE user_id=$1 AND (project_id=$2 OR workspace_id IN (SELECT id FROM floq_project_workspaces WHERE project_id=$2))`, [userId, projectId],
+    )).rows as Array<Record<string, unknown>>;
+    const count = async (table: "canvas_notes" | "keychains") => Number((await this.pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE user_id=$1 AND project_id=$2`, [userId, projectId])).rows[0]?.n ?? 0);
+    const plan = planCheckouts(projectId, workspaces.map((row) => ({ id: String(row.id), cwd: String(row.cwd), isWorktree: row.is_worktree === true })));
+    const checkouts: CheckoutReport[] = [];
+    for (const item of plan) {
+      const report: CheckoutReport = { workspaceId: item.workspaceId, path: item.cwd, kind: item.kind, branch: null, managed: item.managed, state: item.managed ? "ok" : "unmanaged", uncommittedFiles: null };
+      if (item.managed) {
+        let present = true;
+        try { lstatSync(join(handle.mountPath, item.cwd)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") present = false; }
+        if (!present) report.state = "missing";
+        else {
+          const head = safeWorkspaceBranch(handle.mountPath, item.cwd);
+          if (!head.ok) report.state = "unreadable";
+          else {
+            report.branch = head.branch;
+            try {
+              const result = await this.runWorkspaceGit(handle, item.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
+              if (result.exitCode === 0) report.uncommittedFiles = countPorcelain(result.stdout);
+              else report.state = "unreadable";
+            } catch { report.state = "unreadable"; }
+          }
+        }
+      }
+      checkouts.push(report);
+    }
+    return {
+      project: { id: projectId, name: String(project.display_name ?? "").trim() || String(project.name) },
+      sessions: { total: sessions.length, live: sessions.filter((row) => row.state === "running" || row.state === "starting" || this.live.get(String(row.id))?.isAlive).length },
+      notes: await count("canvas_notes"),
+      keychains: await count("keychains"),
+      checkouts,
+      worktrees: checkouts.filter((item) => item.kind === "worktree" && item.state !== "missing").length,
+      dirtyWorktrees: checkouts.filter((item) => item.kind === "worktree" && (item.uncommittedFiles ?? 0) > 0).length,
+      dirtyMainCheckout: checkouts.some((item) => item.kind === "project" && (item.uncommittedFiles ?? 0) > 0),
+      unmanagedCheckouts: checkouts.filter((item) => !item.managed).length,
+      unreadableCheckouts: checkouts.filter((item) => item.state === "unreadable").length,
+    };
+  }
+
+  /**
+   * Irreversibly delete a project: stop and remove its sessions, delete its canvas data in one transaction, then remove the
+   * Floq-managed checkouts from the user's volume. Never touches the remote repository or any path outside
+   * `.floq/projects/<id>` and `.floq/worktrees/<uuid>` (see removeManagedCheckout).
+   */
+  async deleteProject(userId: string, projectId: string): Promise<ProjectDeleteResult> {
+    return this.withShardActivity(userId, () => this.withProjectBranchLock(projectId, async () => {
+      if (!UUID_PATTERN.test(projectId)) throw notFound("Project not found");
+      const handle = await this.shards.wake(userId);
+      this.assertLifecycleOpen();
+      const owned = await this.pool.query("SELECT id FROM floq_projects WHERE id=$1 AND user_id=$2", [projectId, userId]);
+      if (!owned.rows[0]) throw notFound("Project not found");
+      const workspaces = (await this.pool.query("SELECT id,cwd,is_worktree FROM floq_project_workspaces WHERE project_id=$1 AND user_id=$2 ORDER BY created_at", [projectId, userId])).rows as Array<Record<string, unknown>>;
+      const plan = planCheckouts(projectId, workspaces.map((row) => ({ id: String(row.id), cwd: String(row.cwd), isWorktree: row.is_worktree === true })));
+      const sessionIds = (await this.pool.query(
+        `SELECT id FROM agent_sessions WHERE user_id=$1 AND (project_id=$2 OR workspace_id IN (SELECT id FROM floq_project_workspaces WHERE project_id=$2))`, [userId, projectId],
+      )).rows.map((row: Record<string, unknown>) => String(row.id));
+
+      // 1. Stop live agents/terminals first so nothing writes into the checkouts or the rows while they are removed.
+      for (const id of sessionIds) {
+        try { rmSync(this.secretDir(handle, id), { recursive: true, force: true }); } catch { /* best effort */ }
+        const session = this.live.get(id);
+        if (session) {
+          this.intentionalSleep.add(id);
+          this.live.delete(id);
+          this.vault.revokeSession(id);
+          session.dispose();
+        }
+      }
+
+      // 2. All database state in one transaction; sessions cascade to links, inbox, wired memory and note/keychain links.
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM agent_approvals WHERE user_id=$1 AND (requester_project_id=$2 OR target_project_id=$2)", [userId, projectId]);
+        await client.query("DELETE FROM agent_links WHERE project_id=$1", [projectId]);
+        await client.query("DELETE FROM canvas_notes WHERE user_id=$1 AND project_id=$2", [userId, projectId]);
+        await client.query("DELETE FROM keychains WHERE user_id=$1 AND project_id=$2", [userId, projectId]);
+        await client.query(`DELETE FROM agent_sessions WHERE user_id=$1 AND (project_id=$2 OR workspace_id IN (SELECT id FROM floq_project_workspaces WHERE project_id=$2))`, [userId, projectId]);
+        await pruneProjectFromFolders(client, userId, projectId);
+        const removed = await client.query("DELETE FROM floq_projects WHERE id=$1 AND user_id=$2 RETURNING id", [projectId, userId]);
+        if (!removed.rows[0]) throw notFound("Project not found");
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally { client.release(); }
+
+      // 3. Files. The project is already gone, so failures are reported (and logged), not thrown.
+      const leftovers: ProjectDeleteResult["leftovers"] = [];
+      let removedCheckouts = 0;
+      const ordered = [...plan.filter((item) => item.kind === "worktree"), ...plan.filter((item) => item.kind === "project")];
+      for (const item of ordered) {
+        if (!item.managed) { leftovers.push({ path: item.cwd, reason: "Not created by Floq; left untouched." }); continue; }
+        try {
+          const outcome = removeManagedCheckout(handle.mountPath, item.cwd, item.kind);
+          if (outcome !== "missing") removedCheckouts += 1;
+        } catch (error) {
+          log.error("project.delete_files_failed", { userId, projectId, workspaceId: item.workspaceId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+          leftovers.push({ path: item.cwd, reason: error instanceof Error ? error.message.slice(0, 200) : "Could not remove this directory." });
+        }
+      }
+      log.info("project.deleted", { userId, projectId, sessions: sessionIds.length, checkouts: removedCheckouts, leftovers: leftovers.length });
+      return { deleted: true as const, sessionsDeleted: sessionIds.length, removedCheckouts, leftovers };
+    }));
   }
 
   async projectBranches(userId: string, projectId: string, workspaceId: string): Promise<{ currentBranch: string | null; branches: string[] }> {

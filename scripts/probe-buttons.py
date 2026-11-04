@@ -1,4 +1,5 @@
 """Button migration probe: login/home/settings in light+dark with hover/focus states. Needs preview on :1421."""
+import os
 import importlib.util, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -17,7 +18,7 @@ with sync_playwright() as p:
             pg = ctx.new_page(); errs = []
             pg.on("pageerror", lambda e: errs.append(str(e)))
             pg.route("**/*", F.Fixture().handle)
-            pg.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded"); pg.wait_for_timeout(2500)
+            pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded"); pg.wait_for_timeout(2500)
             if scene == "settings":
                 try: pg.get_by_role("button", name="Settings").first.click(timeout=3000); pg.wait_for_timeout(800)
                 except Exception as e: errs.append("settings-open: " + str(e)[:80])

@@ -48,6 +48,7 @@ export interface ProjectWorkspace {
   name: string;
   branch: string | null;
   isWorktree: boolean;
+  navExpanded: boolean;
   sessionIds: string[];
 }
 

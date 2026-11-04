@@ -1,4 +1,5 @@
 """Tab-walk focus-visible audit: records ring/outline + radius per focused control. Needs vite on :1421."""
+import os
 import importlib.util, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -23,7 +24,7 @@ with sync_playwright() as p:
             elif path == "/v1/agent-roles": route.fulfill(status=200, content_type="application/json", headers=hd, body=json.dumps(ROLES))
             else: fx.handle(route)
         pg.route("**/*", h)
-        pg.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
+        pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
         pg.get_by_role("button", name="New agent").first.click(); pg.wait_for_timeout(900)
         for i in range(9):
             pg.keyboard.press("Tab"); pg.wait_for_timeout(250)

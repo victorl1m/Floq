@@ -1,4 +1,5 @@
 """Exercise real Sonner toasts from synthetic port events and verify viewport/layout behavior."""
+import os
 import importlib.util, json, re
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -7,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 SPEC=importlib.util.spec_from_file_location("verify_canvas",ROOT/"scripts"/"verify-final-canvas.py")
 CANVAS=importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(CANVAS)
 OUT=ROOT/"docs"/"redesign"; OUT.mkdir(parents=True,exist_ok=True)
-URL="http://127.0.0.1:1421/"
+URL=os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/")
 
 class ToastFixture(CANVAS.CanvasFixture):
  def handle(self,route):

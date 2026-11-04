@@ -20,6 +20,10 @@ import type {
   RuntimeProject,
   WorktreeDeleteResult,
   WorktreeDeleteStatus,
+  ProjectDeleteResult,
+  ProjectDeleteStatus,
+  ProjectFoldersDoc,
+  ProjectFoldersState,
   RuntimeSkill,
   McpProviderChoice,
   McpNewSecret,
@@ -38,6 +42,9 @@ import type {
   SubagentPolicy,
   UserSettings,
   Organization,
+  OrganizationInvitation,
+  IssuedOrganizationInvitation,
+  IncomingOrganizationInvitation,
   TaskBoard,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
@@ -189,16 +196,64 @@ export class RuntimeClient {
     return (await this.call<{ organizations: Organization[] }>("GET", "/v1/organizations")).organizations;
   }
 
-  async createOrganization(name: string): Promise<Organization> {
-    return (await this.call<{ organization: Organization }>("POST", "/v1/organizations", { name })).organization;
+  async createOrganization(name: string, slug?: string): Promise<Organization> {
+    return (await this.call<{ organization: Organization }>("POST", "/v1/organizations", { name, ...(slug ? { slug } : {}) })).organization;
+  }
+
+  async organizationSlugAvailable(slug: string): Promise<{ slug: string; available: boolean }> {
+    return this.call("GET", `/v1/organization-slugs/${encodeURIComponent(slug)}`);
+  }
+
+  async deleteOrganization(organizationId: string, confirm: string): Promise<void> {
+    await this.call("DELETE", `/v1/organizations/${encodeURIComponent(organizationId)}`, { confirm });
+  }
+
+  async leaveOrganization(organizationId: string): Promise<void> {
+    await this.call("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/leave`, {});
+  }
+
+  async transferOrganization(organizationId: string, userId: string): Promise<void> {
+    await this.call("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/transfer`, { userId });
+  }
+
+  async setOrganizationMemberRole(organizationId: string, userId: string, role: "admin" | "member"): Promise<void> {
+    await this.call("PATCH", `/v1/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`, { role });
+  }
+
+  async removeOrganizationMember(organizationId: string, userId: string): Promise<void> {
+    await this.call("DELETE", `/v1/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`);
+  }
+
+  async organizationInvitations(organizationId: string): Promise<OrganizationInvitation[]> {
+    return (await this.call<{ invitations: OrganizationInvitation[] }>("GET", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations`)).invitations;
+  }
+
+  async resendOrganizationInvitation(organizationId: string, invitationId: string): Promise<IssuedOrganizationInvitation> {
+    return (await this.call<{ invitation: IssuedOrganizationInvitation }>("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations/${encodeURIComponent(invitationId)}/resend`, {})).invitation;
+  }
+
+  async cancelOrganizationInvitation(organizationId: string, invitationId: string): Promise<void> {
+    await this.call("DELETE", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations/${encodeURIComponent(invitationId)}`);
+  }
+
+  async incomingOrganizationInvitations(): Promise<IncomingOrganizationInvitation[]> {
+    return (await this.call<{ invitations: IncomingOrganizationInvitation[] }>("GET", "/v1/me/organization-invitations")).invitations;
+  }
+
+  async acceptIncomingOrganizationInvitation(invitationId: string): Promise<{ organizationId: string }> {
+    return this.call("POST", `/v1/organization-invitations/${encodeURIComponent(invitationId)}/accept`, {});
+  }
+
+  async declineIncomingOrganizationInvitation(invitationId: string): Promise<void> {
+    await this.call("POST", `/v1/organization-invitations/${encodeURIComponent(invitationId)}/decline`, {});
   }
 
   async renameOrganization(organizationId: string, name: string): Promise<void> {
     await this.call("PATCH", `/v1/organizations/${encodeURIComponent(organizationId)}`, { name });
   }
 
-  async createOrganizationInvitation(organizationId: string, email: string): Promise<{ token: string; expiresAt: string }> {
-    return (await this.call<{ invitation: { token: string; expiresAt: string } }>("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations`, { email })).invitation;
+  async createOrganizationInvitation(organizationId: string, email: string, role: "admin" | "member" = "member"): Promise<IssuedOrganizationInvitation> {
+    return (await this.call<{ invitation: IssuedOrganizationInvitation }>("POST", `/v1/organizations/${encodeURIComponent(organizationId)}/invitations`, { email, role })).invitation;
   }
 
   async acceptOrganizationInvitation(token: string): Promise<{ organizationId: string }> {
@@ -303,6 +358,32 @@ export class RuntimeClient {
 
   async updateProject(id: string, patch: { displayName?: string | null; imageUrl?: string | null }): Promise<RuntimeProject> {
     return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, patch)).project;
+  }
+
+  async setWorkspaceNavExpanded(projectId: string, workspaceId: string, navExpanded: boolean): Promise<void> {
+    await this.call("PATCH", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { navExpanded });
+  }
+
+  async setProjectNavExpanded(projectId: string, navExpanded: boolean): Promise<void> {
+    await this.call("PATCH", `/v1/projects/${encodeURIComponent(projectId)}/workspaces`, { navExpanded });
+  }
+
+  projectDeleteStatus(projectId: string): Promise<ProjectDeleteStatus> {
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/delete-status`, undefined, { timeoutMs: 2 * 60_000 });
+  }
+
+  /** Irreversible: removes the project, its sessions and canvas data, and its Floq-managed checkouts. */
+  deleteProject(projectId: string): Promise<ProjectDeleteResult> {
+    return this.call("DELETE", `/v1/projects/${encodeURIComponent(projectId)}`, undefined, { timeoutMs: 5 * 60_000 });
+  }
+
+  projectFolders(): Promise<ProjectFoldersState> {
+    return this.call("GET", "/v1/project-folders");
+  }
+
+  /** Version-checked replace. A 409 `version_conflict` means another device saved first. `keepalive` survives page unload. */
+  async saveProjectFolders(version: number, doc: ProjectFoldersDoc, options: { keepalive?: boolean } = {}): Promise<ProjectFoldersState> {
+    return (await this.request<ProjectFoldersState>("PUT", "/v1/project-folders", { version, doc }, { timeoutMs: 20_000, keepalive: options.keepalive })).data;
   }
 
   worktreeDeleteStatus(projectId: string, workspaceId: string): Promise<WorktreeDeleteStatus> {

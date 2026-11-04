@@ -1,5 +1,6 @@
 """Note title probe on the synthetic fixture runtime (dev server on :1420): context menu has no colour items,
 double-click/F2 title editing, Enter/blur save, Escape cancel, empty clears, typing never drags the node."""
+import os
 import importlib.util, json, sys, re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -9,7 +10,7 @@ def load(n,f):
  s=importlib.util.spec_from_file_location(n,ROOT/"scripts"/f); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
 FIX=load("verify_ui","verify-ui.py"); CANVAS=load("vfc","verify-final-canvas.py")
 OUT=ROOT/"docs"/"redesign"/"note-title"; OUT.mkdir(parents=True,exist_ok=True)
-URL="http://127.0.0.1:1420/"
+URL=os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1420/")
 def note(i,**kw):
  return {"id":f"n{i}","projectId":"project-agi","text":"hello","color":"yellow","x":60+i*10,"y":420,"w":240,"h":160,"linkedSessionIds":[],"title":None,"agentNoteName":None,"placed":True,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",**kw}
 class Fx(CANVAS.CanvasFixture):

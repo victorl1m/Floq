@@ -8,13 +8,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { toast } from "sonner";
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
 import { runViewTransition } from "@/lib/view-transition";
 import { useUndoDelete } from "@/lib/use-undo-delete";
 import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
-import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization } from "./types";
+import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization, ProjectDeleteResult } from "./types";
 
 const STORAGE_KEY = "floq.connection";
 
@@ -96,7 +97,13 @@ interface RuntimeContextValue {
   activeWorkspaceCwd: string | null;
   refreshProjects: (force?: boolean) => Promise<void>;
   createProject: (input: { gitUrl: string; name?: string }) => Promise<RuntimeProject>;
+  /** Persist a workspace's sidebar expanded/collapsed state on the server (optimistic). */
+  setWorkspaceNavExpanded: (projectId: string, workspaceId: string, expanded: boolean) => Promise<void>;
+  /** Collapse or expand every workspace of a project (one request). */
+  setProjectNavExpanded: (projectId: string, expanded: boolean) => Promise<void>;
   updateProject: (id: string, patch: { displayName?: string | null; imageUrl?: string | null }) => Promise<RuntimeProject>;
+  /** Irreversibly delete a project (server removes its sessions, canvas data and Floq-managed checkouts) and drop it from every local list, tab, selection and preference. */
+  deleteProject: (id: string) => Promise<ProjectDeleteResult>;
   selectProject: (id: string | null, workspaceId?: string | null) => void;
   /** Selected agent session (shown in the "session" view). */
   selectedId: string | null;
@@ -423,6 +430,70 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setProjects((list) => list.map((item) => item.id === id ? project : item));
     return project;
   }, [client]);
+
+  /** Optimistic workspace collapse state. PATCHes are serialised per workspace; a failure (not a stale reply) reverts and toasts. */
+  const navQueue = useRef(new Map<string, Promise<void>>());
+  const navLatest = useRef(new Map<string, number>());
+  const applyNav = useCallback((projectId: string, workspaceId: string | null, value: boolean) => {
+    mutation.current++;
+    projectsRefresh.current.markMutation();
+    setProjects((list) => list.map((project) => project.id !== projectId ? project : { ...project, workspaces: project.workspaces.map((workspace) => workspaceId === null || workspace.id === workspaceId ? { ...workspace, navExpanded: value } : workspace) }));
+  }, []);
+  const setWorkspaceNavExpanded = useCallback(async (projectId: string, workspaceId: string, expanded: boolean) => {
+    if (!client) return;
+    const key = `${projectId}:${workspaceId}`;
+    const previous = projects.find((project) => project.id === projectId)?.workspaces.find((workspace) => workspace.id === workspaceId)?.navExpanded ?? true;
+    const seq = (navLatest.current.get(key) ?? 0) + 1;
+    navLatest.current.set(key, seq);
+    applyNav(projectId, workspaceId, expanded);
+    const run = (navQueue.current.get(key) ?? Promise.resolve()).then(async () => {
+      try { await client.setWorkspaceNavExpanded(projectId, workspaceId, expanded); }
+      catch (error) {
+        if (navLatest.current.get(key) !== seq) return; // a newer toggle owns the state
+        applyNav(projectId, workspaceId, previous);
+        toast.error("Could not save the workspace state", { description: errorMessage(error) });
+      }
+    });
+    navQueue.current.set(key, run);
+    await run;
+  }, [client, projects, applyNav]);
+  const setProjectNavExpanded = useCallback(async (projectId: string, expanded: boolean) => {
+    if (!client) return;
+    const workspaces = projects.find((project) => project.id === projectId)?.workspaces ?? [];
+    const before = new Map(workspaces.map((workspace) => [workspace.id, workspace.navExpanded]));
+    for (const workspace of workspaces) navLatest.current.set(`${projectId}:${workspace.id}`, (navLatest.current.get(`${projectId}:${workspace.id}`) ?? 0) + 1);
+    applyNav(projectId, null, expanded);
+    try { await client.setProjectNavExpanded(projectId, expanded); }
+    catch (error) {
+      setProjects((list) => list.map((project) => project.id !== projectId ? project : { ...project, workspaces: project.workspaces.map((workspace) => ({ ...workspace, navExpanded: before.get(workspace.id) ?? workspace.navExpanded })) }));
+      toast.error("Could not save the workspace state", { description: errorMessage(error) });
+    }
+  }, [client, projects, applyNav]);
+
+  // One-time move of the old per-device collapse state onto the server-side workspaces, then drop the local copy.
+  const navMigrating = useRef(false);
+  useEffect(() => {
+    if (!client || !preferenceScope || !projectsLoaded.current || navMigrating.current) return;
+    const doneKey = `floq.workspaceNavMigrated.v1:${preferenceScope}`;
+    try { if (localStorage.getItem(doneKey) === "1") return; } catch { /* storage unavailable: migrate each session */ }
+    const legacy = userPreferencesRef.current.workspaceNavExpanded ?? {};
+    const existing = new Set(projects.flatMap((project) => project.workspaces.map((workspace) => `${project.id}:${workspace.id}`)));
+    const collapsed = Object.entries(legacy).filter(([key, open]) => open === false && existing.has(key)).map(([key]) => key);
+    navMigrating.current = true;
+    void (async () => {
+      try {
+        for (const key of collapsed) {
+          const cut = key.indexOf(":");
+          try { await client.setWorkspaceNavExpanded(key.slice(0, cut), key.slice(cut + 1), false); }
+          catch (error) { if (!(error instanceof RuntimeError && error.status === 404)) throw error; }
+        }
+        try { localStorage.setItem(doneKey, "1"); } catch { /* ignore */ }
+        updateUserPreferences({ workspaceNavExpanded: {} });
+        if (collapsed.length) await refreshProjects(true).catch(() => {});
+      } catch { /* leave the local values; retried on the next load */ }
+      finally { navMigrating.current = false; }
+    })();
+  }, [client, preferenceScope, projects, refreshProjects, updateUserPreferences]);
 
   const selectProject = useCallback((id: string | null, workspaceId?: string | null) => {
     setActiveProjectId(id);
@@ -776,6 +847,40 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, [softDeleteSessions]);
   const deleteSession = useCallback(async (id: string) => deleteSessions([id]), [deleteSessions]);
 
+  const deleteProject = useCallback(async (id: string): Promise<ProjectDeleteResult> => {
+    if (!client) throw new Error("Not signed in");
+    const result = await client.deleteProject(id);
+    // The server already removed the project and its sessions. Forget them locally, in one pass.
+    const gone = new Set(allSessionsRef.current.filter((session) => session.projectId === id).map((session) => session.id));
+    mutation.current++;
+    projectsRefresh.current.markMutation();
+    setProjects((list) => list.filter((project) => project.id !== id));
+    setSessions((list) => list.filter((session) => !gone.has(session.id)));
+    setAgentTabIds((opened) => opened.filter((tab) => !gone.has(tab)));
+    setTerminalTabIds((opened) => opened.filter((tab) => !gone.has(tab)));
+    setOpenedIds((opened) => opened.filter((tab) => !gone.has(tab)));
+    setSelectedId((current) => (current && gone.has(current) ? null : current));
+    setShellId((current) => (current && gone.has(current) ? null : current));
+    if (activeProjectIdRef.current === id) { setActiveProjectId(null); setActiveWorkspaceId(null); }
+    // Leave the deleted project's canvas (also in back/forward history) for Home.
+    setHistory((h) => {
+      const stack = h.stack.map((entry): HistoryEntry => (entry.view === "canvas" && entry.arg === id ? { view: "home", arg: null } : entry));
+      return { stack, index: h.index };
+    });
+    const prefs = userPreferencesRef.current;
+    const without = <T,>(record: Record<string, T> | undefined, drop: (key: string) => boolean) => Object.fromEntries(Object.entries(record ?? {}).filter(([key]) => !drop(key)));
+    updateUserPreferences({
+      canvasPositions: without(prefs.canvasPositions, (key) => key === id),
+      canvasSizes: without(prefs.canvasSizes, (key) => key === id),
+      canvasViewports: without(prefs.canvasViewports, (key) => key === id),
+      hiddenSessionIds: without(prefs.hiddenSessionIds, (key) => gone.has(key)),
+      recentForwardPorts: without(prefs.recentForwardPorts, (key) => gone.has(key)),
+      ...(prefs.lastCanvasProjectId === id ? { lastCanvasProjectId: null } : {}),
+    } as UserPreferencePatch);
+    void refreshProjects(true).catch(() => {});
+    return result;
+  }, [client, refreshProjects, updateUserPreferences]);
+
   // Every consumer sees sessions, tabs and selection without the ids whose delete is pending.
   const visibleSessions = useMemo(() => pendingDeleteIds.size === 0 ? allSessions : allSessions.filter((s) => !pendingDeleteIds.has(s.id)), [allSessions, pendingDeleteIds]);
   const visibleOpenedIds = useMemo(() => openedIds.filter((id) => !pendingDeleteIds.has(id)), [openedIds, pendingDeleteIds]);
@@ -801,7 +906,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       activeWorkspaceCwd: projects.find((p) => p.id === activeProjectId)?.workspaces.find((w) => w.id === activeWorkspaceId)?.cwd ?? null,
       refreshProjects,
       createProject,
+      setWorkspaceNavExpanded,
+      setProjectNavExpanded,
       updateProject,
+      deleteProject,
       selectProject,
       selectedId: visibleSelectedId,
       shellId: visibleShellId,
@@ -874,7 +982,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       activeWorkspaceId,
       refreshProjects,
       createProject,
+      setWorkspaceNavExpanded,
+      setProjectNavExpanded,
       updateProject,
+      deleteProject,
       selectProject,
       visibleSelectedId,
       visibleShellId,

@@ -16,15 +16,16 @@
 #     for that tag.
 #
 # How to cut a release: bump the version, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-# Review and publish the draft release in the GitHub UI once the Windows and
-# macOS workflows have both finished.
+# Review and publish the draft release in the GitHub UI once this workflow
+# has finished. (macOS builds are not published for now.)
 #
-# Release race (this workflow and "Build macOS" run in parallel on the same tag):
+# Release creation:
 #   We deliberately do NOT let tauri-action create the release (tagName input).
-#   Two independent workflows could both see "no release" and create duplicates.
 #   Instead the `release` job runs `gh release view || gh release create` and
-#   retries once on "already exists", then `gh release upload --clobber`.
-#   Whoever gets there first creates the draft; the other reuses it.
+#   retries once on "already exists", then `gh release upload --clobber`. This
+#   also stays safe if a second platform workflow is added later and runs in
+#   parallel on the same tag: whoever gets there first creates the draft and
+#   the other reuses it.
 #
 # Secrets: none required. Only the built-in GITHUB_TOKEN is used.
 #   Windows code signing is not configured (installers are unsigned, so

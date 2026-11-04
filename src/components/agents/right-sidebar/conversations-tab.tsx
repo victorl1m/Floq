@@ -134,7 +134,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
             />
           ) : groups.map((group) => (
             <section key={group.key} aria-label={group.label} className="mb-1">
-              <h3 className="sticky top-0 z-[1] flex items-center justify-between bg-background/85 px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase backdrop-blur-sm">
+              <h3 className="sticky top-0 z-[1] flex items-center justify-between bg-background/85 px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                 {group.label}
                 <span className="tabular-nums normal-case">{group.items.length}</span>
               </h3>

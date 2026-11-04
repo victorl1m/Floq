@@ -57,6 +57,17 @@ interface Props {
 }
 
 /** One xterm instance + stream socket per session. Stays mounted while the session is open. */
+/** The replay is hidden and normally finishes instantly; only a slow one gets a label. */
+function DelayedReloadLabel() {
+    const [show, setShow] = useState(false);
+    useEffect(() => {
+        const timer = setTimeout(() => setShow(true), 600);
+        return () => clearTimeout(timer);
+    }, []);
+    if (!show) return null;
+    return <div role="status" className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center text-xs text-muted-foreground">Reloading…</div>;
+}
+
 export default function SessionTerminal({ sessionId, active, titlebarActions = true, titlebarTitle = true, focusOnActive = true, embedded, onOutput, transparentBackground = false }: Props) {
     const { client, sessions, upsertSession, resumeRequest, consumeResumeRequest } = useRuntime();
     const session = embedded?.session ?? sessions.find((s) => s.id === sessionId);
@@ -96,6 +107,8 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const [termPrefs] = useTerminalPrefs();
     const [performancePrefs] = usePerformancePrefs();
     const [termReady, setTermReady] = useState(false);
+    // True while buffered output is replayed after the terminal was released and mounted again.
+    const [reloading, setReloading] = useState(false);
     const [busy, setBusy] = useState<"resume" | null>(null);
     const [resumeError, setResumeError] = useState<string | null>(null);
     const resumingRef = useRef(false);
@@ -462,6 +475,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         let stopped = false;
         let attempt = 0;
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 
         const connect = () => {
             const term = termRef.current;
@@ -490,6 +504,12 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                         // builds hello and the replay in one tick, so later frames are live.
                         replayUntilRef.current = frame.session.seq;
                         replayingRef.current = true;
+                        if (lastSeqRef.current < frame.session.seq) {
+                            setReloading(true);
+
+                            clearTimeout(reloadTimer);
+                            reloadTimer = setTimeout(() => { term.scrollToBottom(); setReloading(false); }, 4_000);
+                        }
                         upsertRef.current(frame.session);
                         if (restarted) {
                             // A resumed session starts a new PTY with seq back at 0: start over.
@@ -502,6 +522,10 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     case "output":
                         if (frame.seq > lastSeqRef.current) {
                             lastSeqRef.current = frame.seq;
+                            if (frame.seq >= replayUntilRef.current) {
+                                clearTimeout(reloadTimer);
+                                term.write("", () => { term.scrollToBottom(); setReloading(false); });
+                            }
                             if (replayingRef.current && frame.seq > replayUntilRef.current) {
                                 // First live frame: xterm parses writes in order, so this empty write's
                                 // callback runs once all replay is parsed and before this frame is.
@@ -536,6 +560,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         return () => {
             stopped = true;
             clearTimeout(timer);
+            clearTimeout(reloadTimer);
             const ws = wsRef.current;
             wsRef.current = null;
             ws?.close();
@@ -644,7 +669,8 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     browserUploadItems(Array.from(event.dataTransfer.files), (items) => uploadFilesRef.current(items));
                 }}
             >
-                <div ref={hostRef} className="absolute inset-2" />
+                <div ref={hostRef} className={cn("absolute inset-2", reloading && "invisible")} />
+                {reloading && <DelayedReloadLabel />}
                 {dropHover && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-primary/10 text-sm font-medium text-primary-text">Drop files to upload</div>}
                 {!embedded && active && <>
                     <input

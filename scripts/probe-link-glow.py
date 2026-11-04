@@ -1,5 +1,6 @@
 """Link/hover glow states on agent cards. usage: python probe-link-glow.py <tag> [light|dark] [glass|solid]"""
-from __future__ import annotations
+from __future__ import annotations
+import os
 import importlib.util, json, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -17,7 +18,7 @@ def main():
   b=p.chromium.launch(headless=True); ctx=b.new_context(viewport={"width":1440,"height":960})
   ctx.add_init_script(f"localStorage.setItem('theme','{theme}');localStorage.setItem('floq.material','{material}');localStorage.setItem('floq.connection',JSON.stringify({{baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")
   page=ctx.new_page(); page.on("pageerror",lambda e:print("PAGEERR",str(e)[:300])); page.route("**/*",V.CanvasFixture().handle)
-  page.goto("http://127.0.0.1:1420/",wait_until="domcontentloaded"); page.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
+  page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1420/"),wait_until="domcontentloaded"); page.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
   page.get_by_role("button",name="AGI Paulo - SARAH",exact=True).click()
   for i in ("agi-agent-1","agi-agent-2","agi-agent-3"): page.locator(f'.react-flow__node[data-id="{i}"]').wait_for(state="visible",timeout=10000)
   if tag=='before': page.add_style_tag(content='.canvas-node-halo,.canvas-side-strip::after{display:none!important}')  # old visuals: the halo did not exist

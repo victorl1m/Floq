@@ -1,9 +1,11 @@
 [package]
 name = "floq"
 version = "0.2.0"
-description = "Floq desktop app: a Tauri interface for running Claude Code and Codex agents on a self-hosted runtime"
+description = "Desktop workspace for running Claude Code and Codex agents on a server you host"
 authors = ["Victor Lima"]
 license = "MIT"
+repository = "https://github.com/victorl1m/Floq"
+homepage = "https://github.com/victorl1m/Floq"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

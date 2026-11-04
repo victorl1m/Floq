@@ -2,9 +2,28 @@
   "name": "floq-runtime",
   "private": true,
   "version": "0.1.0",
+  "description": "Self-hosted runtime for Floq: hosts Claude Code and Codex agent sessions in sandboxed per-user terminals",
+  "author": "Victor Lima",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/victorl1m/Floq.git",
+    "directory": "runtime"
+  },
+  "homepage": "https://github.com/victorl1m/Floq#readme",
+  "bugs": {
+    "url": "https://github.com/victorl1m/Floq/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "self-hosted",
+    "pty",
+    "sandbox",
+    "typescript"
+  ],
   "type": "module",
-  "description": "Cloud runtime server that hosts Claude Code and Codex agent sessions behind a PTY for Floq",
   "engines": {
     "node": ">=20"
   },

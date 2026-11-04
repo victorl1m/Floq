@@ -2,12 +2,30 @@
   "name": "floq",
   "private": true,
   "version": "0.2.0",
-  "license": "MIT",
   "description": "Desktop workspace for running Claude Code and Codex agents on a server you host",
+  "author": "Victor Lima",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/victorl1m/floq"
+    "url": "git+https://github.com/victorl1m/Floq.git"
   },
+  "homepage": "https://github.com/victorl1m/Floq#readme",
+  "bugs": {
+    "url": "https://github.com/victorl1m/Floq/issues"
+  },
+  "keywords": [
+    "tauri",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "developer-tools",
+    "canvas",
+    "desktop-app",
+    "react",
+    "typescript",
+    "rust",
+    "self-hosted"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
