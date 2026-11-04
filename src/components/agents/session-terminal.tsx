@@ -651,7 +651,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                 }}
             >
                 <div ref={hostRef} className="absolute inset-2" />
-                {dropHover && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-primary/10 text-sm font-medium text-primary">Drop files to upload</div>}
+                {dropHover && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-primary/10 text-sm font-medium text-primary-text">Drop files to upload</div>}
                 {!embedded && active && <>
                     <input
                         ref={fileInputRef}

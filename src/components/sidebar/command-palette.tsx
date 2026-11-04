@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { IconHome, IconPlus, IconSettings, IconSparkles, IconTerminal2 } from "@tabler/icons-react";
+import { useEffect, useRef, useState } from "react";
+import { IconHome, IconPlus, IconSettings, IconSparkles, IconTerminal2, IconChecklist, IconLock, IconFolder, IconX } from "@tabler/icons-react";
+import { Button } from "@/components/ui/button";
 import {
     Command,
     CommandDialog,
@@ -16,13 +17,18 @@ import { useRuntime } from "@/lib/runtime/store";
 
 /** Ctrl/Cmd+K palette to jump to views, sessions and settings. */
 export default function CommandPalette() {
-    const { sessions, searchOpen, setSearchOpen, navigate, openSession, openSettings, setNewAgentOpen } =
+    const { sessions, projects, searchOpen, setSearchOpen, navigate, openCanvas, openSession, openSettings, setNewAgentOpen } =
         useRuntime();
+    const [query, setQuery] = useState("");
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => { if (!searchOpen) setQuery(""); }, [searchOpen]);
 
     const agents = sessions.filter((s) => s.provider !== "shell");
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
+            if (event.isComposing) return;
             // Terminals keep Ctrl+K (kill-line in shells and TUIs).
             if (event.target instanceof Element && event.target.closest(".xterm")) return;
             if (event.key === "," && (event.metaKey || event.ctrlKey)) {
@@ -53,7 +59,10 @@ export default function CommandPalette() {
             className="top-[10vh] max-h-[calc(90dvh-1rem)] w-[calc(100vw-2rem)] max-w-[640px] translate-y-0 sm:max-w-[640px]"
         >
             <Command>
-                <CommandInput placeholder="Search sessions, projects, skills and settings..." />
+                <div className="relative">
+                    <CommandInput ref={inputRef} value={query} onValueChange={setQuery} aria-label="Search workspace" placeholder="Search sessions, projects and settings…" className="pr-9" />
+                    {query && <Button type="button" variant="ghost" size="icon-xs" aria-label="Clear workspace search" className="absolute top-1.5 right-2" onClick={() => { setQuery(""); inputRef.current?.focus(); }}><IconX /></Button>}
+                </div>
                 <CommandList className="max-h-[min(60dvh,480px)]">
                     <CommandEmpty>No results found.</CommandEmpty>
                     <CommandGroup heading="Go to">
@@ -61,9 +70,15 @@ export default function CommandPalette() {
                             <IconHome />
                             Home
                         </CommandItem>
+                        <CommandItem onSelect={run(() => navigate("tasks"))}>
+                            <IconChecklist />Tasks
+                        </CommandItem>
                         <CommandItem onSelect={run(() => navigate("skills"))}>
                             <IconSparkles />
                             Skills & MCP
+                        </CommandItem>
+                        <CommandItem onSelect={run(() => navigate("secrets"))}>
+                            <IconLock />Secrets
                         </CommandItem>
                         <CommandItem onSelect={run(() => navigate("terminal"))}>
                             <IconTerminal2 />
@@ -78,6 +93,11 @@ export default function CommandPalette() {
                             New agent
                         </CommandItem>
                     </CommandGroup>
+                    {projects.length > 0 && <CommandGroup heading="Projects">
+                        {projects.map((project) => <CommandItem key={project.id} value={`project ${project.displayName || project.name} ${project.id}`} onSelect={run(() => openCanvas(project.id))}>
+                            <IconFolder /><span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span><CommandShortcut>Canvas</CommandShortcut>
+                        </CommandItem>)}
+                    </CommandGroup>}
                     {agents.length > 0 && (
                         <CommandGroup heading="Sessions">
                             {agents.map((session) => (

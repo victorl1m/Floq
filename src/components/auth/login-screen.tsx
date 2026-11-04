@@ -17,6 +17,7 @@ import {
     FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Spinner } from "@/components/ui/spinner";
 import { defaultBaseUrl, useRuntime } from "@/lib/runtime/store";
 import {
@@ -167,7 +168,7 @@ function PasswordStep({ serverUrl, email, invitationToken, onDiscardInvitation }
                         <FormItem>
                             <FormLabel>Password</FormLabel>
                             <FormControl>
-                                <Input type="password" autoComplete="current-password" autoFocus {...field} />
+                                <PasswordInput autoComplete="current-password" autoFocus {...field} />
                             </FormControl>
                             <FormMessage />
                         </FormItem>
@@ -247,12 +248,12 @@ function InvitationRegistrationStep({
                     )} />
                     <FormField control={form.control} name="password" render={({ field }) => (
                         <FormItem>
-                            <FormLabel>Password</FormLabel><FormControl><Input type="password" autoComplete="new-password" {...field} /></FormControl>
+                            <FormLabel>Password</FormLabel><FormControl><PasswordInput autoComplete="new-password" {...field} /></FormControl>
                             {errors.password ? <FormMessage /> : <FormDescription>At least {MIN_PASSWORD} characters.</FormDescription>}
                         </FormItem>
                     )} />
                     <FormField control={form.control} name="confirm" render={({ field }) => (
-                        <FormItem><FormLabel>Confirm password</FormLabel><FormControl><Input type="password" autoComplete="new-password" {...field} /></FormControl><FormMessage /></FormItem>
+                        <FormItem><FormLabel>Confirm password</FormLabel><FormControl><PasswordInput autoComplete="new-password" {...field} /></FormControl><FormMessage /></FormItem>
                     )} />
                 </div>
                 <RootError message={errors.root?.message} />
@@ -329,7 +330,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                             <FormItem>
                                 <FormLabel>Password</FormLabel>
                                 <FormControl>
-                                    <Input type="password" autoComplete="new-password" {...field} />
+                                    <PasswordInput autoComplete="new-password" {...field} />
                                 </FormControl>
                                 {errors.password ? (
                                     <FormMessage />
@@ -346,7 +347,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                             <FormItem>
                                 <FormLabel>Confirm password</FormLabel>
                                 <FormControl>
-                                    <Input type="password" autoComplete="new-password" {...field} />
+                                    <PasswordInput autoComplete="new-password" {...field} />
                                 </FormControl>
                                 <FormMessage />
                             </FormItem>

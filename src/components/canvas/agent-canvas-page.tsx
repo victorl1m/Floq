@@ -28,7 +28,7 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyText } from "@/lib/clipboard";
@@ -989,9 +989,10 @@ function AgentCanvas() {
 
       <Dialog open={renaming !== null} onOpenChange={(open) => { if (!open) setRenaming(null); }}>
         <DialogContent className="sm:max-w-sm">
-          <DialogHeader><DialogTitle>Rename agent</DialogTitle></DialogHeader>
-          <form onSubmit={(event) => { event.preventDefault(); void submitRename(); }} className="flex flex-col gap-3">
-            <Input autoFocus value={renaming?.title ?? ""} maxLength={120} onChange={(event) => setRenaming((current) => current && { ...current, title: event.target.value })} />
+          <DialogHeader><DialogTitle>Rename agent</DialogTitle><DialogDescription>Choose a name you can recognize in the workspace.</DialogDescription></DialogHeader>
+          <form noValidate onSubmit={(event) => { event.preventDefault(); void submitRename(); }} className="flex flex-col gap-3">
+            <label htmlFor="rename-agent-title" className="text-sm font-medium">Agent name</label>
+            <Input id="rename-agent-title" autoFocus value={renaming?.title ?? ""} maxLength={120} onChange={(event) => setRenaming((current) => current && { ...current, title: event.target.value })} />
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setRenaming(null)}>Cancel</Button>
               <Button type="submit" disabled={!renaming?.title.trim()}>Rename</Button>

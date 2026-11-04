@@ -166,7 +166,7 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
           </div>
           {bulk ? (
             <>
-              <Textarea value={envText} onChange={(event) => setEnvText(event.target.value)} placeholder={"API_KEY=…\nDB_URL=\"…\""} rows={5} spellCheck={false} autoComplete="off" className="font-mono text-xs [-webkit-text-security:disc]" />
+              <Textarea aria-label="Secrets in environment file format" value={envText} onChange={(event) => setEnvText(event.target.value)} placeholder={"API_KEY=…\nDB_URL=\"…\""} rows={5} spellCheck={false} autoComplete="off" className="font-mono text-xs [-webkit-text-security:disc]" />
               {parsed.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {parsed.map((item) => {
@@ -180,11 +180,11 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
               </Button>
             </>
           ) : (
-            <form className="flex flex-col gap-2" autoComplete="off" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-              <Input value={name} onChange={(event) => { setName(event.target.value.toUpperCase().replace(/\s+/g, "_")); setError(null); }} placeholder="NAME" maxLength={64} spellCheck={false} autoComplete="off" aria-invalid={name !== "" && !nameValid} className="font-mono text-xs" />
+            <form noValidate className="flex flex-col gap-2" autoComplete="off" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+              <Input aria-label="Secret name" value={name} onChange={(event) => { setName(event.target.value.toUpperCase().replace(/\s+/g, "_")); setError(null); }} placeholder="NAME" maxLength={64} spellCheck={false} autoComplete="off" aria-invalid={name !== "" && !nameValid} className="font-mono text-xs" />
               {name !== "" && !nameValid && <p className="text-[11px] text-destructive">Use A-Z, 0-9 and _, not starting with a digit (max 64).</p>}
               <div className="relative">
-                <Textarea ref={valueRef} value={value} onChange={(event) => { setValue(event.target.value); setError(null); }} placeholder="Value" rows={2} spellCheck={false} autoComplete="off" data-1p-ignore data-lpignore="true" className={`pr-9 font-mono text-xs ${show ? "" : "[-webkit-text-security:disc]"}`} />
+                <Textarea aria-label="Secret value" ref={valueRef} value={value} onChange={(event) => { setValue(event.target.value); setError(null); }} placeholder="Value" rows={2} spellCheck={false} autoComplete="off" data-1p-ignore data-lpignore="true" className={`pr-9 font-mono text-xs ${show ? "" : "[-webkit-text-security:disc]"}`} />
                 <Button type="button" variant="ghost" size="icon-xs" className="absolute top-1 right-1" aria-label={show ? "Hide value" : "Show value"} title={show ? "Hide value" : "Show value"} onClick={() => setShow((v) => !v)}>
                   {show ? <IconEyeOff size={13} /> : <IconEye size={13} />}
                 </Button>

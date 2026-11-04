@@ -4,17 +4,25 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useTerminalPrefs, type CursorStyle } from "@/lib/prefs";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { useMaterialPreference, type MaterialPreference } from "@/lib/material-preference";
 
 export default function AppearanceSection() {
     const { theme = "system", setTheme } = useTheme();
     const [terminal, setTerminal] = useTerminalPrefs();
+    const [material, setMaterial] = useMaterialPreference();
 
     return (
         <SettingsPage title="Appearance" description="Theme and terminal look. Stored on this device only.">
             <SettingsGroup title="App">
-                <SettingRow label="Theme" description="Follow the system or force light or dark.">
+                <SettingRow label="Material" htmlFor="appearance-material" description="Glass uses translucent surfaces. Follow system respects your device’s transparency preference.">
+                    <Select value={material} onValueChange={(value) => setMaterial(value as MaterialPreference)}>
+                        <SelectTrigger id="appearance-material" className="w-36"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="glass">Glass</SelectItem><SelectItem value="system">Follow system</SelectItem><SelectItem value="solid">Solid</SelectItem></SelectContent>
+                    </Select>
+                </SettingRow>
+                <SettingRow label="Theme" htmlFor="appearance-theme" description="Follow the system or force light or dark.">
                     <Select value={theme} onValueChange={setTheme}>
-                        <SelectTrigger className="w-36">
+                        <SelectTrigger id="appearance-theme" className="w-36">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -30,6 +38,7 @@ export default function AppearanceSection() {
                 <SettingRow label="Font size" description="Applies to open terminals immediately.">
                     <span className="w-10 text-right text-sm tabular-nums text-muted-foreground">{terminal.fontSize}px</span>
                     <Slider
+                        aria-label="Terminal font size"
                         className="w-40"
                         min={11}
                         max={18}
@@ -38,9 +47,9 @@ export default function AppearanceSection() {
                         onValueChange={([v]) => setTerminal({ fontSize: v })}
                     />
                 </SettingRow>
-                <SettingRow label="Cursor style">
+                <SettingRow label="Cursor style" htmlFor="appearance-cursor">
                     <Select value={terminal.cursorStyle} onValueChange={(v) => setTerminal({ cursorStyle: v as CursorStyle })}>
-                        <SelectTrigger className="w-36">
+                        <SelectTrigger id="appearance-cursor" className="w-36">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -50,8 +59,8 @@ export default function AppearanceSection() {
                         </SelectContent>
                     </Select>
                 </SettingRow>
-                <SettingRow label="Cursor blink">
-                    <Switch checked={terminal.cursorBlink} onCheckedChange={(v) => setTerminal({ cursorBlink: v })} />
+                <SettingRow label="Cursor blink" htmlFor="appearance-cursor-blink">
+                    <Switch id="appearance-cursor-blink" checked={terminal.cursorBlink} onCheckedChange={(v) => setTerminal({ cursorBlink: v })} />
                 </SettingRow>
             </SettingsGroup>
         </SettingsPage>

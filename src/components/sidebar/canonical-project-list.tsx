@@ -53,6 +53,7 @@ import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { RuntimeProject, SessionState, SessionSummary } from "@/lib/runtime/types";
 import { cn } from "cn";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const CTX = "w-56";
 const ROW_OPEN = "rounded-md data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground";
@@ -94,7 +95,7 @@ async function projectImageThumbnail(file: File): Promise<string> {
 }
 
 function StateDot({ state }: { state: SessionState }) {
-  return <span title={state} aria-label={state} className={cn("size-1.5 shrink-0 rounded-full", DOT[state])} />;
+  return <span role="img" title={state} aria-label={state} className={cn("size-1.5 shrink-0 rounded-full", DOT[state])} />;
 }
 
 type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
@@ -447,11 +448,11 @@ export default function CanonicalProjectList() {
       </div>
       </div>
       <SidebarGroupContent>
-        {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <p className="px-2 py-4 text-xs text-muted-foreground">Loading projects…</p> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
+        {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <div role="status" aria-label="Loading projects" aria-busy="true" className="space-y-1 px-2 py-2">{[0, 1, 2].map((row) => <div key={row} className="flex h-8 items-center gap-2"><Skeleton className="size-4 shrink-0" /><Skeleton className="h-3 flex-1" /></div>)}</div> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
           <SidebarMenu>
             {rootProjects.map(renderProject)}
             {folders.map((folder) => <SidebarMenuItem key={folder.id}><Collapsible open={userPreferences.folderNavExpanded[folder.id] ?? true} onOpenChange={(open) => updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [folder.id]: open } })} className="group/folder">
-              <div className="group/folder-row relative"><CollapsibleTrigger asChild><SidebarMenuButton className="h-8 pr-10 text-[13px] font-medium"><IconFolder className="text-muted-foreground" /><span className="truncate">{folder.name}</span><IconChevronRight className="ml-auto text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90 md:opacity-0 md:group-hover/folder-row:opacity-100 md:group-focus-visible/menu-button:opacity-100" /></SidebarMenuButton></CollapsibleTrigger>
+              <div className="group/folder-row relative"><CollapsibleTrigger asChild><SidebarMenuButton className="h-8 pr-10 text-[13px] font-medium"><IconFolder className="text-muted-foreground" /><span className="truncate">{folder.name}</span><IconChevronRight className="ml-auto text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90 md:opacity-0 md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" /></SidebarMenuButton></CollapsibleTrigger>
                 <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-1.5 transition-opacity md:opacity-0 md:group-hover/folder-row:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
                   <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => openFolderEdit({ kind: "folder-edit", folder })}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => setRemoveFolder(folder)}><IconTrash />Remove folder</DropdownMenuItem></DropdownMenuContent>
                 </DropdownMenu>
@@ -465,7 +466,7 @@ export default function CanonicalProjectList() {
 
     <CloneDialog open={repoOpen} onOpenChange={setRepoOpen} onClone={async (repo) => { await createProject({ gitUrl: repo.url, name: repo.label }); await refreshProjects(); }} />
     <AppDialog open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={edit?.kind.startsWith("folder") ? <IconFolderPlus /> : <IconPencil />} title={edit?.kind === "folder-new" ? "Create folder" : edit?.kind === "folder-edit" ? "Rename folder" : "Project settings"} description={edit?.kind === "project" ? "These details are shared with your other Floq sessions. Image URLs load directly in your browser." : "Folders organize projects in this sidebar. Removing a folder keeps its projects."} footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
-      <form id="canonical-project-edit" onSubmit={(event) => void saveEdit(event)} className="flex flex-col gap-3">
+      <form id="canonical-project-edit" noValidate onSubmit={(event) => void saveEdit(event)} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2"><Label htmlFor="canonical-project-name">{edit?.kind.startsWith("folder") ? "Name" : "Project name"}</Label><Input id="canonical-project-name" autoFocus maxLength={60} value={name} onChange={(event) => { setName(event.target.value); setEditError(null); }} /></div>
         {edit?.kind === "project" && <>
           <div className="flex flex-col gap-2">

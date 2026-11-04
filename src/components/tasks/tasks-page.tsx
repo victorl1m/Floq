@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { IconArrowRight, IconChecklist, IconCopy, IconDots, IconPlus, IconTrash, IconUsers } from "@tabler/icons-react";
+import { IconArrowRight, IconChecklist, IconCopy, IconDots, IconPlus, IconTrash, IconUsers, IconX, IconStar } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Command, CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -25,6 +27,26 @@ import type { TaskBoard, TaskCard } from "@/lib/runtime/types";
 import TaskCardDialog from "./task-card-dialog";
 
 type Cursor = { userId: string; name: string; x: number; y: number };
+
+function BoardSkeleton() {
+  return <div role="status" aria-label="Loading task board" aria-busy="true" className="flex min-h-0 flex-1 items-start gap-3 overflow-hidden p-5">
+    <span className="sr-only">Loading lists and cards…</span>
+    {[3, 2, 2].map((count, column) => <div key={column} aria-hidden="true" className="w-[min(19rem,84vw)] shrink-0 overflow-hidden rounded-xl border border-border/70 bg-muted/20">
+      <div className="flex h-12 items-center justify-between border-b border-border/60 px-3">
+        <Skeleton rows={1} className="h-3 w-24" />
+        <Skeleton rows={1} className="size-5 rounded-full" />
+      </div>
+      <div className="space-y-2 p-2.5">
+        {Array.from({ length: count }, (_, card) => <div key={card} className="glass-surface space-y-3 rounded-lg border border-border/60 p-3">
+          <Skeleton rows={1} className={`h-3 ${card % 2 ? "w-3/4" : "w-5/6"}`} />
+          <div className="space-y-2"><Skeleton rows={1} className="h-2.5 w-full" />{card !== 1 && <Skeleton rows={1} className="h-2.5 w-2/3" />}</div>
+          <div className="flex items-center justify-between pt-1"><Skeleton rows={1} className="h-4 w-14 rounded" /><Skeleton rows={1} className="size-5 rounded-full" /></div>
+        </div>)}
+        <Skeleton rows={1} className="my-3 h-3 w-20" />
+      </div>
+    </div>)}
+  </div>;
+}
 type RealtimeFrame = { type: "hello" | "board"; board: TaskBoard } | { type: "presence"; userId: string; name: string; x: number; y: number } | { type: "presence-left"; userId: string };
 type BoardNavigationPreferences = { favorites: string[]; recent: string[]; openTabs: string[]; activeBoardId: string; tabsInitialized: boolean };
 
@@ -51,11 +73,15 @@ function formatTaskDueDate(value: string): string {
 }
 
 export default function TasksPage() {
-  const { client, user, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId } = useRuntime();
+  const { client, user, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId, selectOrganization } = useRuntime();
   const organizationId = activeOrganizationId ?? "";
   const [boards, setBoards] = useState<Omit<TaskBoard, "lists">[]>([]);
   const [board, setBoard] = useState<TaskBoard | null>(null);
   const [boardId, setBoardId] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [boardQuery, setBoardQuery] = useState("");
+  const boardSearchRef = useRef<HTMLInputElement>(null);
+  const boardPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const [cursors, setCursors] = useState<Cursor[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +119,19 @@ export default function TasksPage() {
   const activeNavigationPreferences = navigationPreferences.scope === navigationScope ? navigationPreferences.value : readBoardNavigationPreferences("");
   const selectedOrganization = organizations.find((organization) => organization.id === organizationId) ?? null;
   const visibleBoard = boardsReadyScope === navigationScope && board?.organizationId === organizationId ? board : null;
-  const openedBoards = boardsReadyScope === navigationScope ? boards : [];
+  const openedBoards = boardsReadyScope === navigationScope ? activeNavigationPreferences.openTabs.flatMap((id) => boards.find((item) => item.id === id) ?? []) : [];
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== "b") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="combobox"]')) return;
+      event.preventDefault();
+      setPickerOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     const strip = boardTabStripRef.current;
@@ -135,8 +173,8 @@ export default function TasksPage() {
       const validFavorites = saved.favorites.filter((id) => boardIds.has(id));
       const validRecent = saved.recent.filter((id) => boardIds.has(id));
       const defaultBoardId = validRecent[0] ?? loaded[0]?.id ?? "";
-      const openTabs = loaded.map((item) => item.id);
-      const activeBoardId = boardIds.has(saved.activeBoardId) ? saved.activeBoardId : defaultBoardId;
+      const openTabs = saved.tabsInitialized ? saved.openTabs.filter((id) => boardIds.has(id)) : defaultBoardId ? [defaultBoardId] : [];
+      const activeBoardId = openTabs.includes(saved.activeBoardId) ? saved.activeBoardId : openTabs[0] ?? "";
       setNavigationPreferences({ scope: navigationScope, value: { favorites: validFavorites, recent: validRecent, openTabs, activeBoardId, tabsInitialized: true } });
       setBoardId(activeBoardId);
       setBoardsReadyScope(navigationScope);
@@ -172,9 +210,15 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (!client || !boardId) { boardRequest.current++; setBoard(null); setCursors([]); return; }
-    boardRequest.current++;
+    const request = ++boardRequest.current;
     setCursors([]);
     let closed = false;
+    // Render a snapshot even when the live connection is temporarily unavailable.
+    void client.taskBoard(boardId).then((next) => {
+      if (!closed && request === boardRequest.current && currentBoardId.current === boardId) setBoard(next);
+    }).catch((reason) => {
+      if (!closed && request === boardRequest.current) setError(errorMessage(reason));
+    });
     let retry: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
     const connect = () => {
@@ -186,7 +230,7 @@ export default function TasksPage() {
         if (closed || currentBoardId.current !== boardId) return;
         try {
           const frame = JSON.parse(String(event.data)) as RealtimeFrame;
-          if ((frame.type === "hello" || frame.type === "board") && frame.board.id === currentBoardId.current) setBoard(frame.board);
+          if ((frame.type === "hello" || frame.type === "board") && frame.board.id === currentBoardId.current) { boardRequest.current++; setBoard(frame.board); setError(null); }
           if (frame.type === "presence") setCursors((items) => [...items.filter((item) => item.userId !== frame.userId), frame]);
           if (frame.type === "presence-left") setCursors((items) => items.filter((item) => item.userId !== frame.userId));
         } catch { /* Ignore malformed runtime frames; reconnect retrieves a fresh snapshot. */ }
@@ -238,6 +282,23 @@ export default function TasksPage() {
     setBoardId(nextBoardId);
   };
   const pageError = error ?? organizationsError;
+  const closeBoardTab = (id: string) => {
+    const tabs = activeNavigationPreferences.openTabs.filter((tab) => tab !== id);
+    const index = activeNavigationPreferences.openTabs.indexOf(id);
+    const nextId = boardId === id ? tabs[Math.min(index, tabs.length - 1)] ?? "" : boardId;
+    updateNavigationPreferences((current) => ({ ...current, openTabs: tabs, activeBoardId: nextId, tabsInitialized: true }));
+    if (boardId === id) { setBoardId(nextId); setBoard(null); setActiveCard(null); }
+    requestAnimationFrame(() => (nextId ? boardTabRefs.current.get(nextId) : boardPickerTriggerRef.current)?.focus());
+  };
+  const favoriteIds = new Set(activeNavigationPreferences.favorites);
+  const recentIds = new Set(activeNavigationPreferences.recent);
+  const pickerGroups = boardQuery.trim()
+    ? [{ title: "Search results", items: boards.filter((item) => item.title.toLocaleLowerCase().includes(boardQuery.trim().toLocaleLowerCase())) }]
+    : [
+      { title: "Favorites", items: boards.filter((item) => favoriteIds.has(item.id)) },
+      { title: "Recent", items: activeNavigationPreferences.recent.flatMap((id) => boards.find((item) => item.id === id && !favoriteIds.has(id)) ?? []) },
+      { title: "All boards", items: boards.filter((item) => !favoriteIds.has(item.id) && !recentIds.has(item.id)) },
+    ];
   const onCreateOrganization = async (event: FormEvent) => {
     event.preventDefault();
     if (!organizationName.trim() || !client) return;
@@ -327,10 +388,10 @@ export default function TasksPage() {
     selectBoard(nextId);
     requestAnimationFrame(() => boardTabRefs.current.get(nextId)?.focus());
   };
-  if (organizationsLoading) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
+  if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-5"><h1 className="text-base font-semibold">Tasks</h1><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background text-foreground">
+    <section className="flex h-full min-h-0 min-w-0 flex-col text-foreground">
       {titlebarSlot && createPortal(
         <div className="flex h-full min-w-0 items-center gap-1 overflow-hidden">
           <div ref={boardTabStripRef} className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Boards">
@@ -338,9 +399,11 @@ export default function TasksPage() {
             const active = item.id === boardId;
             return <div key={item.id} role="presentation" className={`group flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}>
               <Button ref={(node) => { if (node) boardTabRefs.current.set(item.id, node); else boardTabRefs.current.delete(item.id); }} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls="task-board-panel" id={`task-board-tab-${item.id}`} data-task-board-tab={item.id} title={item.title} variant="ghost" className="h-7 min-w-0 max-w-40 justify-start truncate px-0 text-xs" onClick={() => selectBoard(item.id)} onKeyDown={(event) => onBoardTabKeyDown(event, item.id)}>{item.title}</Button>
+              <Button variant="ghost" size="icon-xs" className="ml-1 size-5" aria-label={`Close ${item.title} tab`} onClick={() => closeBoardTab(item.id)}><IconX className="size-3" /></Button>
             </div>;
           })}
           </div>
+          <Button variant="ghost" size="icon-sm" aria-label="Choose a board" title="Choose a board (B)" onClick={() => setPickerOpen(true)}><IconPlus /></Button>
         </div>,
         titlebarSlot,
       )}
@@ -349,22 +412,23 @@ export default function TasksPage() {
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-base font-semibold">Tasks{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h1>
             </div>
-            {selectedOrganization && <div className="hidden items-center gap-2 sm:flex" aria-label="Organization members">
+            {organizations.length > 0 && <Button ref={boardPickerTriggerRef} variant="outline" size="sm" aria-label="Choose a board" onClick={() => setPickerOpen(true)}><IconChecklist /><span className="hidden sm:inline">Boards</span></Button>}
+            {selectedOrganization && <div className="hidden items-center gap-2 sm:flex" role="group" aria-label="Organization members">
               <AvatarGroup>{members.slice(0, 4).map((member) => {
                 const name = member.name || member.email;
                 const initials = name.split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
-                return <Tooltip key={member.id}><TooltipTrigger asChild><Avatar size="sm" tabIndex={0} aria-label={name} className="focus-visible:ring-2 focus-visible:ring-ring"><AvatarFallback>{initials}</AvatarFallback></Avatar></TooltipTrigger><TooltipContent>{name}{member.role === "owner" ? " · owner" : ""}</TooltipContent></Tooltip>;
-              })}{members.length > 4 && <Tooltip><TooltipTrigger asChild><AvatarGroupCount tabIndex={0} aria-label={members.length - 4 + " more organization members"} className="focus-visible:ring-2 focus-visible:ring-ring">+{members.length - 4}</AvatarGroupCount></TooltipTrigger><TooltipContent>{members.slice(4).map((member) => (member.name || member.email) + (member.role === "owner" ? " · owner" : "")).join(", ")}</TooltipContent></Tooltip>}</AvatarGroup>
+                return <Tooltip key={member.id}><TooltipTrigger asChild><Avatar size="sm" role="img" tabIndex={0} aria-label={name} className="focus-visible:ring-2 focus-visible:ring-ring"><AvatarFallback>{initials}</AvatarFallback></Avatar></TooltipTrigger><TooltipContent>{name}{member.role === "owner" ? " · owner" : ""}</TooltipContent></Tooltip>;
+              })}{members.length > 4 && <Tooltip><TooltipTrigger asChild><AvatarGroupCount role="img" tabIndex={0} aria-label={members.length - 4 + " more organization members"} className="focus-visible:ring-2 focus-visible:ring-ring">+{members.length - 4}</AvatarGroupCount></TooltipTrigger><TooltipContent>{members.slice(4).map((member) => (member.name || member.email) + (member.role === "owner" ? " · owner" : "")).join(", ")}</TooltipContent></Tooltip>}</AvatarGroup>
               <Badge variant="outline"><IconUsers />{members.length}</Badge>
             </div>}
             {visibleBoard && <Badge variant="secondary">{cardCount} {cardCount === 1 ? "card" : "cards"}</Badge>}
-            <Button size="sm" onClick={() => { setError(null); setBoardName(""); setOrganizationName(""); setDialog(organizations.length ? "board" : "organization"); }}><IconPlus /><span className="hidden sm:inline">{organizations.length ? "New board" : "Create organization"}</span></Button>
+            <Button size="sm" aria-label={organizations.length ? "New board" : "Create organization"} onClick={() => { setError(null); setBoardName(""); setOrganizationName(""); setDialog(organizations.length ? "board" : "organization"); }}><IconPlus /><span className="hidden sm:inline">{organizations.length ? "New board" : "Create organization"}</span></Button>
             <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="outline" aria-label="Organization and board actions"><IconDots /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => { setError(null); setOrganizationName(""); setDialog("organization"); }}><IconPlus />Create organization</DropdownMenuItem>
               {selectedOrganization?.role === "owner" && <DropdownMenuItem onSelect={() => { setError(null); setInviteToken(""); setInviteEmail(""); setDialog("invite"); }}><IconUsers />Invite member</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => { setError(null); setDialog("join"); }}><IconArrowRight />Join with token</DropdownMenuItem>
-              {visibleBoard && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => { setBoardName(visibleBoard.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
-                {selectedOrganization?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + visibleBoard.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(visibleBoard.id); const remaining = await client?.organizationBoards(organizationId) ?? []; const tabs = remaining.map((item) => item.id); const nextActive = tabs[0] ?? ""; setNavigationPreferences((current) => ({ ...current, value: { ...current.value, openTabs: tabs, activeBoardId: nextActive, tabsInitialized: true } })); setBoards(remaining); setBoardId(nextActive); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
+              {visibleBoard && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => updateNavigationPreferences((current) => ({ ...current, favorites: current.favorites.includes(visibleBoard.id) ? current.favorites.filter((id) => id !== visibleBoard.id) : [...current.favorites, visibleBoard.id] }))}><IconStar />{favoriteIds.has(visibleBoard.id) ? "Remove from favorites" : "Add to favorites"}</DropdownMenuItem><DropdownMenuItem onSelect={() => { setBoardName(visibleBoard.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
+                {selectedOrganization?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + visibleBoard.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(visibleBoard.id); const remaining = await client?.organizationBoards(organizationId) ?? []; const available = new Set(remaining.map((item) => item.id)); const tabs = activeNavigationPreferences.openTabs.filter((id) => available.has(id)); const nextActive = tabs[0] ?? ""; setNavigationPreferences((current) => ({ ...current, value: { ...current.value, openTabs: tabs, activeBoardId: nextActive, tabsInitialized: true } })); setBoards(remaining); setBoardId(nextActive); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
             </DropdownMenuContent></DropdownMenu>
           </header>
 
@@ -377,12 +441,12 @@ export default function TasksPage() {
           </Empty>
         ) : (
           <>
-            {!visibleBoard ? (
-                <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this organization."}</EmptyDescription></EmptyHeader>{!boards.length && <EmptyContent><Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button></EmptyContent>}</Empty>
+            {!visibleBoard && (boardId || boardsReadyScope !== navigationScope) && !pageError ? <BoardSkeleton /> : !visibleBoard ? (
+                <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this organization."}</EmptyDescription></EmptyHeader><EmptyContent>{boards.length ? <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>Choose a board</Button> : <Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button>}</EmptyContent></Empty>
             ) : (
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
-                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" aria-label={`${visibleBoard.title} board`}>
+                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" role="region" aria-label={`${visibleBoard.title} board`}>
                   {visibleBoard.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
                     <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
                     <div className="min-h-10 space-y-2 overflow-y-auto p-2.5">
@@ -422,6 +486,27 @@ export default function TasksPage() {
         )}
       </div>
         </main>
+      <CommandDialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setBoardQuery(""); }} title="Choose a board" description="Search boards in your organization. Select a board to open its tab.">
+        <div className="border-b p-3">
+          <Label htmlFor="board-organization" className="mb-2 block text-xs text-muted-foreground">Organization</Label>
+          <Select value={organizationId} onValueChange={selectOrganization}>
+            <SelectTrigger id="board-organization" className="w-full"><SelectValue placeholder="Choose organization" /></SelectTrigger>
+            <SelectContent>{organizations.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <Command shouldFilter={false}>
+          <div className="relative">
+            <CommandInput ref={boardSearchRef} value={boardQuery} onValueChange={setBoardQuery} placeholder="Search boards…" aria-label="Search boards" className="pr-9" />
+            {boardQuery && <Button variant="ghost" size="icon-xs" aria-label="Clear board search" className="absolute top-1.5 right-2" onClick={() => { setBoardQuery(""); boardSearchRef.current?.focus(); }}><IconX /></Button>}
+          </div>
+          <CommandList className="max-h-[min(320px,45dvh)]">
+            <CommandEmpty>{boardsReadyScope !== navigationScope && organizationId ? "Loading boards…" : boardQuery ? "No boards match your search." : "No boards in this organization."}</CommandEmpty>
+            {pickerGroups.filter((group) => group.items.length > 0).map((group) => <CommandGroup key={group.title} heading={group.title}>
+              {group.items.map((item) => <CommandItem key={item.id} value={item.id} className="min-w-0" onSelect={() => { selectBoard(item.id); setPickerOpen(false); setBoardQuery(""); }}><IconChecklist /><span className="truncate">{item.title}</span>{favoriteIds.has(item.id) && <IconStar aria-hidden="true" className="ml-auto size-3 fill-primary text-primary-text" />}{item.id === boardId && <span className="ml-auto text-xs text-muted-foreground">Open</span>}</CommandItem>)}
+            </CommandGroup>)}
+          </CommandList>
+        </Command>
+      </CommandDialog>
       <AppDialog open={dialog === "organization"} onOpenChange={(open) => { if (!busy) setDialog(open ? "organization" : null); }} icon={<IconUsers />} title="Create an organization" description="Start a shared space for boards and members." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="create-organization-form" disabled={busy || !organizationName.trim()}><IconPlus />Create organization</Button></>}>
         <form id="create-organization-form" className="space-y-2" noValidate onSubmit={onCreateOrganization}><Label htmlFor="new-organization">Organization name</Label><Input id="new-organization" autoFocus maxLength={80} value={organizationName} onChange={(event) => setOrganizationName(event.target.value)} placeholder="e.g. Product" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
       </AppDialog>

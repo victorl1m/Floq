@@ -1,0 +1,44 @@
+{
+  "environment": "Headless installed Chrome, isolated synthetic runtime, 1440x1000 and 390x844",
+  "checks": [
+    "Sign-in autofill and password visibility",
+    "Home starter preserves editable prompt and focuses composer",
+    "Native workspace view transition runs on navigation",
+    "Board picker search, open, close, intentionally empty tab persistence and B shortcut",
+    "Actual ASCII skeleton paints at reserved row geometry",
+    "Skills search empty and clear",
+    "Secrets empty state",
+    "Glass and Solid appearance override OS reduced-transparency intentionally",
+    "Settings dialog, theme selector and popup keyboard semantics",
+    "Settings server failure exposes Retry and recovers",
+    "390px mobile navigation closes drawer, no horizontal page overflow",
+    "OS reduced-motion render",
+    "Floq device reduced-motion preference applies immediately"
+  ],
+  "errors": [],
+  "warnings": [
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+  ],
+  "accessibility": [
+    {
+      "label": "Sign-in password",
+      "violations": []
+    },
+    {
+      "label": "Home dark",
+      "violations": []
+    },
+    {
+      "label": "Board picker",
+      "violations": []
+    },
+    {
+      "label": "Secrets dark",
+      "violations": []
+    },
+    {
+      "label": "Settings light",
+      "violations": []
+    }
+  ]
+}

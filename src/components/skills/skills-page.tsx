@@ -3,12 +3,14 @@ import { IconCode, IconPlus, IconRefresh, IconSearch, IconSparkles, IconTrash, I
 import { toast } from "sonner";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/agents/provider";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SkillReader, type SkillReaderSource } from "@/components/skills/skill-reader";
 import { AddMcpDialog } from "@/components/skills/add-mcp-dialog";
@@ -22,11 +24,20 @@ const providerLabel: Record<Exclude<Provider, "all">, string> = { claude: "Claud
 const MAX_INSTRUCTIONS_BYTES = 28 * 1024;
 
 function EmptyState({ title, detail, action }: { title: string; detail: string; action?: ReactNode }) {
-  return <div className="flex min-h-52 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border px-5 text-center">
-    <IconSparkles className="size-5 text-muted-foreground" aria-hidden="true" />
-    <p className="text-sm font-medium">{title}</p>
-    <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">{detail}</p>
-    {action}
+  return <Empty className="min-h-52 flex-none bg-card/20 px-5 py-8">
+    <EmptyHeader><EmptyMedia variant="icon"><IconSparkles aria-hidden="true" /></EmptyMedia><EmptyTitle>{title}</EmptyTitle><EmptyDescription>{detail}</EmptyDescription></EmptyHeader>
+    {action && <EmptyContent>{action}</EmptyContent>}
+  </Empty>;
+}
+
+function RowsLoading({ label }: { label: string }) {
+  return <div role="status" aria-label={`Loading ${label}`} className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30">
+    {Array.from({ length: 3 }, (_, index) => <div key={index} className="flex items-center gap-3 px-4 py-3">
+      <Skeleton className="size-4 rounded-sm" />
+      <div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-3 w-32" /><Skeleton className="h-2.5 w-3/4" /></div>
+      <Skeleton className="h-6 w-16" />
+    </div>)}
+    <span className="sr-only">Loading {label}…</span>
   </div>;
 }
 
@@ -77,6 +88,11 @@ export default function SkillsPage() {
   const [scopeKey, setScopeKey] = useState(() => activeProjectId ?? "global");
   const [provider, setProvider] = useState<Provider>("all");
   const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const clearQuery = () => {
+    setQuery("");
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
   const [tab, setTab] = useState("skills");
   const [skills, setSkills] = useState<RuntimeSkill[]>([]);
   const [servers, setServers] = useState<RuntimeMcpServer[]>([]);
@@ -266,7 +282,7 @@ export default function SkillsPage() {
         <SelectTrigger id="skills-project-scope" className="w-full lg:w-64"><SelectValue placeholder="Choose a project">{project ? <><ProjectMark project={project} className="size-4" /><span className="truncate">{project.displayName?.trim() || project.name}</span></> : "My global skills"}</SelectValue></SelectTrigger>
         <SelectContent><SelectItem value="global">My global skills</SelectItem>{projects.map((item) => <SelectItem key={item.id} value={item.id}><ProjectMark project={item} className="size-4" /><span className="truncate">{item.displayName?.trim() || item.name}</span></SelectItem>)}</SelectContent>
       </Select>
-      <label className="relative min-w-0 flex-1"><IconSearch className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search skills and servers" aria-label="Search skills and MCP servers" className="h-9 pl-9 pr-9" />{query && <Button type="button" variant="ghost" size="icon-xs" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={() => setQuery("")}><IconX /></Button>}</label>
+      <label className="relative min-w-0 flex-1"><IconSearch className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search skills and servers" aria-label="Search skills and MCP servers" className="h-9 pl-9 pr-9" />{query && <Button type="button" variant="ghost" size="icon-xs" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={clearQuery}><IconX /></Button>}</label>
       <Select value={provider} onValueChange={(value) => setProvider(value as Provider)}><SelectTrigger aria-label="Filter by agent" className="w-full lg:w-36"><SelectValue>{provider === "all" ? "All agents" : <><ProviderIcon provider={provider} />{providerLabel[provider]}</>}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All agents</SelectItem><SelectItem value="claude"><ProviderIcon provider="claude" />Claude</SelectItem><SelectItem value="codex"><ProviderIcon provider="codex" />Codex</SelectItem></SelectContent></Select>
     </div>
     {project && <p className="-mt-2 text-xs text-muted-foreground">Project skills are saved in this checkout. Commit them to include them in new worktrees.</p>}
@@ -274,22 +290,26 @@ export default function SkillsPage() {
     <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 flex-col gap-4">
       <TabsList className="w-full justify-start sm:w-fit"><TabsTrigger value="skills" className="px-4">Skills <span className="ml-1 text-xs text-muted-foreground">{skillsStatus === "loading" ? "—" : skills.length}</span></TabsTrigger><TabsTrigger value="mcps" className="px-4">MCP servers <span className="ml-1 text-xs text-muted-foreground">{mcpStatus === "loading" ? "—" : servers.length}</span></TabsTrigger></TabsList>
       <TabsContent value="skills" className="min-h-0 flex-1">
-        {skillsStatus === "loading" && <div role="status" className="flex min-h-52 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">Loading skills…</div>}
+        <FloqReveal className="block min-h-52" loading={skillsStatus === "loading"} revealOnMount={false}>
+        {skillsStatus === "loading" && <RowsLoading label="skills" />}
         {skillsStatus === "error" && <EmptyState title="Could not load skills" detail="Check the runtime connection and try again." action={<Button variant="outline" size="sm" onClick={() => setRefresh((value) => value + 1)}>Retry</Button>} />}
         {skillsStatus === "ready" && scope === "project" && !project && <EmptyState title="Choose a project" detail="Select a project above to see its skills and add project-specific instructions." />}
         {skillsStatus === "ready" && scope === "global" && !homeScanned && <p className="mb-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">Personal skills are hidden while your home is locked. Start an agent, then refresh to include them.</p>}
-        {skillsStatus === "ready" && project && filteredSkills.length === 0 && <EmptyState title={skills.length ? "No skills match this search" : "No project skills yet"} detail={skills.length ? "Try another search." : "Add a skill to give agents project-specific instructions."} action={skills.length ? <Button variant="link" size="sm" onClick={() => setQuery("")}>Clear search</Button> : undefined} />}
-        {skillsStatus === "ready" && scope === "global" && filteredSkills.length === 0 && <EmptyState title={skills.length ? "No skills match this search" : homeScanned ? "No installed skills yet" : "Personal skills are locked"} detail={skills.length ? "Try another search." : homeScanned ? "No bundled or personal skills were found." : "No bundled skills were found. Start an agent to unlock your home and check for personal skills."} action={skills.length ? <Button variant="link" size="sm" onClick={() => setQuery("")}>Clear search</Button> : undefined} />}
+        {skillsStatus === "ready" && project && filteredSkills.length === 0 && <EmptyState title={skills.length ? "No skills match this search" : "No project skills yet"} detail={skills.length ? "Try another search." : "Add a skill to give agents project-specific instructions."} action={skills.length ? <Button variant="link" size="sm" onClick={clearQuery}>Clear search</Button> : undefined} />}
+        {skillsStatus === "ready" && scope === "global" && filteredSkills.length === 0 && <EmptyState title={skills.length ? "No skills match this search" : homeScanned ? "No installed skills yet" : "Personal skills are locked"} detail={skills.length ? "Try another search." : homeScanned ? "No bundled or personal skills were found." : "No bundled skills were found. Start an agent to unlock your home and check for personal skills."} action={skills.length ? <Button variant="link" size="sm" onClick={clearQuery}>Clear search</Button> : undefined} />}
         {skillsStatus === "ready" && filteredSkills.length > 0 && <SkillRows skills={filteredSkills} onOpen={openInstalledSkill} onDelete={setDeleting} />}
+        </FloqReveal>
       </TabsContent>
       <TabsContent value="mcps" className="min-h-0 flex-1">
-        {mcpStatus === "loading" && <div role="status" className="flex min-h-52 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">Loading MCP servers…</div>}
+        <FloqReveal className="block min-h-52" loading={mcpStatus === "loading"} revealOnMount={false}>
+        {mcpStatus === "loading" && <RowsLoading label="MCP servers" />}
         {mcpStatus === "error" && <EmptyState title="Could not load MCP servers" detail="Check the runtime connection and try again." action={<Button variant="outline" size="sm" onClick={() => setRefresh((value) => value + 1)}>Retry</Button>} />}
         {mcpStatus === "ready" && scope === "project" && !project && <EmptyState title="Choose a project" detail="Select a project above to see its installed MCP servers." />}
         {mcpStatus === "ready" && scope === "global" && !mcpHomeScanned && <p className="mb-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">Personal MCP settings are hidden while your home is locked. Start an agent, then refresh to include them.</p>}
         {mcpStatus === "ready" && malformedMcpConfigs > 0 && <p role="status" className="mb-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{malformedMcpConfigs} MCP configuration {malformedMcpConfigs === 1 ? "file could not" : "files could not"} be read. Check the source settings and refresh.</p>}
         {mcpStatus === "ready" && filteredServers.length === 0 && <EmptyState title={servers.length ? "No servers match this search" : mcpHomeScanned ? "No installed MCP servers" : "Personal MCP settings are locked"} detail={servers.length ? "Try another search." : mcpHomeScanned ? "Installed MCP servers appear here with their provider and connection type. Use Add MCP server to install one." : "Start an agent to unlock your home and check for personal MCP servers."} action={servers.length ? <Button variant="link" size="sm" onClick={() => setQuery("")}>Clear search</Button> : undefined} />}
         {mcpStatus === "ready" && filteredServers.length > 0 && <McpRows servers={filteredServers} onRemove={setRemovingMcp} />}
+        </FloqReveal>
       </TabsContent>
     </Tabs>
 
@@ -306,7 +326,7 @@ export default function SkillsPage() {
               {catalogState === "loading" && <p role="status" className="py-3 text-center text-xs text-muted-foreground">Searching catalog…</p>}
               {catalogState === "error" && !preview && <p className="text-xs text-muted-foreground">Search failed. Check the runtime connection and try again.</p>}
               {catalogState === "ready" && catalogItems.length === 0 && <p className="py-3 text-center text-xs text-muted-foreground">No skills found. Try another search or import a supported URL.</p>}
-              {catalogItems.length > 0 && !preview && <div className="max-h-52 divide-y divide-border overflow-y-auto rounded-lg border border-border">{catalogItems.map((item) => <button key={item.id} type="button" onClick={() => void previewCatalogItem(item)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="min-w-0"><span className="block truncate text-sm font-medium">{item.name}</span><span className="block truncate text-[11px] text-muted-foreground">{item.source} · {item.installs.toLocaleString()} installs</span></span><span className="shrink-0 text-xs text-primary">Preview</span></button>)}</div>}
+              {catalogItems.length > 0 && !preview && <div className="max-h-52 divide-y divide-border overflow-y-auto rounded-lg border border-border">{catalogItems.map((item) => <button key={item.id} type="button" onClick={() => void previewCatalogItem(item)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="min-w-0"><span className="block truncate text-sm font-medium">{item.name}</span><span className="block truncate text-[11px] text-muted-foreground">{item.source} · {item.installs.toLocaleString()} installs</span></span><span className="shrink-0 text-xs text-primary-text">Preview</span></button>)}</div>}
             </TabsContent>
             <TabsContent value="url" className="mt-0 flex flex-col gap-3"><form noValidate onSubmit={(event) => void previewImportUrl(event)} className="flex flex-col gap-2"><Label htmlFor="project-skill-url">Skills.sh or GitHub SKILL.md URL</Label><div className="flex gap-2"><Input id="project-skill-url" value={importUrl} onChange={(event) => { catalogRequest.current += 1; setImportUrl(event.target.value); setPreview(null); setPreviewState("idle"); }} placeholder="https://github.com/.../SKILL.md" /><Button type="submit" variant="outline" disabled={previewState === "loading"}>Preview</Button></div><p className="text-[11px] text-muted-foreground">Only supported HTTPS skill pages and SKILL.md files can be imported.</p></form></TabsContent>
             <TabsContent value="write" className="mt-0 flex flex-col gap-3">
