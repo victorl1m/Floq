@@ -48,6 +48,18 @@ export default function PerformanceSection() {
                             />
                         </SettingRow>
                     )}
+                    <SettingRow label="Background terminals" description="Hidden tabs of the current project kept loaded. Others reload when you open them; 0 uses the least memory.">
+                        <span className="w-16 text-right text-sm tabular-nums text-muted-foreground">{prefs.warmTerminals}</span>
+                        <Slider
+                            className="w-40"
+                            min={0}
+                            max={6}
+                            step={1}
+                            value={[prefs.warmTerminals]}
+                            aria-label="Background terminals kept loaded"
+                            onValueChange={([value]) => setPrefs({ warmTerminals: value })}
+                        />
+                    </SettingRow>
                     <p className="px-4 py-3 text-xs leading-relaxed text-muted-foreground">
                         Lower limits use less memory and keep less output available to review or search. Reducing the limit immediately removes the oldest terminal lines.
                     </p>

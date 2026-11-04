@@ -86,6 +86,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       UNIQUE (user_id, cwd)
     );
     ALTER TABLE floq_project_workspaces ADD COLUMN IF NOT EXISTS available BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE floq_project_workspaces ADD COLUMN IF NOT EXISTS nav_expanded BOOLEAN NOT NULL DEFAULT TRUE;
     CREATE INDEX IF NOT EXISTS floq_project_workspaces_project_idx ON floq_project_workspaces(project_id);
     CREATE OR REPLACE FUNCTION floq_normalize_git_url(repo_url TEXT) RETURNS TEXT
     LANGUAGE SQL IMMUTABLE AS $fn$
@@ -297,6 +298,12 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       block TEXT NOT NULL,
       digest TEXT NOT NULL,
       items JSONB NOT NULL DEFAULT '[]',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS user_project_folders (
+      user_id TEXT PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL DEFAULT 1,
+      doc JSONB NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);

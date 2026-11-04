@@ -29,9 +29,9 @@ PROJECTS = [
         {"id": "agi-main", "cwd": "/synthetic/agi-paulo", "name": "main", "branch": "main", "isWorktree": False, "sessionIds": ["agi-agent-1"]},
         {"id": "agi-research", "cwd": "/synthetic/agi-paulo/.worktrees/research", "name": "Research pass", "branch": "floq/research-pass", "isWorktree": True, "sessionIds": ["agi-agent-2", "agi-agent-3"]},
     ]},
-    {**PROJECT, "id": "project-api", "name": "api-suprimentos", "displayName": "API Suprimentos", "cwd": "/synthetic/api-suprimentos", "workspaces": [
-        {"id": "api-main", "cwd": "/synthetic/api-suprimentos", "name": "main", "branch": "main", "isWorktree": False, "sessionIds": ["api-agent-1", "api-agent-2"]},
-        {"id": "api-dataverse", "cwd": "/synthetic/api-suprimentos/.worktrees/dataverse", "name": "Dataverse integration", "branch": "floq/dataverse-mcp", "isWorktree": True, "sessionIds": ["api-agent-3"]},
+    {**PROJECT, "id": "project-api", "name": "api-procurement", "displayName": "API Procurement", "cwd": "/synthetic/api-procurement", "workspaces": [
+        {"id": "api-main", "cwd": "/synthetic/api-procurement", "name": "main", "branch": "main", "isWorktree": False, "sessionIds": ["api-agent-1", "api-agent-2"]},
+        {"id": "api-dataverse", "cwd": "/synthetic/api-procurement/.worktrees/dataverse", "name": "Dataverse integration", "branch": "floq/dataverse-mcp", "isWorktree": True, "sessionIds": ["api-agent-3"]},
     ]},
     {**PROJECT, "id": "project-flowless", "name": "flowless", "displayName": "Flowless", "cwd": "/synthetic/flowless", "workspaces": [
         {"id": "flowless-main", "cwd": "/synthetic/flowless", "name": "main", "branch": "main", "isWorktree": False, "sessionIds": ["flowless-agent-1"]},
@@ -48,9 +48,9 @@ SESSIONS = [
     {**SESSION, "id": "agi-agent-1", "title": "Outline the evaluation plan", "projectId": "project-agi", "worktreeId": "agi-main", "cwd": "/synthetic/agi-paulo", "projectCwd": "/synthetic/agi-paulo", "role": "orchestrator"},
     {**SESSION, "id": "agi-agent-2", "title": "Review policy and edge cases", "projectId": "project-agi", "worktreeId": "agi-research", "cwd": "/synthetic/agi-paulo/.worktrees/research", "projectCwd": "/synthetic/agi-paulo"},
     {**SESSION, "id": "agi-agent-3", "title": "Summarize evaluator feedback", "projectId": "project-agi", "worktreeId": "agi-research", "cwd": "/synthetic/agi-paulo/.worktrees/research", "projectCwd": "/synthetic/agi-paulo", "provider": "claude", "state": "sleeping", "activity": "idle"},
-    {**SESSION, "id": "api-agent-1", "title": "Review purchase request flow", "projectId": "project-api", "worktreeId": "api-main", "cwd": "/synthetic/api-suprimentos", "projectCwd": "/synthetic/api-suprimentos"},
-    {**SESSION, "id": "api-agent-2", "title": "Check vendor synchronization", "projectId": "project-api", "worktreeId": "api-main", "cwd": "/synthetic/api-suprimentos", "projectCwd": "/synthetic/api-suprimentos", "provider": "claude"},
-    {**SESSION, "id": "api-agent-3", "title": "Dataverse MCP connection", "projectId": "project-api", "worktreeId": "api-dataverse", "cwd": "/synthetic/api-suprimentos/.worktrees/dataverse", "projectCwd": "/synthetic/api-suprimentos"},
+    {**SESSION, "id": "api-agent-1", "title": "Review purchase request flow", "projectId": "project-api", "worktreeId": "api-main", "cwd": "/synthetic/api-procurement", "projectCwd": "/synthetic/api-procurement"},
+    {**SESSION, "id": "api-agent-2", "title": "Check vendor synchronization", "projectId": "project-api", "worktreeId": "api-main", "cwd": "/synthetic/api-procurement", "projectCwd": "/synthetic/api-procurement", "provider": "claude"},
+    {**SESSION, "id": "api-agent-3", "title": "Dataverse MCP connection", "projectId": "project-api", "worktreeId": "api-dataverse", "cwd": "/synthetic/api-procurement/.worktrees/dataverse", "projectCwd": "/synthetic/api-procurement"},
     {**SESSION, "id": "flowless-agent-1", "title": "Prepare release notes", "projectId": "project-flowless", "worktreeId": "flowless-main", "cwd": "/synthetic/flowless", "projectCwd": "/synthetic/flowless"},
 ]
 SKILLS = [

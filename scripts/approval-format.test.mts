@@ -15,7 +15,7 @@ test("remaining time and announcements", () => {
   assert.equal(formatRemaining(-3), "0:00");
   assert.equal(formatRemaining(3725), "1:02:05");
   assert.deepEqual([600, 61, 60, 11, 10, 0].map(announceBucket), ["start", "start", "60", "60", "10", "10"]);
-  assert.match(describeAnnouncement("start", "Coupa API", "git push origin main", 600), /Coupa API needs your approval: git push origin main\. Expires in 10:00/);
+  assert.match(describeAnnouncement("start", "Acme API", "git push origin main", 600), /Acme API needs your approval: git push origin main\. Expires in 10:00/);
   assert.match(describeAnnouncement("10", "x", "git push", 10), /^10 seconds left/);
 });
 

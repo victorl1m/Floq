@@ -1,5 +1,6 @@
-﻿"""Focused synthetic fixture checks for canvas project context, wires, and sidebar collapse."""
-from __future__ import annotations
+"""Focused synthetic fixture checks for canvas project context, wires, and sidebar collapse."""
+from __future__ import annotations
+import os
 import importlib.util, json, re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,7 +43,7 @@ class EmptyWorkspaceFixture(CanvasFixture):
   super().handle(route)
 
 def main():
- report={"url":"http://127.0.0.1:1421/","syntheticRuntimeOnly":True,"cases":[]}
+ report={"url":os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),"syntheticRuntimeOnly":True,"cases":[]}
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True)
   context=browser.new_context(viewport={"width":1440,"height":960})

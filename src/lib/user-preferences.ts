@@ -3,7 +3,7 @@ export interface UserPreferences {
     activeOrganizationId: string | null;
     sidebarOpen: boolean;
     taskNavigatorOpen: boolean;
-    projectNavExpanded: Record<string, boolean>;
+    /** Legacy: workspace collapse state now lives on the server; read once to migrate, then emptied. */
     workspaceNavExpanded: Record<string, boolean>;
     folderNavExpanded: Record<string, boolean>;
     /** Sessions whose tab was closed: hidden from the left sidebar, still listed under Conversations. */
@@ -27,7 +27,6 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     activeOrganizationId: null,
     sidebarOpen: true,
     taskNavigatorOpen: true,
-    projectNavExpanded: {},
     workspaceNavExpanded: {},
     folderNavExpanded: {},
     hiddenSessionIds: {},
@@ -116,7 +115,6 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             activeOrganizationId: typeof parsed.activeOrganizationId === "string" ? parsed.activeOrganizationId : typeof legacy.activeTeamId === "string" ? legacy.activeTeamId : null,
             sidebarOpen: typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : true,
             taskNavigatorOpen: typeof parsed.taskNavigatorOpen === "boolean" ? parsed.taskNavigatorOpen : true,
-            projectNavExpanded: booleanMap(parsed.projectNavExpanded),
             workspaceNavExpanded: booleanMap(parsed.workspaceNavExpanded),
             folderNavExpanded: booleanMap(parsed.folderNavExpanded),
             hiddenSessionIds: booleanMap(parsed.hiddenSessionIds),

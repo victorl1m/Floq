@@ -104,7 +104,7 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
         fontFamily: MONO_FONT_FAMILY,
         minimumContrastRatio: minimumContrastRatio(darkRef.current),
         theme: mirrorTheme(darkRef.current),
-        scrollback: 500,
+        scrollback: 200,
         disableStdin: true,
         cursorBlink: false,
         cursorInactiveStyle: "none",

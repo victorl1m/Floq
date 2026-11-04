@@ -52,3 +52,41 @@ export function layoutTree(
   });
   return positions;
 }
+
+export interface FloorLayoutItem extends LayoutItem {
+  /** Floor (workspace) id the agent belongs to. */
+  floorId: string;
+}
+
+const FLOOR_GAP = 140;
+
+/**
+ * Runs `layoutTree` per floor and stacks the floors vertically. `floorOrder` is ground floor first;
+ * the ground floor ends up at the bottom, higher floors above it. Floors without agents are skipped.
+ * Returns node positions plus the floor ids that have agents, ground floor first.
+ */
+export function layoutFloors(
+  items: FloorLayoutItem[],
+  floorOrder: string[],
+  size: { width: number; height: number } = DEFAULT_NODE_SIZE,
+): { positions: Record<string, { x: number; y: number }>; floors: string[] } {
+  const order = [...floorOrder];
+  for (const item of items) if (!order.includes(item.floorId)) order.push(item.floorId);
+  const floors = order.filter((id) => items.some((item) => item.floorId === id));
+  const positions: Record<string, { x: number; y: number }> = {};
+  let top = 0;
+  // Walk from the top floor down so the ground floor (first in order) lands lowest.
+  for (const floorId of [...floors].reverse()) {
+    const members = items.filter((item) => item.floorId === floorId);
+    const ids = new Set(members.map((item) => item.id));
+    // Parents on another floor do not shape this floor's tree.
+    const local = layoutTree(members.map((item) => ({ ...item, parentId: item.parentId && ids.has(item.parentId) ? item.parentId : null })), size);
+    let bottom = 0;
+    for (const [id, point] of Object.entries(local)) {
+      positions[id] = { x: point.x, y: top + point.y };
+      bottom = Math.max(bottom, point.y + size.height);
+    }
+    top += bottom + FLOOR_GAP;
+  }
+  return { positions, floors };
+}

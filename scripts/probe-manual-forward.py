@@ -3,6 +3,7 @@ Checks: field/button enabled with no session, 3000 creates a home shell (POST /v
 then port_forward_start with that session's manual tunnel URL, preparing + error states, Enter submits, reuse on 2nd forward.
 Run with the dev server on :1421: python scripts/probe-manual-forward.py [light|dark]
 """
+import os
 import importlib.util, json, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -51,7 +52,7 @@ def main():
         context.add_init_script(TAURI_STUB + "localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fx = make_fixture(); page.route("**/*", fx.handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000); page.wait_for_timeout(2500)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000); page.wait_for_timeout(2500)
         chip = page.locator("footer").get_by_role("button", name="Ports", exact=False); chip.click(); page.wait_for_timeout(300)
         pop = page.locator("[data-slot=popover-content]")
         field = pop.get_by_label("Port to forward"); btn = pop.get_by_role("button", name="Forward", exact=True)

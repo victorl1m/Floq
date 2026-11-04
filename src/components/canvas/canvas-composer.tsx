@@ -220,7 +220,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
   return (
     <Panel position="bottom-center" className="nodrag nopan nowheel mb-3!">
       {collapsed ? (
-        <Button type="button" variant="outline" size="sm" className="animate-in rounded-full border-border bg-card/80 shadow-md backdrop-blur-sm fade-in motion-reduce:animate-none" onClick={() => setCollapsedPersist(false)}>
+        <Button type="button" variant="outline" size="sm" className="animate-in rounded-full border-border bg-card/95 shadow-md fade-in motion-reduce:animate-none" onClick={() => setCollapsedPersist(false)}>
           <IconMessage size={14} />
           Message agents
         </Button>
@@ -231,7 +231,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
           onDragLeave={() => setDropHover(false)}
           onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); setDropHover(false); attachments.addFiles(Array.from(event.dataTransfer.files)); } }}
           className={cn(
-            "flex w-[min(640px,calc(100vw-470px))] min-w-80 animate-in flex-col gap-1.5 rounded-xl border bg-card/85 p-2 text-[13px] leading-5 shadow-lg backdrop-blur-md duration-300 slide-in-from-bottom-4 fade-in motion-reduce:animate-none",
+            "flex w-[min(640px,calc(100vw-470px))] min-w-80 animate-in flex-col gap-1.5 rounded-xl border bg-card/95 p-2 text-[13px] leading-5 shadow-lg duration-300 slide-in-from-bottom-4 fade-in motion-reduce:animate-none",
             "transition-[border-color,box-shadow] focus-within:border-primary/60 focus-within:shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_18%,transparent)]",
             dropHover ? "border-primary border-dashed bg-primary/5" : "border-border",
           )}

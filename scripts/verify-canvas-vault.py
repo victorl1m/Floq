@@ -1,5 +1,6 @@
 """Global vault popover on the canvas: 2 secrets, empty state, light + dark, live refresh."""
 from __future__ import annotations
+import os
 import importlib.util, json
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,7 +24,7 @@ def run(theme,fx,shot,p):
  b=p.chromium.launch(headless=True); c=b.new_context(viewport={"width":1440,"height":960})
  c.add_init_script(f"localStorage.setItem('theme','{theme}');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({{baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:{json.dumps(FIX.USER)}}}));")
  pg=c.new_page(); errs=[]; pg.on("pageerror",lambda e:errs.append(str(e))); pg.route("**/*",fx.handle)
- pg.goto("http://127.0.0.1:1421/",wait_until="domcontentloaded"); pg.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
+ pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),wait_until="domcontentloaded"); pg.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
  pg.get_by_role("button",name="AGI Paulo - SARAH",exact=True).click(); pg.locator('.react-flow__node[data-id="agi-agent-2"]').wait_for(timeout=10000)
  btn=pg.get_by_role("button",name=__import__("re").compile("Global vault")); btn.wait_for(timeout=5000); res={"label":btn.get_attribute("aria-label")}
  btn.click(); pg.wait_for_timeout(300)

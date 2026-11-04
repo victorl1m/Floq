@@ -1,5 +1,6 @@
 """Undo-delete probe on the synthetic fixture runtime (dev server on :1420).
 Deletes from each entry point -> hidden at once + Undo toast -> Undo restores; timer -> one DELETE; reload; multi-delete; Ctrl+Z; screenshots."""
+import os
 import importlib.util, json, sys, re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -9,7 +10,7 @@ def load(n,f):
  s=importlib.util.spec_from_file_location(n,ROOT/"scripts"/f); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
 FIX=load("verify_ui","verify-ui.py"); CANVAS=load("vfc","verify-final-canvas.py")
 OUT=ROOT/"docs"/"redesign"/"undo-delete"; OUT.mkdir(parents=True,exist_ok=True)
-URL="http://127.0.0.1:1420/"
+URL=os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1420/")
 def shell(i,title,project=True):
  base=FIX.SESSIONS[0]
  s={**base,"id":f"sh-{i}","provider":"shell","title":title,"role":None}

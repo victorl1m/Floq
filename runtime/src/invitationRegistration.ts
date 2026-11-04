@@ -20,6 +20,7 @@ interface InvitationRow extends QueryResultRow {
   id: string;
   organization_id: string;
   email: string;
+  role?: string;
 }
 
 interface UserRow extends QueryResultRow {
@@ -28,7 +29,7 @@ interface UserRow extends QueryResultRow {
 
 async function findInvitation(pool: Pool, tokenHash: string): Promise<InvitationRow | undefined> {
   const result = await pool.query<InvitationRow>(
-    "SELECT id, organization_id, email FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now()",
+    "SELECT id, organization_id, email, role FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now()",
     [tokenHash],
   );
   return result.rows[0];
@@ -68,7 +69,7 @@ export async function registerWithInvitation(
     await client.query("BEGIN");
     transactionStarted = true;
     const invitation = await client.query<InvitationRow>(
-      "SELECT id, organization_id, email FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now() FOR UPDATE",
+      "SELECT id, organization_id, email, role FROM collaboration.organization_invitations WHERE token_hash = $1 AND expires_at > now() FOR UPDATE",
       [digest],
     );
     const row = invitation.rows[0];
@@ -86,8 +87,8 @@ export async function registerWithInvitation(
       [accountId, userId, userId, passwordHash],
     );
     await client.query(
-      "INSERT INTO collaboration.organization_members (organization_id, user_id, role) VALUES ($1::uuid, $2, 'member')",
-      [row.organization_id, userId],
+      "INSERT INTO collaboration.organization_members (organization_id, user_id, role) VALUES ($1::uuid, $2, $3)",
+      [row.organization_id, userId, row.role === "admin" ? "admin" : "member"],
     );
     const consumed = await client.query(
       "DELETE FROM collaboration.organization_invitations WHERE id = $1::uuid AND token_hash = $2 AND expires_at > now() RETURNING id",

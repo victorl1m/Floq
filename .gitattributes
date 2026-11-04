@@ -1,4 +1,30 @@
-* text=auto
+# Normalize text files to LF in the repository and in working copies.
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.cur binary
+
+# Windows scripts keep CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts and the runtime image must stay LF (they run in Linux containers)
+*.sh text eol=lf
 runtime/image/** text eol=lf
 runtime/Dockerfile text eol=lf
-*.sh text eol=lf

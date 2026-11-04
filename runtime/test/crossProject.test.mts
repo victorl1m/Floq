@@ -13,10 +13,10 @@ const A2 = "11111111-1111-1111-1111-222222222222";
 const B = "22222222-2222-2222-2222-222222222222";
 const C = "33333333-3333-3333-3333-333333333333"; // another user's agent
 const ROWS = [
-  row(A, "Coupa API", "u1", "p1", "Coupa Wrapper", "coupa"),
-  row(A2, "Coupa Helper", "u1", "p1", "Coupa Wrapper", "coupa"),
-  row(B, "Neotalk Dev", "u1", "p2", "Neotalk Console", "neotalk", "frontend"),
-  row(C, "Stranger", "u2", "p3", "Neotalk Console", "neotalk"),
+  row(A, "Acme API", "u1", "p1", "Acme Wrapper", "acme"),
+  row(A2, "Acme Helper", "u1", "p1", "Acme Wrapper", "acme"),
+  row(B, "Globex Dev", "u1", "p2", "Globex Console", "globex", "frontend"),
+  row(C, "Stranger", "u2", "p3", "Globex Console", "globex"),
 ];
 
 function harness(allow = true, guard = new CrossProjectGuard()) {
@@ -41,15 +41,15 @@ function harness(allow = true, guard = new CrossProjectGuard()) {
 test("discovery lists every project of the user, with project info, and filters by project", async () => {
   const { orchestrator } = harness();
   const all = await orchestrator.list("u1", A);
-  assert.deepEqual(all.map((a) => a.name).sort(), ["Coupa API", "Coupa Helper", "Neotalk Dev"]);
+  assert.deepEqual(all.map((a) => a.name).sort(), ["Acme API", "Acme Helper", "Globex Dev"]);
   const neo = all.find((a) => a.id === B)!;
-  assert.equal(neo.project.name, "Neotalk Console");
+  assert.equal(neo.project.name, "Globex Console");
   assert.equal(neo.project.same, false);
   assert.equal(neo.role, "frontend");
   assert.equal(all.find((a) => a.id === A2)!.project.same, true);
-  assert.deepEqual((await orchestrator.list("u1", A, { project: "neotalk" })).map((a) => a.id), [B]);
+  assert.deepEqual((await orchestrator.list("u1", A, { project: "globex" })).map((a) => a.id), [B]);
   assert.deepEqual((await orchestrator.list("u1", A, { here: true })).map((a) => a.id).sort(), [A, A2]);
-  assert.match(formatAgentListEntry(neo as never), /project "Neotalk Console"/);
+  assert.match(formatAgentListEntry(neo as never), /project "Globex Console"/);
 });
 
 test("another user's agents are invisible and unreachable", async () => {
@@ -63,17 +63,17 @@ test("ask across projects types a provenance header, the body and a reply path",
   const { orchestrator, typed, records } = harness();
   const r = await orchestrator.ask("u1", A, B, "I am building the API; will send OpenAPI", 10, false);
   assert.equal(r.status, "sent");
-  assert.match(typed[0], /^\[Message from agent Coupa API \(project Coupa Wrapper, session 11111111-1111-1111-1111-111111111111, hop 1\)\] I am building the API/);
+  assert.match(typed[0], /^\[Message from agent Acme API \(project Acme Wrapper, session 11111111-1111-1111-1111-111111111111, hop 1\)\] I am building the API/);
   assert.match(typed[0], /floq ask 11111111-1111-1111-1111-111111111111/);
   assert.ok(!typed[0].includes("\n"));
   const cross = records[0][7] as { toProject: string };
-  assert.equal(cross.toProject, "Neotalk Console");
+  assert.equal(cross.toProject, "Globex Console");
 });
 
 test("same-project messages keep the old format", async () => {
   const { orchestrator, typed } = harness();
   await orchestrator.ask("u1", A, A2, "hello", 10, false);
-  assert.equal(typed[0], "[Message from agent Coupa API] hello");
+  assert.equal(typed[0], "[Message from agent Acme API] hello");
 });
 
 test("setting off blocks cross-project reach but not the own project", async () => {

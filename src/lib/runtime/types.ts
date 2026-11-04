@@ -57,6 +57,8 @@ export interface ProjectWorkspace {
   name: string;
   branch: string | null;
   isWorktree: boolean;
+  /** Sidebar collapse state, stored on the server with the workspace. */
+  navExpanded: boolean;
   sessionIds: string[];
 }
 
@@ -74,8 +76,15 @@ export interface RuntimeProject {
 export interface TaskCard { id: string; title: string; description: string; position: number; assigneeId: string | null; dueAt: string | null; createdAt: string; updatedAt: string }
 export interface TaskList { id: string; title: string; position: number; cards: TaskCard[] }
 export interface TaskBoard { id: string; organizationId: string; title: string; createdAt: string; lists: TaskList[] }
-export interface OrganizationMember { id: string; name: string; email: string; role: "owner" | "member" }
-export interface Organization { id: string; name: string; role: "owner" | "member"; members: OrganizationMember[] }
+export type OrganizationRole = "owner" | "admin" | "member";
+export interface OrganizationMember { id: string; name: string; email: string; role: OrganizationRole }
+export interface Organization { id: string; name: string; slug: string; role: OrganizationRole; createdAt?: string; members: OrganizationMember[] }
+/** Pending invitation as the organization's owners and admins see it. */
+export interface OrganizationInvitation { id: string; email: string; role: "admin" | "member"; invitedBy: string; createdAt: string; expiresAt: string; status: "pending" | "expired" }
+/** Returned once when an invitation is created or resent. The runtime has no email transport, so delivery is always "manual". */
+export interface IssuedOrganizationInvitation extends OrganizationInvitation { token: string; delivery: "manual" }
+/** An invitation addressed to the signed-in user's email. */
+export interface IncomingOrganizationInvitation { id: string; organization: { id: string; name: string; slug: string }; role: "admin" | "member"; invitedBy: string; expiresAt: string }
 
 /** What deleting a Floq-created worktree would lose (read-only; GET .../delete-status). */
 export interface WorktreeDeleteStatus {
@@ -99,6 +108,48 @@ export interface WorktreeDeleteResult {
   branchNote: string | null;
   idleSessions: number;
 }
+
+/** One checkout (main or worktree) a project owns; part of the delete-project confirmation. */
+export interface ProjectCheckoutReport {
+  workspaceId: string;
+  path: string;
+  kind: "project" | "worktree";
+  branch: string | null;
+  /** Floq created this directory and will delete it. False: outside Floq's directories, left untouched. */
+  managed: boolean;
+  state: "ok" | "missing" | "unreadable" | "unmanaged";
+  uncommittedFiles: number | null;
+}
+
+/** What deleting a project would remove (read-only; GET /v1/projects/:id/delete-status). */
+export interface ProjectDeleteStatus {
+  project: { id: string; name: string };
+  sessions: { total: number; live: number };
+  notes: number;
+  keychains: number;
+  checkouts: ProjectCheckoutReport[];
+  worktrees: number;
+  dirtyWorktrees: number;
+  dirtyMainCheckout: boolean;
+  unmanagedCheckouts: number;
+  unreadableCheckouts: number;
+}
+
+export interface ProjectDeleteResult {
+  deleted: true;
+  sessionsDeleted: number;
+  removedCheckouts: number;
+  leftovers: Array<{ path: string; reason: string }>;
+}
+
+/** Per-user sidebar folder layout stored on the runtime (GET/PUT /v1/project-folders). */
+export interface ProjectFoldersDoc {
+  folders: Array<{ id: string; name: string }>;
+  root: Array<{ kind: "project" | "folder"; id: string }>;
+  membership: Record<string, string[]>;
+  expanded: Record<string, boolean>;
+}
+export interface ProjectFoldersState { version: number; doc: ProjectFoldersDoc | null; updatedAt: string | null }
 
 export type SkillScope = "global" | "project";
 export type SkillSource = "project" | "home" | "bundled";

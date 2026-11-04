@@ -1,5 +1,6 @@
-﻿"""Focused regression probes for frosted menus, search/home surfaces, and right-panel closing."""
+"""Focused regression probes for frosted menus, search/home surfaces, and right-panel closing."""
 from __future__ import annotations
+import os
 import importlib.util, json, re
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -9,7 +10,7 @@ FIX=importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(FIX)
 OUT=ROOT/"docs"/"redesign"; OUT.mkdir(parents=True,exist_ok=True)
 
 def main():
- report={"url":"http://127.0.0.1:1421/","syntheticRuntimeOnly":True}
+ report={"url":os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),"syntheticRuntimeOnly":True}
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True); context=browser.new_context(viewport={"width":1440,"height":960})
   context.add_init_script("localStorage.setItem('theme','dark');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")

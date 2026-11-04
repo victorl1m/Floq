@@ -43,3 +43,6 @@ docs/redesign/
 # Python caches (probe scripts)
 __pycache__/
 *.pyc
+
+# Local AI tooling state
+.impeccable/

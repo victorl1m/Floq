@@ -24,7 +24,7 @@ export function GlisseSurface({ className, ...props }: ComponentProps<typeof Gla
     () => false,
   );
 
-  const renderGlass = !forcedColors && (material === "glass" || (material === "system" && !prefersReducedTransparency));
+  const renderGlass = !forcedColors && material === "glass" && !prefersReducedTransparency;
   const classes = cn(renderGlass ? "floq-glass" : "floq-surface", "rounded-xl", className);
   if (!renderGlass) {
     return <div className={classes} {...props} />;

@@ -1,4 +1,5 @@
 """Focused production probe for the Home hero reveal in light and reduced motion."""
+import os
 import importlib.util
 import json
 from pathlib import Path
@@ -22,7 +23,7 @@ with sync_playwright() as p:
         page.emulate_media(reduced_motion=mode)
         fixture = FIXTURES.Fixture()
         page.route("**/*", fixture.handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000)
         page.evaluate("document.fonts.ready")
         page.wait_for_timeout(5000)

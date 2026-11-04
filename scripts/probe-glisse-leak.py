@@ -1,4 +1,5 @@
 """Before/after of the Glisse OS-scheme leak on the Keychains empty-state button. Needs vite on :1421."""
+import os
 import importlib.util, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -15,7 +16,7 @@ with sync_playwright() as p:
             ctx = b.new_context(viewport={"width": 1440, "height": 900}, color_scheme="dark")
             ctx.add_init_script(f"localStorage.setItem('theme','{'dark' if mode == 'dark' else 'light'}');localStorage.setItem('floq.material','{'solid' if mode == 'solid' else 'glass'}');" + CONN)
             pg = ctx.new_page(); fx = F.Fixture(); pg.route("**/*", lambda r: fx.handle(r))
-            pg.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
+            pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
             pg.get_by_text("Secrets").first.click(); pg.wait_for_timeout(1200)
             if variant == "before": pg.evaluate("()=>{" + LEAK + "}")
             btn = pg.get_by_role("button", name="Open canvas to create one")

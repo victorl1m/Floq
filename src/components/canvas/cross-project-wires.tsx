@@ -19,7 +19,7 @@ export function CrossProjectWires({ links, titleOf }: { links: AgentLink[]; titl
             key={link.id}
             data-slot="cross-project-wire"
             title={`${local} ${f.direction === "out" ? "reaches" : "is reached by"} ${f.title} in project ${f.projectName}${link.messageCount ? ` (${link.messageCount} messages)` : ""}`}
-            className="flex max-w-full items-center gap-1.5 rounded-full border bg-card/90 py-0.5 pr-2 pl-1.5 text-[11px] text-muted-foreground shadow-sm backdrop-blur-sm"
+            className="flex max-w-full items-center gap-1.5 rounded-full border bg-card/90 py-0.5 pr-2 pl-1.5 text-[11px] text-muted-foreground shadow-sm"
           >
             <IconArrowsExchange aria-hidden="true" className="size-3.5 shrink-0" />
             <span className="truncate"><span className="text-foreground">{local}</span> ↔ {f.title} · {f.projectName}</span>

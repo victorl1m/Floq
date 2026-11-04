@@ -1,6 +1,7 @@
 """Button state matrix: idle/hover/pressed per visible button across scenes x (light, dark, solid) with the OS scheme forced
 dark (the Glisse prefers-color-scheme leak case). Needs vite/preview on :1421.
 Usage: python scripts/probe-button-states.py [tag]  -> docs/redesign/button-states/{tag}-report.json + screenshots."""
+import os
 import importlib.util, json, sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,7 +72,7 @@ with sync_playwright() as p:
                 elif path == "/v1/agent-roles": route.fulfill(status=200, content_type="application/json", headers=hd, body=json.dumps(ROLES))
                 else: fx.handle(route)
             pg.route("**/*", h)
-            pg.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
+            pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded"); pg.wait_for_timeout(2200)
             key = f"{mode}-{scene}"
             try:
                 scene_open(pg, scene)

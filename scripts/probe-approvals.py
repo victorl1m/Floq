@@ -5,6 +5,7 @@ footer chip, the prompt is on top of Home, Canvas, Settings and the command pale
 countdown, outcome state, POST payloads, light/dark screenshots.
 Run with the dev server on :1421: python scripts/probe-approvals.py [light|dark]
 """
+import os
 import importlib.util, json, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,8 +34,8 @@ def ref(i, name, provider, pid, pname):
     return {"id": i, "name": name, "provider": provider, "projectId": pid, "projectName": pname}
 
 
-SARAH = ref("agi-agent-2", "SARAH", "claude", "p1", "Coupa Wrapper")
-NEO = ref("agi-agent-3", "Neotalk Dev", "codex", "p2", "Neotalk Console")
+SARAH = ref("agi-agent-2", "SARAH", "claude", "p1", "Acme Wrapper")
+NEO = ref("agi-agent-3", "Globex Dev", "codex", "p2", "Globex Console")
 
 
 class Fixture(CANVAS.CanvasFixture):
@@ -91,11 +92,11 @@ def main():
         context.add_init_script(INIT + "localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fixture = Fixture(); page.route("**/*", fixture.handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)
         dialog = page.get_by_role("dialog", name="Approval needed")
         dialog.wait_for(timeout=10000)
         text = dialog.inner_text()
-        c["namesRequesterAndTarget"] = all(s in text for s in ("SARAH", "Coupa Wrapper", "Neotalk Dev", "Neotalk Console"))
+        c["namesRequesterAndTarget"] = all(s in text for s in ("SARAH", "Acme Wrapper", "Globex Dev", "Globex Console"))
         action = dialog.locator("[data-slot=approval-action]")
         c["showsExactActionMonospaced"] = action.inner_text() == "git push origin main" and "mono" in action.evaluate("e => getComputedStyle(e).fontFamily + ' ' + e.className")
         c["showsDetail"] = "Fast-forward main" in text

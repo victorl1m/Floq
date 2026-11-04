@@ -14,6 +14,7 @@ import type { SessionSummary } from "@/lib/runtime/types";
 import SessionTerminal, { STATE_DOT } from "./session-terminal";
 import { isLive } from "./provider";
 import { ProviderIcon } from "./provider";
+import { usePerformancePrefs } from "@/lib/prefs";
 import { chooseSplitPeer, resolveSplitPeer, visibleSplitIds } from "@/lib/runtime/terminal-split";
 import {
     DropdownMenu,
@@ -31,6 +32,17 @@ const SPLIT_VIEW_ENABLED = false;
  * Hosts every opened xterm (kept mounted so scrollback survives switching).
  * "terminal" view = shell sessions with tabs; "session" view = the selected agent.
  */
+function updateWarmTerminals(mru: string[], openedIds: string[], isVisible: (id: string) => boolean, inScope: (id: string) => boolean, maxWarmHidden: number): Set<string> {
+    // Terminals of other projects are released (client-side only); the runtime keeps the session running.
+    const open = new Set(openedIds.filter((id) => inScope(id) || isVisible(id)));
+    const visible = openedIds.filter(isVisible);
+    const next = [...visible, ...mru.filter((id) => open.has(id) && !visible.includes(id))];
+    const keep = visible.length + maxWarmHidden;
+    next.length = Math.min(next.length, keep);
+    mru.splice(0, mru.length, ...next);
+    return new Set(next);
+}
+
 export default function TerminalPanel() {
     const {
         client,
@@ -62,6 +74,8 @@ export default function TerminalPanel() {
     const supported = info ? info.server.providers.includes("shell") : null;
     const slot = useTitlebarSlot();
     const creating = useRef(false);
+    const warmRef = useRef<string[]>([]);
+    const [performancePrefs] = usePerformancePrefs();
     const [shellError, setShellError] = useState<string | null>(null);
     const [splitSelection, setSplitSelection] = useState<{ primaryId: string; peerId: string } | null>(null);
     const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
@@ -196,6 +210,7 @@ export default function TerminalPanel() {
     const activeSplitPeer = resolveSplitPeer(primaryId, desiredPeerId, liveOpenedIds);
     const split = activeSplitPeer !== null;
     const visibleSplitSessions = visibleSplitIds(openedIds, primaryId, activeSplitPeer);
+    const warmIds = updateWarmTerminals(warmRef.current, openedIds, (id) => (split ? visibleSplitSessions.has(id) : isActive(id)), (id) => (sessions.find((item) => item.id === id)?.projectId ?? null) === tabProjectId, performancePrefs.warmTerminals);
     const primarySession = sessions.find((session) => session.id === primaryId);
     const splitCandidates = sessions.filter((session) =>
         session.id !== primaryId && openedIds.includes(session.id) && isLive(session.state),
@@ -358,6 +373,9 @@ export default function TerminalPanel() {
                 {openedIds.map((id) => {
                     const session = sessions.find((item) => item.id === id);
                     const visible = split ? visibleSplitSessions.has(id) : isActive(id);
+                    // Hidden tabs beyond the warm set are unmounted: xterm and its scrollback are freed,
+                    // and the runtime replays buffered output when the tab is shown again.
+                    if (!warmIds.has(id)) return null;
                     return (
                         <div
                             key={id}

@@ -5,6 +5,7 @@ Settings > Agents has the default-on "Always recruit subagents" switch that PATC
 instruction preview is a collapsed disclosure (aria-expanded) that opens into a read-only labelled textarea.
 Run with the dev server on :1421: python scripts/probe-subagents.py [light|dark]
 """
+import os
 import importlib.util, json, sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -53,7 +54,7 @@ def main():
         context.add_init_script("localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fixture = Fixture(); page.route("**/*", fixture.handle)
-        page.goto("http://127.0.0.1:1421/", wait_until="domcontentloaded", timeout=15000)
+        page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000)
 
         page.get_by_role("button", name="AGI Paulo - SARAH", exact=True).click()

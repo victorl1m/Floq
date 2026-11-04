@@ -45,18 +45,18 @@ test("floq note write appears on the writer's project canvas, wired, unplaced; e
   assert.deepEqual((await notes.list(U, P1)).map((n) => n.title), [], "an adopted note is not duplicated onto other canvases");
 
   // The agent creates one.
-  await orch.noteWrite(U, "coupa-api-wrapper", "line 1\nline 2", false);
-  const mirrored = await notes.mirrorAgentNote(U, S1, "coupa-api-wrapper");
+  await orch.noteWrite(U, "acme-api-wrapper", "line 1\nline 2", false);
+  const mirrored = await notes.mirrorAgentNote(U, S1, "acme-api-wrapper");
   assert.ok(mirrored);
-  assert.equal(mirrored.title, "coupa-api-wrapper");
+  assert.equal(mirrored.title, "acme-api-wrapper");
   assert.equal(mirrored.projectId, P1);
   assert.deepEqual(mirrored.linkedSessionIds, [S1]);
   assert.equal(mirrored.placed, false);
   assert.equal((await notes.list(U, P1)).length, 1);
 
   // Append through floq refreshes the same card (no duplicate).
-  await orch.noteWrite(U, "coupa-api-wrapper", "line 3", true);
-  await notes.mirrorAgentNote(U, S1, "coupa-api-wrapper");
+  await orch.noteWrite(U, "acme-api-wrapper", "line 3", true);
+  await notes.mirrorAgentNote(U, S1, "acme-api-wrapper");
   const after = await notes.list(U, P1);
   assert.equal(after.length, 1);
   assert.equal(after[0].text, "line 1\nline 2\nline 3");
@@ -65,12 +65,12 @@ test("floq note write appears on the writer's project canvas, wired, unplaced; e
   const placed = await notes.patch(U, after[0].id, { x: 40, y: 60 });
   assert.equal(placed.placed, true);
   await notes.patch(U, after[0].id, { text: "edited on canvas" });
-  assert.deepEqual((await orch.noteRead(U, "coupa-api-wrapper")).content, "edited on canvas");
+  assert.deepEqual((await orch.noteRead(U, "acme-api-wrapper")).content, "edited on canvas");
 
   // Deleting the card removes the note; undo (create with the title) restores both.
   await notes.remove(U, after[0].id);
-  await assert.rejects(orch.noteRead(U, "coupa-api-wrapper"));
-  const restored = await notes.create(U, P1, { x: 40, y: 60, text: "edited on canvas", agentNoteName: "coupa-api-wrapper" });
-  assert.equal(restored.title, "coupa-api-wrapper");
-  assert.equal((await orch.noteRead(U, "coupa-api-wrapper")).content, "edited on canvas");
+  await assert.rejects(orch.noteRead(U, "acme-api-wrapper"));
+  const restored = await notes.create(U, P1, { x: 40, y: 60, text: "edited on canvas", agentNoteName: "acme-api-wrapper" });
+  assert.equal(restored.title, "acme-api-wrapper");
+  assert.equal((await orch.noteRead(U, "acme-api-wrapper")).content, "edited on canvas");
 });
