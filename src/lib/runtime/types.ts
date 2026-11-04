@@ -255,6 +255,8 @@ export interface CanvasNote {
   y: number;
   w: number;
   h: number;
+  /** Agents wired to the note; they can read and edit it and create notes with `floq sticky`. */
+  linkedSessionIds: string[];
   createdAt: string;
   updatedAt: string;
 }

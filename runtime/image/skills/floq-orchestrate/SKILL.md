@@ -62,6 +62,20 @@ floq note list
 
 Notes are shared among the user's agents. Keep them concise and update or append rather than repeating a large context in every terminal message.
 
+## Canvas notes
+
+The user can wire canvas notes (sticky notes) to you. Linked notes are yours to read and edit; you cannot see other notes.
+
+```sh
+floq sticky list                      # ids of the notes wired to you
+floq sticky read NOTE_ID
+floq sticky write NOTE_ID "new text"  # replaces; use - to read the text from stdin
+floq sticky append NOTE_ID "more"
+floq sticky new "text" --color blue   # creates a note, wired to you, next to your other notes
+```
+
+Read before you write (the user may have edited it), prefer `append` for additions, and never put secrets in a note.
+
 ## Lead-only session management
 
 Only the **orchestrator** (a session the user marked with the orchestrator role) may recruit agents; connect and dismiss need a lead session. If you are NOT the orchestrator, never try to recruit: the call is refused with HTTP 403. Instead message the orchestrator with what you need (role, task, context): `floq ask <orchestrator-uuid> "Please recruit a <role> agent to <task>"`. The orchestrator recruits, then reports the new agent's name back to you. If the project has no orchestrator, tell the user to mark one (right-click an agent > Set as orchestrator). Orchestrators coordinate, delegate and read results with `ask`/`wait`/`check`; they do not do implementation themselves unless it is trivial. Recruitment can select `claude` or `codex` and optionally a working directory and role; recruited sessions start in the lead's project directory by default. User authorization still governs whether to create extra sessions.

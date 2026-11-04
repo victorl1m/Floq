@@ -1,7 +1,7 @@
-import { memo, useRef, useState } from "react";
+import { memo, useRef } from "react";
 import { Handle, NodeResizer, Position, useConnection, type Node, type NodeProps } from "@xyflow/react";
 import { orchestratorLabel } from "@/lib/runtime/orchestrator";
-import { IconChevronDown, IconChevronRight, IconCrown, IconKey, IconLink, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronRight, IconCrown, IconKey, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import { ProviderIcon } from "@/components/agents/provider";
 import type { SessionState, SessionSummary } from "@/lib/runtime/types";
 import { useCanvasCtx } from "./canvas-context";
+import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "./wire-edge";
 import NodeMessageBar from "./node-message-bar";
 import SessionMirror, { getMirrorTail } from "./session-mirror";
 
@@ -32,24 +33,6 @@ const SIDES = [
   { id: "left", position: Position.Left },
 ] as const;
 
-type Side = (typeof SIDES)[number]["id"];
-
-/** Dots stay connectable (opacity only, never display/pointer-events); the ::after pseudo-element widens the hit area. */
-function handleClass(show: boolean, linked: boolean) {
-  return cn(
-    "size-3.5! rounded-full! border-2! border-background! bg-primary! transition-[opacity,transform] after:absolute after:-inset-2.5 after:content-[''] hover:scale-125 [&.connectingto]:bg-emerald-500! [&.valid]:bg-emerald-500!",
-    show ? "opacity-100 scale-125" : linked ? "opacity-60 scale-60 bg-muted-foreground!" : "opacity-0",
-  );
-}
-
-function nearestSide(event: React.PointerEvent<HTMLElement>): Side {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const distances: [Side, number][] = [
-    ["top", event.clientY - rect.top], ["right", rect.right - event.clientX], ["bottom", rect.bottom - event.clientY], ["left", event.clientX - rect.left],
-  ];
-  return distances.reduce((best, item) => (item[1] < best[1] ? item : best))[0];
-}
-
 export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
   const ctx = useCanvasCtx();
   const connection = useConnection();
@@ -66,19 +49,15 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
   const sleeping = session.state === "sleeping";
   const waking = ctx.waking.has(id);
   const links = ctx.linkInfo[id];
-  const [hoverSide, setHoverSide] = useState<Side | null>(null);
-  const showAll = connecting || linkPicking;
   const barRef = useRef<HTMLTextAreaElement>(null);
 
   return (
     <div
-      onPointerMove={(event) => { const side = nearestSide(event); setHoverSide((current) => (current === side ? current : side)); }}
-      onPointerLeave={() => setHoverSide(null)}
       className="group/node relative size-full"
     >
-      <NodeResizer isVisible={selected && !collapsed} minWidth={MIN_SIZE.width} minHeight={MIN_SIZE.height} maxWidth={MAX_SIZE.width} maxHeight={MAX_SIZE.height} onResizeEnd={(_, rect) => ctx.savePlacement(id, rect)} lineClassName="border-primary!" handleClassName="size-2.5! rounded-sm! border-primary! bg-background!" />
+      <NodeResizer lineStyle={RESIZER_ABOVE} handleStyle={RESIZER_ABOVE} isVisible={selected && !collapsed} minWidth={MIN_SIZE.width} minHeight={MIN_SIZE.height} maxWidth={MAX_SIZE.width} maxHeight={MAX_SIZE.height} onResizeEnd={(_, rect) => ctx.savePlacement(id, rect)} lineClassName="border-primary!" handleClassName="size-2.5! rounded-sm! border-primary! bg-background!" />
       {SIDES.map((side) => (
-        <Handle key={side.id} id={side.id} type="source" position={side.position} isConnectable isConnectableStart isConnectableEnd className={handleClass(showAll || hoverSide === side.id, !!links?.sides.has(side.id))} />
+        <Handle key={side.id} id={side.id} type="source" position={side.position} style={SIDE_STRIP_STYLE[side.position]} isConnectable isConnectableStart isConnectableEnd className={SIDE_STRIP_CLASS} />
       ))}
 
       <div
@@ -90,6 +69,8 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
           linkPicking && !isLinkSource && "cursor-crosshair hover:border-violet-500 hover:ring-2 hover:ring-violet-500/30",
           (inactive || sleeping) && "opacity-70",
           ctx.sentIds.has(id) && "ring-2 ring-emerald-500/60",
+        "peer-hover/h:border-primary peer-hover/h:ring-2 peer-hover/h:ring-primary/50 peer-hover/h:shadow-[0_0_16px_0_var(--primary)]",
+        connecting && !isLinkSource && "group-hover/node:border-emerald-500 group-hover/node:ring-2 group-hover/node:ring-emerald-500/50 group-hover/node:shadow-[0_0_16px_0_var(--color-emerald-500)]",
         ctx.highlightId === id && "ring-4 ring-primary/50 motion-safe:animate-pulse",
         )}
       >
@@ -129,6 +110,11 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
               <IconKey size={12} />{ctx.keychainCounts[id]}
             </span>
           )}
+          {(ctx.noteCounts[id] ?? 0) > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground tabular-nums" title={`${ctx.noteCounts[id]} note${ctx.noteCounts[id] === 1 ? "" : "s"} linked`}>
+              <IconNote size={12} />{ctx.noteCounts[id]}
+            </span>
+          )}
           <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Open ${session.title}`} title="Open terminal" onClick={() => ctx.focus(session)}>
             <IconWindowMaximize size={14} />
           </Button>
@@ -136,7 +122,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
       </div>
 
       {!collapsed && (
-        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0c0c0e]" onClick={() => { barRef.current?.focus(); }}>
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0c0c0e]" onDoubleClick={() => barRef.current?.focus()}>
           {live ? (
             <SessionMirror session={session} />
           ) : (

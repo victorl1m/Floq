@@ -99,10 +99,14 @@ export function useAgentEvents(client: RuntimeClient | null, projectId: string |
 export type { CanvasNote, NoteColor };
 export type NotePatch = CanvasNoteInput;
 
-export const fetchNotes = (client: RuntimeClient, projectId: string) => client.projectNotes(projectId);
-export const createNoteRequest = (client: RuntimeClient, projectId: string, input: CanvasNoteInput & { x: number; y: number }) => client.createNote(projectId, input);
+// A runtime that predates note links omits linkedSessionIds, so default it.
+const withLinks = (note: CanvasNote): CanvasNote => ({ ...note, linkedSessionIds: note.linkedSessionIds ?? [] });
+export const fetchNotes = async (client: RuntimeClient, projectId: string) => (await client.projectNotes(projectId)).map(withLinks);
+export const createNoteRequest = async (client: RuntimeClient, projectId: string, input: CanvasNoteInput & { x: number; y: number }) => withLinks(await client.createNote(projectId, input));
 export const updateNoteRequest = (client: RuntimeClient, id: string, patch: NotePatch) => client.updateNote(id, patch);
 export const deleteNoteRequest = (client: RuntimeClient, id: string) => client.deleteNote(id);
+export const linkNote = (client: RuntimeClient, id: string, sessionId: string) => client.linkNote(id, sessionId);
+export const unlinkNote = (client: RuntimeClient, id: string, sessionId: string) => client.unlinkNote(id, sessionId);
 
 
 // ---- keychains: a wallet of secrets linked to agents (values are write-only) ----

@@ -1,6 +1,6 @@
 // Keychain nodes (a wallet of secrets), their amber wires to agents, and the hook that syncs them with the runtime.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { BaseEdge, EdgeLabelRenderer, Handle, NodeResizer, Position, useNodesState, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
+import { useConnection, BaseEdge, EdgeLabelRenderer, Handle, NodeResizer, Position, useNodesState, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
 import { IconKey, IconLock, IconPlus, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { cn } from "cn";
@@ -13,7 +13,7 @@ import {
   type Keychain, type KeychainPatch, type NoteColor,
 } from "./canvas-data";
 import { COLORS, COLOR_KEYS } from "./canvas-notes";
-import { pathOf, route, useRect } from "./wire-edge";
+import { pathOf, RESIZER_ABOVE, route, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE, useRect } from "./wire-edge";
 
 export const KC_PREFIX = "kc:";
 export const KCLINK_PREFIX = "kclink:";
@@ -46,14 +46,16 @@ interface KeychainCtxValue {
   clearRenaming: () => void;
   isNew: (id: string) => boolean;
 }
-const KeychainCtx = createContext<KeychainCtxValue | null>(null);
+// Inert default so a card rendered outside (or out of sync with) its provider degrades instead of crashing the canvas.
+const KeychainCtx = createContext<KeychainCtxValue>({ patch: () => {}, manage: () => {}, setEditing: () => {}, renamingId: null, clearRenaming: () => {}, isNew: () => false });
 export const KeychainProvider = KeychainCtx.Provider;
 
 const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
 
 const KeychainCard = memo(function KeychainCard({ data, selected }: NodeProps<KeychainNode>) {
-  const ctx = useContext(KeychainCtx)!;
+  const ctx = useContext(KeychainCtx);
   const kc = data.keychain;
+  const connecting = useConnection().inProgress;
   const palette = COLORS[kc.color] ?? COLORS.yellow;
   const [name, setName] = useState(kc.name);
   const editing = useRef(false);
@@ -73,20 +75,24 @@ const KeychainCard = memo(function KeychainCard({ data, selected }: NodeProps<Ke
   const shown = kc.secretNames.slice(0, 4);
 
   return (
-    <div className={cn("group/kc relative flex size-full flex-col overflow-hidden rounded-lg border-2 border-amber-500/60 bg-card text-card-foreground shadow-sm", selected && "ring-2 ring-amber-500/40")}>
+    <div className="group/kc relative size-full">
       <NodeResizer
         isVisible={selected}
         minWidth={KC_MIN.width}
         minHeight={KC_MIN.height}
         onResizeStart={() => ctx.setEditing(kc.id, true)}
         onResizeEnd={(_, rect) => { ctx.patch(kc.id, { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }); ctx.setEditing(kc.id, false); }}
-        lineClassName="border-amber-500!"
-        handleClassName="size-2.5! rounded-sm! border-amber-500! bg-background!"
+        lineStyle={RESIZER_ABOVE}
+        handleStyle={RESIZER_ABOVE}
+        lineClassName="border-amber-500/70! after:absolute after:-inset-1 after:content-['']"
+        handleClassName="size-3! rounded-sm! border-2! border-amber-500! bg-background! after:absolute after:-inset-1 after:content-['']"
       />
       {SIDES.map((position) => (
         <Handle key={position} id={position} type="source" position={position} isConnectable isConnectableStart isConnectableEnd
-          className="size-3.5! rounded-full! border-2! border-background! bg-amber-500! opacity-0 transition-opacity after:absolute after:-inset-2.5 after:content-[''] group-hover/kc:opacity-100" />
+          style={SIDE_STRIP_STYLE[position]}
+          className={SIDE_STRIP_CLASS} />
       ))}
+      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border-2 border-amber-500/60 bg-card text-card-foreground shadow-sm", selected && "ring-2 ring-amber-500/40", "peer-hover/h:ring-2 peer-hover/h:ring-amber-500/60 peer-hover/h:shadow-[0_0_16px_0_var(--color-amber-500)]", connecting && "group-hover/kc:border-emerald-500 group-hover/kc:ring-2 group-hover/kc:ring-emerald-500/50 group-hover/kc:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
       <div aria-hidden className={cn("pointer-events-none absolute inset-0 opacity-60", palette.tint)} />
       <div className="kc-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1.5 border-b border-amber-500/40 bg-amber-500/15 px-2 active:cursor-grabbing">
         <IconLock size={14} className="shrink-0 text-amber-500" aria-hidden="true" />
@@ -129,6 +135,7 @@ const KeychainCard = memo(function KeychainCard({ data, selected }: NodeProps<Ke
           </Button>
           {kc.linkedSessionIds.length > 0 && <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground tabular-nums" title={`Linked to ${kc.linkedSessionIds.length} agent${kc.linkedSessionIds.length === 1 ? "" : "s"}`}><IconKey size={11} />{kc.linkedSessionIds.length}</span>}
         </div>
+      </div>
       </div>
     </div>
   );

@@ -1,20 +1,28 @@
 // Sticky notes on the canvas: a React Flow node type plus the hook that keeps them in sync with the runtime.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { NodeResizer, useNodesState, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { IconPin, IconTrash } from "@tabler/icons-react";
+import { useConnection, BaseEdge, EdgeLabelRenderer, Handle, NodeResizer, Position, useNodesState, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
+import { IconLink, IconNote, IconTrash, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
-import { createNoteRequest, deleteNoteRequest, fetchNotes, updateNoteRequest, type CanvasNote, type NoteColor, type NotePatch } from "./canvas-data";
+import { createNoteRequest, deleteNoteRequest, fetchNotes, linkNote, unlinkNote, updateNoteRequest, type CanvasNote, type NoteColor, type NotePatch } from "./canvas-data";
+import { pathOf, RESIZER_ABOVE, route, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE, useRect } from "./wire-edge";
 
 export type NoteNode = Node<{ note: CanvasNote }, "note">;
-export const NOTE_MIN = { width: 160, height: 100 };
-export const NOTE_DEFAULT = { width: 220, height: 160 };
+// The runtime rejects sizes under 120, so the resizer minimum stays above it.
+export const NOTE_MIN = { width: 180, height: 120 };
+export const NOTE_MAX = 2000;
+export const NOTE_DEFAULT = { width: 240, height: 180 };
 export const NOTE_PREFIX = "note:";
+export const NOTELINK_PREFIX = "notelink:";
+export const NOTE_TEAL = "#14b8a6";
 export const isNoteId = (id: string) => id.startsWith(NOTE_PREFIX);
+export const isNoteLinkId = (id: string) => id.startsWith(NOTELINK_PREFIX);
+export const noteLinkId = (noteId: string, sessionId: string) => `${NOTELINK_PREFIX}${noteId}:${sessionId}`;
+export type NoteWireEdge = Edge<{ noteId: string; sessionId: string }, "note-wire">;
 
 export const COLORS: Record<NoteColor, { tint: string; border: string; dot: string; label: string }> = {
   yellow: { tint: "bg-amber-400/20", border: "border-amber-500/40", dot: "bg-amber-400", label: "Yellow" },
@@ -43,23 +51,39 @@ interface NoteCtxValue {
   setEditing: (id: string, editing: boolean) => void;
   /** True once for a freshly created note (so it takes focus). */
   isNew: (id: string) => boolean;
+  titleOf: (sessionId: string) => string;
 }
-const NoteCtx = createContext<NoteCtxValue | null>(null);
+// Inert default so a card rendered outside (or out of sync with) its provider degrades instead of crashing the canvas.
+const NoteCtx = createContext<NoteCtxValue>({ patch: () => {}, remove: () => {}, setEditing: () => {}, isNew: () => false, titleOf: () => "agent" });
 export const NoteProvider = NoteCtx.Provider;
 
+const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+
 const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>) {
-  const ctx = useContext(NoteCtx)!;
+  const ctx = useContext(NoteCtx);
   const note = data.note;
+  const connecting = useConnection().inProgress;
   const palette = COLORS[note.color] ?? COLORS.yellow;
   const [text, setText] = useState(note.text);
+  const [flash, setFlash] = useState(false);
   const focused = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const dirty = useRef<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const idRef = useRef(note.id);
   idRef.current = note.id;
+  const shown = useRef(note.text);
 
-  useEffect(() => { if (!focused.current && dirty.current === null) setText(note.text); }, [note.text]);
+  useEffect(() => {
+    if (focused.current || dirty.current !== null) return;
+    setText(note.text);
+    // An edit that arrived from outside (an agent) gets a brief highlight.
+    if (note.text === shown.current) return;
+    shown.current = note.text;
+    setFlash(true);
+    const t = setTimeout(() => setFlash(false), 1500);
+    return () => clearTimeout(t);
+  }, [note.text]);
   useEffect(() => { if (ctx.isNew(note.id)) areaRef.current?.focus(); }, [ctx, note.id]);
 
   const flush = useCallback(() => {
@@ -67,6 +91,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
     if (dirty.current === null) return;
     const value = dirty.current;
     dirty.current = null;
+    shown.current = value;
     ctx.patch(idRef.current, { text: value });
   }, [ctx]);
   useEffect(() => () => flush(), [flush]);
@@ -77,64 +102,121 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, 600);
   };
+  const linked = note.linkedSessionIds;
 
   return (
-    <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm", palette.border, selected && "ring-2 ring-primary/40")}>
+    <div className="group/note relative size-full">
       <NodeResizer
         isVisible={selected}
         minWidth={NOTE_MIN.width}
         minHeight={NOTE_MIN.height}
+        maxWidth={NOTE_MAX}
+        maxHeight={NOTE_MAX}
         onResizeStart={() => ctx.setEditing(note.id, true)}
         onResizeEnd={(_, rect) => { ctx.patch(note.id, { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }); ctx.setEditing(note.id, false); }}
-        lineClassName="border-primary!"
-        handleClassName="size-2.5! rounded-sm! border-primary! bg-background!"
+        lineStyle={RESIZER_ABOVE}
+        handleStyle={RESIZER_ABOVE}
+        lineClassName="border-primary/70! after:absolute after:-inset-1 after:content-['']"
+        handleClassName="size-3! rounded-sm! border-2! border-primary! bg-background! after:absolute after:-inset-1 after:content-['']"
       />
-      <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
-      <div className={cn("note-drag relative flex h-7 shrink-0 cursor-grab items-center gap-1 border-b px-1.5 active:cursor-grabbing", palette.border)}>
-        <IconPin size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        <Popover>
-          <PopoverTrigger asChild>
-            <button type="button" className="nodrag nopan flex size-5 items-center justify-center rounded hover:bg-foreground/10" aria-label="Note color" title="Color">
-              <span className={cn("size-3 rounded-full", palette.dot)} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="flex w-auto gap-1.5 p-2" side="bottom" align="start">
-            {COLOR_KEYS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                aria-label={COLORS[key].label}
-                title={COLORS[key].label}
-                onClick={() => ctx.patch(note.id, { color: key })}
-                className={cn("size-5 rounded-full ring-offset-2 ring-offset-popover", COLORS[key].dot, note.color === key && "ring-2 ring-foreground/60")}
-              />
-            ))}
-          </PopoverContent>
-        </Popover>
-        <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan ml-auto size-5" aria-label="Delete note" title="Delete note" onClick={() => ctx.remove(note.id)}>
-          <IconTrash size={13} />
-        </Button>
+      {SIDES.map((position) => (
+        <Handle key={position} id={position} type="source" position={position} isConnectable isConnectableStart isConnectableEnd
+          style={SIDE_STRIP_STYLE[position]}
+          className={SIDE_STRIP_CLASS} />
+      ))}
+      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow", palette.border, selected && "border-primary/60 shadow-md ring-2 ring-primary/30", flash && "ring-2 ring-teal-500", "peer-hover/h:border-teal-500 peer-hover/h:ring-2 peer-hover/h:ring-teal-500/50 peer-hover/h:shadow-[0_0_16px_0_var(--color-teal-500)]", connecting && "group-hover/note:border-emerald-500 group-hover/note:ring-2 group-hover/note:ring-emerald-500/50 group-hover/note:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
+        <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
+        <div className={cn("note-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1 border-b px-1.5 active:cursor-grabbing", palette.border)}>
+          <IconNote size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className="nodrag nopan flex size-6 items-center justify-center rounded hover:bg-foreground/10" aria-label="Note color" title="Color">
+                <span className={cn("size-3 rounded-full", palette.dot)} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="flex w-auto gap-1.5 p-2" side="bottom" align="start">
+              {COLOR_KEYS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-label={COLORS[key].label}
+                  title={COLORS[key].label}
+                  onClick={() => ctx.patch(note.id, { color: key })}
+                  className={cn("size-5 rounded-full ring-offset-2 ring-offset-popover", COLORS[key].dot, note.color === key && "ring-2 ring-foreground/60")}
+                />
+              ))}
+            </PopoverContent>
+          </Popover>
+          {linked.length > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 tabular-nums dark:text-teal-300" title={`Agents that can read and edit this note: ${linked.map(ctx.titleOf).join(", ")}`}>
+              <IconLink size={11} />{linked.length}
+            </span>
+          )}
+          <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan ml-auto size-6 text-muted-foreground hover:text-destructive" aria-label="Delete note" title="Delete note" onClick={() => ctx.remove(note.id)}>
+            <IconTrash size={14} />
+          </Button>
+        </div>
+        <textarea
+          ref={areaRef}
+          value={text}
+          placeholder="Write a note… Drag from a side dot to an agent to share it."
+          maxLength={20000}
+          spellCheck={false}
+          onChange={(event) => onChange(event.target.value)}
+          onFocus={() => { focused.current = true; ctx.setEditing(note.id, true); }}
+          onBlur={() => { focused.current = false; flush(); ctx.setEditing(note.id, false); }}
+          onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Escape") event.currentTarget.blur(); }}
+          className="nodrag nopan nowheel relative min-h-0 flex-1 resize-none bg-transparent p-2.5 text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground/60"
+        />
       </div>
-      <textarea
-        ref={areaRef}
-        value={text}
-        placeholder="Write a note…"
-        maxLength={20000}
-        spellCheck={false}
-        onChange={(event) => onChange(event.target.value)}
-        onFocus={() => { focused.current = true; ctx.setEditing(note.id, true); }}
-        onBlur={() => { focused.current = false; flush(); ctx.setEditing(note.id, false); }}
-        onKeyDown={(event) => event.stopPropagation()}
-        className="nodrag nopan nowheel relative min-h-0 flex-1 resize-none bg-transparent p-2 text-[13px] leading-snug outline-none placeholder:text-muted-foreground/60"
-      />
     </div>
   );
 });
 
 export const noteNodeTypes = { note: NoteCard };
 
+export const NoteWireCtx = createContext<{ unlink: (noteId: string, sessionId: string) => void } | null>(null);
+
+/** Teal, dotted wire from a note to an agent: the agent can read and edit the note. Unlink button when selected. */
+export const NoteWireEdgeView = memo(function NoteWireEdgeView({ id, source, target, data, selected, markerEnd }: EdgeProps<NoteWireEdge>) {
+  const ctx = useContext(NoteWireCtx);
+  const from = useRect(source);
+  const to = useRect(target);
+  const geometry = useMemo(() => {
+    if (!from || !to) return null;
+    const curve = route(from, to, [], 0);
+    const mid = {
+      x: 0.125 * curve.a.x + 0.375 * curve.c1.x + 0.375 * curve.c2.x + 0.125 * curve.b.x,
+      y: 0.125 * curve.a.y + 0.375 * curve.c1.y + 0.375 * curve.c2.y + 0.125 * curve.b.y,
+    };
+    return { path: pathOf(curve), mid };
+  }, [from, to]);
+  if (!data || !geometry) return null;
+  return (
+    <>
+      <BaseEdge id={id} path={geometry.path} markerEnd={markerEnd} interactionWidth={28}
+        style={{ stroke: NOTE_TEAL, strokeWidth: selected ? 3 : 2, strokeDasharray: "3 5", strokeLinecap: "round", opacity: selected ? 1 : 0.85 }} />
+      <EdgeLabelRenderer>
+        <div className="nodrag nopan absolute" style={{ transform: `translate(-50%, -50%) translate(${geometry.mid.x}px, ${geometry.mid.y}px)`, pointerEvents: "all" }}>
+          <div className={cn("flex items-center gap-1 rounded-full border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm", selected ? "border-teal-500" : "border-border")} title="Note shared with this agent (read and edit)">
+            <IconNote size={11} style={{ color: NOTE_TEAL }} />
+            {selected && (
+              <button type="button" aria-label="Unlink note" title="Unlink (Del)" className="ml-0.5 rounded-full p-0.5 text-destructive hover:bg-destructive/10" onClick={(event) => { event.stopPropagation(); ctx?.unlink(data.noteId, data.sessionId); }}>
+                <IconX size={11} />
+              </button>
+            )}
+          </div>
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+});
+export const noteEdgeTypes = { "note-wire": NoteWireEdgeView };
+
+const sameNote = (a: CanvasNote, b: CanvasNote) => a.updatedAt === b.updatedAt && a.linkedSessionIds.join("\n") === b.linkedSessionIds.join("\n");
+
 /** Notes of one project: polled every 5s, optimistic edits with rollback, never clobbering a note being edited or dragged. */
-export function useCanvasNotes(client: RuntimeClient | null, projectId: string | null) {
+export function useCanvasNotes(client: RuntimeClient | null, projectId: string | null, titleOf: (sessionId: string) => string) {
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
@@ -145,6 +227,13 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
 
   const setEditing = useCallback((id: string, on: boolean) => { if (on) editing.current.add(id); else editing.current.delete(id); }, []);
   const isBusy = (id: string) => editing.current.has(id) || (pending.current.get(id) ?? 0) > 0;
+  const track = <T,>(id: string, promise: Promise<T>) => {
+    pending.current.set(id, (pending.current.get(id) ?? 0) + 1);
+    return promise.finally(() => {
+      const left = (pending.current.get(id) ?? 1) - 1;
+      if (left > 0) pending.current.set(id, left); else pending.current.delete(id);
+    });
+  };
 
   const refresh = useCallback(async () => {
     if (!client || !projectId) return;
@@ -155,7 +244,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
       const next: NoteNode[] = server.map((note) => {
         const existing = byId.get(note.id);
         if (!existing) return toNode(note);
-        if (isBusy(note.id) || existing.data.note.updatedAt === note.updatedAt) return existing;
+        if (isBusy(note.id) || sameNote(existing.data.note, note)) return existing;
         return { ...existing, position: { x: note.x, y: note.y }, width: note.w, height: note.h, data: { note } };
       });
       const have = new Set(server.map((note) => note.id));
@@ -225,12 +314,47 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     });
   }, [client, setNodes, add]);
 
+  const link = useCallback((id: string, sessionId: string) => {
+    if (!client) return;
+    const note = nodesRef.current.find((node) => node.data.note.id === id)?.data.note;
+    if (!note) return;
+    if (note.linkedSessionIds.includes(sessionId)) { toast.info("Already linked", { description: `This note is linked to ${titleOf(sessionId)}.` }); return; }
+    const before = note.linkedSessionIds;
+    apply(id, { linkedSessionIds: [...before, sessionId] });
+    track(id, linkNote(client, id, sessionId)).then(() => {
+      toast.success(`Note linked to ${titleOf(sessionId)}`, { description: "It can read and edit this note with floq sticky." });
+    }).catch((error) => {
+      apply(id, { linkedSessionIds: before });
+      toast.error("Could not link the note", { description: errorMessage(error) });
+    });
+  }, [client, apply, titleOf]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const unlink = useCallback((id: string, sessionId: string) => {
+    if (!client) return;
+    const note = nodesRef.current.find((node) => node.data.note.id === id)?.data.note;
+    if (!note) return;
+    const before = note.linkedSessionIds;
+    apply(id, { linkedSessionIds: before.filter((item) => item !== sessionId) });
+    track(id, unlinkNote(client, id, sessionId)).catch((error) => {
+      apply(id, { linkedSessionIds: before });
+      toast.error("Could not unlink the note", { description: errorMessage(error) });
+    });
+  }, [client, apply]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const unlinkAll = useCallback((id: string) => {
+    const note = nodesRef.current.find((node) => node.data.note.id === id)?.data.note;
+    for (const sessionId of note?.linkedSessionIds ?? []) unlink(id, sessionId);
+  }, [unlink]);
+
   const ctxValue = useMemo<NoteCtxValue>(() => ({
     patch,
     remove,
     setEditing,
     isNew: (id) => { if (newId.current !== id) return false; newId.current = null; return true; },
-  }), [patch, remove, setEditing]);
+    titleOf,
+  }), [patch, remove, setEditing, titleOf]);
+
+  const notes = useMemo(() => nodes.map((node) => node.data.note), [nodes]);
 
   const dragStart = useCallback((node: Node) => setEditing(node.id.slice(NOTE_PREFIX.length), true), [setEditing]);
   const dragEnd = useCallback((node: Node) => {
@@ -239,5 +363,5 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     setEditing(id, false);
   }, [patch, setEditing]);
 
-  return { nodes, onNodesChange: onNodesChange as (changes: NodeChange<Node>[]) => void, add, remove, ctxValue, dragStart, dragEnd };
+  return { nodes, onNodesChange: onNodesChange as (changes: NodeChange<Node>[]) => void, notes, add, remove, patch, link, unlink, unlinkAll, ctxValue, dragStart, dragEnd };
 }

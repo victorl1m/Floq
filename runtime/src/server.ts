@@ -325,6 +325,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, await orchestrator.noteList(userId));
         case "notes/read":
           return send(res, 200, await orchestrator.noteRead(userId, body.name));
+        case "sticky/list":
+          return send(res, 200, { notes: await notes.agentList(userId, sessionId) });
+        case "sticky/read":
+          return send(res, 200, await notes.agentRead(userId, sessionId, body.id));
+        case "sticky/write":
+          return send(res, 200, await notes.agentWrite(userId, sessionId, body.id, body.text, body.append === true));
+        case "sticky/create":
+          return send(res, 200, await notes.agentCreate(userId, sessionId, body));
         case "notes/write":
           return send(res, 200, await orchestrator.noteWrite(userId, body.name, body.content, body.append === true));
         default:
@@ -618,6 +626,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       await notes.remove(userId, noteMatch[1]);
       return send(res, 200, { ok: true });
     }
+
+    const noteLink = /^\/v1\/notes\/([\w-]+)\/links(?:\/([\w-]+))?$/.exec(url.pathname);
+    if (noteLink && method === "POST" && !noteLink[2]) return send(res, 200, await notes.link(userId, noteLink[1], (await readJson<{ sessionId?: unknown }>(req)).sessionId));
+    if (noteLink && method === "DELETE" && noteLink[2]) return send(res, 200, await notes.unlink(userId, noteLink[1], noteLink[2]));
 
     // Keychains: write-only wallets linked to agents. No endpoint returns a secret value.
     const touch = async (kc: Keychain, sessionIds: string[]) => {
