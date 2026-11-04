@@ -13,11 +13,11 @@
 #   - Workflow artifact "floq-windows-<version>-<sha>" (14 days retention)
 #   - On a push to main: a published PRE-release "build-<version>-<run number>"
 #     with the installers attached (never marked "latest").
-#   - On a v* tag: the installers are also attached to a DRAFT GitHub Release
+#   - On a v* tag: the installers are also attached to a published PRE-release
 #     for that tag.
 #
 # How to cut a release: bump the version, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-# Review and publish the draft release in the GitHub UI once this workflow
+# The pre-release is published automatically; edit its notes in the GitHub UI after this workflow
 # has finished. (macOS builds are not published for now.)
 #
 # Release creation:
@@ -25,7 +25,7 @@
 #   Instead the `release` job runs `gh release view || gh release create` and
 #   retries once on "already exists", then `gh release upload --clobber`. This
 #   also stays safe if a second platform workflow is added later and runs in
-#   parallel on the same tag: whoever gets there first creates the draft and
+#   parallel on the same tag: whoever gets there first creates the release and
 #   the other reuses it.
 #
 # Secrets: none required. Only the built-in GITHUB_TOKEN is used.
@@ -139,13 +139,13 @@ jobs:
           gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --prerelease --latest=false --title "Floq ${version} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" --generate-notes
 
-      - name: Create draft release if missing (race tolerant) and upload
+      - name: Create pre-release if missing (race tolerant) and upload
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           set -euo pipefail
           create() {
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
               --title "Floq $TAG" --generate-notes --verify-tag
           }
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
