@@ -18,7 +18,9 @@ import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles
 import type { AgentLinks } from "./links.js";
 import type { CanvasNotes } from "./notes.js";
 import type { Keychain, Keychains } from "./keychains.js";
+import type { WiredContext } from "./wiredContext.js";
 import { selectableAgentModels, type Orchestrator } from "./orchestrator.js";
+import { buildSubagentInstruction, TOOL_SPECS, type SubagentService } from "./subagents.js";
 import type { PatchSecret, PutSecret, Vault } from "./vault.js";
 import { listProviders } from "./providers.js";
 import { IdempotencyCache } from "./idempotency.js";
@@ -31,6 +33,7 @@ import { TasksService } from "./tasks.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
+import { PortRequests } from "./portRequests.js";
 import { databasePort, listSessionPorts, MANUAL_DENY_PORTS, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
@@ -50,6 +53,9 @@ interface Deps {
   links: AgentLinks;
   notes: CanvasNotes;
   keychains: Keychains;
+  /** Optional so existing callers keep working; absent = no wired-context feature. */
+  wired?: WiredContext;
+  subagents?: SubagentService;
   pool: pg.Pool;
   credentials: CredentialBroker;
   claudeOauth: ClaudeOAuth;
@@ -60,11 +66,16 @@ interface Deps {
   tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const setupHits = new Map<string, { count: number; resetAt: number }>();
   const scheduledAgentRestarts = new Set<string>();
+  // Agent "open a port" requests: the user answers in the app; the runtime enforces the 60s deadline itself.
+  const portRequests = new PortRequests({
+    isDenied: (port) => port === config.port || port === databasePort(config.databaseUrl) || MANUAL_DENY_PORTS.includes(port),
+    isAlive: (userId, sessionId) => { try { manager.getLive(sessionId, userId); return true; } catch { return false; } },
+  });
   const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
   function rateLimitSetup(req: IncomingMessage): void {
@@ -187,6 +198,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     return { scope, projectId };
   }
 
+  function requireSubagents(): SubagentService {
+    if (!subagents) throw new HttpError(503, "subagents_unavailable", "Subagents are not configured");
+    return subagents;
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://runtime");
     const method = req.method ?? "GET";
@@ -213,7 +229,26 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         case "secrets/global":
           return send(res, 200, { secrets: await vault.reveal(userId, null, "env", sessionId) });
         case "agents/list":
-          return send(res, 200, { agents: await orchestrator.list(userId, sessionId) });
+          return send(res, 200, { agents: await orchestrator.list(userId, sessionId, { project: body.project, here: body.here === true }) });
+        case "agents/link": {
+          const r = await orchestrator.link(userId, sessionId, body.name);
+          if (wired) for (const id of new Set(r.ids)) {
+            try {
+              const w = await wired.sync(userId, id);
+              if (w.added.length || w.removed.length) await manager.notifyWired(userId, id, w.added, w.removed, w.block);
+            } catch (error) {
+              log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+            }
+          }
+          return send(res, 200, r);
+        }
+        case "ports/open": {
+          // Blocks until the user answers or 60s pass. Nothing is opened here: the user's app opens the tunnel on Allow.
+          const me = await orchestrator.toolkitCaller(userId, sessionId, false);
+          const pendingRequest = portRequests.request(userId, { sessionId, agentName: me.name, port: body.port, protocol: body.protocol, purpose: body.purpose });
+          res.once("close", () => { if (!res.writableEnded) pendingRequest.abandon(); });
+          return send(res, 200, await pendingRequest.promise);
+        }
         case "agents/restart": {
           if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Session restart requires POST");
           if (Object.keys(body).length) throw badRequest("Session restart takes no target or options; it can only restart the calling agent", "invalid_restart");
@@ -261,6 +296,17 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, await orchestrator.connect(userId, sessionId, body.from, body.to));
         case "agents/recruit":
           return send(res, 200, await orchestrator.recruit(userId, sessionId, body));
+        // Always-recruit subagents (`floq subagent ...`): any agent session may use them; limits are enforced in SubagentService.
+        case "agents/subagent/recruit":
+          return send(res, 200, await requireSubagents().recruit(userId, sessionId, body));
+        case "agents/subagent/list":
+          return send(res, 200, await requireSubagents().list(userId, sessionId));
+        case "agents/subagent/ask":
+          return send(res, 200, await requireSubagents().ask(userId, sessionId, body.id, body.prompt, Number(body.timeoutSec) || undefined, body.wait !== false));
+        case "agents/subagent/result":
+          return send(res, 200, await requireSubagents().result(userId, sessionId, body.id, Number(body.chars) || undefined, body.full === true));
+        case "agents/subagent/dismiss":
+          return send(res, 200, await requireSubagents().dismiss(userId, sessionId, body.id));
         case "agents/dismiss":
           return send(res, 200, await orchestrator.dismiss(userId, sessionId, body.name));
         // Skills, MCP servers and secrets (`floq skills|mcp|secrets`). Reading is open to any agent session of this user;
@@ -321,6 +367,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const secrets = await vault.create(userId, sessionId, { name: body.name, value: body.value, description: body.description });
           return send(res, 201, { secrets: secrets.map((s) => ({ name: s.name, description: s.description })) });
         }
+        case "wired/get": {
+          if (!wired) return send(res, 200, { block: "" });
+          const { block } = await wired.sync(userId, sessionId);
+          return send(res, 200, { block });
+        }
         case "notes/list":
           return send(res, 200, await orchestrator.noteList(userId));
         case "notes/read":
@@ -333,8 +384,12 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, await notes.agentWrite(userId, sessionId, body.id, body.text, body.append === true));
         case "sticky/create":
           return send(res, 200, await notes.agentCreate(userId, sessionId, body));
-        case "notes/write":
-          return send(res, 200, await orchestrator.noteWrite(userId, body.name, body.content, body.append === true));
+        case "notes/write": {
+          const written = await orchestrator.noteWrite(userId, body.name, body.content, body.append === true);
+          // Show the note on the writing agent's project canvas, wired to it. Never fail the write over the mirror.
+          if (typeof body.name === "string") await notes.mirrorAgentNote(userId, sessionId, body.name).catch((e) => log.warn("note.mirror.failed", { userId, error: String(e) }));
+          return send(res, 200, written);
+        }
         default:
           throw notFound();
       }
@@ -426,6 +481,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       });
     }
 
+    // Read-only preview of the fixed subagent policy for Settings (the text is not editable by design).
+    if (method === "GET" && url.pathname === "/v1/subagents/policy") {
+      const limits = requireSubagents().limits;
+      return send(res, 200, { enabled: (await settings.get(userId)).alwaysRecruitSubagents, limits, tools: TOOL_SPECS, instruction: buildSubagentInstruction({ enabled: true, depth: 0, limits, crossProject: (await settings.get(userId)).allowCrossProjectAgents }) });
+    }
     if (url.pathname === "/v1/settings") {
       if (method === "GET") return send(res, 200, { settings: await settings.get(userId) });
       if (method === "PATCH" || method === "PUT") {
@@ -617,22 +677,50 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const limit = clampInt(Number(url.searchParams.get("limit")) || 50, 1, 200);
       return send(res, 200, { events: links.hub.recent(userId, linksMatch[1], limit) });
     }
+    // Refresh the persisted wired-context memory of agents whose wires changed; with `notify`, tell the live ones. Never fails the request.
+    const wiredTouch = async (sessionIds: string[], notify: boolean) => {
+      if (!wired) return;
+      for (const id of new Set(sessionIds)) {
+        try {
+          const r = await wired.sync(userId, id);
+          if (notify && (r.added.length || r.removed.length)) await manager.notifyWired(userId, id, r.added, r.removed, r.block);
+        } catch (error) {
+          log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+        }
+      }
+    };
+
     const notesMatch = /^\/v1\/projects\/([\w-]+)\/notes$/.exec(url.pathname);
     if (notesMatch && method === "GET") return send(res, 200, { notes: await notes.list(userId, notesMatch[1]) });
     if (notesMatch && method === "POST") return send(res, 200, await notes.create(userId, notesMatch[1], await readJson(req)));
     const noteMatch = /^\/v1\/notes\/([\w-]+)$/.exec(url.pathname);
-    if (noteMatch && method === "PATCH") return send(res, 200, await notes.patch(userId, noteMatch[1], await readJson(req)));
+    if (noteMatch && method === "PATCH") {
+      const note = await notes.patch(userId, noteMatch[1], await readJson(req));
+      await wiredTouch(note.linkedSessionIds, false); // keep the persisted memory current; no live notice per edit
+      return send(res, 200, note);
+    }
     if (noteMatch && method === "DELETE") {
-      await notes.remove(userId, noteMatch[1]);
+      const sessions = await notes.remove(userId, noteMatch[1]);
+      await wiredTouch(sessions, true);
       return send(res, 200, { ok: true });
     }
 
     const noteLink = /^\/v1\/notes\/([\w-]+)\/links(?:\/([\w-]+))?$/.exec(url.pathname);
-    if (noteLink && method === "POST" && !noteLink[2]) return send(res, 200, await notes.link(userId, noteLink[1], (await readJson<{ sessionId?: unknown }>(req)).sessionId));
-    if (noteLink && method === "DELETE" && noteLink[2]) return send(res, 200, await notes.unlink(userId, noteLink[1], noteLink[2]));
+    if (noteLink && method === "POST" && !noteLink[2]) {
+      const sessionId = (await readJson<{ sessionId?: unknown }>(req)).sessionId;
+      const note = await notes.link(userId, noteLink[1], sessionId);
+      await wiredTouch([sessionId as string], true);
+      return send(res, 200, note);
+    }
+    if (noteLink && method === "DELETE" && noteLink[2]) {
+      const note = await notes.unlink(userId, noteLink[1], noteLink[2]);
+      await wiredTouch([noteLink[2]], true);
+      return send(res, 200, note);
+    }
 
     // Keychains: write-only wallets linked to agents. No endpoint returns a secret value.
-    const touch = async (kc: Keychain, sessionIds: string[]) => {
+    const touch = async (kc: Keychain, sessionIds: string[], notify = false) => {
+      await wiredTouch(sessionIds, notify);
       let live = false;
       for (const id of new Set(sessionIds)) live = (await manager.syncSessionSecrets(userId, id)) || live;
       return { ...kc, appliesOnNextStart: live };
@@ -646,6 +734,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (kcOne && method === "DELETE") {
       const sessions = await keychains.remove(userId, kcOne[1]);
       for (const id of sessions) await manager.syncSessionSecrets(userId, id);
+      await wiredTouch(sessions, true);
       return send(res, 200, { ok: true });
     }
     const kcSecret = /^\/v1\/keychains\/([\w-]+)\/secrets\/([^/]{1,64})$/.exec(url.pathname);
@@ -662,11 +751,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (kcLink && method === "POST" && !kcLink[2]) {
       const body = await readJson<{ sessionId?: unknown }>(req);
       const kc = await keychains.link(userId, kcLink[1], body.sessionId);
-      return send(res, 200, await touch(kc, [body.sessionId as string]));
+      return send(res, 200, await touch(kc, [body.sessionId as string], true));
     }
     if (kcLink && method === "DELETE" && kcLink[2]) {
       const kc = await keychains.unlink(userId, kcLink[1], kcLink[2]);
-      return send(res, 200, await touch(kc, [kcLink[2]]));
+      return send(res, 200, await touch(kc, [kcLink[2]], true));
     }
 
     // Marking an orchestrator is a user decision: only reachable with the user's own auth (/v1), never with an agent's
@@ -680,11 +769,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     if (url.pathname === "/v1/links" && method === "POST") {
       const body = await readJson<{ fromSessionId?: unknown; toSessionId?: unknown }>(req);
-      return send(res, 200, await links.createManual(userId, body.fromSessionId, body.toSessionId));
+      const link = await links.createManual(userId, body.fromSessionId, body.toSessionId);
+      await wiredTouch([link.fromSessionId, link.toSessionId], true);
+      return send(res, 200, link);
     }
     const linkMatch = /^\/v1\/links\/([\w-]+)$/.exec(url.pathname);
     if (linkMatch && method === "DELETE") {
-      await links.remove(userId, linkMatch[1]);
+      const ends = await links.remove(userId, linkMatch[1]);
+      await wiredTouch(ends, true);
       return send(res, 200, { ok: true });
     }
 
@@ -774,6 +866,15 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (!workspaceFiles) throw notFound();
       const path = url.searchParams.get("path");
       return send(res, 200, filesMatch[2] ? await workspaceFiles.read(userId, filesMatch[1], path) : await workspaceFiles.list(userId, filesMatch[1], path));
+    }
+
+    if (url.pathname === "/v1/port-requests" && method === "GET") return send(res, 200, { requests: portRequests.list(userId) });
+    const portRequestAnswer = /^\/v1\/port-requests\/([\w-]+)\/resolve$/.exec(url.pathname);
+    if (portRequestAnswer && method === "POST") {
+      const body = await readJson<{ decision?: unknown; message?: unknown }>(req);
+      if (body.decision !== "allow" && body.decision !== "deny" && body.decision !== "error") throw badRequest("decision must be allow, deny or error");
+      const status = portRequests.resolve(userId, portRequestAnswer[1], body.decision === "error" ? { decision: "error", message: typeof body.message === "string" ? body.message : "unknown error" } : { decision: body.decision });
+      return send(res, 200, { status });
     }
 
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
@@ -910,8 +1011,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         const userId = await userFor(headers);
         wss.handleUpgrade(req, socket, head, (ws) => {
           const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
-          ws.on("close", off);
-          ws.on("error", off);
+          const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offAll = () => { off(); offPorts(); };
+          ws.on("close", offAll);
+          ws.on("error", offAll);
         });
         return;
       }

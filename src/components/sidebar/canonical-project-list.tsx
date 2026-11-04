@@ -36,14 +36,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuAction, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub, SidebarMenuSubItem } from "@/components/ui/sidebar";
+import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub, SidebarMenuSubItem } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
 import { ProviderIcon, isLive } from "@/components/agents/provider";
 import { ActivityIndicator, agentActivity } from "@/components/agents/activity-indicator";
 import { ProjectMark } from "@/components/projects/project-identity";
-import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, removeProjectFolder, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
+import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
 import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
 import { copyText } from "@/lib/clipboard";
 import { openRightSidebar } from "@/lib/right-sidebar";
@@ -53,6 +53,8 @@ import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { RuntimeProject, SessionState, SessionSummary } from "@/lib/runtime/types";
 import { cn } from "cn";
+import { addFolder, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
+import { DndButton, DndRow, EmptyFolderDrop, InlineRename, ProjectDnd, RootEndDrop, RowAction, useSavedLayout } from "@/components/sidebar/project-folder";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const CTX = "w-56";
@@ -98,7 +100,7 @@ function StateDot({ state }: { state: SessionState }) {
   return <span role="img" title={state} aria-label={state} className={cn("size-1.5 shrink-0 rounded-full", DOT[state])} />;
 }
 
-type EditState = { kind: "folder-new" } | { kind: "folder-edit"; folder: ProjectFolder } | { kind: "project"; project: RuntimeProject } | null;
+type EditState = { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
   const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, focusOnCanvas, openSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences } = useRuntime();
@@ -118,7 +120,7 @@ export default function CanonicalProjectList() {
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
-  const [removeFolder, setRemoveFolder] = useState<ProjectFolder | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const recruits = useMemo(() => recruitCounts(sessions), [sessions]);
   const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [deletingWorktree, setDeletingWorktree] = useState<WorktreeDeleteTarget | null>(null);
@@ -131,14 +133,46 @@ export default function CanonicalProjectList() {
     const knownFolders = new Set(folders.map((folder) => folder.id));
     return new Map(projectMeta.map((item) => [item.projectId, item.folderId && knownFolders.has(item.folderId) ? item.folderId : null]));
   }, [folders, projectMeta]);
-  const projectsByFolder = useMemo(() => {
-    const map = new Map<string | null, RuntimeProject[]>();
-    for (const project of projects) {
-      const folderId = folderByProject.get(project.id) ?? null;
-      map.set(folderId, [...(map.get(folderId) ?? []), project]);
-    }
-    return map;
-  }, [folderByProject, projects]);
+  const savedLayout = useSavedLayout(scope);
+  const layout = useMemo<ProjectLayout>(
+    () => reconcileLayout(savedLayout, projects.map((project) => project.id), folders.map((folder) => folder.id), (id) => folderByProject.get(id)),
+    [folderByProject, folders, projects, savedLayout],
+  );
+  const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const foldersById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
+  const projectLabel = (project: RuntimeProject) => project.displayName?.trim() || project.name;
+
+  function createFolder(withProjectId?: string) {
+    const id = crypto.randomUUID();
+    saveProjectFolders(scope, [...loadProjectFolders(scope), { id, name: "New folder" }]);
+    let next = addFolder(layout, id);
+    if (withProjectId) next = moveProjectInto(next, withProjectId, id);
+    saveLayout(scope, next);
+    updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [id]: true } });
+    setRenamingFolder(id);
+  }
+  function renameFolder(folder: ProjectFolder, value: string) {
+    setRenamingFolder(null);
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === folder.name) return;
+    saveProjectFolders(scope, loadProjectFolders(scope).map((item) => item.id === folder.id ? { ...item, name: trimmed.slice(0, 60) } : item));
+  }
+  function deleteFolder(folder: ProjectFolder) {
+    const count = layout.folders[folder.id]?.length ?? 0;
+    const previous = layout;
+    saveProjectFolders(scope, loadProjectFolders(scope).filter((item) => item.id !== folder.id));
+    saveLayout(scope, removeFolderFromLayout(layout, folder.id));
+    toast(`Folder “${folder.name}” removed`, {
+      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list.` : undefined,
+      action: { label: "Undo", onClick: () => {
+        const current = loadProjectFolders(scope);
+        if (!current.some((item) => item.id === folder.id)) saveProjectFolders(scope, [...current, folder]);
+        saveLayout(scope, previous);
+      } },
+    });
+  }
+  function moveProject(projectId: string, folderId: string | null) { saveLayout(scope, moveProjectInto(layout, projectId, folderId)); }
+  function setFolderExpanded(folderId: string, open: boolean) { updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [folderId]: open } }); }
 
   useEffect(() => {
     if (!loaded || projectsLoading || projectsError || projects.length === 0) return;
@@ -186,30 +220,11 @@ export default function CanonicalProjectList() {
     setEditError(null);
   }
 
-  function openFolderEdit(value: EditState) {
-    setEdit(value);
-    setName(value?.kind === "folder-edit" ? value.folder.name : "");
-    setImage("");
-    setImageData(null);
-    setImageFileName("");
-    setEditError(null);
-  }
-
   async function saveEdit(event: FormEvent) {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed || trimmed.length > 60) return setEditError("Enter a name between 1 and 60 characters.");
     if (!edit) return;
-    if (edit.kind === "folder-new") {
-      saveProjectFolders(scope, [...loadProjectFolders(scope), { id: crypto.randomUUID(), name: trimmed }]);
-      setEdit(null);
-      return;
-    }
-    if (edit.kind === "folder-edit") {
-      saveProjectFolders(scope, folders.map((folder) => folder.id === edit.folder.id ? { ...folder, name: trimmed } : folder));
-      setEdit(null);
-      return;
-    }
     let imageUrl: string | null = null;
     if (imageKind === "file") {
       imageUrl = imageData;
@@ -312,10 +327,10 @@ export default function CanonicalProjectList() {
     const live = isLive(session.state);
     const recruited = recruits.get(session.id);
     return <ContextMenu key={session.id}><ContextMenuTrigger asChild><SidebarMenuSubItem className={cn("group/agent-row relative", ROW_OPEN)}>
-      <SidebarMenuButton title={`${recruited !== undefined ? `${orchestratorLabel(recruited)} · ` : ""}${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={((view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)) || (view === "canvas" && session.id === selectedId)} className={cn("h-7 gap-1.5 pr-7 text-[13px] font-normal", recruited !== undefined && "bg-violet-500/10 shadow-[inset_2px_0_0_0_rgb(139_92_246)] hover:bg-violet-500/15")} onClick={() => focusOnCanvas(session)}>
+      <SidebarMenuButton title={`${recruited !== undefined ? `${orchestratorLabel(recruited)} · ` : ""}${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={((view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)) || (view === "canvas" && session.id === selectedId)} className="h-7 gap-1.5 pr-14! text-[13px] font-normal" onClick={() => focusOnCanvas(session)}>
         <span className="flex h-3 w-4 shrink-0 items-center justify-center">{agentActivity(session) ? <ActivityIndicator session={session} /> : <StateDot state={session.state} />}</span><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>{recruited !== undefined && <IconCrown className={cn("size-3.5 shrink-0", ORCHESTRATOR_TEXT)} aria-label={orchestratorLabel(recruited)} />}
       </SidebarMenuButton>
-      <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1 text-muted-foreground md:opacity-0 md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
+      <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></RowAction></DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className={MENU}>
           {!isLive(session.state) && <DropdownMenuItem onClick={() => void resume(session)}><IconPlayerPlay />Resume</DropdownMenuItem>}
           {session.state === "running" && <DropdownMenuItem onClick={() => void sleep(session)}><IconMoon />Sleep</DropdownMenuItem>}
@@ -347,22 +362,23 @@ export default function CanonicalProjectList() {
   function renderProject(project: RuntimeProject) {
     const workspaces = project.workspaces ?? [];
     const projectExpanded = userPreferences.projectNavExpanded[project.id] ?? true;
+    const currentFolder = containerOf(layout, project.id) ?? null;
     return <SidebarMenuItem key={project.id}>
       <Collapsible open={projectExpanded} onOpenChange={(open) => updateUserPreferences({ projectNavExpanded: { ...userPreferences.projectNavExpanded, [project.id]: open } })} className="group/project">
-        <ContextMenu><ContextMenuTrigger asChild><div className={cn("group/project-row relative", ROW_OPEN)}>
-          <SidebarMenuButton isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium" title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
-            <ProjectMark project={project} className="text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
-          </SidebarMenuButton>
-          <CollapsibleTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-7! text-muted-foreground md:opacity-0 md:group-hover/project-row:opacity-100 md:focus-visible:opacity-100" aria-label={`Toggle ${project.displayName || project.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/project:rotate-90" /></SidebarMenuAction></CollapsibleTrigger>
-          <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-1.5 transition-opacity md:opacity-0 md:group-hover/project-row:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
+        <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row", ROW_OPEN)}>
+          <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
+            <ProjectMark project={project} className="text-muted-foreground [&:is(img)]:bg-sidebar-accent/40 [&:is(img)]:ring-1 [&:is(img)]:ring-sidebar-border/70" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
+          </DndButton></SidebarMenuButton>
+          <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/project-row:opacity-100 md:group-focus-within/project-row:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className={MENU}>
               <DropdownMenuItem onClick={() => openProjectEdit(project)}><IconPencil />Project settings</DropdownMenuItem>
               <DropdownMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent here</DropdownMenuItem>
-              {folders.filter((folder) => folder.id !== folderByProject.get(project.id)).map((folder) => <DropdownMenuItem key={folder.id} onClick={() => updateCanonicalProjectMeta(project.id, { folderId: folder.id }, scope)}><IconFolder />Move to {folder.name}</DropdownMenuItem>)}
-              {!!folderByProject.get(project.id) && <DropdownMenuItem onClick={() => updateCanonicalProjectMeta(project.id, { folderId: null }, scope)}><IconFolder />Move to root</DropdownMenuItem>}
+              {folders.filter((folder) => folder.id !== currentFolder).map((folder) => <DropdownMenuItem key={folder.id} onClick={() => moveProject(project.id, folder.id)}><IconFolder />Move to {folder.name}</DropdownMenuItem>)}
+              {currentFolder !== null && <DropdownMenuItem onClick={() => moveProject(project.id, null)}><IconX />Move out of folder</DropdownMenuItem>}
             </DropdownMenuContent>
           </DropdownMenu>
-        </div></ContextMenuTrigger>
+          <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${projectExpanded ? "Collapse" : "Expand"} ${project.displayName || project.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/project:rotate-90" /></RowAction></CollapsibleTrigger>
+        </DndRow></ContextMenuTrigger>
           <ContextMenuContent className={CTX}>
             <ContextMenuItem onClick={() => openCanvas(project.id)}><IconLayoutKanban />Open canvas</ContextMenuItem>
             <ContextMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent in this project</ContextMenuItem>
@@ -375,16 +391,15 @@ export default function CanonicalProjectList() {
             <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, true)}><IconChevronsDown />Expand all workspaces</ContextMenuItem>
             <ContextMenuItem disabled={workspaces.length === 0} onClick={() => setAllWorkspaces(project, false)}><IconChevronsUp />Collapse all workspaces</ContextMenuItem>
             <ContextMenuItem disabled={projectsLoading} onClick={() => void retryProjects().catch(() => {})}><IconRefresh />Refresh projects</ContextMenuItem>
-            {(folders.filter((folder) => folder.id !== folderByProject.get(project.id)).length > 0 || !!folderByProject.get(project.id)) && <>
-              <ContextMenuSeparator />
-              <ContextMenuSub><ContextMenuSubTrigger><IconFolder />Move to folder</ContextMenuSubTrigger><ContextMenuSubContent>
-                {folders.filter((folder) => folder.id !== folderByProject.get(project.id)).map((folder) => <ContextMenuItem key={folder.id} onClick={() => updateCanonicalProjectMeta(project.id, { folderId: folder.id }, scope)}><IconFolder />{folder.name}</ContextMenuItem>)}
-                {!!folderByProject.get(project.id) && <ContextMenuItem onClick={() => updateCanonicalProjectMeta(project.id, { folderId: null }, scope)}><IconX />Root</ContextMenuItem>}
-              </ContextMenuSubContent></ContextMenuSub>
-            </>}
+            <ContextMenuSeparator />
+            <ContextMenuSub><ContextMenuSubTrigger><IconFolder />Move to folder</ContextMenuSubTrigger><ContextMenuSubContent>
+              {folders.filter((folder) => folder.id !== currentFolder).map((folder) => <ContextMenuItem key={folder.id} onClick={() => moveProject(project.id, folder.id)}><IconFolder />{folder.name}</ContextMenuItem>)}
+              {currentFolder !== null && <ContextMenuItem onClick={() => moveProject(project.id, null)}><IconX />Move out of folder</ContextMenuItem>}
+              <ContextMenuItem onClick={() => createFolder(project.id)}><IconFolderPlus />New folder…</ContextMenuItem>
+            </ContextMenuSubContent></ContextMenuSub>
           </ContextMenuContent></ContextMenu>
         <CollapsibleContent>
-          <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-2 pr-0">
+          <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-3 pr-0">
             {workspaces.map((workspace) => {
               const agents = sessionsForWorkspace(project.id, workspace, sessions).filter((session) => session.provider !== "shell" && (!userPreferences.hiddenSessionIds[session.id] || isLive(session.state) || openedIds.includes(session.id)));
               const label = workspace.branch || workspace.name || "Main";
@@ -396,13 +411,13 @@ export default function CanonicalProjectList() {
                     <CollapsibleTrigger asChild><SidebarMenuButton className={cn("h-8 gap-1.5 text-[13px] text-muted-foreground", workspace.isWorktree ? "pr-20!" : "pr-14!")} title={`${label} · ${workspace.cwd}`}>
                       <IconGitBranch /><span className="min-w-0 truncate">{label}</span>
                     </SidebarMenuButton></CollapsibleTrigger>
-                    <Tooltip><TooltipTrigger asChild><SidebarMenuAction className={cn("top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100 md:aria-expanded:opacity-100", workspace.isWorktree ? "right-14!" : "right-7!")} aria-label={`New agent in ${label}`} onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus /></SidebarMenuAction></TooltipTrigger><TooltipContent>New agent in {label}</TooltipContent></Tooltip>
-                    <CollapsibleTrigger asChild><SidebarMenuAction className={cn("top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:focus-visible:opacity-100", workspace.isWorktree && "right-7!")} aria-label={`Toggle agents in ${label}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/workspace:rotate-90" /></SidebarMenuAction></CollapsibleTrigger>
-                    {workspace.isWorktree && <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1.5 text-muted-foreground md:opacity-0 md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for worktree ${label}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
+                    {workspace.isWorktree && <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="third" reveal="md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100" aria-label={`Actions for worktree ${label}`}><IconDots /></RowAction></DropdownMenuTrigger>
                       <DropdownMenuContent side="right" align="start" className={MENU}>
                         <DropdownMenuItem variant="destructive" onClick={() => setDeletingWorktree({ project, workspace })}><IconTrash />Delete worktree</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>}
+                    <Tooltip><TooltipTrigger asChild><RowAction slot="second" reveal="md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100" aria-label={`New agent in ${label}`} onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus /></RowAction></TooltipTrigger><TooltipContent>New agent in {label}</TooltipContent></Tooltip>
+                    <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${workspaceExpanded ? "Collapse" : "Expand"} agents in ${label}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/workspace:rotate-90" /></RowAction></CollapsibleTrigger>
                   </div></ContextMenuTrigger>
                     <ContextMenuContent className={CTX}>
                       <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus />New agent here</ContextMenuItem>
@@ -430,18 +445,57 @@ export default function CanonicalProjectList() {
     </SidebarMenuItem>;
   }
 
-  const rootProjects = projectsByFolder.get(null) ?? [];
+  function renderFolder(folder: ProjectFolder) {
+    const expanded = userPreferences.folderNavExpanded[folder.id] ?? true;
+    const members = (layout.folders[folder.id] ?? []).flatMap((id) => projectsById.get(id) ?? []);
+    const menu = {
+      rename: () => setRenamingFolder(folder.id),
+      toggle: () => setFolderExpanded(folder.id, !expanded),
+      remove: () => deleteFolder(folder),
+    };
+    return <SidebarMenuItem key={folder.id}>
+      <Collapsible open={expanded} onOpenChange={(open) => setFolderExpanded(folder.id, open)} className="group/folder">
+        <ContextMenu><ContextMenuTrigger asChild><DndRow kind="folder" itemId={folder.id} className={cn("group/folder-row", ROW_OPEN)}>
+          {renamingFolder === folder.id
+            ? <div className="flex h-8 items-center gap-2 px-2"><IconFolder className="size-4 shrink-0 text-muted-foreground" /><InlineRename initial={folder.name} label="Folder name" onCommit={(value) => renameFolder(folder, value)} onCancel={() => setRenamingFolder(null)} /></div>
+            : <>
+              <CollapsibleTrigger asChild><SidebarMenuButton asChild className="h-8 pr-14! text-[13px] font-medium"><DndButton title={`${folder.name} · ${members.length} ${members.length === 1 ? "project" : "projects"}`}>
+                {expanded ? <IconFolderOpen className="text-muted-foreground" /> : <IconFolder className="text-muted-foreground" />}<span className="min-w-0 flex-1 truncate">{folder.name}</span>
+              </DndButton></SidebarMenuButton></CollapsibleTrigger>
+              <span aria-hidden className="pointer-events-none absolute top-1/2 right-7 flex size-6 -translate-y-1/2 items-center justify-center text-[11px] tabular-nums text-muted-foreground transition-opacity md:group-hover/folder-row:opacity-0 md:group-focus-within/folder-row:opacity-0 md:group-has-aria-expanded/folder-row:opacity-0">{members.length}</span>
+              <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
+                <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
+              </DropdownMenu>
+              <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90" /></RowAction></CollapsibleTrigger>
+            </>}
+        </DndRow></ContextMenuTrigger>
+          <ContextMenuContent className={CTX}>
+            <ContextMenuItem onSelect={menu.rename}><IconPencil />Rename folder</ContextMenuItem>
+            <ContextMenuItem onClick={menu.toggle}>{expanded ? <IconChevronsUp /> : <IconChevronsDown />}{expanded ? "Collapse" : "Expand"}</ContextMenuItem>
+            <ContextMenuItem onClick={() => createFolder()}><IconFolderPlus />New folder</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder (keep projects)</ContextMenuItem>
+          </ContextMenuContent></ContextMenu>
+        <CollapsibleContent>
+          <ul className="ml-3 flex min-w-0 flex-col border-l border-sidebar-border/60">
+            {members.length ? members.map(renderProject) : <li><EmptyFolderDrop folderId={folder.id}><span className="flex h-8 items-center px-2 text-xs text-muted-foreground">Drop projects here</span></EmptyFolderDrop></li>}
+          </ul>
+        </CollapsibleContent>
+      </Collapsible>
+    </SidebarMenuItem>;
+  }
+
   return <>
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
       <div className="flex h-8 items-center justify-between gap-2 px-2 mb-1">
       <h2 className="text-xs font-medium text-muted-foreground">Projects</h2>
       <div className="flex items-center gap-0.5">
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="Refresh projects" disabled={projectsLoading} onClick={() => void retryProjects().catch(() => {})}><IconRefresh className={cn("size-3.5", projectsLoading && "animate-spin motion-reduce:animate-none")} /></Button></TooltipTrigger><TooltipContent>Refresh projects</TooltipContent></Tooltip>
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="New folder" onClick={() => openFolderEdit({ kind: "folder-new" })}><IconFolderPlus className="size-3.5" /></Button></TooltipTrigger><TooltipContent>New folder</TooltipContent></Tooltip>
+      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="New folder" onClick={() => createFolder()}><IconFolderPlus className="size-3.5" /></Button></TooltipTrigger><TooltipContent>New folder</TooltipContent></Tooltip>
       <DropdownMenu><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="Add to projects"><IconPlus className="size-3.5" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>Add to projects</TooltipContent></Tooltip>
         <DropdownMenuContent align="start" side="right" className={MENU}>
           <DropdownMenuItem onClick={() => setNewAgentOpen(true)}><IconPlus />New agent</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => openFolderEdit({ kind: "folder-new" })}><IconFolderPlus />New folder</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => createFolder()}><IconFolderPlus />New folder</DropdownMenuItem>
           <DropdownMenuItem onClick={() => setRepoOpen(true)}><IconGitBranch />Import repository</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -449,25 +503,27 @@ export default function CanonicalProjectList() {
       </div>
       <SidebarGroupContent>
         {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <div role="status" aria-label="Loading projects" aria-busy="true" className="space-y-1 px-2 py-2">{[0, 1, 2].map((row) => <div key={row} className="flex h-8 items-center gap-2"><Skeleton className="size-4 shrink-0" /><Skeleton className="h-3 flex-1" /></div>)}</div> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
+          <ProjectDnd layout={layout} onLayout={(next) => saveLayout(scope, next)} isFolderExpanded={(id) => userPreferences.folderNavExpanded[id] ?? true} onExpandFolder={(id) => setFolderExpanded(id, true)}
+            labelOf={(kind, id) => kind === "folder" ? foldersById.get(id)?.name ?? "folder" : projectsById.get(id) ? projectLabel(projectsById.get(id)!) : "project"}
+            renderOverlay={(kind, id) => <div className="flex h-8 w-56 items-center gap-2 rounded-md border border-sidebar-border bg-popover px-2 text-[13px] font-medium text-popover-foreground shadow-md">
+              {kind === "folder" ? <IconFolder className="size-4 shrink-0 text-muted-foreground" /> : projectsById.get(id) ? <ProjectMark project={projectsById.get(id)!} className="text-muted-foreground" /> : null}
+              <span className="min-w-0 flex-1 truncate">{kind === "folder" ? foldersById.get(id)?.name : projectsById.get(id) ? projectLabel(projectsById.get(id)!) : ""}</span></div>}>
           <SidebarMenu>
-            {rootProjects.map(renderProject)}
-            {folders.map((folder) => <SidebarMenuItem key={folder.id}><Collapsible open={userPreferences.folderNavExpanded[folder.id] ?? true} onOpenChange={(open) => updateUserPreferences({ folderNavExpanded: { ...userPreferences.folderNavExpanded, [folder.id]: open } })} className="group/folder">
-              <div className="group/folder-row relative"><CollapsibleTrigger asChild><SidebarMenuButton className="h-8 pr-10 text-[13px] font-medium"><IconFolder className="text-muted-foreground" /><span className="truncate">{folder.name}</span><IconChevronRight className="ml-auto text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90 md:opacity-0 md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" /></SidebarMenuButton></CollapsibleTrigger>
-                <DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuAction className="top-1/2! -translate-y-1/2 right-1.5 transition-opacity md:opacity-0 md:group-hover/folder-row:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></SidebarMenuAction></DropdownMenuTrigger>
-                  <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => openFolderEdit({ kind: "folder-edit", folder })}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => setRemoveFolder(folder)}><IconTrash />Remove folder</DropdownMenuItem></DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <CollapsibleContent><SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-2 pr-0">{(projectsByFolder.get(folder.id) ?? []).length ? (projectsByFolder.get(folder.id) ?? []).map(renderProject) : <SidebarMenuSubItem><span className="block px-2 py-2 text-xs text-muted-foreground">No projects in this folder</span></SidebarMenuSubItem>}</SidebarMenuSub></CollapsibleContent>
-            </Collapsible></SidebarMenuItem>)}
-          </SidebarMenu>}
+            {layout.root.map((entry) => {
+              if (entry.kind === "project") { const project = projectsById.get(entry.id); return project ? renderProject(project) : null; }
+              const folder = foldersById.get(entry.id);
+              return folder ? renderFolder(folder) : null;
+            })}
+            <RootEndDrop />
+          </SidebarMenu></ProjectDnd>}
         {projectsError && <div role="status" className="mt-2 flex items-center justify-between gap-2 px-2 text-xs text-muted-foreground"><span className="min-w-0">{projects.length ? "Projects may be out of date" : "Could not load projects"}</span><Button variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-xs" disabled={projectsLoading} onClick={() => void retryProjects().catch(() => {})}>Retry</Button></div>}
       </SidebarGroupContent>
     </SidebarGroup>
 
     <CloneDialog open={repoOpen} onOpenChange={setRepoOpen} onClone={async (repo) => { await createProject({ gitUrl: repo.url, name: repo.label }); await refreshProjects(); }} />
-    <AppDialog open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={edit?.kind.startsWith("folder") ? <IconFolderPlus /> : <IconPencil />} title={edit?.kind === "folder-new" ? "Create folder" : edit?.kind === "folder-edit" ? "Rename folder" : "Project settings"} description={edit?.kind === "project" ? "These details are shared with your other Floq sessions. Image URLs load directly in your browser." : "Folders organize projects in this sidebar. Removing a folder keeps its projects."} footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
+    <AppDialog open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={<IconPencil />} title="Project settings" description="These details are shared with your other Floq sessions. Image URLs load directly in your browser." footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
       <form id="canonical-project-edit" noValidate onSubmit={(event) => void saveEdit(event)} className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2"><Label htmlFor="canonical-project-name">{edit?.kind.startsWith("folder") ? "Name" : "Project name"}</Label><Input id="canonical-project-name" autoFocus maxLength={60} value={name} onChange={(event) => { setName(event.target.value); setEditError(null); }} /></div>
+        <div className="flex flex-col gap-2"><Label htmlFor="canonical-project-name">Project name</Label><Input id="canonical-project-name" autoFocus maxLength={60} value={name} onChange={(event) => { setName(event.target.value); setEditError(null); }} /></div>
         {edit?.kind === "project" && <>
           <div className="flex flex-col gap-2">
             <Label htmlFor="project-image-kind">Project image</Label>
@@ -505,8 +561,7 @@ export default function CanonicalProjectList() {
       </form>
     </AppDialog>
 
-    <AlertDialog open={removeFolder !== null} onOpenChange={(open) => !open && setRemoveFolder(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia className="bg-destructive/10 text-destructive"><IconTrash /></AlertDialogMedia><AlertDialogTitle>Remove this folder?</AlertDialogTitle><AlertDialogDescription>Projects in “{removeFolder?.name}” stay in Floq and move to the root of the Projects list. No sessions or repository files are deleted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => { if (removeFolder) removeProjectFolder(scope, removeFolder.id); setRemoveFolder(null); }}>Remove folder</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <WorktreeDeleteDialog target={deletingWorktree} onClose={() => setDeletingWorktree(null)} />
-    <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia className="bg-destructive/10 text-destructive"><IconTrash /></AlertDialogMedia><AlertDialogTitle>Delete this agent?</AlertDialogTitle><AlertDialogDescription>“{deleting?.title}” and its terminal session will be removed. This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia className="bg-destructive/10 text-destructive"><IconTrash /></AlertDialogMedia><AlertDialogTitle>Delete this agent?</AlertDialogTitle><AlertDialogDescription>“{deleting?.title}” and its terminal session will be removed. You can undo for a few seconds afterwards.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </>;
 }

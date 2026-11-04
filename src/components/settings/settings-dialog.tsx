@@ -116,7 +116,7 @@ export default function SettingsDialog() {
 
     return (
         <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="flex h-[min(820px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[1120px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1120px]">
+        <DialogContent className="settings-dialog flex h-[min(820px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[1120px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1120px]">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">Configure Floq</DialogDescription>
         <div className="flex h-full min-h-0 flex-col md:flex-row">
@@ -136,7 +136,8 @@ export default function SettingsDialog() {
                 </Select>
             </div>
 
-            <nav aria-label="Settings" className="hidden w-[200px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-border bg-muted/30 p-3 md:flex">
+            <nav aria-label="Settings" className="settings-nav hidden w-[220px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-border bg-muted/30 p-4 md:flex">
+                <div className="px-2 pb-1 pt-2 text-lg font-semibold tracking-tight">Settings</div>
                 {groups.map((group) => (
                     <div key={group.title} className="flex flex-col gap-0.5">
                         <span className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.title}</span>
@@ -147,7 +148,7 @@ export default function SettingsDialog() {
                                 aria-current={section === item.id ? "page" : undefined}
                                 onClick={() => openSettings(item.id)}
                                 className={cn(
-                                    "flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                    "flex h-9 items-center gap-2.5 rounded-xl px-2.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                     section === item.id
                                         ? "bg-primary/10 font-medium text-primary-text"
                                         : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
@@ -161,8 +162,8 @@ export default function SettingsDialog() {
                 ))}
             </nav>
 
-            <div className="mt-10 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1 md:mt-10">
-                <div className="mx-auto w-full max-w-[760px] px-4 pt-2 pb-8 sm:px-8">{content}</div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-1">
+                <div className="mx-auto w-full max-w-[760px] px-5 pt-10 pb-8 sm:px-9">{content}</div>
             </div>
         </div>
         </DialogContent>

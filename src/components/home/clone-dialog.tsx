@@ -242,7 +242,7 @@ export default function CloneDialog({ open, onOpenChange, onClone }: Props) {
             icon={<IconGitBranch />}
             title="Clone a repository"
             description="Clone a repository into your projects. It will be ready before you start an agent."
-            footerStart={tab === "github" ? <button type="button" className="underline" onClick={() => setTab("url")}>Use URL instead</button> : null}
+            footerStart={tab === "github" ? <Button variant="link" size="xs" type="button" className="h-auto px-0" onClick={() => setTab("url")}>Use URL instead</Button> : null}
             footer={
                 <>
                     <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>

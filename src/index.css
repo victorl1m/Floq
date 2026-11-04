@@ -75,25 +75,30 @@ summary {
 
 :root {
   --app-footer-height: 1.5rem;
-  --background: #e8e8ec;
-  --foreground: #141416;
-  --card: #ffffff;
-  --card-foreground: #141416;
-  --popover: #ffffff;
-  --popover-foreground: #141416;
+  /* Shell geometry: left pane, content frame and right pane share these bounds. */
+  --shell-top: 55px;
+  --shell-bottom: calc(var(--app-footer-height) + 15px);
+  --shell-gap: 8px;
+  --shell-radius: 22px;
+  --background: #e7e9ee;
+  --foreground: #202633;
+  --card: #fbfcfe;
+  --card-foreground: #202633;
+  --popover: #fbfcfe;
+  --popover-foreground: #202633;
   --primary: #f97316;
   --primary-hover: #ea580c;
-  --primary-text: #943b08;
+  --primary-text: #b54708;
   --primary-foreground: #211007;
-  --secondary: #ededf0;
-  --secondary-foreground: #202024;
-  --muted: #ededf0;
-  --muted-foreground: #50505a;
-  --accent: #f2ece7;
-  --accent-foreground: #202024;
+  --secondary: #eef0f4;
+  --secondary-foreground: #273142;
+  --muted: #eef0f4;
+  --muted-foreground: #596476;
+  --accent: #f7eee7;
+  --accent-foreground: #273142;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: #dedee3;
-  --input: #8a8a93;
+  --border: #d6dbe4;
+  --input: #a4adbb;
   --ring: #c2410c;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
@@ -104,89 +109,280 @@ summary {
   --ascii-skeleton: #5e5e66;
   --ascii-accent: #f97316;
   --ascii-font: var(--font-mono);
-  --sidebar: #f2f2f4;
-  --sidebar-foreground: #141416;
+  --sidebar: #f5f6f9;
+  --sidebar-foreground: #202633;
   --sidebar-primary: #f97316;
   --sidebar-primary-foreground: #211007;
-  --sidebar-accent: #eee8e2;
-  --sidebar-accent-foreground: #202024;
-  --sidebar-border: #dedee3;
+  --sidebar-accent: #e9edf3;
+  --sidebar-accent-foreground: #202633;
+  --sidebar-border: #d6dbe4;
   --sidebar-ring: #c2410c;
-  --glass-surface: rgb(255 255 255 / 0.48);
-  --glass-border: rgb(255 255 255 / 0.72);
+  --glass-surface: rgb(255 255 255 / 0.64);
+  --glass-border: rgb(255 255 255 / 0.8);
   --glass-highlight: rgb(255 255 255 / 0.96);
-  --glass-shadow: 0 18px 48px -26px rgb(20 20 22 / 0.38), 0 2px 8px rgb(20 20 22 / 0.07);
-  --workspace-wash: radial-gradient(ellipse 75% 90% at 4% 8%, rgb(241 163 111 / 0.42), transparent 78%), radial-gradient(ellipse 80% 90% at 90% 80%, rgb(148 155 179 / 0.22), transparent 78%);
+  --glass-shadow: 0 18px 44px -32px rgb(28 38 54 / 0.35), 0 2px 8px rgb(28 38 54 / 0.06);
+  /* Elevation scale: layered box-shadows only (no filters, never animated in blur). */
+  --shadow-elev-1: 0 1px 2px rgb(28 38 54 / 0.06), 0 4px 12px -2px rgb(28 38 54 / 0.08);
+  --shadow-elev-2: 0 1px 2px rgb(28 38 54 / 0.07), 0 6px 16px -4px rgb(28 38 54 / 0.1), 0 18px 40px -12px rgb(28 38 54 / 0.14);
+  --shadow-elev-3: 0 1px 2px rgb(28 38 54 / 0.07), 0 6px 14px -4px rgb(28 38 54 / 0.09), 0 20px 44px -12px rgb(28 38 54 / 0.16), 0 44px 90px -24px rgb(28 38 54 / 0.2);
+  --shadow-elev-3-focus: 0 1px 2px rgb(28 38 54 / 0.09), 0 8px 18px -4px rgb(28 38 54 / 0.12), 0 26px 56px -12px rgb(28 38 54 / 0.2), 0 56px 110px -24px rgb(28 38 54 / 0.26);
+  --shadow-elev-rim: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --glass-drop: rgb(28 38 54 / 0.1);
+  --sidebar-dust: rgb(61 76 96 / 0.16);
+  --sidebar-glow: rgb(255 255 255 / 0.5);
+  --overlay-scrim: rgb(25 32 44 / 0.3);
+  --workspace-wash: none;
 }
 
+/* === PROVIDER THEMES (src/lib/provider-theme.ts mirrors these) ===================================
+   Apply with data-provider="claude|codex|shell". Unknown providers inherit the app accent.
+   Accent used sparingly: selection border, key icons, status. No glows, rails or washes. */
+:root {
+  --provider-accent: var(--primary-text);
+  --provider-accent-foreground: var(--primary-foreground);
+}
+[data-provider="claude"] { --provider-accent: #B4502C; --provider-accent-foreground: #FFFFFF; }
+[data-provider="codex"] { --provider-accent: #0A7C61; --provider-accent-foreground: #FFFFFF; }
+[data-provider="shell"] { --provider-accent: #5F6673; --provider-accent-foreground: #FFFFFF; }
+:is(.dark, .canvas-chrome-dark) [data-provider="claude"] { --provider-accent: #E08A6A; --provider-accent-foreground: #1A0E08; }
+:is(.dark, .canvas-chrome-dark) [data-provider="codex"] { --provider-accent: #2FBF9A; --provider-accent-foreground: #04130F; }
+:is(.dark, .canvas-chrome-dark) [data-provider="shell"] { --provider-accent: #A1A1A6; --provider-accent-foreground: #000000; }
+.canvas-chrome-light [data-provider="claude"] { --provider-accent: #B4502C; --provider-accent-foreground: #FFFFFF; }
+.canvas-chrome-light [data-provider="codex"] { --provider-accent: #0A7C61; --provider-accent-foreground: #FFFFFF; }
+.canvas-chrome-light [data-provider="shell"] { --provider-accent: #5F6673; --provider-accent-foreground: #FFFFFF; }
+[data-provider] {
+  --provider-tint: color-mix(in oklab, var(--provider-accent) 6%, transparent);
+  --provider-selection: color-mix(in oklab, var(--provider-accent) 10%, transparent);
+  --provider-rim: color-mix(in oklab, var(--provider-accent) 45%, var(--border));
+}
+[data-provider] .canvas-agent-card-material[data-selected="true"] { border-color: var(--provider-accent); }
+/* === END PROVIDER THEMES ======================================================================= */
+
 .dark {
-  --background: #141418;
-  --foreground: #ededef;
-  --card: #101013;
-  --card-foreground: #ededef;
-  --popover: #141418;
-  --popover-foreground: #ededef;
+  --background: #000000;
+  --foreground: #f5f5f7;
+  --card: #1c1c1e;
+  --card-foreground: #f5f5f7;
+  --popover: #1c1c1e;
+  --popover-foreground: #f5f5f7;
   --primary: #f97316;
   --primary-hover: #fb923c;
   --primary-text: #fb923c;
   --primary-foreground: #211007;
-  --secondary: #1b1b20;
-  --secondary-foreground: #ededef;
-  --muted: #19191e;
-  --muted-foreground: #c0bdc6;
-  --accent: #202027;
-  --accent-foreground: #ededef;
+  --secondary: #2c2c2e;
+  --secondary-foreground: #f5f5f7;
+  --muted: #1c1c1e;
+  --muted-foreground: #98989d;
+  --accent: #2c2c2e;
+  --accent-foreground: #f5f5f7;
   --destructive: oklch(0.704 0.191 22.216);
-  --border: #29292f;
-  --input: #73737d;
+  --border: #38383a;
+  --input: #636366;
   --ring: #fb923c;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: #101013;
-  --sidebar-foreground: #ededef;
+  --sidebar: #1c1c1e;
+  --sidebar-foreground: #f5f5f7;
   --sidebar-primary: #f97316;
   --sidebar-primary-foreground: #211007;
-  --sidebar-accent: #1b1b20;
-  --sidebar-accent-foreground: #ededef;
-  --sidebar-border: #29292f;
-  --sidebar-ring: #fb923c;
+  --sidebar-accent: #2c2c2e;
+  --sidebar-accent-foreground: #f5f5f7;
+  --sidebar-border: #38383a;
+  --sidebar-ring: #ff9f0a;
   --ascii-skeleton: #aaaab3;
   --ascii-accent: #fb923c;
-  --glass-surface: rgb(34 32 36 / 0.48);
-  --glass-border: rgb(237 237 239 / 0.17);
-  --glass-highlight: rgb(255 255 255 / 0.085);
-  --glass-shadow: 0 22px 58px -25px rgb(0 0 0 / 0.78), 0 2px 10px rgb(0 0 0 / 0.22);
-  --workspace-wash: radial-gradient(ellipse 68% 80% at 80% 46%, rgb(202 111 61 / 0.3), transparent 76%), radial-gradient(ellipse 75% 90% at 15% 8%, rgb(166 167 183 / 0.23), transparent 75%);
+  --glass-surface: rgb(48 48 50 / 0.62);
+  --glass-border: rgb(190 190 198 / 0.22);
+  --glass-highlight: rgb(255 255 255 / 0.12);
+  --glass-shadow: 0 18px 44px -30px rgb(0 0 0 / 0.8);
+  --shadow-elev-1: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 14px -2px rgb(0 0 0 / 0.55);
+  --shadow-elev-2: 0 1px 2px rgb(0 0 0 / 0.55), 0 8px 20px -4px rgb(0 0 0 / 0.6), 0 22px 48px -12px rgb(0 0 0 / 0.7);
+  --shadow-elev-3: 0 0 0 1px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.7), 0 12px 28px -2px rgb(0 0 0 / 0.8), 0 28px 64px 0 rgb(0 0 0 / 0.85), 0 60px 120px 8px rgb(0 0 0 / 0.8);
+  --shadow-elev-3-focus: 0 0 0 1px rgb(0 0 0 / 0.6), 0 3px 8px rgb(0 0 0 / 0.8), 0 16px 36px -2px rgb(0 0 0 / 0.88), 0 36px 80px 2px rgb(0 0 0 / 0.92), 0 72px 140px 12px rgb(0 0 0 / 0.88);
+  --shadow-elev-rim: inset 0 1px 0 rgb(255 255 255 / 0.12), inset 0 0 0 1px rgb(255 255 255 / 0.04);
+  --glass-drop: transparent;
+  --sidebar-dust: rgb(255 255 255 / 0.24);
+  --sidebar-glow: rgb(255 255 255 / 0.2);
+  --overlay-scrim: rgb(0 0 0 / 0.62);
+  --workspace-wash: none;
+}
+
+/* Canvas theme: one switch (data-canvas-theme / .canvas-chrome-{light,dark}, set from next-themes' resolved
+   theme in agent-canvas-page.tsx) drives React Flow's colorMode and these tokens. Dark keeps the OLED remap
+   below; light inherits the app's light tokens and only adds canvas-specific surfaces. */
+.canvas-chrome {
+  container-type: inline-size;
+  container-name: canvas-stage;
+}
+.canvas-chrome-light {
+  color-scheme: light;
+  color: var(--foreground);
+  --canvas-bg: #f4f5f8;
+  --canvas-dot: #aab2c0;
+  --canvas-card-border: #c5ccd8;
+  --xy-background-color: var(--canvas-bg);
+  --xy-background-pattern-dots-color: var(--canvas-dot);
+  /* Glisse variables re-mapped for the light canvas (mirrors the dark remap below). */
+  --lg-glass: rgb(255 255 255 / 0.92);
+  --lg-glass-active: rgb(32 38 51 / 0.07);
+  --lg-edge: #c5ccd8;
+  --lg-drop: transparent;
+  --lg-foreground: #202633;
+  --lg-muted: #596476;
+  --lg-lens: rgb(255 255 255 / 0.5);
+  --lg-lens-drop: transparent;
+  --xy-minimap-background-color: #fbfcfe;
+  --xy-selection-background-color: rgb(194 65 12 / 0.07);
+  --xy-selection-border: 1px dotted rgb(194 65 12 / 0.7);
+  /* Soft grey off-white so white cards separate by tone + the elevation tokens, not by heavy borders. */
+  background-color: var(--canvas-bg);
+}
+.canvas-chrome-light .canvas-topbar {
+  border-color: var(--canvas-card-border);
+  background-color: rgb(255 255 255 / 0.82);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.9), transparent 55%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-1);
+}
+.canvas-chrome-light .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"] { border-color: var(--canvas-card-border); }
+/* Open popover trigger (Vault): keep the glass, signal state with an accent rim instead of a flat grey flood. */
+.canvas-chrome .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"][aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--primary) 70%, transparent);
+  background-color: var(--lg-glass);
+}
+.canvas-chrome-light .react-flow__controls-button,
+.canvas-chrome-light .react-flow__minimap { box-shadow: var(--shadow-elev-1); }
+.canvas-chrome-dark {
+  color-scheme: dark;
+  color: var(--foreground);
+  --background: #000000;
+  --foreground: #f5f5f7;
+  --card: #1c1c1e;
+  --card-foreground: #f5f5f7;
+  --popover: #1c1c1e;
+  --popover-foreground: #f5f5f7;
+  --primary: #f97316;
+  --primary-hover: #fb923c;
+  --primary-text: #fb923c;
+  --primary-foreground: #211007;
+  --secondary: #2c2c2e;
+  --secondary-foreground: #f5f5f7;
+  --muted: #1c1c1e;
+  --muted-foreground: #98989d;
+  --accent: #2c2c2e;
+  --accent-foreground: #f5f5f7;
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: #38383a;
+  --input: #636366;
+  --ring: #fb923c;
+  /* Glisse's --lg-* are mapped on :root, where var() resolves once against the APP theme; re-map them here so
+     the always-dark chrome gets dark glass and light labels even when the app is in Light. */
+  --lg-glass: rgb(255 255 255 / 0.08);
+  --lg-glass-active: rgb(255 255 255 / 0.15);
+  --lg-edge: rgb(255 255 255 / 0.16);
+  --lg-drop: transparent;
+  --lg-foreground: #f5f5f7;
+  --lg-muted: #98989d;
+  --lg-fill: var(--primary);
+  --lg-ring: var(--ring);
+  --lg-lens: rgb(255 255 255 / 0.055);
+  --lg-lens-drop: transparent;
+  --lg-lens-shine: 1;
+  --lg-rim-shine: 0.13;
+}
+/* Topbar buttons: Floq's size tokens (32px / 10px radius) beat per-button h-* overrides, which lose to
+   the higher-specificity `.floq-button.lg-button[data-size]` rules. */
+.canvas-topbar .floq-button.lg-button { height: 2rem; border-radius: 10px; }
+.canvas-chrome-dark .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"] { border-color: rgb(255 255 255 / 0.16); }
+.canvas-topbar {
+  color: var(--foreground);
+  border: 1px solid rgb(255 255 255 / 0.14);
+  background-color: rgb(28 28 30 / 0.84);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.09), transparent 48%);
+  backdrop-filter: blur(8px) saturate(1.08);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 12px 32px -26px rgb(0 0 0 / 0.72);
+}
+/* The tools row never shows a scrollbar. Setting overflow-x alone makes overflow-y compute to auto, so a focus ring,
+   a pressed-scale or a 1px rounding on click produced a vertical scrollbar. Vertical overflow is clipped instead;
+   the block padding (cancelled by the negative margin) keeps focus rings inside the clip box. Where the row really
+   is too narrow it scrolls sideways with hidden scrollbars. */
+.canvas-topbar-tools {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 2px;
+  margin: -4px -2px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.canvas-topbar-tools::-webkit-scrollbar { display: none; width: 0; height: 0; }
+@container canvas-stage (min-width: 760px) {
+  .canvas-topbar-layout { display: flex; min-width: 0; align-items: center; gap: 0.5rem; }
+  .canvas-topbar-identity { order: 1; flex: 1 1 0%; }
+  .canvas-topbar-tools { order: 2; flex: 0 1 auto; min-width: 0; max-width: 58%; justify-content: center; overflow-x: auto; }
+  .canvas-topbar-actions { order: 3; flex: 0 0 auto; }
+}
+@container canvas-stage (max-width: 759px) {
+  .canvas-topbar-layout {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "identity actions" "tools tools";
+  }
+  .canvas-topbar-identity { grid-area: identity; }
+  .canvas-topbar-actions { grid-area: actions; justify-self: end; }
+  .canvas-topbar-tools {
+    grid-area: tools; justify-content: flex-start; overscroll-behavior-x: contain;
+    padding-inline: 8px; margin-inline: -6px; width: calc(100% + 12px);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  }
+  .canvas-link-mode-panel { margin-top: 5.5rem !important; }
+}
+:root[data-material="solid"] .canvas-topbar {
+  background-color: #1c1c1e;
+  background-image: none;
+  backdrop-filter: none;
+}
+:root[data-material="solid"] .canvas-chrome-light .canvas-topbar { background-color: #ffffff; }
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-material="system"] .canvas-topbar {
+    background-color: #1c1c1e;
+    background-image: none;
+    backdrop-filter: none;
+  }
+  :root[data-material="system"] .canvas-chrome-light .canvas-topbar { background-color: #ffffff; }
+}
+@media (forced-colors: active) {
+  .canvas-topbar { color: CanvasText; border-color: CanvasText; background: Canvas; background-image: none; backdrop-filter: none; }
 }
 
 @utility material-content {
-  border: 1px solid var(--glass-border);
-  background-color: color-mix(in oklab, var(--card) 78%, transparent);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(140deg, color-mix(in oklab, white 9%, transparent), transparent 38%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 8px 22px -22px color-mix(in oklab, var(--foreground) 35%, transparent);
+  backdrop-filter: none;
 }
 
 @utility glass-surface {
   background-color: var(--glass-surface);
-  backdrop-filter: blur(24px) saturate(125%);
-  -webkit-backdrop-filter: blur(24px) saturate(125%);
+  background-image: linear-gradient(145deg, color-mix(in oklab, white 10%, transparent), transparent 38%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 @utility glass-panel {
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
   background-color: var(--glass-surface);
+  background-image: linear-gradient(145deg, color-mix(in oklab, white 12%, transparent), transparent 40%);
   box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: blur(26px) saturate(128%);
-  -webkit-backdrop-filter: blur(26px) saturate(128%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .workspace-surface {
   background-color: var(--background);
   background-image: var(--workspace-wash);
-  background-attachment: fixed;
 }
 
 .workspace-view {
@@ -216,37 +412,15 @@ summary {
   to { opacity: 1; }
 }
 
-.glass-key-surface {
-  position: relative;
-  isolation: isolate;
-}
-
-.glass-key-surface::before {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  padding: 1px;
-  border-radius: inherit;
-  background: linear-gradient(145deg, var(--glass-highlight), var(--glass-border) 58%, color-mix(in oklab, var(--primary) 18%, var(--glass-border)));
-  content: "";
-  pointer-events: none;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-}
-
 @supports not (backdrop-filter: blur(1px)) {
   .glass-surface,
-  .glass-panel,
-  .cn-toast {
+  .glass-panel {
     background-color: var(--popover);
   }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  :root:not([data-material="glass"]) .glass-surface,
-  :root:not([data-material="glass"]) .glass-panel,
-  :root:not([data-material="glass"]) .cn-toast {
+  :root[data-material="system"] :is(.glass-surface, .glass-panel, .floq-glass.lg-glass) {
     background-color: var(--popover);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -255,8 +429,7 @@ summary {
 
 @media (forced-colors: active) {
   .glass-surface,
-  .glass-panel,
-  .cn-toast {
+  .glass-panel {
     border-color: CanvasText;
     background-color: Canvas;
     box-shadow: none;
@@ -269,145 +442,357 @@ summary {
   }
 }
 
-/* Sonner is deliberately unstyled; these recipes own its surface and all controls. */
+/*
+ * Floq toasts: a notch that melts into a grain card.
+ * Sonner stays the engine (queue, a11y roles, pause on hover/focus, swipe, timers);
+ * these recipes own the surface. The card follows the app theme: light card in light,
+ * OLED card in dark. The notch is the same surface as the card (clipped), so the morph never
+ * changes colour mid-flight; in light a hairline drop-shadow outline keeps it visible.
+ * No backdrop-filter: opaque surface, cheap to paint. Theme switch = variable swap, live.
+ * Motion: clip-path morph (small, short, one-shot) + opacity; reduced motion = fade only.
+ */
 .toaster[data-sonner-toaster] {
-  --offset-top: max(60px, env(safe-area-inset-top));
-  z-index: 1000;
+  z-index: 2147483000;
+  --toast-spring: linear(0, 0.2 8%, 0.62 20%, 0.9 34%, 1.03 48%, 1.04 58%, 1.01 76%, 1);
+  --toast-notch: inset(0 calc(50% - 46px) calc(100% - 28px) calc(50% - 46px) round 14px);
+  /* Light is the base; .dark and solid override the variables below. */
+  --toast-bg: var(--popover);
+  --toast-fg: var(--popover-foreground);
+  --toast-fg-muted: #4a5365;
+  --toast-fg-faint: #5b6475;
+  --toast-rim: rgb(28 38 54 / 0.14);
+  --toast-rim-top: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --toast-wash: 10%;
+  --toast-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.12 0 0 0 0 0.15 0 0 0 0 0.21 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --toast-grain-opacity: 0.05;
+  --toast-grain-blend: multiply;
+  --toast-hover-fill: rgb(28 38 54 / 0.07);
+  --toast-press-fill: rgb(28 38 54 / 0.12);
+  --toast-hover-fg: var(--popover-foreground);
+  --toast-focus: var(--ring);
+  --toast-action-bg: #202633;
+  --toast-action-bg-hover: #333c4e;
+  --toast-action-bg-press: #151a24;
+  --toast-action-fg: #ffffff;
+  --toast-cancel-border: rgb(28 38 54 / 0.22);
+  --toast-icon-fill: 11%;
+  --toast-dot-glow: 0 0 5px;
+  --toast-success: #15803d;
+  --toast-info: #1d4ed8;
+  --toast-warning: #b45309;
+  --toast-error: #c62828;
+  --toast-loading: #4f46e5;
+  /* Shadow lives on the container, so it traces the clipped shape (notch, morph, card, fold) in full.
+     Same ink as --shadow-elev-*; the 0-offset hairline outlines the notch where the border is clipped away. */
+  filter: drop-shadow(0 12px 14px rgb(28 38 54 / 0.14)) drop-shadow(0 2px 3px rgb(28 38 54 / 0.16)) drop-shadow(0 0 0.6px rgb(28 38 54 / 0.4));
+}
+
+.dark .toaster[data-sonner-toaster] {
+  --toast-bg: #0b0b0d;
+  --toast-fg: #f5f5f7;
+  --toast-fg-muted: #b8b8c2;
+  --toast-fg-faint: #a8a8b3;
+  --toast-rim: rgb(255 255 255 / 0.11);
+  --toast-rim-top: inset 0 1px 0 rgb(255 255 255 / 0.09);
+  --toast-wash: 16%;
+  --toast-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --toast-grain-opacity: 0.085;
+  --toast-grain-blend: normal;
+  --toast-hover-fill: rgb(255 255 255 / 0.1);
+  --toast-press-fill: rgb(255 255 255 / 0.18);
+  --toast-hover-fg: #fff;
+  --toast-focus: #fff;
+  --toast-action-bg: #f5f5f7;
+  --toast-action-bg-hover: #fff;
+  --toast-action-bg-press: #d9d9de;
+  --toast-action-fg: #0b0b0d;
+  --toast-cancel-border: rgb(255 255 255 / 0.16);
+  --toast-icon-fill: 14%;
+  --toast-dot-glow: 0 0 8px;
+  --toast-success: #4ade80;
+  --toast-info: #cbd5e1;
+  --toast-warning: #fbbf24;
+  --toast-error: #f87171;
+  --toast-loading: #a5b4fc;
+  filter: drop-shadow(0 14px 16px rgb(0 0 0 / 0.28)) drop-shadow(0 2px 3px rgb(0 0 0 / 0.32));
+}
+
+/* Solid material, light: pure white card, crisp border, no grain, tight shadow. */
+:root[data-material="solid"]:not(.dark) .toaster[data-sonner-toaster] {
+  --toast-bg: #ffffff;
+  --toast-rim: var(--border);
+  --toast-rim-top: none;
+  --toast-wash: 0%;
+  --toast-grain-opacity: 0;
+  filter: drop-shadow(0 6px 8px rgb(28 38 54 / 0.12)) drop-shadow(0 1px 2px rgb(28 38 54 / 0.18)) drop-shadow(0 0 0.6px rgb(28 38 54 / 0.45));
+}
+/* Solid material, dark: same OLED card, crisper rim, no grain. */
+:root[data-material="solid"].dark .toaster[data-sonner-toaster] {
+  --toast-rim: rgb(255 255 255 / 0.18);
+  --toast-rim-top: none;
+  --toast-grain-opacity: 0;
 }
 
 .toaster [data-sonner-toast].cn-toast {
-  position: relative;
+  --toast-tone: var(--toast-info);
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 28px;
-  grid-template-areas: "icon content close" "icon action cancel";
+  grid-template-columns: var(--toast-icon, 30px) minmax(0, 1fr) auto auto;
+  grid-template-areas: "icon content content close" "icon . cancel action";
   align-items: center;
-  gap: 4px 12px;
+  gap: 0 10px;
   width: min(390px, calc(100vw - 32px));
-  min-height: 72px;
-  padding: 12px 12px 12px 14px;
+  /* Compact (title only): symmetric padding, pill radius; the card clip target reads the same radius. */
+  --toast-radius: 25px;
+  --toast-icon: 30px;
+  --toast-card: inset(0 0 0 0 round var(--toast-radius));
+  padding: 9px 10px 9px 10px;
   overflow: hidden;
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  color: var(--foreground);
-  background-color: var(--glass-surface);
-  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: blur(26px) saturate(130%);
-  -webkit-backdrop-filter: blur(26px) saturate(130%);
+  border: 1px solid var(--toast-rim);
+  border-radius: var(--toast-radius);
+  color: var(--toast-fg);
+  background-color: var(--toast-bg);
+  background-image: radial-gradient(130% 80px at 50% 0, color-mix(in oklab, var(--toast-tone) var(--toast-wash), transparent), transparent 75%);
+  box-shadow: var(--toast-rim-top);
+  counter-reset: toast-pending var(--toast-pending, 0);
+  animation: cn-toast-morph 780ms both;
 }
 
+/* No action buttons: a single row, so icon, title and close share one exact centre line. */
+.toaster [data-sonner-toast].cn-toast:not(:has(.cn-toast-action, .cn-toast-cancel)) {
+  grid-template-areas: "icon content content close";
+}
+
+/* Title + description (or actions): roomier two-line card. */
+.toaster [data-sonner-toast].cn-toast:has(.cn-toast-description) {
+  --toast-radius: 22px;
+  --toast-icon: 34px;
+  padding: 12px 12px 12px 14px;
+}
+/* Actions sit on a second row: keep the same inset as the compact card. */
+.toaster [data-sonner-toast].cn-toast:has(.cn-toast-action, .cn-toast-cancel):not(:has(.cn-toast-description)) {
+  --toast-radius: 22px;
+  padding: 10px 10px 10px 10px;
+}
+
+/* Film grain: inline SVG noise, low opacity, sits under the content. */
 .toaster [data-sonner-toast].cn-toast::before {
   position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--glass-highlight) 24%, var(--glass-highlight) 76%, transparent);
+  inset: 0;
+  z-index: 0;
+  background-image: var(--toast-grain);
+  background-size: 160px 160px;
   content: "";
+  mix-blend-mode: var(--toast-grain-blend);
+  opacity: var(--toast-grain-opacity);
   pointer-events: none;
 }
+
+/* The notch's status light: only visible while collapsed. */
+.toaster [data-sonner-toast].cn-toast::after {
+  position: absolute;
+  top: 11px;
+  left: calc(50% - 3px);
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--toast-tone);
+  box-shadow: var(--toast-dot-glow) var(--toast-tone);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  animation: cn-toast-dot 780ms both;
+}
+
+.toaster [data-sonner-toast].cn-toast > * { position: relative; z-index: 1; animation: cn-toast-content-in 780ms both; }
+
+/* Toasts waiting behind the notch show only their edge. */
+.toaster [data-sonner-toast].cn-toast[data-front="false"][data-expanded="false"] > * { opacity: 0; animation: none; }
+
+/* Sonner slides toasts in from above by a full height; keep it a soft settle instead. */
+.toaster [data-sonner-toast].cn-toast[data-mounted="false"] { --y: translateY(-6px); }
+.toaster [data-sonner-toast].cn-toast[data-removed="true"] {
+  --y: translateY(-4px);
+  animation: cn-toast-fold 200ms cubic-bezier(0.4, 0, 0.9, 0.4) both;
+}
+.toaster [data-sonner-toast].cn-toast[data-removed="true"] > * { animation: cn-toast-content-out 110ms ease-in both; }
+
+/* Swipe to dismiss (up is primary, left/right secondary). Sonner owns the gesture and sets --swipe-amount-*;
+   the surface adds a light fade with distance (--toast-drag-fade, written by the Toaster) and, on release
+   past the threshold, glides back to the notch while the fold plays instead of sliding off screen.
+   Drag never starts on buttons: their icons ignore the pointer so the event target is the button itself. */
+.toaster [data-sonner-toast].cn-toast[data-swiping="true"]:not([data-removed="true"]) { opacity: var(--toast-drag-fade, 1); }
+.toaster [data-sonner-toast].cn-toast[data-swipe-out="true"] {
+  transform: var(--y) translate(0, 0);
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.9, 0.4);
+}
+.cn-toast :is(button, [role="button"]) * { pointer-events: none; }
+.toaster [data-sonner-toast].cn-toast[data-removed="true"]::after { animation: cn-toast-dot-in 200ms ease-out both; }
+
+/* Only the newest toast is the notch's face; older ones wait behind it. */
+.toaster [data-sonner-toast].cn-toast[data-front="true"] .cn-toast-title::after {
+  margin-left: 8px;
+  color: var(--toast-fg-faint);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  content: "+" counter(toast-pending) " more";
+}
+.toaster.toaster-solo [data-sonner-toast].cn-toast .cn-toast-title::after { content: none !important; }
+
+@keyframes cn-toast-morph {
+  0% { clip-path: var(--toast-notch); opacity: 0; }
+  10% { opacity: 1; }
+  30% { clip-path: var(--toast-notch); animation-timing-function: var(--toast-spring); }
+  100% { clip-path: var(--toast-card); }
+}
+@keyframes cn-toast-fold {
+  from { clip-path: var(--toast-card); opacity: 1; }
+  to { clip-path: var(--toast-notch); opacity: 0; }
+}
+@keyframes cn-toast-content-in {
+  0%, 38% { opacity: 0; transform: translateY(5px) scale(0.98); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes cn-toast-content-out { to { opacity: 0; } }
+@keyframes cn-toast-dot {
+  0%, 10% { opacity: 0; transform: scale(0.4); }
+  22%, 30% { opacity: 1; transform: scale(1); }
+  42%, 100% { opacity: 0; transform: scale(0.6); }
+}
+@keyframes cn-toast-dot-in { 0%, 40% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes cn-toast-fade { from { opacity: 0; } to { opacity: 1; } }
 
 .cn-toast .cn-toast-icon {
   grid-area: icon;
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: var(--toast-icon, 30px);
+  height: var(--toast-icon, 30px);
   place-items: center;
-  border: 1px solid color-mix(in oklab, var(--toast-tone, var(--primary)) 26%, var(--glass-border));
-  border-radius: 10px;
-  color: var(--toast-tone, var(--primary-text));
-  background: color-mix(in oklab, var(--toast-tone, var(--primary)) 12%, var(--glass-surface));
+  border: 1px solid color-mix(in oklab, var(--toast-tone) 30%, transparent);
+  border-radius: calc(var(--toast-icon, 30px) * 0.35);
+  color: var(--toast-tone);
+  background: color-mix(in oklab, var(--toast-tone) var(--toast-icon-fill), transparent);
 }
 
-.cn-toast-success { --toast-tone: #15803d; }
-.cn-toast-info { --toast-tone: #526274; }
-.cn-toast-warning { --toast-tone: #a16207; }
-.cn-toast-error { --toast-tone: #b42318; }
-.dark .cn-toast-success { --toast-tone: #4ade80; }
-.dark .cn-toast-info { --toast-tone: #cbd5e1; }
-.dark .cn-toast-warning { --toast-tone: #fbbf24; }
-.dark .cn-toast-error { --toast-tone: #f87171; }
-.cn-toast-loading { --toast-tone: var(--primary-text); }
+/* Status tones come from the theme variables (>= 3:1 on the card in both themes). */
+.toaster [data-sonner-toast].cn-toast-success { --toast-tone: var(--toast-success); }
+.toaster [data-sonner-toast].cn-toast-info { --toast-tone: var(--toast-info); }
+.toaster [data-sonner-toast].cn-toast-warning { --toast-tone: var(--toast-warning); }
+.toaster [data-sonner-toast].cn-toast-error { --toast-tone: var(--toast-error); }
+.toaster [data-sonner-toast].cn-toast-loading { --toast-tone: var(--toast-loading); }
 
 .cn-toast .cn-toast-content {
   grid-area: content;
   min-width: 0;
-  color: var(--foreground);
+  color: var(--toast-fg);
 }
+/* Sonner can leave an empty description node behind; never let it take space. */
+.cn-toast .cn-toast-description:empty { display: none; }
 
 .cn-toast .cn-toast-title {
   display: block;
-  overflow: hidden;
-  color: var(--foreground);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  color: var(--toast-fg);
   font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.25rem;
-  text-overflow: ellipsis;
 }
 
 .cn-toast .cn-toast-description {
   display: block;
   margin-top: 2px;
-  color: var(--muted-foreground);
+  color: var(--toast-fg-muted);
   font-size: 0.8125rem;
   line-height: 1.125rem;
   overflow-wrap: anywhere;
 }
 
-.cn-toast .cn-toast-close {
+.toaster [data-sonner-toast].cn-toast .cn-toast-close {
   grid-area: close;
+  align-self: center;
+  justify-self: end;
   display: grid;
   width: 28px;
   height: 28px;
   place-items: center;
   border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--muted-foreground);
+  border-radius: 999px;
+  color: var(--toast-fg-muted);
   background: transparent;
-  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: none;
+  transition: color 120ms ease, background-color 120ms ease, scale 120ms ease;
 }
 
-.cn-toast .cn-toast-close:hover,
-.cn-toast .cn-toast-cancel:hover {
-  border-color: var(--glass-border);
-  color: var(--foreground);
-  background: color-mix(in oklab, var(--foreground) 7%, transparent);
+/* With a description the close button lines up with the title row, not the card's middle. */
+.toaster [data-sonner-toast].cn-toast:has(.cn-toast-description) .cn-toast-close { align-self: start; margin-top: -4px; }
+
+/* Pressed/hover states: fills only (no layout); the press scale stays inside the card inset. */
+.toaster [data-sonner-toast].cn-toast .cn-toast-close:hover,
+.toaster [data-sonner-toast].cn-toast .cn-toast-cancel:hover {
+  color: var(--toast-hover-fg);
+  background: var(--toast-hover-fill);
 }
+.toaster [data-sonner-toast].cn-toast .cn-toast-close:active,
+.toaster [data-sonner-toast].cn-toast .cn-toast-cancel:active {
+  color: var(--toast-hover-fg);
+  background: var(--toast-press-fill);
+  scale: 0.94;
+}
+.toaster [data-sonner-toast].cn-toast .cn-toast-action:active { background: var(--toast-action-bg-press); scale: 0.96; }
 
 .cn-toast .cn-toast-action,
 .cn-toast .cn-toast-cancel {
+  margin-top: 8px;
   justify-self: end;
+  white-space: nowrap;
   min-height: 28px;
-  padding: 4px 10px;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--toast-cancel-border);
+  border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1rem;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, scale 120ms ease;
 }
 
 .cn-toast .cn-toast-action {
   grid-area: action;
-  border-color: color-mix(in oklab, var(--primary) 55%, transparent);
-  color: var(--primary-foreground);
-  background: var(--primary);
+  border-color: transparent;
+  color: var(--toast-action-fg);
+  background: var(--toast-action-bg);
 }
-
-.cn-toast .cn-toast-action:hover { background: var(--primary-hover); }
-.cn-toast .cn-toast-cancel { grid-area: cancel; color: var(--foreground); background: transparent; }
+.cn-toast .cn-toast-action:hover { background: var(--toast-action-bg-hover); }
+.cn-toast .cn-toast-cancel { grid-area: cancel; color: var(--toast-fg); background: transparent; }
 
 .cn-toast :is(button, [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
+  outline: 2px solid var(--toast-focus);
   outline-offset: 2px;
 }
+.toaster [data-sonner-toast].cn-toast .cn-toast-close:focus-visible { outline-offset: 0; }
 
 @media (max-width: 640px) {
-  .toaster[data-sonner-toaster][data-x-position="right"] {
-    left: 50% !important;
-    right: auto !important;
+  .toaster[data-sonner-toaster][data-x-position="center"] {
     width: min(420px, calc(100vw - 24px));
-    transform: translateX(-50%);
   }
 
   .toaster [data-sonner-toast].cn-toast { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toaster [data-sonner-toast].cn-toast :is(.cn-toast-close, .cn-toast-action, .cn-toast-cancel) { transition: none; }
+  .toaster [data-sonner-toast].cn-toast :is(.cn-toast-close, .cn-toast-action, .cn-toast-cancel):active { scale: 1; }
+  .toaster [data-sonner-toast].cn-toast { animation: cn-toast-fade 160ms ease-out both; }
+  .toaster [data-sonner-toast].cn-toast[data-removed="true"] { animation: cn-toast-fade 160ms ease-in reverse both; }
+  .toaster [data-sonner-toast].cn-toast > *,
+  .toaster [data-sonner-toast].cn-toast[data-removed="true"] > * { animation: none; }
+  .toaster [data-sonner-toast].cn-toast::after { display: none; }
+  .toaster [data-sonner-toast].cn-toast[data-swipe-out="true"] { transition: none; }
+  .toaster [data-sonner-toast].cn-toast[data-mounted="false"],
+  .toaster [data-sonner-toast].cn-toast[data-removed="true"] { --y: translateY(0); }
 }
 
 @media (forced-colors: active) {
@@ -420,24 +805,9 @@ summary {
     color: CanvasText;
     background: Canvas;
     box-shadow: none;
-    backdrop-filter: none;
   }
-}
-
-@supports not (backdrop-filter: blur(1px)) {
-  .toaster [data-sonner-toast].cn-toast {
-    background-color: var(--popover);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .toaster [data-sonner-toast].cn-toast {
-    background-color: var(--popover);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
+  .toaster [data-sonner-toast].cn-toast::before,
+  .toaster [data-sonner-toast].cn-toast::after { display: none; }
 }
 
 @layer base {
@@ -497,12 +867,20 @@ summary {
     background-color: color-mix(in oklab, var(--foreground) 35%, transparent);
   }
 
-  /* The terminal is always dark, whatever the app theme. */
+  /* Terminal scrollbar follows the terminal surface (light ink on dark, dark ink on light). */
   .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-    background-color: rgb(255 255 255 / 0.2);
+    background-color: rgb(31 35 40 / 0.28);
   }
 
   .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(31 35 40 / 0.45);
+  }
+
+  .dark .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background-color: rgb(255 255 255 / 0.2);
+  }
+
+  .dark .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
     background-color: rgb(255 255 255 / 0.35);
   }
 }
@@ -535,6 +913,83 @@ summary {
   animation: none !important;
 }
 
+@property --floq-edge-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.button-shimmer {
+  position: relative;
+  isolation: isolate;
+}
+
+/* The shared button keeps Floq's compact geometry while Glisse owns native button material. */
+.floq-button.lg-button {
+  height: 2rem;
+  gap: 0.375rem;
+  border-radius: 10px;
+  padding-inline: 0.625rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+.floq-button.lg-button > svg { width: 1rem; height: 1rem; }
+.floq-button.lg-button[data-floq-variant="default"] { color: var(--primary-foreground); }
+.floq-button.lg-button[data-floq-variant="destructive"] { --lg-destructive: var(--destructive); color: white; }
+.floq-button.lg-button[data-floq-variant="outline"] { border: 1px solid var(--border); }
+.floq-button.lg-button[data-floq-variant="secondary"] { color: var(--secondary-foreground); }
+.floq-button.lg-button[data-floq-variant="ghost"],
+.floq-button.lg-button[data-floq-variant="link"] { color: var(--foreground); }
+.floq-button.lg-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.floq-button.lg-button[data-size="xs"],
+.floq-button.lg-button[data-size="icon-xs"] { height: 1.5rem; border-radius: 8px; }
+.floq-button.lg-button[data-size="xs"] { gap: 0.25rem; padding-inline: 0.5rem; font-size: 0.75rem; line-height: 1rem; }
+.floq-button.lg-button[data-size="icon-xs"] { width: 1.5rem; padding: 0; }
+.floq-button.lg-button[data-size="icon-xs"] > svg { width: 0.75rem; height: 0.75rem; }
+.floq-button.lg-button[data-size="sm"],
+.floq-button.lg-button[data-size="icon-sm"] { height: 1.75rem; border-radius: 9px; }
+.floq-button.lg-button[data-size="sm"] { gap: 0.25rem; padding-inline: 0.625rem; font-size: 0.8125rem; }
+.floq-button.lg-button[data-size="icon-sm"] { width: 1.75rem; padding: 0; }
+.floq-button.lg-button[data-size="icon-sm"] > svg { width: 0.875rem; height: 0.875rem; }
+.floq-button.lg-button[data-size="lg"],
+.floq-button.lg-button[data-size="icon-lg"] { height: 2.25rem; border-radius: 11px; }
+.floq-button.lg-button[data-size="lg"] { padding-inline: 0.75rem; }
+.floq-button.lg-button[data-size="icon"] { width: 2rem; padding: 0; }
+.floq-button.lg-button[data-size="icon-lg"] { width: 2.25rem; padding: 0; }
+
+.button-shimmer > * { position: relative; z-index: 1; }
+
+.button-shimmer::after {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--floq-edge-angle), transparent 0deg 250deg, rgb(255 255 255 / 0.32) 278deg, rgb(255 255 255 / 0.92) 292deg, rgb(255 255 255 / 0.32) 306deg, transparent 330deg 360deg);
+  content: "";
+  pointer-events: none;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: floq-edge-shimmer 5.5s linear infinite;
+}
+
+@keyframes floq-edge-shimmer { to { --floq-edge-angle: 360deg; } }
+
+.button-shimmer:disabled::after,
+.button-shimmer[aria-disabled="true"]::after,
+.button-shimmer[aria-busy="true"]::after,
+:root[data-material="solid"] .button-shimmer::after { display: none; }
+
+.floq-reduced-motion .button-shimmer::after { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .button-shimmer::after { animation: none; }
+}
+
+@media (forced-colors: active) {
+  .button-shimmer::after { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -562,18 +1017,501 @@ summary {
   --lg-fill: var(--primary);
   --lg-ring: var(--ring);
   --lg-edge: var(--glass-border);
+  /* Hover/pressed tint follows the app theme (a translucent ink over the glass), never Glisse's OS-scheme grey. */
+  --lg-glass-active: color-mix(in srgb, var(--foreground) 7%, var(--glass-surface));
+  --lg-glass-pressed: color-mix(in srgb, var(--foreground) 13%, var(--glass-surface));
 }
-.floq-glass.lg-glass {
-  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
-}
-@media (prefers-reduced-transparency: reduce) {
-  :root:not([data-material="glass"]) .floq-glass.lg-glass { --lg-filter: none; --lg-blur: 0px; background: var(--popover); }
-}
-
-:root[data-material="solid"] :is(.glass-surface, .glass-panel, .material-content, .cn-toast, .floq-glass.lg-glass) {
-  background: var(--popover);
+.floq-button.lg-button:is([data-floq-variant="outline"], [data-floq-variant="secondary"]):is(:active, [data-pressed]) { background-color: var(--lg-glass-pressed, var(--lg-glass-active)); }
+:root[data-material="solid"] :is(.glass-surface, .glass-panel, .material-content, .floq-glass.lg-glass) {
+  background-color: var(--popover);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  --lg-filter: none;
   --lg-blur: 0px;
 }
+
+/* Floq's product surfaces: pearl light planes and OLED-neutral graphite layers. */
+.workspace-frame {
+  /* Same top/bottom bounds and radius as the side panes; gutters are --shell-gap. */
+  margin: var(--shell-top) var(--shell-gap) var(--shell-bottom) var(--shell-gap);
+  border: 1px solid color-mix(in oklab, var(--border) 42%, transparent);
+  border-radius: var(--shell-radius);
+  /* Definite height: never depends on a sibling pane or the footer-padded wrapper. */
+  align-self: flex-start;
+  height: calc(100svh - var(--shell-top) - var(--shell-bottom));
+  box-shadow: none;
+}
+
+.floq-surface {
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  background-color: var(--card);
+  box-shadow: var(--shadow-elev-2), inset 0 1px 0 var(--glass-highlight);
+}
+.glass-key-surface {
+  border-color: color-mix(in oklab, var(--border) 70%, transparent);
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in oklab, white 12%, transparent), transparent 42%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-2);
+}
+.dark .glass-key-surface {
+  border-color: rgb(255 255 255 / 0.13);
+  background-color: rgb(35 35 37 / 0.84);
+  background-image: linear-gradient(135deg, rgb(255 255 255 / 0.095), transparent 42%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-2);
+}
+.canvas-chrome-light .canvas-agent-card-material {
+  border-color: var(--canvas-card-border);
+  background-color: color-mix(in oklab, #ffffff 90%, transparent);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.9), transparent 55%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-2);
+}
+.canvas-agent-card-material {
+  border-color: color-mix(in oklab, var(--border) 75%, transparent);
+  background-color: color-mix(in oklab, var(--card) 91%, transparent);
+  background-image: linear-gradient(145deg, color-mix(in oklab, white 9%, transparent), transparent 42%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-1);
+}
+.dark .canvas-agent-card-material {
+  border-color: rgb(255 255 255 / 0.14);
+  background-color: rgb(26 26 28 / 0.84);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.07), transparent 45%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-2);
+}
+.floq-surface[data-slot="dialog-content"] {
+  border-color: color-mix(in oklab, var(--border) 62%, transparent);
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in oklab, white 12%, transparent), transparent 34%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+}
+.dark .floq-surface[data-slot="dialog-content"] {
+  border-color: rgb(255 255 255 / 0.13);
+  background-color: rgb(28 28 30 / 0.88);
+  background-image: linear-gradient(135deg, rgb(255 255 255 / 0.08), transparent 34%);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+}
+
+/* Popup material stays local to floating menus and dialog surfaces. */
+.floq-frosted-menu {
+  border-color: color-mix(in oklab, var(--border) 72%, transparent);
+  background-color: rgb(255 255 255 / 0.84);
+  backdrop-filter: blur(10px) saturate(1.12);
+}
+.dark .floq-frosted-menu {
+  border-color: rgb(255 255 255 / 0.15);
+  background-color: rgb(30 30 32 / 0.86);
+  backdrop-filter: blur(10px) saturate(1.1);
+}
+.floq-surface.floq-frosted-dialog:not(.terminal-dialog-shell) {
+  backdrop-filter: blur(8px) saturate(1.06);
+}
+.dark .floq-surface.floq-frosted-dialog:not(.terminal-dialog-shell) {
+  background-color: rgb(30 30 32 / 0.9);
+}
+.terminal-dialog-shell {
+  backdrop-filter: none;
+}
+
+/* Home composer: near-opaque card; the matrix field is excluded from its rect (data-matrix-exclude). */
+.home-task-composer.glass-key-surface {
+  border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
+  background-color: color-mix(in oklab, var(--card) 97%, transparent);
+  background-image: none;
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+  transition: box-shadow 200ms ease-out;
+}
+.home-task-composer.glass-key-surface:focus-within { box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3-focus); }
+.home-list-row { transition: box-shadow 150ms ease-out; }
+.home-list-row:hover:not(:disabled) { box-shadow: var(--shadow-elev-1); }
+
+[data-slot="sidebar-inner"] {
+  border-color: color-mix(in oklab, var(--border) 52%, transparent);
+  border-right-color: transparent;
+  background-color: rgb(255 255 255 / 0.72);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.18), transparent 40%);
+  backdrop-filter: blur(6px) saturate(1.12);
+  -webkit-backdrop-filter: blur(6px) saturate(1.12);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 1px 0 0 rgb(255 255 255 / 0.24);
+}
+.dark [data-slot="sidebar-inner"] {
+  border-color: rgb(255 255 255 / 0.09);
+  border-right-color: transparent;
+  background-color: rgb(23 23 25 / 0.72);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.07), transparent 42%);
+  backdrop-filter: blur(6px) saturate(1.1);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), inset 1px 0 0 rgb(255 255 255 / 0.035);
+}
+
+.floq-right-sidebar {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--border) 68%, transparent);
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(145deg, color-mix(in oklab, white 12%, transparent), transparent 42%);
+  backdrop-filter: blur(8px) saturate(1.08);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 14px 36px -32px color-mix(in oklab, var(--foreground) 42%, transparent);
+}
+
+#home-prompt,
+#home-prompt:focus,
+#home-prompt:focus-visible {
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.dark .floq-right-sidebar {
+  border-color: rgb(255 255 255 / 0.11);
+  background-color: rgb(24 24 26 / 0.9);
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.075), transparent 44%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.11), 0 18px 42px -34px rgb(0 0 0 / 0.9);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .floq-right-sidebar { background-color: var(--card); }
+  .dark .floq-right-sidebar { background-color: #1c1c1e; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-material="system"] .floq-right-sidebar { backdrop-filter: none; background-color: var(--card); }
+  :root[data-material="system"].dark .floq-right-sidebar { background-color: #1c1c1e; }
+}
+:root[data-material="solid"] .floq-right-sidebar { backdrop-filter: none; background-color: var(--card); }
+:root[data-material="solid"].dark .floq-right-sidebar { background-color: #1c1c1e; }
+@media (forced-colors: active) {
+  .floq-right-sidebar { border-color: CanvasText; background: Canvas; box-shadow: none; backdrop-filter: none; }
+}
+
+[data-slot="sidebar-container"] {
+  padding: var(--shell-top) var(--shell-gap) var(--shell-bottom);
+}
+/* The sidebar gap already ends one gutter past the pane, so the frame needs no extra left margin. */
+[data-slot="sidebar"][data-state="expanded"] ~ .workspace-frame { margin-left: 0; }
+
+.sidebar-dust-backdrop {
+  position: absolute;
+  z-index: 0;
+  inset: var(--shell-top) var(--shell-gap) var(--shell-bottom);
+  border-radius: var(--shell-radius);
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 90% 24% at 16% 0%, var(--sidebar-glow), transparent 100%),
+    radial-gradient(circle at 12% 12%, var(--sidebar-dust) 0 0.7px, transparent 1.4px),
+    radial-gradient(circle at 72% 18%, var(--sidebar-dust) 0 0.8px, transparent 1.5px),
+    radial-gradient(circle at 38% 31%, var(--sidebar-dust) 0 0.6px, transparent 1.3px),
+    radial-gradient(circle at 86% 41%, var(--sidebar-dust) 0 0.7px, transparent 1.4px),
+    radial-gradient(circle at 19% 58%, var(--sidebar-dust) 0 0.6px, transparent 1.3px),
+    radial-gradient(circle at 62% 69%, var(--sidebar-dust) 0 0.8px, transparent 1.5px),
+    radial-gradient(circle at 31% 84%, var(--sidebar-dust) 0 0.7px, transparent 1.4px),
+    radial-gradient(circle at 88% 92%, var(--sidebar-dust) 0 0.6px, transparent 1.3px);
+  pointer-events: none;
+}
+
+[data-slot="sidebar-header"] { padding: 12px 10px 8px; }
+[data-slot="sidebar-content"] { padding: 4px 10px 8px; }
+[data-slot="sidebar-footer"] { padding: 8px 10px 10px; }
+[data-sidebar="menu-button"] { border-radius: 10px; transition: background-color 140ms ease, color 140ms ease; }
+[data-sidebar="menu-button"][data-active="true"] {
+  color: var(--sidebar-foreground);
+  background: var(--sidebar-accent);
+  box-shadow: none;
+}
+[data-sidebar="menu-button"][data-active="true"] > svg {
+  color: var(--muted-foreground);
+}
+
+.workspace-frame :is(input, textarea, [data-slot="select-trigger"]) {
+  border-color: color-mix(in oklab, var(--border) 76%, var(--foreground));
+  background-color: color-mix(in oklab, var(--card) 86%, transparent);
+}
+.workspace-frame :is(input, textarea, [data-slot="select-trigger"]):focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent);
+}
+.workspace-frame .canvas-node-message-bar .canvas-node-message-input,
+.workspace-frame .canvas-node-message-bar .canvas-node-message-input:focus,
+.workspace-frame .canvas-node-message-bar .canvas-node-message-input:focus-visible {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+/* No focus ring on the node message input (user request); the caret shows focus. */
+[data-slot="kbd"]:not([data-slot="kbd-group"]) {
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.page-heading { font-size: clamp(1.75rem, 2.5vw, 2rem); letter-spacing: -0.045em; line-height: 1.1; }
+.workspace-frame table { border-collapse: separate; border-spacing: 0; }
+.workspace-frame thead { background: color-mix(in oklab, var(--muted) 62%, transparent); }
+.workspace-frame thead th { color: var(--muted-foreground); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.025em; }
+.workspace-frame tbody tr { transition: background-color 120ms ease; }
+.workspace-frame tbody tr:hover { background: color-mix(in oklab, var(--accent) 48%, transparent); }
+
+.material-content {
+  border-color: var(--border);
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(140deg, color-mix(in oklab, white 9%, transparent), transparent 38%);
+  box-shadow: 0 5px 20px -20px color-mix(in oklab, var(--foreground) 38%, transparent), inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.floq-glass.lg-glass {
+  --lg-glass: var(--glass-surface);
+  --lg-edge: var(--glass-border);
+  --lg-drop: var(--glass-drop);
+  --lg-rim-shine: 0.38;
+  --lg-glass-bend: 0.52;
+  --lg-glass-dispersion: 0.28;
+  --lg-blur: 12px;
+  border: 0;
+  color: var(--popover-foreground);
+}
+.sidebar-search-glass.lg-glass {
+  --lg-blur: 5px;
+  --lg-glass-bend: 0.22;
+  --lg-glass-dispersion: 0.08;
+  min-width: 0;
+  border-radius: 10px;
+}
+/* Glisse's unlayered relative positioning otherwise wins over Tailwind's fixed utility. */
+.floq-glass.lg-glass[data-slot="dialog-content"],
+.floq-glass.lg-glass[data-slot="alert-dialog-content"] { position: fixed; }
+/* === Terminal theme (light/dark) ===
+   Mirrors src/lib/terminal-theme.ts: the xterm canvas and every container around it share one surface. */
+:root { --terminal-bg: #f6f8fa; --terminal-scrim: rgb(246 248 250 / 0.82); }
+.dark { --terminal-bg: #0c0c0e; --terminal-scrim: rgb(0 0 0 / 0.45); }
+.terminal-surface,
+.terminal-dialog-body { background-color: var(--terminal-bg); }
+.terminal-scrim { background-color: var(--terminal-scrim); }
+.dark .terminal-scrim { backdrop-filter: blur(1px); }
+:root:not(.dark) .xterm .xterm-viewport { color-scheme: light; }
+/* === end Terminal theme === */
+.terminal-dialog-toolbar {
+  border-color: color-mix(in oklab, var(--border) 80%, transparent);
+  background-color: color-mix(in oklab, var(--card) 80%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in oklab, white 12%, transparent), transparent 44%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+.dark .terminal-dialog-toolbar {
+  border-color: rgb(255 255 255 / 0.12);
+  background-color: rgb(40 40 42 / 0.82);
+  background-image: linear-gradient(135deg, rgb(255 255 255 / 0.09), transparent 44%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12);
+}
+.dark .workspace-surface { background-image: none; }
+.dark .workspace-frame { border-color: #1c1c1e; background-color: #000; }
+.dark .workspace-frame::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(ellipse 68% 38% at 18% 0%, rgb(255 255 255 / 0.022), transparent 100%);
+  pointer-events: none;
+}
+
+.auth-screen {
+  position: fixed;
+  z-index: 45;
+  inset: 40px 0 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: clamp(20px, 4vh, 44px) clamp(16px, 5vw, 72px);
+  background: var(--background);
+  background-image: var(--workspace-wash);
+}
+.dark .auth-screen {
+  background-color: #000;
+  background-image: radial-gradient(ellipse 44% 56% at 76% 52%, rgb(255 255 255 / 0.052), transparent 100%);
+}
+.auth-layout {
+  display: grid;
+  width: min(1040px, 100%);
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+  align-items: center;
+  gap: clamp(36px, 7vw, 96px);
+}
+.auth-story { min-width: 0; padding-block: 16px; }
+.auth-wordmark { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 650; letter-spacing: -0.035em; }
+.auth-logo, .auth-form-symbol {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--primary) 28%, var(--border));
+  border-radius: 14px;
+  color: var(--primary-text);
+  background: color-mix(in oklab, var(--primary) 12%, var(--card));
+}
+.auth-story h2 { max-width: 560px; margin: 28px 0 12px; font-size: clamp(36px, 3.8vw, 48px); font-weight: 500; letter-spacing: -0.035em; line-height: 1.06; }
+.auth-story-description { max-width: 430px; color: var(--muted-foreground); font-size: 16px; line-height: 1.7; }
+.auth-workflow { display: grid; gap: 16px; margin-top: 28px; padding: 20px; }
+.auth-workflow-row { display: flex; align-items: center; gap: 13px; }
+.auth-workflow-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border: 1px solid var(--border); border-radius: 12px; color: var(--primary-text); background: color-mix(in oklab, var(--card) 76%, transparent); }
+.auth-workflow-row div { display: grid; gap: 3px; }
+.auth-workflow-row strong { font-size: 13px; font-weight: 600; }
+.auth-workflow-row span:not(.auth-workflow-icon) { color: var(--muted-foreground); font-size: 12px; }
+.auth-providers { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 20px; color: var(--muted-foreground); font-size: 12px; }
+.auth-provider-note { margin-left: auto; }
+.auth-card { display: flex; min-width: 0; flex-direction: column; gap: 24px; padding: clamp(22px, 3vw, 34px); }
+.auth-card {
+  border-color: color-mix(in oklab, var(--border) 64%, transparent);
+  background-color: color-mix(in oklab, var(--card) 78%, transparent);
+  backdrop-filter: blur(9px) saturate(1.08);
+  -webkit-backdrop-filter: blur(9px) saturate(1.08);
+}
+.auth-workflow {
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  background-color: color-mix(in oklab, var(--card) 70%, transparent);
+  background-image: linear-gradient(140deg, color-mix(in oklab, white 18%, transparent), transparent 40%);
+}
+.dark .auth-card {
+  border-color: rgb(255 255 255 / 0.12);
+  background-color: rgb(28 28 30 / 0.78);
+  backdrop-filter: blur(9px) saturate(1.12);
+  -webkit-backdrop-filter: blur(9px) saturate(1.12);
+}
+.dark .auth-workflow {
+  border-color: rgb(255 255 255 / 0.1);
+  background-color: rgb(35 35 37 / 0.72);
+  background-image: linear-gradient(140deg, rgb(255 255 255 / 0.065), transparent 42%);
+}
+.auth-form-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.auth-form-symbol { width: 40px; height: 40px; margin-bottom: 4px; }
+.auth-form-content { display: grid; gap: 16px; }
+.auth-form-content form { display: grid; gap: 16px; }
+.auth-form-content :is(input, [data-slot="select-trigger"]) { min-height: 42px; border-radius: 12px; }
+.auth-invitation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; border-top: 1px solid var(--border); padding-top: 16px; color: var(--muted-foreground); font-size: 12px; }
+.auth-card-footer { display: flex; align-items: center; gap: 7px; border-top: 1px solid var(--border); padding-top: 14px; color: var(--muted-foreground); font-size: 11px; }
+.auth-credit { grid-column: 1 / -1; justify-self: end; display: flex; align-items: center; gap: 5px; color: var(--muted-foreground); font-size: 11px; }
+.dark .auth-workflow-icon { background: #2c2c2e; }
+
+.settings-dialog { border-radius: 22px !important; }
+.settings-nav { background: color-mix(in oklab, var(--muted) 38%, transparent) !important; }
+.settings-group {
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 16px;
+  background-color: color-mix(in oklab, var(--card) 88%, transparent);
+  background-image: linear-gradient(140deg, color-mix(in oklab, white 9%, transparent), transparent 42%);
+}
+.dark .settings-group {
+  border-color: rgb(255 255 255 / 0.1);
+  background-color: rgb(28 28 30 / 0.86);
+  background-image: linear-gradient(140deg, rgb(255 255 255 / 0.07), transparent 42%);
+}
+.settings-group > :is(div, form) { padding: 16px 18px; }
+
+[data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"], [data-slot="sheet-overlay"] { background-color: var(--overlay-scrim); }
+[data-slot="dialog-header"] { gap: 8px; }
+[data-slot="dialog-footer"] { border-color: var(--border); background: color-mix(in oklab, var(--muted) 68%, transparent); }
+
+@media (max-width: 860px) {
+  .auth-layout { width: min(460px, 100%); grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .auth-story { display: none; }
+  .auth-card { gap: 20px; }
+  .auth-credit { grid-column: auto; }
+  :root { --shell-gap: 6px; --shell-radius: 16px; }
+}
+
+@media (max-height: 720px) and (min-width: 861px) {
+  .auth-screen { place-items: start center; padding-block: 18px; }
+  .auth-layout { gap: 30px; }
+  .auth-story h2 { margin-top: 18px; font-size: clamp(36px, 4vw, 48px); }
+  .auth-workflow { gap: 10px; margin-top: 16px; padding: 15px; }
+  .auth-card { gap: 17px; padding: 22px; }
+}
+
+@media (max-height: 780px) and (min-width: 861px) {
+  .auth-story { display: none; }
+  .auth-layout { width: min(430px, 100%); grid-template-columns: minmax(0, 1fr); }
+  .auth-credit { grid-column: auto; }
+}
+
+@media (max-width: 520px) {
+  .auth-screen { inset-block-start: 40px; padding: 12px; }
+  .auth-layout { width: 100%; }
+  .auth-card { padding: 20px; }
+  .auth-credit { justify-self: center; }
+  [data-slot="sidebar-container"] { padding-left: 5px; }
+}
+
+@media (forced-colors: active) {
+  .workspace-frame, [data-sidebar="sidebar"], .material-content, .floq-glass.lg-glass { border: 1px solid CanvasText; background: Canvas; box-shadow: none; backdrop-filter: none; }
+  .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog { border-color: CanvasText; background: Canvas; background-image: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  [data-slot="kbd"]:not([data-slot="kbd-group"]) { border-color: CanvasText; color: CanvasText; background: Canvas; box-shadow: none; }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .floq-glass.lg-glass { background-color: var(--popover); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-material="system"] .floq-glass.lg-glass { background-color: var(--popover); --lg-blur: 0px; }
+  :root[data-material="system"] :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
+    background-color: var(--card);
+    background-image: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  :root[data-material="system"] .home-task-composer.glass-key-surface { border-color: var(--border); box-shadow: var(--shadow-elev-1); }
+}
+
+:root[data-material="solid"] :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
+  background-color: var(--card);
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Keep the new popup material's standard property after Lightning CSS target transforms. */
+@media (forced-colors: active) {
+  :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-material="system"] :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
+}
+:root[data-material="solid"] :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
+:root[data-material="solid"] :is(.glass-key-surface, .canvas-agent-card-material, .floq-surface, .floq-frosted-menu, .floq-frosted-dialog) { box-shadow: var(--shadow-elev-1); }
+:root[data-material="solid"] .home-task-composer.glass-key-surface:focus-within { box-shadow: var(--shadow-elev-1); }
+:root[data-material="solid"] .home-list-row:hover:not(:disabled) { box-shadow: none; }
+
+/* === Sidebar resize handle (left sidebar; user-enlargeable, never below default width) === */
+.sidebar-resize-handle {
+  position: absolute;
+  z-index: 30;
+  top: var(--shell-top);
+  bottom: var(--shell-bottom);
+  /* Centered on the pane's right edge: 10px hit area, 1-2px visible bar. */
+  right: calc(var(--shell-gap) - 5px);
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.sidebar-resize-handle[data-limit="min"] { cursor: e-resize; }
+.sidebar-resize-handle[data-limit="max"] { cursor: w-resize; }
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset-block: 24px;
+  inset-inline: 4px;
+  border-radius: 999px;
+  background: var(--ring);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.sidebar-resize-handle:hover::after { opacity: 0.45; }
+.sidebar-resize-handle:focus-visible::after,
+.sidebar-resize-handle[data-dragging="true"]::after { opacity: 0.9; inset-inline: 3px; }
+.sidebar-resize-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
+html[data-sidebar-resizing="true"], html[data-sidebar-resizing="true"] * { user-select: none !important; cursor: col-resize !important; }
+html[data-sidebar-resizing="true"] [data-slot="sidebar-gap"],
+html[data-sidebar-resizing="true"] [data-slot="sidebar-container"] { transition: none !important; }
+html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] webview { pointer-events: none; }
+@media (max-width: 899px) { .sidebar-resize-handle { display: none; } }
+@media (prefers-reduced-motion: reduce) { .sidebar-resize-handle::after { transition: none; } }
+/* === end sidebar resize handle === */

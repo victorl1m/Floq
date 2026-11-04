@@ -49,7 +49,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
   return (
     <div
       ref={rootRef}
-      className={cn("nodrag nopan nowheel flex shrink-0 flex-col gap-1 border-t bg-muted/30 px-2 py-1.5 text-[12px] transition-colors", hover && "bg-primary/10")}
+      className={cn("canvas-node-message-bar nodrag nopan nowheel flex shrink-0 flex-col gap-1 border-t bg-muted/30 px-2 py-1.5 text-[12px] transition-colors", hover && "bg-primary/10")}
       onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setHover(true); } }}
       onDragLeave={() => setHover(false)}
       onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); setHover(false); attachments.addFiles(Array.from(event.dataTransfer.files)); } }}
@@ -64,7 +64,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
           value={text}
           placeholder={`Message ${session.title}…`}
           aria-label={`Message ${session.title}`}
-          className="max-h-22 min-h-6 min-w-0 flex-1 resize-none bg-transparent py-0.5 leading-5 outline-none placeholder:text-muted-foreground/70"
+          className="canvas-node-message-input max-h-22 min-h-6 min-w-0 flex-1 resize-none bg-transparent py-0.5 leading-5 outline-none placeholder:text-muted-foreground/70"
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
             event.stopPropagation();

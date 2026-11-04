@@ -194,7 +194,7 @@ export default function ChangesTab({ client, targets, onCount }: { client: Runti
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/70 bg-background/20 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2 text-xs">
             {anyReady ? (
@@ -229,7 +229,7 @@ export default function ChangesTab({ client, targets, onCount }: { client: Runti
                   type="button"
                   aria-expanded={!closed}
                   onClick={() => setFolderClosed((current) => ({ ...current, [target.id]: !closed }))}
-                  className="sticky top-0 z-[2] flex h-8 w-full min-w-0 items-center gap-1.5 border-b border-border bg-muted px-2 text-left text-xs hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                  className="sticky top-0 z-[2] flex h-8 w-full min-w-0 items-center gap-1.5 border-b border-border/70 bg-muted/65 px-3 text-left text-xs hover:bg-muted/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
                   <IconChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", !closed && "rotate-90")} />
                   <IconFolder className="size-3.5 shrink-0 text-muted-foreground" />

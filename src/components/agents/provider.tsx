@@ -3,6 +3,7 @@ import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
+import { providerClass, providerThemeProps } from "@/lib/provider-theme";
 import type { ProviderId, SessionState } from "@/lib/runtime/types";
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -13,7 +14,7 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
 
 export function ProviderIcon({ provider, className }: { provider: ProviderId; className?: string }) {
     const Icon = provider === "claude" ? IconBrandClaude : provider === "shell" ? IconTerminal2 : IconBrandCodex;
-    return <Icon className={cn("size-4 shrink-0", className)} aria-label={PROVIDER_LABEL[provider]} />;
+    return <Icon {...providerThemeProps(provider)} className={cn("size-4 shrink-0", providerClass.text, className)} aria-label={PROVIDER_LABEL[provider]} />;
 }
 
 export function isLive(state: SessionState): boolean {

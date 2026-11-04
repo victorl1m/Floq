@@ -186,14 +186,11 @@ function UsageItem({
             }}
         >
             <PopoverTrigger asChild>
-                <button
+                <Button variant="ghost" size="xs"
                     type="button"
                     title={top ? tooltip(id, top) : NAME[id] + " usage"}
                     aria-label={`Show ${NAME[id]} usage details`}
-                    className={cn(
-                        "inline-flex h-6 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] leading-none text-muted-foreground tabular-nums transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                        open && "bg-muted text-foreground",
-                    )}
+                    className={cn("gap-1.5 px-2 text-[11px] leading-none text-muted-foreground tabular-nums", open && "bg-muted text-foreground")}
                 >
                     <BrandIcon id={id} />
                     <span className="h-1 w-10 shrink-0 self-center overflow-hidden rounded-full bg-foreground/10">
@@ -206,7 +203,7 @@ function UsageItem({
                             {compact(top.resetsAt) ? " · " + compact(top.resetsAt) : ""}
                         </span>
                     )}
-                </button>
+                </Button>
             </PopoverTrigger>
             <UsagePopoverContent id={id} data={data} isRefreshing={isRefreshing} refresh={refresh} />
         </Popover>
@@ -227,16 +224,16 @@ export function UsageMeters() {
 
     return (
         <div className="flex items-center gap-1">
-            <button
+            <Button variant="ghost" size="xs"
                 type="button"
                 title={"Refresh usage" + (updated ? " · updated " + updated : "")}
                 aria-label="Refresh usage"
                 disabled={isRefreshing}
                 onClick={() => void refresh()}
-                className="-ml-2 inline-flex h-6 cursor-pointer items-center rounded px-2 text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                className="-ml-2 px-2 text-muted-foreground"
             >
                 <IconRefresh size={12} stroke={1.5} className={cn(isRefreshing && "animate-spin")} />
-            </button>
+            </Button>
             {(["claude", "codex"] as const).map((id) => {
                 const data = usage[id];
                 return data?.connected ? (

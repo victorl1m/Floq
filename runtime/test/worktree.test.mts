@@ -98,7 +98,7 @@ test("project membership groups isolated workers with their parent and separates
   ];
   const pool = { query: async () => ({ rows: agents }) };
   const orchestrator = new Orchestrator(pool, {}, {});
-  const listed = await orchestrator.list("user", "00000000-0000-4000-8000-000000000001");
+  const listed = await orchestrator.list("user", "00000000-0000-4000-8000-000000000001", { here: true });
   assert.deepEqual(listed.map((agent) => [agent.id, agent.name]), [
     ["00000000-0000-4000-8000-000000000001", "Lead"],
     ["00000000-0000-4000-8000-000000000002", "Worker"],

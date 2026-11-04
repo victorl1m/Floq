@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useMemo, useState } from "react";
 import { IconMessages, IconRestore, IconSearch, IconX } from "@tabler/icons-react";
 import { Input } from "@/components/ui/input";
@@ -112,7 +113,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-col gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border/70 bg-background/20 px-3 py-2.5">
         <div className="flex items-center justify-between px-1 text-xs">
           <span className="font-medium">Conversations</span>
           <span className="rounded-full bg-muted px-1.5 text-[10px] text-muted-foreground tabular-nums">{all.length}</span>
@@ -120,10 +121,10 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
         <div className="relative">
           <IconSearch aria-hidden className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input aria-label="Search conversations" placeholder="Search conversations" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setQuery(""); }} className="h-7 pr-6 pl-7 text-xs" />
-          {query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")} className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"><IconX className="size-3" /></button>}
+          {query && <Button variant="ghost" size="icon-xs" type="button" aria-label="Clear search" onClick={() => setQuery("")} className="absolute inset-y-0 right-1.5 my-auto size-5 text-muted-foreground"><IconX className="size-3" /></Button>}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {!loaded ? <RowSkeletons count={6} rowClass="h-9" />
           : groups.length === 0 ? (
             <PanelEmpty
@@ -133,7 +134,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
             />
           ) : groups.map((group) => (
             <section key={group.key} aria-label={group.label} className="mb-1">
-              <h3 className="sticky top-0 z-[1] flex items-center justify-between bg-background px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+              <h3 className="sticky top-0 z-[1] flex items-center justify-between bg-background/85 px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase backdrop-blur-sm">
                 {group.label}
                 <span className="tabular-nums normal-case">{group.items.length}</span>
               </h3>

@@ -82,6 +82,8 @@ export default function TasksPage() {
   const [boardQuery, setBoardQuery] = useState("");
   const boardSearchRef = useRef<HTMLInputElement>(null);
   const boardPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const boardPickerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const boardPickerSelectedBoardRef = useRef<string | null>(null);
   const [cursors, setCursors] = useState<Cursor[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,13 +123,40 @@ export default function TasksPage() {
   const visibleBoard = boardsReadyScope === navigationScope && board?.organizationId === organizationId ? board : null;
   const openedBoards = boardsReadyScope === navigationScope ? activeNavigationPreferences.openTabs.flatMap((id) => boards.find((item) => item.id === id) ?? []) : [];
 
+  const openBoardPicker = (trigger?: HTMLElement | null) => {
+    const activeElement = document.activeElement;
+    boardPickerReturnFocusRef.current = trigger
+      ?? (activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null)
+      ?? boardPickerTriggerRef.current;
+    boardPickerSelectedBoardRef.current = null;
+    setPickerOpen(true);
+  };
+  const restoreBoardPickerFocus = (event: Event) => {
+    event.preventDefault();
+    const selectedBoardId = boardPickerSelectedBoardRef.current;
+    const opener = boardPickerReturnFocusRef.current;
+    const fallback = boardPickerTriggerRef.current;
+    requestAnimationFrame(() => {
+      if (selectedBoardId) {
+        boardTabRefs.current.get(selectedBoardId)?.focus();
+      } else {
+        const target = opener?.isConnected && opener.getClientRects().length > 0
+          ? opener
+          : fallback?.isConnected && fallback.getClientRects().length > 0 ? fallback : null;
+        target?.focus();
+      }
+      boardPickerReturnFocusRef.current = null;
+      boardPickerSelectedBoardRef.current = null;
+    });
+  };
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== "b") return;
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="combobox"]')) return;
       event.preventDefault();
-      setPickerOpen(true);
+      openBoardPicker();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -403,7 +432,7 @@ export default function TasksPage() {
             </div>;
           })}
           </div>
-          <Button variant="ghost" size="icon-sm" aria-label="Choose a board" title="Choose a board (B)" onClick={() => setPickerOpen(true)}><IconPlus /></Button>
+          <Button variant="ghost" size="icon-sm" aria-label="Choose a board" title="Choose a board (B)" onClick={(event) => openBoardPicker(event.currentTarget)}><IconPlus /></Button>
         </div>,
         titlebarSlot,
       )}
@@ -412,7 +441,7 @@ export default function TasksPage() {
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-base font-semibold">Tasks{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h1>
             </div>
-            {organizations.length > 0 && <Button ref={boardPickerTriggerRef} variant="outline" size="sm" aria-label="Choose a board" onClick={() => setPickerOpen(true)}><IconChecklist /><span className="hidden sm:inline">Boards</span></Button>}
+            {organizations.length > 0 && <Button ref={boardPickerTriggerRef} variant="outline" size="sm" aria-label="Choose a board" onClick={(event) => openBoardPicker(event.currentTarget)}><IconChecklist /><span className="hidden sm:inline">Boards</span></Button>}
             {selectedOrganization && <div className="hidden items-center gap-2 sm:flex" role="group" aria-label="Organization members">
               <AvatarGroup>{members.slice(0, 4).map((member) => {
                 const name = member.name || member.email;
@@ -422,7 +451,7 @@ export default function TasksPage() {
               <Badge variant="outline"><IconUsers />{members.length}</Badge>
             </div>}
             {visibleBoard && <Badge variant="secondary">{cardCount} {cardCount === 1 ? "card" : "cards"}</Badge>}
-            <Button size="sm" aria-label={organizations.length ? "New board" : "Create organization"} onClick={() => { setError(null); setBoardName(""); setOrganizationName(""); setDialog(organizations.length ? "board" : "organization"); }}><IconPlus /><span className="hidden sm:inline">{organizations.length ? "New board" : "Create organization"}</span></Button>
+            <Button size="sm" shimmer aria-label={organizations.length ? "New board" : "Create organization"} onClick={() => { setError(null); setBoardName(""); setOrganizationName(""); setDialog(organizations.length ? "board" : "organization"); }}><IconPlus /><span className="hidden sm:inline">{organizations.length ? "New board" : "Create organization"}</span></Button>
             <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="outline" aria-label="Organization and board actions"><IconDots /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => { setError(null); setOrganizationName(""); setDialog("organization"); }}><IconPlus />Create organization</DropdownMenuItem>
               {selectedOrganization?.role === "owner" && <DropdownMenuItem onSelect={() => { setError(null); setInviteToken(""); setInviteEmail(""); setDialog("invite"); }}><IconUsers />Invite member</DropdownMenuItem>}
@@ -442,7 +471,7 @@ export default function TasksPage() {
         ) : (
           <>
             {!visibleBoard && (boardId || boardsReadyScope !== navigationScope) && !pageError ? <BoardSkeleton /> : !visibleBoard ? (
-                <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this organization."}</EmptyDescription></EmptyHeader><EmptyContent>{boards.length ? <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>Choose a board</Button> : <Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button>}</EmptyContent></Empty>
+                <Empty className="m-auto max-w-lg border-0"><EmptyHeader><EmptyMedia variant="icon"><IconChecklist /></EmptyMedia><EmptyTitle>{boards.length ? "Choose a board" : "No boards yet"}</EmptyTitle><EmptyDescription>{boards.length ? "Choose a board to see its lists and cards." : "Create a board for this organization."}</EmptyDescription></EmptyHeader><EmptyContent>{boards.length ? <Button size="sm" variant="outline" onClick={(event) => openBoardPicker(event.currentTarget)}>Choose a board</Button> : <Button size="sm" onClick={() => setDialog("board")}><IconPlus />Create board</Button>}</EmptyContent></Empty>
             ) : (
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
@@ -486,7 +515,7 @@ export default function TasksPage() {
         )}
       </div>
         </main>
-      <CommandDialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setBoardQuery(""); }} title="Choose a board" description="Search boards in your organization. Select a board to open its tab.">
+      <CommandDialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setBoardQuery(""); }} onCloseAutoFocus={restoreBoardPickerFocus} title="Choose a board" description="Search boards in your organization. Select a board to open its tab.">
         <div className="border-b p-3">
           <Label htmlFor="board-organization" className="mb-2 block text-xs text-muted-foreground">Organization</Label>
           <Select value={organizationId} onValueChange={selectOrganization}>
@@ -502,7 +531,7 @@ export default function TasksPage() {
           <CommandList className="max-h-[min(320px,45dvh)]">
             <CommandEmpty>{boardsReadyScope !== navigationScope && organizationId ? "Loading boards…" : boardQuery ? "No boards match your search." : "No boards in this organization."}</CommandEmpty>
             {pickerGroups.filter((group) => group.items.length > 0).map((group) => <CommandGroup key={group.title} heading={group.title}>
-              {group.items.map((item) => <CommandItem key={item.id} value={item.id} className="min-w-0" onSelect={() => { selectBoard(item.id); setPickerOpen(false); setBoardQuery(""); }}><IconChecklist /><span className="truncate">{item.title}</span>{favoriteIds.has(item.id) && <IconStar aria-hidden="true" className="ml-auto size-3 fill-primary text-primary-text" />}{item.id === boardId && <span className="ml-auto text-xs text-muted-foreground">Open</span>}</CommandItem>)}
+              {group.items.map((item) => <CommandItem key={item.id} value={item.id} className="min-w-0" onSelect={() => { boardPickerSelectedBoardRef.current = item.id; selectBoard(item.id); setPickerOpen(false); setBoardQuery(""); }}><IconChecklist /><span className="truncate">{item.title}</span>{favoriteIds.has(item.id) && <IconStar aria-hidden="true" className="ml-auto size-3 fill-primary text-primary-text" />}{item.id === boardId && <span className="ml-auto text-xs text-muted-foreground">Open</span>}</CommandItem>)}
             </CommandGroup>)}
           </CommandList>
         </Command>

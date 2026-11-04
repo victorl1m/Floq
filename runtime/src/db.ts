@@ -129,6 +129,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
             AND p.normalized_git_url=floq_normalize_git_url(repo.git_url) AND repo.cwd=s.project_cwd
         ));
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS git_coauthor BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS always_recruit_subagents BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS allow_cross_project_agents BOOLEAN NOT NULL DEFAULT TRUE;
     CREATE TABLE IF NOT EXISTS provider_credentials (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,
@@ -255,5 +257,16 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       PRIMARY KEY (note_id, session_id)
     );
     CREATE INDEX IF NOT EXISTS canvas_note_links_session_idx ON canvas_note_links(session_id);
+    ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS agent_note_name TEXT;
+    ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS placed BOOLEAN NOT NULL DEFAULT true;
+    CREATE UNIQUE INDEX IF NOT EXISTS canvas_notes_agent_name_idx ON canvas_notes(user_id, COALESCE(project_id, '00000000-0000-0000-0000-000000000000'::uuid), agent_note_name) WHERE agent_note_name IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS agent_wired_memory (
+      session_id UUID PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      block TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      items JSONB NOT NULL DEFAULT '[]',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }

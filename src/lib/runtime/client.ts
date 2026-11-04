@@ -12,6 +12,7 @@ import type {
   ClaudeOAuthResult,
   ClaudeOAuthStart,
   DevicePoll,
+  PortRequest,
   GithubRepoPage,
   Exposure,
   RuntimeInfo,
@@ -33,6 +34,7 @@ import type {
   SessionPort,
   SessionSummary,
   SettingsPatch,
+  SubagentPolicy,
   UserSettings,
   Organization,
   TaskBoard,
@@ -83,7 +85,7 @@ export class RuntimeClient {
     method: string,
     path: string,
     body?: unknown,
-    options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+    options: { timeoutMs?: number; headers?: Record<string, string>; keepalive?: boolean } = {},
   ): Promise<{ data: T; headers: Headers }> {
     const headers: Record<string, string> = {};
     if (this.token) headers.Authorization = "Bearer " + this.token;
@@ -99,6 +101,7 @@ export class RuntimeClient {
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
+        ...(options.keepalive ? { keepalive: true } : {}),
       });
       text = await response.text();
     } catch {
@@ -337,6 +340,11 @@ export class RuntimeClient {
     await this.call("DELETE", `/v1/sessions/${id}`);
   }
 
+  /** DELETE that survives the page unloading (keepalive); fire and forget. */
+  deleteSessionKeepalive(id: string): void {
+    void this.request("DELETE", `/v1/sessions/${id}`, undefined, { keepalive: true }).catch(() => {});
+  }
+
   gitChanges = (sessionId: string) => this.call<GitChanges>("GET", `/v1/sessions/${sessionId}/changes`);
 
   gitDiff = (sessionId: string, path: string) =>
@@ -448,6 +456,10 @@ export class RuntimeClient {
 
   async settings(): Promise<UserSettings> {
     return (await this.call<{ settings: UserSettings }>("GET", "/v1/settings")).settings;
+  }
+
+  async subagentPolicy(): Promise<SubagentPolicy> {
+    return this.call<SubagentPolicy>("GET", "/v1/subagents/policy");
   }
 
   async updateSettings(patch: SettingsPatch): Promise<UserSettings> {
@@ -619,6 +631,13 @@ export class RuntimeClient {
   async projectEvents(projectId: string, limit = 50): Promise<AgentMessageEvent[]> {
     return (await this.call<{ events: AgentMessageEvent[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/events?limit=${limit}`)).events;
   }
+
+  /** Port requests agents are waiting on (re-fetched after a reconnect). */
+  portRequests = async () => (await this.call<{ requests: PortRequest[] }>("GET", "/v1/port-requests")).requests;
+
+  /** Answer a port request. Rejects (404) once the runtime has expired or cancelled it. */
+  resolvePortRequest = (id: string, body: { decision: "allow" | "deny" } | { decision: "error"; message: string }) =>
+    this.call<{ status: string }>("POST", `/v1/port-requests/${encodeURIComponent(id)}/resolve`, body);
 
   /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
   eventsUrl(): string {

@@ -111,10 +111,10 @@ export default function SecretsPage() {
                     name, description: description.trim(), expose,
                 };
                 if (value !== "") input.value = value;
-                setSecrets(await client.patchSecret(editingOriginalName, input));
+                setSecrets(await client.patchSecret(editingOriginalName, input)); window.dispatchEvent(new Event("floq:vault-changed"));
                 toast.success("Secret changes saved");
             } else {
-                setSecrets(await client.putSecret(name, { value, description: description.trim(), expose }));
+                setSecrets(await client.putSecret(name, { value, description: description.trim(), expose })); window.dispatchEvent(new Event("floq:vault-changed"));
                 toast.success("Secret added");
             }
             resetForm();
@@ -130,7 +130,7 @@ export default function SecretsPage() {
         setDeleting(null);
         if (!target) return;
         try {
-            setSecrets(await client.deleteSecret(target));
+            setSecrets(await client.deleteSecret(target)); window.dispatchEvent(new Event("floq:vault-changed"));
             toast.success("Secret deleted");
         } catch (e) {
             toast.error("Could not delete secret", { description: errorMessage(e) });
@@ -140,8 +140,8 @@ export default function SecretsPage() {
     return (
         <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-5 p-5 md:gap-6 md:p-8">
             <header className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0"><h1 className="text-xl font-semibold tracking-tight">Secrets</h1><p className="mt-1 text-sm text-muted-foreground">Manage values agents can use without exposing them in terminal output.</p></div>
-                <Button ref={addButtonRef} onClick={beginAdd} disabled={busy || formOpen}><IconPlus />Add secret</Button>
+                <div className="min-w-0"><h1 className="page-heading font-semibold tracking-tight">Secrets</h1><p className="mt-1 text-sm text-muted-foreground">Manage values agents can use without exposing them in terminal output.</p></div>
+                <Button ref={addButtonRef} shimmer onClick={beginAdd} disabled={busy || formOpen}><IconPlus />Add secret</Button>
             </header>
             <SettingsGroup className="overflow-hidden">
             <FloqReveal className="block" loading={secrets === null && !loadError} revealOnMount={false}>
@@ -277,7 +277,7 @@ export default function SecretsPage() {
                 {saveError && <p role="alert" className="text-sm text-destructive">Could not save secret: {saveError}</p>}
                 <div>
                     <div className="flex flex-wrap gap-2">
-                    <Button type="submit" disabled={busy || !nameValid || duplicate || (editingOriginalName === null && !value)}>
+                    <Button type="submit" shimmer disabled={busy || !nameValid || duplicate || (editingOriginalName === null && !value)}>
                         {busy ? "Saving…" : editingOriginalName !== null ? "Save changes" : "Add secret"}
                     </Button>
                     <Button type="button" variant="outline" disabled={busy} onClick={cancelForm}>Cancel</Button>

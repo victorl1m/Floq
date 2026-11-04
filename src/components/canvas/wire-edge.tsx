@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { memo, useMemo, type CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, Position, useInternalNode, useStore, type Edge, type EdgeProps } from "@xyflow/react";
 import { IconArrowsExchange, IconMessage, IconPlugConnected, IconRoute, IconX } from "@tabler/icons-react";
@@ -6,8 +7,8 @@ import type { CanvasLink, LinkKind } from "./canvas-data";
 import { useCanvasCtx } from "./canvas-context";
 
 export const KIND_COLOR: Record<LinkKind, string> = {
-  recruit: "#8b5cf6",
-  message: "#0ea5e9",
+  recruit: "var(--muted-foreground)",
+  message: "color-mix(in oklab, var(--muted-foreground) 72%, var(--primary) 28%)",
   manual: "var(--muted-foreground)",
 };
 export const KIND_LABEL: Record<LinkKind, string> = { recruit: "delegates", message: "talks", manual: "linked" };
@@ -155,8 +156,8 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
   const path = pathOf(geometry.curve);
   const Icon = KIND_ICON[link.kind];
   const live = ctx.live[link.id];
-  // Delegation wires are purple only while a message is in flight or the recruit is working; otherwise neutral.
-  const color = link.kind === "recruit" && !live && !targetWorking ? KIND_COLOR.manual : KIND_COLOR[link.kind];
+  // Resting relationships stay quiet; active and selected wires use the high-contrast semantic accent.
+  const color = selected || live || targetWorking ? "var(--primary-text)" : KIND_COLOR[link.kind];
   const labelAt = geometry.label ?? (selected ? geometry.mid : null);
   const bubbleAt = labelAt ?? geometry.mid;
 
@@ -185,9 +186,9 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
               <Icon size={11} style={{ color }} />
               <span className="tabular-nums">{link.messageCount > 0 ? link.messageCount : KIND_LABEL[link.kind]}</span>
               {selected && !link.synthetic && (
-                <button type="button" aria-label="Delete link" title="Delete link (Del)" className="ml-0.5 rounded-full p-0.5 text-destructive hover:bg-destructive/10" onClick={(event) => { event.stopPropagation(); ctx.deleteLink(link); }}>
+                <Button variant="ghost" size="icon-xs" type="button" aria-label="Delete link" title="Delete link (Del)" className="ml-0.5 size-4 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); ctx.deleteLink(link); }}>
                   <IconX size={11} />
-                </button>
+                </Button>
               )}
             </div>
           </div>

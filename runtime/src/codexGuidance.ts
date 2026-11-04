@@ -9,7 +9,7 @@ export const FLOQ_CODEX_GUIDANCE = [
   FLOQ_GUIDANCE_BEGIN,
   "## Floq CLI and MCP",
   "",
-  "In Floq sessions, use the floq CLI for agent coordination and for inspecting Floq-installed skills, MCP servers, and secrets. Run floq --help when unsure of a command. On coordination requests, read the floq-orchestrate skill and use floq list to see visible sessions; do not use native subagents unless the user asks for them. For MCP discovery or troubleshooting, use floq mcp list --provider codex or claude for the current project/scope, and distinguish configured servers from authenticated servers and tools loaded into this session. A configured server is not proof that it is connected.",
+  "In Floq sessions, use the floq CLI for agent coordination and for inspecting Floq-installed skills, MCP servers, and secrets. Run floq --help when unsure of a command. On coordination requests, read the floq-orchestrate skill and use floq list to see visible sessions; native subagents are disabled in Floq; recruit visible ones with `floq subagent recruit`. For MCP discovery or troubleshooting, use floq mcp list --provider codex or claude for the current project/scope, and distinguish configured servers from authenticated servers and tools loaded into this session. A configured server is not proof that it is connected.",
   "",
   "If the user asks to use an MCP integration and its tools are available, use those tools directly. For Codex-native status, run codex mcp list --json in this session's current CODEX_HOME; /mcp shows tools available to the running TUI. If status says not_logged_in, explain that the user needs codex mcp login NAME --no-browser in the matching project/session context. Do not claim it works until its tools are available. Do not use an external plugin catalog to determine Floq-installed MCP state; use catalogs only when the user wants a new integration that is not configured. Never expose secret values in logs, tool output, or chat; `floq secrets list` shows names and descriptions only.",
   "",
@@ -17,24 +17,28 @@ export const FLOQ_CODEX_GUIDANCE = [
   FLOQ_GUIDANCE_END,
 ].join("\n");
 
-export function mergeFloqGuidance(current: string): string {
+/** `extra` (the session's wired-context block) rides inside the managed block, so each start replaces it and an empty one removes it. */
+export function mergeFloqGuidance(current: string, extra = ""): string {
+  const guidance = extra ? FLOQ_CODEX_GUIDANCE.replace(FLOQ_GUIDANCE_END, () => `
+${extra}
+${FLOQ_GUIDANCE_END}`) : FLOQ_CODEX_GUIDANCE;
   const begin = current.indexOf(FLOQ_GUIDANCE_BEGIN);
   const end = current.indexOf(FLOQ_GUIDANCE_END);
   if (begin >= 0 && end > begin) {
     const after = end + FLOQ_GUIDANCE_END.length;
     const beforeText = current.slice(0, begin).trimEnd();
     const afterText = current.slice(after).trim();
-    return `${beforeText ? `${beforeText}\n\n` : ""}${FLOQ_CODEX_GUIDANCE}${afterText ? `\n\n${afterText}` : ""}\n`;
+    return `${beforeText ? `${beforeText}\n\n` : ""}${guidance}${afterText ? `\n\n${afterText}` : ""}\n`;
   }
   const cleaned = current
     .split(FLOQ_GUIDANCE_BEGIN).join("")
     .split(FLOQ_GUIDANCE_END).join("")
     .trimEnd();
-  return `${cleaned}${cleaned ? "\n\n" : ""}${FLOQ_CODEX_GUIDANCE}\n`;
+  return `${cleaned}${cleaned ? "\n\n" : ""}${guidance}\n`;
 }
 
 /** Refresh a small marked instruction block while preserving the rest of the effective AGENTS file. */
-export function syncCodexManagedGuidance(codeHome: string, uid?: number): string {
+export function syncCodexManagedGuidance(codeHome: string, uid?: number, extra = ""): string {
   const root = realpathSync(codeHome);
   const override = join(root, "AGENTS.override.md");
   const standard = join(root, "AGENTS.md");
@@ -48,7 +52,7 @@ export function syncCodexManagedGuidance(codeHome: string, uid?: number): string
   const fromRoot = relative(root, parent);
   if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) throw new Error("Codex instruction path escaped CODEX_HOME");
   const current = existsSync(selected) ? readFileSync(selected, "utf8") : "";
-  const next = mergeFloqGuidance(current);
+  const next = mergeFloqGuidance(current, extra);
   if (next === current) return selected;
 
   const temporary = join(parent, `.${basename(selected)}.${randomUUID()}.tmp`);

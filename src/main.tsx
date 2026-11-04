@@ -15,7 +15,6 @@ function PersistedSidebarProvider({ children }: { children: React.ReactNode }) {
     return <SidebarProvider
         open={userPreferences.sidebarOpen}
         onOpenChange={(open) => updateUserPreferences({ sidebarOpen: open })}
-        className="pb-(--app-footer-height)"
     >
         {children}
     </SidebarProvider>;
@@ -28,7 +27,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 
       <Titlebar />
       <ThemeProvider
-        attribute="class"
+        attribute={["class", "data-theme"]}
         defaultTheme="system"
         enableSystem
         disableTransitionOnChange

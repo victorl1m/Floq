@@ -1,0 +1,8 @@
+{
+  "permissions": { "deny": ["Agent", "Task"] },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Agent|Task", "hooks": [{ "type": "command", "command": "node /usr/local/bin/floq-block-native-subagent.mjs" }] }
+    ]
+  }
+}

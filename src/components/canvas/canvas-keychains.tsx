@@ -169,9 +169,9 @@ export const KeychainWireEdgeView = memo(function KeychainWireEdgeView({ id, sou
             <IconKey size={11} style={{ color: KC_AMBER }} />
             <IconLock size={10} />
             {selected && (
-              <button type="button" aria-label="Unlink keychain" title="Unlink (Del)" className="ml-0.5 rounded-full p-0.5 text-destructive hover:bg-destructive/10" onClick={(event) => { event.stopPropagation(); ctx?.unlink(data.keychainId, data.sessionId); }}>
+              <Button variant="ghost" size="icon-xs" type="button" aria-label="Unlink keychain" title="Unlink (Del)" className="ml-0.5 size-4 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); ctx?.unlink(data.keychainId, data.sessionId); }}>
                 <IconX size={11} />
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -195,6 +195,8 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
   const pending = useRef(new Map<string, number>());
   const created = useRef(new Map<string, number>());
   const newId = useRef<string | null>(null);
+  /** Ids deleted locally: an in-flight poll that began before the delete must not resurrect them. */
+  const deleted = useRef(new Set<string>());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [managing, setManaging] = useState<string | null>(null);
 
@@ -212,6 +214,7 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
     if (!client || !projectId) return;
     let server: Keychain[];
     try { server = await fetchKeychains(client, projectId); } catch { return; }
+    server = server.filter((kc) => !deleted.current.has(kc.id));
     setNodes((current) => {
       const byId = new Map(current.map((node) => [node.data.keychain.id, node]));
       const next: KeychainNode[] = server.map((kc) => {
@@ -272,10 +275,13 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
   const remove = useCallback((id: string) => {
     if (!client) return;
     const gone = nodesRef.current.find((node) => node.data.keychain.id === id);
+    if (!gone) return; // already removed: guards double-delete
+    deleted.current.add(id);
     setNodes((current) => current.filter((node) => node.data.keychain.id !== id));
     setManaging((current) => (current === id ? null : current));
     deleteKeychainRequest(client, id).then(() => toast.success("Keychain deleted")).catch((error) => {
-      if (gone) setNodes((current) => [...current, gone]);
+      deleted.current.delete(id);
+      if (gone) setNodes((current) => [...current.filter((node) => node.data.keychain.id !== id), gone]);
       toast.error("Could not delete the keychain", { description: errorMessage(error) });
     });
   }, [client, setNodes]);

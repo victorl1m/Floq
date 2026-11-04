@@ -20,11 +20,13 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconKey, IconLayoutDistributeHorizontal, IconLink, IconMap, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
+  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconNotes, IconKey, IconLayoutDistributeHorizontal, IconLink, IconMap, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
+import { CrossProjectWires } from "./cross-project-wires";
 import { cn } from "cn";
+import { ProjectMark } from "@/components/projects/project-identity";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -39,6 +41,7 @@ import AgentNodeCard, { HEADER_HEIGHT, MAX_SIZE, MIN_SIZE, type AgentNode } from
 import ActivityPanel from "./activity-panel";
 import { Keys } from "./canvas-kbd";
 import KeychainDialog from "./keychain-dialog";
+import VaultPopover from "./vault-popover";
 import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
 import { NOTE_DEFAULT, NOTE_PREFIX, NOTE_TEAL, NoteProvider, NoteWireCtx, isNoteId, isNoteLinkId, noteEdgeTypes, noteLinkId, noteNodeTypes, useCanvasNotes, type NoteWireEdge } from "./canvas-notes";
 import CanvasComposer from "./canvas-composer";
@@ -51,6 +54,9 @@ import { DEFAULT_NODE_SIZE, layoutTree } from "./layout";
 import { getMirrorText } from "./session-mirror";
 import { agentActivity } from "@/components/agents/activity-indicator";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
+import { setCanvasSidebarSession } from "@/lib/right-sidebar";
+
+const NO_PROJECT_MARK = { imageUrl: null, gitUrl: null } as const;
 
 // Defined once outside the components so React Flow does not remount nodes/edges on every render.
 const nodeTypes = { agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes };
@@ -78,7 +84,7 @@ function ShortcutTip({ label, keys, children }: { label: string; keys?: string; 
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="top">{label}{keys && <Keys keys={keys} className="ml-2 pl-0" />}</TooltipContent>
+      <TooltipContent side="bottom">{label}{keys && <Keys keys={keys} className="ml-2 pl-0" />}</TooltipContent>
     </Tooltip>
   );
 }
@@ -89,21 +95,21 @@ function CanvasControls() {
   const { zoom } = useViewport();
   const minZoom = useStore((state) => state.minZoom);
   const maxZoom = useStore((state) => state.maxZoom);
-  const button = "size-8";
+  const button = "size-6 rounded-lg";
   return (
-    <Panel position="bottom-left" className="flex items-center gap-0.5 rounded-lg border border-border bg-card/80 p-1 shadow-md backdrop-blur-sm">
+    <Panel position="bottom-left" className="canvas-zoom m-2! flex h-8 items-center gap-0.5 rounded-[10px] border border-[var(--canvas-card-border,var(--border))] bg-card/90 px-1 text-foreground shadow-[var(--shadow-elev-1)] backdrop-blur-sm">
       <ShortcutTip label="Zoom out" keys="Ctrl -">
-        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom out" disabled={zoom <= minZoom + 0.001} onClick={() => void zoomOut({ duration: 200 })}><IconMinus size={16} /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom out" disabled={zoom <= minZoom + 0.001} onClick={() => void zoomOut({ duration: 200 })}><IconMinus size={14} /></Button>
       </ShortcutTip>
       <ShortcutTip label="Reset zoom to 100%" keys="Ctrl 0">
-        <Button type="button" variant="ghost" size="sm" className="h-8 min-w-12 px-1.5 text-xs tabular-nums" aria-label="Reset zoom to 100%" onClick={() => void zoomTo(1, { duration: 200 })}>{Math.round(zoom * 100)}%</Button>
+        <Button type="button" variant="ghost" size="sm" className="h-6 min-w-10 rounded-lg px-1 text-xs tabular-nums" aria-label="Reset zoom to 100%" onClick={() => void zoomTo(1, { duration: 200 })}>{Math.round(zoom * 100)}%</Button>
       </ShortcutTip>
       <ShortcutTip label="Zoom in" keys="Ctrl +">
-        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom in" disabled={zoom >= maxZoom - 0.001} onClick={() => void zoomIn({ duration: 200 })}><IconPlus size={16} /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Zoom in" disabled={zoom >= maxZoom - 0.001} onClick={() => void zoomIn({ duration: 200 })}><IconPlus size={14} /></Button>
       </ShortcutTip>
-      <span className="mx-0.5 h-5 w-px bg-border" />
+      <span className="mx-0.5 h-4 w-px bg-border" aria-hidden="true" />
       <ShortcutTip label="Fit view" keys="F">
-        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Fit view" onClick={() => void fitView({ padding: 0.2, duration: 300 })}><IconFocus2 size={16} /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className={button} aria-label="Fit view" onClick={() => void fitView({ padding: 0.2, duration: 300 })}><IconFocus2 size={14} /></Button>
       </ShortcutTip>
     </Panel>
   );
@@ -112,11 +118,13 @@ function CanvasControls() {
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 function AgentCanvas() {
-  const {
-    sessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
-    client, upsertSession, canvasFocus, consumeCanvasFocus, deleteSession,
-  } = useRuntime();
+  // Single canvas theme switch: follows the app theme (light/dark/system resolved by next-themes).
   const { resolvedTheme } = useTheme();
+  const canvasTheme: "light" | "dark" = resolvedTheme === "light" ? "light" : "dark";
+  const {
+    sessions, deleteSessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
+    client, upsertSession, canvasFocus, consumeCanvasFocus,
+  } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
   // The canvas is always bound to the project it was opened for, never to a possibly-null active project.
   const activeProjectId = canvasProjectId;
@@ -204,7 +212,6 @@ function AgentCanvas() {
   savedViewportRef.current = savedViewport;
 
   // ---- notes ----
-  const notes = useCanvasNotes(client, activeProjectId, titleOf);
   const keychains = useCanvasKeychains(client, activeProjectId, titleOf);
 
   // ---- links ----
@@ -261,14 +268,15 @@ function AgentCanvas() {
     setRemoved((set) => new Set(set).add(link.id));
     try {
       await deleteLinkRequest(client, link.id);
-      await refreshLinks();
-      return true;
     } catch (error) {
+      // Roll back the optimistic removal only when the server did not delete it.
+      setRemoved((set) => { const next = new Set(set); next.delete(link.id); return next; });
       toast.error("Could not delete the link", { description: errorMessage(error) });
       return false;
-    } finally {
-      setRemoved((set) => { const next = new Set(set); next.delete(link.id); return next; });
     }
+    // Keep the id hidden: an in-flight poll that started before the delete must not resurrect the wire.
+    try { await refreshLinks(); } catch { /* the poll will catch up */ }
+    return true;
   }, [client, refreshLinks]);
 
   const reverseLink = useCallback(async (link: CanvasLink) => {
@@ -334,6 +342,26 @@ function AgentCanvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState<AgentNode>(buildNodes(true));
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
+  const notes = useCanvasNotes(client, activeProjectId, titleOf, {
+    ready: linksLoaded,
+    occupied: () => [
+      ...nodesRef.current.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? node.measured?.width ?? 360, h: node.height ?? node.measured?.height ?? 220 })),
+      ...keychains.nodes.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? KC_DEFAULT.width, h: node.height ?? KC_DEFAULT.height })),
+      ...notesNodesRef.current.filter((node) => node.data.note.placed !== false).map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? NOTE_DEFAULT.width, h: node.height ?? NOTE_DEFAULT.height })),
+    ],
+    agentRect: (sessionId) => {
+      const node = nodesRef.current.find((item) => item.id === sessionId);
+      return node ? { x: node.position.x, y: node.position.y, w: node.width ?? node.measured?.width ?? 360, h: node.height ?? node.measured?.height ?? 220 } : undefined;
+    },
+    reveal: (nodeId) => void fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.6, maxZoom: 1 }),
+  });
+  const notesNodesRef = useRef(notes.nodes);
+  notesNodesRef.current = notes.nodes;
+  useEffect(() => {
+    const selectedId = nodes.find((node) => node.selected && projectSessions.some((session) => session.id === node.id))?.id ?? null;
+    setCanvasSidebarSession(selectedId);
+  }, [nodes, projectSessions]);
+  useEffect(() => () => setCanvasSidebarSession(null), []);
 
   // Session updates refresh node data in place; positions and sizes of existing nodes (dragged, resized or not) are kept.
   useEffect(() => {
@@ -429,7 +457,7 @@ function AgentCanvas() {
     target: link.toSessionId,
     data: { link },
     selected: link.id === selectedEdgeId,
-    markerEnd: { type: MarkerType.ArrowClosed, color: link.kind === "manual" ? "#71717a" : KIND_COLOR[link.kind], width: 18, height: 18 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: link.id === selectedEdgeId ? "var(--primary-text)" : KIND_COLOR[link.kind], width: 18, height: 18 },
   })), [allLinks, selectedEdgeId]);
 
   const kcEdges = useMemo(() => {
@@ -603,13 +631,6 @@ function AgentCanvas() {
 
   // ---- notes, secrets, deleting agents ----
   const [kcDeleteAsk, setKcDeleteAsk] = useState<{ id: string; name: string } | null>(null);
-  const [vaultCount, setVaultCount] = useState<number | null>(null);
-  useEffect(() => {
-    if (!client) return;
-    let live = true;
-    client.secrets().then((list) => { if (live) setVaultCount(list.length); }, () => undefined);
-    return () => { live = false; };
-  }, [client]);
   const [deleteAsk, setDeleteAsk] = useState<SessionSummary | null>(null);
   const allNodes = useMemo(() => [...notes.nodes, ...keychains.nodes, ...nodes] as Node[], [notes.nodes, keychains.nodes, nodes]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
@@ -635,26 +656,12 @@ function AgentCanvas() {
     void addNoteAt({ x: Math.round(center.x - NOTE_DEFAULT.width / 2), y: Math.round(center.y - NOTE_DEFAULT.height / 2) });
   }, [addNoteAt, screenToFlowPosition]);
 
-  /** Deletes agent sessions at once (no confirmation); one summary toast, errors per agent. */
-  const deleteAgents = useCallback(async (ids: string[]) => {
+  /** Deletes agent sessions at once (no confirmation) as a soft delete: hidden now, one Undo toast, real delete after the grace period. Layout is kept for Undo and dropped by the store on the real delete. */
+  const deleteAgents = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
-    const results = await Promise.all(ids.map(async (id) => {
-      const title = sessionsRef.current.find((item) => item.id === id)?.title ?? "agent";
-      try { await deleteSession(id); return id; }
-      catch (error) { toast.error(`Could not delete ${title}`, { description: errorMessage(error) }); return null; }
-    }));
-    const done = results.filter((id): id is string => id !== null);
-    if (done.length === 0) return;
-    setTerminalId((current) => (current && done.includes(current) ? null : current));
-    if (activeProjectId) {
-      const prefs = prefsRef.current;
-      const strip = <T,>(map: Record<string, T> | undefined) => Object.fromEntries(Object.entries(map ?? {}).filter(([id]) => !done.includes(id)));
-      const next = { canvasPositions: { ...prefs.canvasPositions, [activeProjectId]: strip(prefs.canvasPositions[activeProjectId]) }, canvasSizes: { ...prefs.canvasSizes, [activeProjectId]: strip(prefs.canvasSizes[activeProjectId]) } };
-      prefsRef.current = { ...prefs, ...next };
-      updateUserPreferences(next);
-    }
-    toast.success(done.length === 1 ? "Deleted 1 agent" : `Deleted ${done.length} agents`);
-  }, [deleteSession, activeProjectId, updateUserPreferences]);
+    setTerminalId((current) => (current && ids.includes(current) ? null : current));
+    deleteSessions(ids);
+  }, [deleteSessions]);
 
   const KCLINK_PREFIX_LEN = kcLinkId("", "").length - 1;
   const NOTELINK_PREFIX_LEN = noteLinkId("", "").length - 1;
@@ -780,28 +787,28 @@ function AgentCanvas() {
     if (target.closest("input, textarea, select, [contenteditable=true], .xterm, [role=dialog], [data-radix-popper-content-wrapper]")) return;
     if (event.key === "Escape") { setLinkMode(null); setSelectedEdgeId(null); return; }
     if (event.key === "Delete" || event.key === "Backspace") {
-      if (selectedEdgeId && isKeychainLinkId(selectedEdgeId)) {
-        const [kcId, sid] = selectedEdgeId.slice(KCLINK_PREFIX_LEN).split(":");
-        keychains.unlink(kcId, sid);
-        setSelectedEdgeId(null);
-        return;
-      }
-      if (selectedEdgeId && isNoteLinkId(selectedEdgeId)) {
-        const [noteId, sid] = selectedEdgeId.slice(NOTELINK_PREFIX_LEN).split(":");
-        notes.unlink(noteId, sid);
-        setSelectedEdgeId(null);
-        return;
-      }
-      if (selectedEdgeId) {
-        const link = linksRef.current.find((item) => item.id === selectedEdgeId);
-        if (link) void deleteLink(link);
-        setSelectedEdgeId(null);
-        return;
-      }
       const agentIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
       const noteIds = notes.nodes.filter((node) => node.selected).map((node) => node.data.note.id);
       const kcSelected = keychains.keychains.find((kc) => keychains.nodes.some((node) => node.selected && node.data.keychain.id === kc.id));
-      if (agentIds.length || noteIds.length || kcSelected) {
+      const anyNodeSelected = agentIds.length > 0 || noteIds.length > 0 || !!kcSelected;
+      // A selected node (e.g. box-selected after clicking a wire) wins over a stale edge selection.
+      if (selectedEdgeId && !anyNodeSelected) {
+        event.preventDefault();
+        setSelectedEdgeId(null);
+        if (isKeychainLinkId(selectedEdgeId)) {
+          const [kcId, sid] = selectedEdgeId.slice(KCLINK_PREFIX_LEN).split(":");
+          keychains.unlink(kcId, sid);
+        } else if (isNoteLinkId(selectedEdgeId)) {
+          const [noteId, sid] = selectedEdgeId.slice(NOTELINK_PREFIX_LEN).split(":");
+          notes.unlink(noteId, sid);
+        } else {
+          const link = linksRef.current.find((item) => item.id === selectedEdgeId);
+          if (link) void deleteLink(link);
+        }
+        return;
+      }
+      if (selectedEdgeId) setSelectedEdgeId(null);
+      if (anyNodeSelected) {
         event.preventDefault();
         for (const id of noteIds) notes.remove(id);
         void deleteAgents(agentIds);
@@ -826,6 +833,20 @@ function AgentCanvas() {
     else if (event.key.toLowerCase() === "f") void fitView({ padding: 0.2, duration: 300 });
   }
 
+  // After a delete the focused element is removed and focus falls back to <body>, where the wrapper's
+  // onKeyDown never fires. Route Delete/Backspace from <body> to the same handler so the next delete works.
+  const onKeyDownRef = useRef(onKeyDown);
+  onKeyDownRef.current = onKeyDown;
+  useEffect(() => {
+    const onDocKeyDown = (event: KeyboardEvent) => {
+      if (event.target !== document.body || (event.key !== "Delete" && event.key !== "Backspace")) return;
+      if (document.querySelector("[role=dialog], [role=alertdialog], [role=menu]")) return;
+      onKeyDownRef.current(event as unknown as React.KeyboardEvent);
+    };
+    document.addEventListener("keydown", onDocKeyDown);
+    return () => document.removeEventListener("keydown", onDocKeyDown);
+  }, []);
+
   if (projectSessions.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
@@ -841,7 +862,7 @@ function AgentCanvas() {
   }
 
   const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode) => (
-    <Button type="button" variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} title={label} onClick={onClick}>{icon}</Button>
+    <Button type="button" variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
 
   return (
@@ -855,10 +876,11 @@ function AgentCanvas() {
         <ContextMenuTrigger asChild>
           <div
             ref={wrapRef}
+            data-canvas-theme={canvasTheme}
             tabIndex={-1}
             onKeyDown={onKeyDown}
             onContextMenuCapture={(event) => setMenuTarget({ kind: "pane", flow: screenToFlowPosition({ x: event.clientX, y: event.clientY }) })}
-            className={cn("size-full outline-none", linkMode && "[&_.react-flow__pane]:cursor-crosshair")}
+            className={cn("canvas-chrome size-full outline-none", canvasTheme === "dark" ? "canvas-chrome-dark" : "canvas-chrome-light", linkMode && "[&_.react-flow__pane]:cursor-crosshair")}
           >
             <ReactFlow
               nodes={allNodes}
@@ -886,7 +908,7 @@ function AgentCanvas() {
               isValidConnection={isValidConnection}
               connectionMode={ConnectionMode.Loose}
               connectionRadius={40}
-              connectionLineStyle={{ stroke: "#8b5cf6", strokeWidth: 2.5, strokeDasharray: "6 4" }}
+              connectionLineStyle={{ stroke: "var(--primary-text)", strokeWidth: 2.5, strokeDasharray: "6 4" }}
               nodesConnectable
               edgesFocusable={false}
               deleteKeyCode={null}
@@ -895,7 +917,7 @@ function AgentCanvas() {
               onlyRenderVisibleElements
               fitView={!savedViewport}
               minZoom={0.1}
-              colorMode={resolvedTheme === "dark" ? "dark" : "light"}
+              colorMode={canvasTheme}
               proOptions={{ hideAttribution: true }}
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
@@ -909,7 +931,7 @@ function AgentCanvas() {
                     style={{ width: 140, height: 90 }}
                     className="m-2! overflow-hidden rounded-md! border border-border bg-card/80! shadow-sm backdrop-blur-sm"
                     nodeColor={minimapColor}
-                    nodeStrokeColor={(node) => (recruits.has(node.id) ? "#8b5cf6" : "transparent")}
+                    nodeStrokeColor={(node) => (recruits.has(node.id) ? "var(--primary-text)" : "transparent")}
                     nodeStrokeWidth={3}
                     nodeBorderRadius={3}
                     maskColor="color-mix(in oklab, var(--background) 65%, transparent)"
@@ -923,42 +945,58 @@ function AgentCanvas() {
                 </>
               )}
 
-              <Panel position="top-left" className="flex items-center gap-2">
-                <span className="max-w-60 truncate rounded-md border border-border bg-card px-2.5 py-1 text-sm font-medium" title={project?.cwd}>{projectName}</span>
-                <Button type="button" variant="outline" size="sm" onClick={openNewAgent}>
-                  <IconPlus size={14} />
-                  New agent
-                </Button>
-                {vaultCount !== null && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="flex items-center gap-1 rounded-md border border-amber-500/50 bg-card px-2 py-1 text-xs text-muted-foreground"><IconKey size={13} className="text-amber-500" />Vault · {vaultCount}</span>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Global vault: available to all agents, no wires needed</TooltipContent>
-                  </Tooltip>
-                )}
-              </Panel>
+              <Panel position="top-left" className="m-2! w-[calc(100%-1rem)]">
+                <div className="canvas-topbar w-full rounded-2xl border border-border/70 p-1.5 shadow-sm">
+                  <div className="canvas-topbar-layout grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5">
+                    <div className="canvas-topbar-identity order-1 flex min-w-0 items-center gap-2 pl-1">
+                      <span aria-hidden className="flex size-[18px] shrink-0 items-center justify-center">
+                        <ProjectMark key={project?.id ?? "none"} project={project ?? NO_PROJECT_MARK} className="size-[18px] text-muted-foreground" />
+                      </span>
+                      <span className="min-w-0 truncate text-sm font-medium" title={project?.cwd}>{projectName}</span>
+                    </div>
 
-              <Panel position="top-center" className="flex items-center gap-0.5 rounded-lg border border-border bg-card p-1 shadow-md">
-                {toolButton(tool === "select", "Select (drag to box-select)", () => setTool("select"), <IconPointer size={16} />)}
-                {toolButton(tool === "pan", "Pan (drag to move canvas)", () => setTool("pan"), <IconHandStop size={16} />)}
-                <span className="mx-1 h-5 w-px bg-border" />
-                {toolButton(linkMode !== null, "Link mode (L)", () => setLinkMode((mode) => mode ? null : { from: null }), <IconLink size={16} />)}
-                <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label="Wake all sleeping agents" title={sleepingCount ? `Wake all sleeping agents (${sleepingCount})` : "No sleeping agents"} disabled={sleepingCount === 0} onClick={() => void wakeAll()}>
-                  <IconPlayerPlay size={16} />
-                  {sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{sleepingCount}</span>}
-                </Button>
-                {toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />)}
-                {toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />)}
-                {toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}
-                {toolButton(false, "Fit view (F)", () => void fitView({ duration: 200 }), <IconArrowsMaximize size={16} />)}
-                <span className="mx-1 h-5 w-px bg-border" />
-                {toolButton(showMiniMap, "Mini map", () => setShowMiniMap((value) => !value), <IconMap size={16} />)}
-                {toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}
+                    <div className="canvas-topbar-actions order-2 flex shrink-0 items-center gap-1">
+                      <ShortcutTip label={sleepingCount ? `Wake all sleeping agents (${sleepingCount})` : "No sleeping agents"}>
+                        <span tabIndex={sleepingCount === 0 ? 0 : undefined} className="inline-flex">
+                          <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label="Wake all sleeping agents" disabled={sleepingCount === 0} onClick={() => void wakeAll()}>
+                            <IconPlayerPlay size={16} />
+                            {sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{sleepingCount}</span>}
+                          </Button>
+                        </span>
+                      </ShortcutTip>
+                      <VaultPopover />
+                      <Button type="button" className="shrink-0" disabled={!activeProjectId} onClick={openNewAgent}>
+                        <IconPlus size={15} />
+                        New agent
+                      </Button>
+                    </div>
+
+                    <div role="group" aria-label="Canvas tools" className="canvas-topbar-tools order-3 col-span-2 row-start-2 flex min-w-0 items-center justify-center gap-1">
+                      <div role="group" aria-label="Canvas modes" className="flex shrink-0 items-center gap-0.5">
+                        <ShortcutTip label="Select (drag to box-select)">{toolButton(tool === "select", "Select (drag to box-select)", () => setTool("select"), <IconPointer size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Pan (drag to move canvas)">{toolButton(tool === "pan", "Pan (drag to move canvas)", () => setTool("pan"), <IconHandStop size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Link mode" keys="L">{toolButton(linkMode !== null, "Link mode (L)", () => setLinkMode((mode) => mode ? null : { from: null }), <IconLink size={16} />)}</ShortcutTip>
+                      </div>
+                      <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
+                      <div role="group" aria-label="Add to canvas" className="flex shrink-0 items-center gap-0.5">
+                        <ShortcutTip label="Add note" keys="N">{toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />)}</ShortcutTip>
+                      </div>
+                      <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
+                      <div role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">
+                        <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet"); }, <IconNotes size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200 }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Mini map">{toolButton(showMiniMap, "Mini map", () => setShowMiniMap((value) => !value), <IconMap size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Activity">{toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}</ShortcutTip>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </Panel>
 
               {linkMode && (
-                <Panel position="top-center" className="mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm backdrop-blur-sm">
+                <Panel position="top-center" className="canvas-link-mode-panel mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm backdrop-blur-sm">
                   <IconLink size={12} className="text-violet-500" />
                   <span className="max-w-72 truncate">{linkMode.from ? `Link ${titleOf(linkMode.from)} to…` : "Pick the agent to link from"}</span>
                   <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label="Cancel link mode (Esc)" title="Cancel (Esc)" onClick={() => setLinkMode(null)}><IconX size={11} /></Button>
@@ -975,6 +1013,8 @@ function AgentCanvas() {
                 onSent={markSent}
                 focusRef={composerFocus}
               />
+
+              <CrossProjectWires links={runtimeLinks} titleOf={titleOf} />
 
               {showActivity && (
                 <ActivityPanel

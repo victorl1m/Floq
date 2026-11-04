@@ -279,7 +279,7 @@ export class LinuxShardDriver implements ShardDriver {
     // bwrap creates the parent directories of binds as 0700 root, which the per-user uid cannot read
     // (resolv.conf, ssl config): create them 0755 explicitly, before anything is bound into them.
     args.push("--perms", "0755", "--dir", "/etc", "--perms", "0755", "--dir", "/home");
-    for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/ssl", "/etc/ca-certificates", "/etc/alternatives", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime"]) {
+    for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/ssl", "/etc/ca-certificates", "/etc/alternatives", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime", "/etc/claude-code"]) {
       if (existsSync(path)) args.push("--ro-bind", path, path);
     }
     args.push(

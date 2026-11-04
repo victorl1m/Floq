@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
 import { createNoteRequest, deleteNoteRequest, fetchNotes, linkNote, unlinkNote, updateNoteRequest, type CanvasNote, type NoteColor, type NotePatch } from "./canvas-data";
+import { findFreeSpot, type Rect } from "./note-placement";
 import { pathOf, RESIZER_ABOVE, route, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE, useRect } from "./wire-edge";
 
 export type NoteNode = Node<{ note: CanvasNote }, "note">;
@@ -52,9 +53,11 @@ interface NoteCtxValue {
   /** True once for a freshly created note (so it takes focus). */
   isNew: (id: string) => boolean;
   titleOf: (sessionId: string) => string;
+  /** Id of a note being pointed at ("Show on canvas"); its card pulses. */
+  highlight: string | null;
 }
 // Inert default so a card rendered outside (or out of sync with) its provider degrades instead of crashing the canvas.
-const NoteCtx = createContext<NoteCtxValue>({ patch: () => {}, remove: () => {}, setEditing: () => {}, isNew: () => false, titleOf: () => "agent" });
+const NoteCtx = createContext<NoteCtxValue>({ patch: () => {}, remove: () => {}, setEditing: () => {}, isNew: () => false, titleOf: () => "agent", highlight: null });
 export const NoteProvider = NoteCtx.Provider;
 
 const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
@@ -124,7 +127,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
           style={SIDE_STRIP_STYLE[position]}
           className={SIDE_STRIP_CLASS} />
       ))}
-      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow", palette.border, selected && "border-primary/60 shadow-md ring-2 ring-primary/30", flash && "ring-2 ring-teal-500", "peer-hover/h:border-teal-500 peer-hover/h:ring-2 peer-hover/h:ring-teal-500/50 peer-hover/h:shadow-[0_0_16px_0_var(--color-teal-500)]", connecting && "group-hover/note:border-emerald-500 group-hover/note:ring-2 group-hover/note:ring-emerald-500/50 group-hover/note:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
+      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow", palette.border, selected && "border-primary/60 shadow-md ring-2 ring-primary/30", (flash || ctx.highlight === note.id) && "ring-2 ring-teal-500 shadow-[0_0_18px_0_var(--color-teal-500)]", "peer-hover/h:border-teal-500 peer-hover/h:ring-2 peer-hover/h:ring-teal-500/50 peer-hover/h:shadow-[0_0_16px_0_var(--color-teal-500)]", connecting && "group-hover/note:border-emerald-500 group-hover/note:ring-2 group-hover/note:ring-emerald-500/50 group-hover/note:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
         <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
         <div className={cn("note-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1 border-b px-1.5 active:cursor-grabbing", palette.border)}>
           <IconNote size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -147,6 +150,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
               ))}
             </PopoverContent>
           </Popover>
+          {note.title && <span className="min-w-0 truncate text-[12px] font-medium" title={`Agent note: ${note.title}`}>{note.title}</span>}
           {linked.length > 0 && (
             <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 tabular-nums dark:text-teal-300" title={`Agents that can read and edit this note: ${linked.map(ctx.titleOf).join(", ")}`}>
               <IconLink size={11} />{linked.length}
@@ -159,6 +163,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
         <textarea
           ref={areaRef}
           value={text}
+          aria-label={note.title ? `Note ${note.title}` : "Note text"}
           placeholder="Write a note… Drag from a side dot to an agent to share it."
           maxLength={20000}
           spellCheck={false}
@@ -201,9 +206,9 @@ export const NoteWireEdgeView = memo(function NoteWireEdgeView({ id, source, tar
           <div className={cn("flex items-center gap-1 rounded-full border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm", selected ? "border-teal-500" : "border-border")} title="Note shared with this agent (read and edit)">
             <IconNote size={11} style={{ color: NOTE_TEAL }} />
             {selected && (
-              <button type="button" aria-label="Unlink note" title="Unlink (Del)" className="ml-0.5 rounded-full p-0.5 text-destructive hover:bg-destructive/10" onClick={(event) => { event.stopPropagation(); ctx?.unlink(data.noteId, data.sessionId); }}>
+              <Button variant="ghost" size="icon-xs" type="button" aria-label="Unlink note" title="Unlink (Del)" className="ml-0.5 size-4 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); ctx?.unlink(data.noteId, data.sessionId); }}>
                 <IconX size={11} />
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -216,7 +221,25 @@ export const noteEdgeTypes = { "note-wire": NoteWireEdgeView };
 const sameNote = (a: CanvasNote, b: CanvasNote) => a.updatedAt === b.updatedAt && a.linkedSessionIds.join("\n") === b.linkedSessionIds.join("\n");
 
 /** Notes of one project: polled every 5s, optimistic edits with rollback, never clobbering a note being edited or dragged. */
-export function useCanvasNotes(client: RuntimeClient | null, projectId: string | null, titleOf: (sessionId: string) => string) {
+export interface NotePlacement {
+  /** Rects of everything on the canvas (agents, notes, keychains), in flow coordinates. */
+  occupied: () => Rect[];
+  agentRect: (sessionId: string) => Rect | undefined;
+  /** False until the agent nodes are on the canvas, so placement can anchor next to the creating agent. */
+  ready: boolean;
+  /** Centres the canvas on a note node and is called by the "Show on canvas" toast action. */
+  reveal: (nodeId: string) => void;
+}
+
+export function useCanvasNotes(client: RuntimeClient | null, projectId: string | null, titleOf: (sessionId: string) => string, placement?: NotePlacement) {
+  const placementRef = useRef(placement);
+  placementRef.current = placement;
+  const known = useRef<Set<string> | null>(null);
+  const placing = useRef(new Set<string>());
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const titleOfRef = useRef(titleOf);
+  titleOfRef.current = titleOf;
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNode>([]);
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
@@ -224,6 +247,8 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
   const pending = useRef(new Map<string, number>());
   const created = useRef(new Map<string, number>());
   const newId = useRef<string | null>(null);
+  /** Ids deleted locally: an in-flight poll that began before the delete must not resurrect them. */
+  const deleted = useRef(new Set<string>());
 
   const setEditing = useCallback((id: string, on: boolean) => { if (on) editing.current.add(id); else editing.current.delete(id); }, []);
   const isBusy = (id: string) => editing.current.has(id) || (pending.current.get(id) ?? 0) > 0;
@@ -235,10 +260,22 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     });
   };
 
+  const revealRef = useRef<(id: string) => void>(() => {});
   const refresh = useCallback(async () => {
     if (!client || !projectId) return;
     let server: CanvasNote[];
     try { server = await fetchNotes(client, projectId); } catch { return; }
+    server = server.filter((note) => !deleted.current.has(note.id));
+    // Notes agents created since the last poll: tell the user where they are. The first load only records what exists.
+    if (known.current) {
+      for (const note of server) {
+        if (known.current.has(note.id) || created.current.has(note.id)) continue;
+        if (!note.title) continue;
+        const who = note.linkedSessionIds[0] ? titleOfRef.current(note.linkedSessionIds[0]) : "An agent";
+        toast(`${who} created note ${note.title}`, { action: { label: "Show on canvas", onClick: () => revealRef.current(note.id) } });
+      }
+    }
+    known.current = new Set([...(known.current ?? []), ...server.map((note) => note.id)]);
     setNodes((current) => {
       const byId = new Map(current.map((node) => [node.data.note.id, node]));
       const next: NoteNode[] = server.map((note) => {
@@ -259,6 +296,8 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
   useEffect(() => {
     setNodes([]);
     editing.current.clear();
+    known.current = null;
+    placing.current.clear();
     void refresh();
     const timer = setInterval(() => void refresh(), 5000);
     return () => clearInterval(timer);
@@ -280,7 +319,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
       .then((saved) => { if (saved?.updatedAt) apply(id, { updatedAt: saved.updatedAt }); })
       .catch((error) => {
         const revert: Partial<CanvasNote> = {};
-        for (const key of Object.keys(change) as (keyof NotePatch)[]) Object.assign(revert, { [key]: before[key] });
+        for (const key of Object.keys(change) as (keyof NotePatch)[]) Object.assign(revert, { [key]: before[key as keyof CanvasNote] });
         apply(id, revert);
         toast.error("Could not save the note", { description: errorMessage(error) });
       })
@@ -290,26 +329,69 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
       });
   }, [client, apply]);
 
-  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; w?: number; h?: number }) => {
+  // Notes an agent created (or that predate canvas mirroring) have no spot yet: pick a free one near the creating agent and save it.
+  useEffect(() => {
+    const info = placementRef.current;
+    if (!info?.ready || !client) return;
+    const pendingNotes = nodes.filter((node) => node.data.note.placed === false && !placing.current.has(node.data.note.id));
+    if (!pendingNotes.length) return;
+    const occupied = info.occupied();
+    for (const node of pendingNotes) {
+      const note = node.data.note;
+      placing.current.add(note.id);
+      const anchor = note.linkedSessionIds.map((sid) => info.agentRect(sid)).find(Boolean);
+      const spot = findFreeSpot({ w: note.w, h: note.h }, occupied, anchor);
+      occupied.push({ ...spot, w: note.w, h: note.h });
+      patch(note.id, { x: spot.x, y: spot.y });
+      apply(note.id, { placed: true });
+    }
+  }, [nodes, client, patch, apply, placement?.ready]);
+
+  const reveal = useCallback((id: string) => {
+    clearTimeout(highlightTimer.current);
+    setHighlight(id);
+    setNodes((current) => current.map((node) => node.data.note.id === id ? { ...node, selected: true } : { ...node, selected: false }));
+    setTimeout(() => placementRef.current?.reveal(NOTE_PREFIX + id), 60);
+    highlightTimer.current = setTimeout(() => setHighlight(null), 3000);
+  }, [setNodes]);
+  revealRef.current = reveal;
+  useEffect(() => () => clearTimeout(highlightTimer.current), []);
+
+  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; w?: number; h?: number; agentNoteName?: string }) => {
     if (!client || !projectId) return;
     try {
       const note = await createNoteRequest(client, projectId, { w: NOTE_DEFAULT.width, h: NOTE_DEFAULT.height, ...input });
       created.current.set(note.id, Date.now());
       newId.current = note.id;
       setNodes((current) => [...current.filter((node) => node.data.note.id !== note.id), { ...toNode(note), selected: true }]);
+      return note;
     } catch (error) {
       toast.error("Could not add the note", { description: errorMessage(error) });
+      return undefined;
     }
   }, [client, projectId, setNodes]);
 
   const remove = useCallback((id: string) => {
     if (!client) return;
     const gone = nodesRef.current.find((node) => node.data.note.id === id)?.data.note;
+    if (!gone) return; // already removed: guards double-delete
+    deleted.current.add(id);
     setNodes((current) => current.filter((node) => node.data.note.id !== id));
     deleteNoteRequest(client, id).then(() => {
-      if (gone?.text.trim()) toast("Note deleted", { action: { label: "Undo", onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color }) } });
+      if (gone?.text.trim() || gone?.title) {
+        toast(gone.title ? `Note ${gone.title} deleted` : "Note deleted", {
+          description: gone.title ? "Agents can no longer read it with floq note." : undefined,
+          action: {
+            label: "Undo",
+            onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, agentNoteName: gone.title ?? undefined }).then((restored) => {
+              if (restored && client) for (const sid of gone.linkedSessionIds) void linkNote(client, restored.id, sid).catch(() => {});
+            }),
+          },
+        });
+      }
     }).catch((error) => {
-      if (gone) setNodes((current) => [...current, toNode(gone)]);
+      deleted.current.delete(id);
+      if (gone) setNodes((current) => [...current.filter((node) => node.data.note.id !== id), toNode(gone)]);
       toast.error("Could not delete the note", { description: errorMessage(error) });
     });
   }, [client, setNodes, add]);
@@ -352,7 +434,8 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     setEditing,
     isNew: (id) => { if (newId.current !== id) return false; newId.current = null; return true; },
     titleOf,
-  }), [patch, remove, setEditing, titleOf]);
+    highlight,
+  }), [patch, remove, setEditing, titleOf, highlight]);
 
   const notes = useMemo(() => nodes.map((node) => node.data.note), [nodes]);
 
@@ -363,5 +446,5 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     setEditing(id, false);
   }, [patch, setEditing]);
 
-  return { nodes, onNodesChange: onNodesChange as (changes: NodeChange<Node>[]) => void, notes, add, remove, patch, link, unlink, unlinkAll, ctxValue, dragStart, dragEnd };
+  return { nodes, onNodesChange: onNodesChange as (changes: NodeChange<Node>[]) => void, notes, add, remove, patch, reveal, link, unlink, unlinkAll, ctxValue, dragStart, dragEnd };
 }

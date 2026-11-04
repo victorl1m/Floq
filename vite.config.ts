@@ -6,6 +6,11 @@ import tailwindcss from "@tailwindcss/vite";
 
 
 const host = process.env.TAURI_DEV_HOST;
+// Keep CSS minification aligned with the native WebView. Chromium on Windows
+// supports standard backdrop-filter; WebKit still needs its prefixed form.
+const cssTarget = process.env.TAURI_ENV_PLATFORM === "windows" || (!process.env.TAURI_ENV_PLATFORM && process.platform === "win32")
+  ? "chrome105"
+  : "safari13";
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -21,6 +26,9 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  build: {
+    cssTarget,
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

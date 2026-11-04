@@ -95,7 +95,7 @@ export function getProviderDefinition(id: ProviderId, config: Config): ProviderD
 const versionCache = new Map<string, { version: string | null; checkedAt: number }>();
 const VERSION_TTL_MS = 60_000;
 
-function detectVersion(bin: string): { available: boolean; version: string | null } {
+export function detectVersion(bin: string): { available: boolean; version: string | null } {
   const cached = versionCache.get(bin);
   if (cached && Date.now() - cached.checkedAt < VERSION_TTL_MS) {
     return { available: cached.version !== null, version: cached.version };

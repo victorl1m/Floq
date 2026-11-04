@@ -8,6 +8,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator";
 import { ManualForwardForm, useActiveForwardSession } from "@/components/window/manual-forward-form";
 import { errorMessage } from "@/lib/runtime/store";
+import { usePortRequests } from "@/lib/port-requests";
+import { PortRequestCard } from "@/components/window/port-requests";
 import { portForwardingSupported, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
 
 function copyUrl(port: number) {
@@ -25,30 +27,37 @@ export function ForwardedPorts() {
     const forwardedPorts = Object.keys(forwarded).map(Number).sort((a, b) => a - b);
     const count = forwardedPorts.length;
     const detected = (sessionId ? ports[sessionId] ?? [] : []).filter(({ port }) => !forwarded[port]);
-    const label = `${count} forwarded port${count === 1 ? "" : "s"}`;
+    const requests = usePortRequests();
+    const waiting = requests.filter((item) => item.state === "pending").length;
+    const label = `Ports: ${count} forwarded${waiting ? `, ${waiting} request${waiting === 1 ? "" : "s"} waiting for your answer` : ""}`;
 
     return (
         <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
-                <button
+                <Button variant="ghost" size="xs"
                     type="button"
                     title={label}
                     aria-label={label}
-                    className={cn(
-                        "-mr-2 ml-2 inline-flex h-6 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] tabular-nums transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                        count === 0 && "opacity-60",
-                        open && "bg-muted text-foreground",
-                    )}
+                    className={cn("-mr-2 ml-2 gap-1.5 px-2 text-[11px] tabular-nums", count === 0 && !waiting && "opacity-60", open && "bg-muted text-foreground")}
                 >
-                    <IconPlugConnected size={12} stroke={1.5} />
+                    <IconPlugConnected size={12} stroke={1.5} aria-hidden="true" />
+                    <span>Ports</span>
                     <span>{count}</span>
-                </button>
+                    {waiting > 0 && <span aria-hidden="true" className="rounded-full bg-destructive px-1 text-[10px] leading-4 text-white">{waiting}</span>}
+                </Button>
             </PopoverTrigger>
             <PopoverContent align="end" side="top" sideOffset={8} className="w-80 gap-3 p-3">
                 <div className="space-y-0.5">
                     <p className="text-xs font-medium">Port forwarding</p>
-                    <p className="text-[10px] text-muted-foreground">Reach ports from a session on this computer.</p>
+                    <p className="text-[10px] text-muted-foreground">Reach ports from your sessions on this computer.</p>
                 </div>
+                {requests.length > 0 && (
+                    <div className="flex flex-col gap-3" aria-label="Port requests from agents" role="group">
+                        <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">Requested by agents</p>
+                        {requests.map((item) => <PortRequestCard key={item.request.id} item={item} client={client} />)}
+                        <Separator />
+                    </div>
+                )}
                 {!portForwardingSupported ? (
                     <p className="text-[10px] text-muted-foreground">Forwarding needs the Floq desktop app.</p>
                 ) : (

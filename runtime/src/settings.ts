@@ -12,6 +12,10 @@ export interface PublicSettings {
   gitCoauthor: boolean;
   /** False when the server disabled the co-author feature (FLOQ_GIT_COAUTHOR is empty). */
   gitCoauthorAvailable: boolean;
+  /** Fixed Floq policy tells every agent to delegate via subagents (default on). Off = recruit only when asked. */
+  alwaysRecruitSubagents: boolean;
+  /** Agents may discover and message agents of the user's other projects (default on). */
+  allowCrossProjectAgents: boolean;
   github: { login: string; connectedAt: string } | null;
 }
 
@@ -21,6 +25,8 @@ export interface SettingsPatch {
   gitName?: string | null;
   gitEmail?: string | null;
   gitCoauthor?: boolean;
+  alwaysRecruitSubagents?: boolean;
+  allowCrossProjectAgents?: boolean;
 }
 
 /** Decrypted values used to launch one user's agent session. */
@@ -69,6 +75,8 @@ export class SettingsStore {
       gitEmail: row?.git_email ?? null,
       gitCoauthor: row?.git_coauthor ?? true,
       gitCoauthorAvailable: Boolean(this.config.gitCoauthor),
+      alwaysRecruitSubagents: row?.always_recruit_subagents ?? true,
+      allowCrossProjectAgents: row?.allow_cross_project_agents ?? true,
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
   }
@@ -92,6 +100,14 @@ export class SettingsStore {
     if (patch.gitCoauthor !== undefined) {
       if (typeof patch.gitCoauthor !== "boolean") throw badRequest("gitCoauthor must be boolean");
       push("git_coauthor", patch.gitCoauthor);
+    }
+    if (patch.alwaysRecruitSubagents !== undefined) {
+      if (typeof patch.alwaysRecruitSubagents !== "boolean") throw badRequest("alwaysRecruitSubagents must be boolean");
+      push("always_recruit_subagents", patch.alwaysRecruitSubagents);
+    }
+    if (patch.allowCrossProjectAgents !== undefined) {
+      if (typeof patch.allowCrossProjectAgents !== "boolean") throw badRequest("allowCrossProjectAgents must be boolean");
+      push("allow_cross_project_agents", patch.allowCrossProjectAgents);
     }
     if (patch.gitName !== undefined) push("git_name", cleanText(patch.gitName, "gitName", 100));
     if (patch.gitEmail !== undefined) {

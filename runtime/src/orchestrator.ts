@@ -9,6 +9,8 @@ import type { SettingsStore } from "./settings.js";
 import { getAgentRole, GENERALIST_ID, ORCHESTRATOR_ROLE_ID } from "./roles.js";
 import type { Keychains } from "./keychains.js";
 import type { AgentLinks } from "./links.js";
+import { CrossProjectGuard, buildProvenance, buildReplyHint } from "./crossProject.js";
+import { log } from "./logger.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -35,6 +37,9 @@ export interface AgentView {
   lead: boolean;
   linked: boolean;
   self: boolean;
+  role: string | null;
+  /** Project of the agent (id is null outside a registered project); `same` is true for the caller's own project. */
+  project: { id: string | null; name: string; same: boolean };
 }
 
 export async function selectableAgentModels(
@@ -57,6 +62,7 @@ export async function selectableAgentModels(
  * Rules: agents (claude/codex, never shells) are linked iff they share a project root; older sessions
  * without a project root fall back to normalized cwd, and auto-assigned workspaces form one "scratch"
  * project. Only a lead agent can recruit and dismiss (within its own project). Scoped to one user.
+ * Messaging (ask/check/wait/link) also works across the same user's projects unless they turned that off.
  */
 const SCRATCH = /^workspace\/[0-9a-f]{8}$/;
 
@@ -102,7 +108,16 @@ export class Orchestrator {
     private readonly settings: SettingsStore,
     private readonly links?: AgentLinks,
     private readonly secrets?: Keychains,
+    private readonly cross: CrossProjectGuard = new CrossProjectGuard(),
   ) {}
+
+  private async crossAllowed(userId: string): Promise<boolean> {
+    try { return (await this.settings.get(userId)).allowCrossProjectAgents !== false; } catch { return true; }
+  }
+
+  private projectName(row: { project_name?: string | null; project_id: string | null }): string {
+    return row.project_name || (row.project_id ? "project" : "(scratch)");
+  }
 
   /** Redact the secret values of the given sessions from text the runtime generates for other agents or the UI. */
   private async scrub(userId: string, ids: string[], text: string): Promise<string> {
@@ -114,7 +129,7 @@ export class Orchestrator {
   }
 
   private async rows(userId: string) {
-    return (await this.pool.query("SELECT id, title, provider, model, state, lead, role, cwd, git_url, project_cwd, project_id, workspace_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell'", [userId])).rows as Array<{
+    return (await this.pool.query("SELECT s.id, s.title, s.provider, s.model, s.state, s.lead, s.role, s.cwd, s.git_url, s.project_cwd, s.project_id, s.workspace_id, p.name AS project_name FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id WHERE s.user_id = $1 AND s.provider <> 'shell'", [userId])).rows as Array<{
       id: string;
       title: string;
       provider: ProviderId;
@@ -127,6 +142,7 @@ export class Orchestrator {
       project_cwd: string | null;
       project_id: string | null;
       workspace_id: string | null;
+      project_name: string | null;
     }>;
   }
 
@@ -162,29 +178,37 @@ export class Orchestrator {
    * excluded from the session rows, exactly as for `floq list`/`recruit`), so they get "Calling session not found".
    * Changes require a lead session, the same check that gates recruit/dismiss.
    */
-  async toolkitCaller(userId: string, sessionId: string, requireLead: boolean): Promise<{ id: string; projectId: string | null; provider: "claude" | "codex" }> {
+  async toolkitCaller(userId: string, sessionId: string, requireLead: boolean): Promise<{ id: string; name: string; projectId: string | null; provider: "claude" | "codex" }> {
     const me = await this.caller(userId, sessionId);
     if (requireLead && !me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can install or remove skills and MCP servers or create secrets");
-    return { id: me.id, projectId: me.project_id, provider: me.provider as "claude" | "codex" };
+    return { id: me.id, name: me.title, projectId: me.project_id, provider: me.provider as "claude" | "codex" };
   }
 
   private async target(userId: string, sessionId: string, name: unknown) {
     const me = await this.caller(userId, sessionId);
     const other = await this.resolve(userId, name);
     if (other.id === me.id) throw badRequest("An agent cannot target itself");
-    if (!this.sameProject(me, other)) {
-      throw new HttpError(403, "not_linked", '"' + other.title + '" is in a different project');
+    const cross = !this.sameProject(me, other);
+    if (cross && !(await this.crossAllowed(userId))) {
+      throw new HttpError(403, "cross_project_disabled", '"' + other.title + '" is in a different project and the user turned off "Allow agents to talk across projects" in Settings > Agents');
     }
-    return { me, other };
+    return { me, other, cross };
   }
 
-  async list(userId: string, sessionId: string): Promise<AgentView[]> {
+  /**
+   * Agents the caller can reach. Default: every agent of the user's projects (when "Allow agents to talk across
+   * projects" is on; otherwise only the caller's own project). `project` filters by project name or id, `here` by own project.
+   */
+  async list(userId: string, sessionId: string, options: { project?: unknown; here?: unknown } = {}): Promise<AgentView[]> {
     const rows = await this.rows(userId);
     const me = rows.find((r) => r.id === sessionId);
     if (!me) throw notFound("Calling session not found");
+    const crossOk = await this.crossAllowed(userId);
+    const wanted = typeof options.project === "string" && options.project.trim() ? options.project.trim().toLowerCase() : null;
     return rows
-      .filter((r) => this.sameProject(me, r))
-      .map((r) => ({
+      .map((r) => ({ r, same: this.sameProject(me, r) }))
+      .filter(({ r, same }) => (same || (crossOk && options.here !== true)) && (!wanted || (r.project_name ?? "").toLowerCase().includes(wanted) || r.project_id === wanted))
+      .map(({ r, same }) => ({
         id: r.id,
         name: r.title,
         provider: r.provider,
@@ -193,6 +217,8 @@ export class Orchestrator {
         lead: r.lead,
         linked: r.id !== me.id,
         self: r.id === me.id,
+        role: r.role,
+        project: { id: r.project_id, name: this.projectName(r), same },
       }));
   }
 
@@ -282,7 +308,9 @@ export class Orchestrator {
   /** Type a message into another agent's terminal; by default wait for its turn to finish and return the full reply. */
   async ask(userId: string, sessionId: string, name: unknown, prompt: unknown, timeoutSec?: number, wait = true, chars?: number, full = false) {
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 20_000) throw badRequest("prompt required (max 20000 chars)");
-    const { me, other } = await this.target(userId, sessionId, name);
+    const { me, other, cross } = await this.target(userId, sessionId, name);
+    // Cross-project: size cap, rate limit, dedupe and loop protection run BEFORE anything is typed or woken.
+    const hop = cross ? this.cross.admit(me.id, other.id, prompt).hop : 0;
     const timeoutMs = Math.min(Math.max((timeoutSec ?? DEFAULT_TIMEOUT_MS / 1000) * 1000, 10_000), MAX_TIMEOUT_MS);
 
     let live = this.manager.findLive(other.id, userId);
@@ -299,10 +327,17 @@ export class Orchestrator {
     const unsubscribe = target.subscribe((frame) => { if (frame.type === "output") collected.push(frame.data); });
     try {
       const body = prompt.replace(/\r?\n/g, " ").trim();
-      target.write("[Message from agent " + me.title + "] " + body);
+      if (cross) {
+        const from = { id: me.id, title: me.title, projectName: this.projectName(me) };
+        const text = await this.scrub(userId, [other.id, me.id], buildProvenance(from, hop) + " " + body + buildReplyHint(from, wait));
+        target.write(text);
+        log.info("agent.cross_project_message", { userId, fromSessionId: me.id, toSessionId: other.id, fromProjectId: me.project_id, toProjectId: other.project_id, chars: body.length, hop, wait });
+      } else {
+        target.write("[Message from agent " + me.title + "] " + body);
+      }
       await new Promise((r) => setTimeout(r, 300));
       target.write("\r");
-      await this.links?.record(userId, me.id, other.id, "message", "message", "ask", await this.scrub(userId, [other.id, me.id], body));
+      await this.links?.record(userId, me.id, other.id, "message", "message", "ask", await this.scrub(userId, [other.id, me.id], body), cross ? { fromTitle: me.title, toTitle: other.title, fromProject: this.projectName(me), toProject: this.projectName(other), toProjectId: other.project_id } : undefined);
       if (!wait) return { id: other.id, name: other.title, status: "sent", source: "none", output: "", truncated: 0 };
       const { why, turn } = await this.awaitTurn(target, userId, afterPrompts, timeoutMs, Date.now());
       if ((why === "done" || why === "quiet") && turn?.reply) await this.links?.record(userId, other.id, me.id, "message", "reply", "reply", await this.scrub(userId, [other.id, me.id], turn.reply));
@@ -320,14 +355,27 @@ export class Orchestrator {
     const b = await this.resolve(userId, to);
     if (a.id === b.id) throw badRequest("Cannot connect an agent to itself");
     if (!this.sameProject(me, a) || !this.sameProject(me, b)) {
-      throw new HttpError(403, "other_project", "Agents outside your project cannot be connected");
+      throw new HttpError(403, "other_project", "Agents outside your project cannot be connected with `floq connect`; use `floq link <agent>` to wire yourself to an agent of another project");
     }
     return { ok: true };
   }
 
-  async recruit(userId: string, sessionId: string, input: { name?: unknown; provider?: unknown; model?: unknown; cwd?: unknown; role?: unknown; isolated?: unknown }) {
+  /**
+   * `floq link`: wire the caller to any agent of the same user, including other projects. The wire appears on the
+   * caller's canvas as a labelled chip for a foreign agent, and both agents' wired context lists the other.
+   */
+  async link(userId: string, sessionId: string, name: unknown) {
+    const { me, other, cross } = await this.target(userId, sessionId, name);
+    if (!this.links) throw conflict("Agent links are not available");
+    const link = await this.links.upsert(me.id, other.id, "manual", "none");
+    if (cross) log.info("agent.cross_project_link", { userId, fromSessionId: me.id, toSessionId: other.id, fromProjectId: me.project_id, toProjectId: other.project_id });
+    return { ok: true, linkId: link.id, ids: [me.id, other.id], cross, project: this.projectName(other) };
+  }
+
+  /** `skipOrchestratorCheck` is only for SubagentService, which enforces its own depth/children/total limits. `prompt` is the first message. */
+  async recruit(userId: string, sessionId: string, input: { name?: unknown; provider?: unknown; model?: unknown; cwd?: unknown; role?: unknown; isolated?: unknown; prompt?: unknown; wire?: unknown }, options: { skipOrchestratorCheck?: boolean } = {}) {
     const me = await this.caller(userId, sessionId);
-    assertCanRecruit(me, await this.rows(userId), (a, b) => this.sameProject(a, b));
+    if (!options.skipOrchestratorCheck) assertCanRecruit(me, await this.rows(userId), (a, b) => this.sameProject(a, b));
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name || name.length > 60) throw badRequest("name required (max 60 chars)");
     if ((await this.rows(userId)).some((r) => r.title.toLowerCase() === name.toLowerCase())) throw conflict('An agent named "' + name + '" already exists');
@@ -368,6 +416,7 @@ export class Orchestrator {
       provider,
       model: input.model as string | undefined,
       role: rolePreset,
+      prompt: options.skipOrchestratorCheck && typeof input.prompt === "string" ? input.prompt : undefined,
       title: name,
       cwd: cwd ?? undefined,
       projectId: me.project_id ?? undefined,
@@ -388,7 +437,7 @@ export class Orchestrator {
         setTimeout(() => live?.write("\r"), 300);
       }, 6_000).unref();
     }
-    await this.links?.record(userId, me.id, created.id, "recruit", "none", "recruit", roleText || "Recruited " + name + (provider === "codex" ? " (codex)" : ""));
+    if (input.wire !== false) await this.links?.record(userId, me.id, created.id, "recruit", "none", "recruit", roleText || "Recruited " + name + (provider === "codex" ? " (codex)" : ""));
     return { id: created.id, name, provider, model: created.model ?? "default", state: created.state };
   }
 
