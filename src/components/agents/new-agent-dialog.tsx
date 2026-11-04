@@ -124,7 +124,7 @@ export default function NewAgentDialog() {
                 </>
             }
         >
-            <form id={FORM_ID} onSubmit={onSubmit} className="flex flex-col gap-4">
+            <form id={FORM_ID} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
                 {error && <ErrorBanner>{error}</ErrorBanner>}
 
                 {loading ? (
@@ -158,7 +158,7 @@ export default function NewAgentDialog() {
                                     >
                                         <ProviderIcon provider={id} className="size-5" />
                                         {PROVIDER_LABEL[id]}
-                                        {selected && <IconCheck className="absolute top-2 right-2 size-4 text-primary" />}
+                                        {selected && <IconCheck className="absolute top-2 right-2 size-4 text-primary-text" />}
                                     </button>
                                 );
                             })}

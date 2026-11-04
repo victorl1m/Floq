@@ -59,6 +59,7 @@ export function ManualForwardForm({ client, sessionId }: { client: RuntimeClient
 
     return (
         <form
+            noValidate
             className="flex flex-col gap-1.5"
             onSubmit={(event) => { event.preventDefault(); void submit(value); }}
         >

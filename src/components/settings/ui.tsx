@@ -7,7 +7,7 @@ export function SettingsPage({ title, description, children }: { title: string; 
         <div className="flex flex-col gap-6">
             <div className="flex flex-col gap-1">
                 <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-                <p className="text-sm text-muted-foreground">{description}</p>
+                <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{description}</p>
             </div>
             {children}
         </div>
@@ -18,8 +18,8 @@ export function SettingsPage({ title, description, children }: { title: string; 
 export function SettingsGroup({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
     return (
         <section className="flex flex-col gap-2">
-            {title && <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</h2>}
-            <div className={cn("divide-y divide-border rounded-xl border border-border bg-card/40", className)}>{children}</div>
+            {title && <h2 className="px-1 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">{title}</h2>}
+            <div className={cn("glass-panel divide-y divide-border rounded-xl", className)}>{children}</div>
         </section>
     );
 }
@@ -44,7 +44,7 @@ export function SettingRow({
                 <label htmlFor={htmlFor} className="text-sm font-medium">
                     {label}
                 </label>
-                {description && <div className="text-xs text-muted-foreground">{description}</div>}
+                {description && <div className="max-w-prose text-xs leading-relaxed text-muted-foreground">{description}</div>}
             </div>
             {children && <div className={cn("flex shrink-0 items-center gap-2", stack && "w-full")}>{children}</div>}
         </div>
@@ -55,14 +55,13 @@ export function SettingRow({
 export function SavedCheck({ show }: { show: boolean }) {
     return (
         <span
-            aria-live="polite"
+            role="status"
             className={cn(
-                "flex items-center gap-1 text-xs text-muted-foreground transition-opacity duration-300",
+                "flex min-w-12 items-center gap-1 text-xs text-muted-foreground transition-opacity duration-150",
                 show ? "opacity-100" : "opacity-0",
             )}
         >
-            <IconCheck className="size-3" />
-            Saved
+            {show && <><IconCheck aria-hidden="true" className="size-3" />Saved</>}
         </span>
     );
 }

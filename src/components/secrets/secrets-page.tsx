@@ -14,10 +14,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
 import { errorMessage, useClient } from "@/lib/runtime/store";
 import type { Exposure, SecretInfo } from "@/lib/runtime/types";
 import { SettingsGroup } from "../settings/ui";
@@ -142,7 +144,20 @@ export default function SecretsPage() {
                 <Button ref={addButtonRef} onClick={beginAdd} disabled={busy || formOpen}><IconPlus />Add secret</Button>
             </header>
             <SettingsGroup className="overflow-hidden">
-            {secrets && secrets.length > 0 ? (
+            <FloqReveal className="block" loading={secrets === null && !loadError} revealOnMount={false}>
+            {secrets === null && !loadError ? (
+                <div role="status" aria-label="Loading secrets" className="divide-y divide-border">
+                    {[0, 1, 2].map((row) => <div key={row} className="flex items-center gap-4 px-4 py-3">
+                        <Skeleton className="h-3 w-28" /><Skeleton className="h-3 min-w-0 flex-1" /><Skeleton className="h-6 w-14" /><Skeleton className="h-3 w-24" />
+                    </div>)}
+                    <span className="sr-only">Loading secrets…</span>
+                </div>
+            ) : loadError ? (
+                <Empty className="min-h-32 flex-none border-0 bg-transparent p-5">
+                    <EmptyHeader><EmptyTitle>Could not load secrets</EmptyTitle><EmptyDescription>{loadError}</EmptyDescription></EmptyHeader>
+                    <EmptyContent><Button type="button" variant="outline" size="sm" onClick={() => void load()}><IconRefresh />Try again</Button></EmptyContent>
+                </Empty>
+            ) : secrets?.length ? (
                 <Table>
                     <TableHeader>
                         <TableRow>
@@ -189,11 +204,12 @@ export default function SecretsPage() {
                     </TableBody>
                 </Table>
             ) : (
-                <div className="flex flex-col items-start gap-2 p-4">
-                    <p className="text-sm text-muted-foreground">{loadError ? "Could not load secrets." : secrets ? "No secrets stored yet. Add one when an agent needs a credential." : "Loading secrets…"}</p>
-                    {loadError && <><p role="alert" className="text-xs text-destructive">{loadError}</p><Button type="button" variant="outline" size="sm" onClick={() => void load()}><IconRefresh />Try again</Button></>}
-                </div>
+                <Empty className="min-h-40 flex-none border-0 bg-transparent p-5">
+                    <EmptyHeader><EmptyTitle>No secrets stored yet</EmptyTitle><EmptyDescription>Add a secret when an agent needs a credential.</EmptyDescription></EmptyHeader>
+                    <EmptyContent><Button type="button" size="sm" onClick={beginAdd}><IconPlus />Add secret</Button></EmptyContent>
+                </Empty>
             )}
+            </FloqReveal>
             </SettingsGroup>
 
             {formOpen && <SettingsGroup>

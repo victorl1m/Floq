@@ -111,7 +111,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
       StarterKit.configure({ heading: false, horizontalRule: false, link: { openOnClick: false, autolink: true } }),
       Placeholder.configure({ placeholder: "Message your agents…  @ to mention, Enter to send, Shift+Enter for a new line" }),
       Mention.configure({
-        HTMLAttributes: { class: "rounded bg-primary/15 px-1 text-primary" },
+        HTMLAttributes: { class: "rounded bg-primary/15 px-1 text-primary-text" },
         suggestion: {
           char: "@",
           items: ({ query }) => latest.current.sessions
@@ -140,7 +140,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
     content: (() => { const saved = read(draftKey(projectId)); try { return saved ? (JSON.parse(saved) as JSONContent) : ""; } catch { return ""; } })(),
     editorProps: {
       attributes: {
-        class: "min-h-[1.5rem] max-h-[40vh] overflow-y-auto px-1 py-0.5 outline-none [&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12px] [&_pre]:font-mono [&_pre]:text-[12px] [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_pre]:my-1 [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5 [&_p.is-editor-empty:first-child]:before:pointer-events-none [&_p.is-editor-empty:first-child]:before:float-left [&_p.is-editor-empty:first-child]:before:h-0 [&_p.is-editor-empty:first-child]:before:text-muted-foreground/70 [&_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]",
+        class: "min-h-[1.5rem] max-h-[40vh] overflow-y-auto px-1 py-0.5 outline-none [&_a]:text-primary-text [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12px] [&_pre]:font-mono [&_pre]:text-[12px] [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_pre]:my-1 [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5 [&_p.is-editor-empty:first-child]:before:pointer-events-none [&_p.is-editor-empty:first-child]:before:float-left [&_p.is-editor-empty:first-child]:before:h-0 [&_p.is-editor-empty:first-child]:before:text-muted-foreground/70 [&_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]",
       },
       handleKeyDown: (view, event) => {
         if (mentionRef.current) return false;
@@ -238,7 +238,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
         >
           <div className="flex flex-wrap items-center gap-1 text-[11px]">
             <span className="text-muted-foreground">To:</span>
-            {all && <span className="animate-in rounded-md bg-primary/15 px-1.5 py-0.5 text-primary fade-in zoom-in-95">all running ({running.length})</span>}
+            {all && <span className="animate-in rounded-md bg-primary/15 px-1.5 py-0.5 text-primary-text fade-in zoom-in-95">all running ({running.length})</span>}
             {!all && targets.map((session) => (
               <span key={session.id} className="flex animate-in items-center gap-1 rounded-md border border-border bg-muted/60 py-0.5 pr-0.5 pl-1.5 fade-in zoom-in-95 motion-reduce:animate-none">
                 <ProviderIcon provider={session.provider} className="size-3" />
@@ -284,7 +284,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
           {mention.items.map((item, index) => {
             const session = sessions.find((candidate) => candidate.id === item.id);
             return (
-              <button key={item.id} type="button" className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1 text-left", index === mention.index && "bg-muted")} onMouseDown={(event) => { event.preventDefault(); mention.command(item); }}>
+              <button key={item.id} type="button" className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", index === mention.index && "bg-muted")} onMouseDown={(event) => event.preventDefault()} onClick={() => mention.command(item)}>
                 {session && <ProviderIcon provider={session.provider} className="size-3.5" />}
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {session && <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} />}

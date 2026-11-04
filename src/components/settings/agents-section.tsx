@@ -37,9 +37,9 @@ export default function AgentsSection({ settings, onChange }: Props) {
     return (
         <SettingsPage title="Agents" description="How new agents start. Defaults are stored on this device.">
             <SettingsGroup title="Defaults">
-                <SettingRow label="Default agent" description="Preselected in the Home composer.">
+                <SettingRow label="Default agent" htmlFor="default-agent-provider" description="Preselected in the Home composer.">
                     <Select value={defaults.provider} onValueChange={(v) => setDefaultProvider(v as ProviderId)}>
-                        <SelectTrigger className="w-40">
+                        <SelectTrigger id="default-agent-provider" className="w-40">
                             <SelectValue><ProviderIcon provider={defaults.provider} />{PROVIDER_LABEL[defaults.provider]}</SelectValue>
                         </SelectTrigger>
                         <SelectContent>

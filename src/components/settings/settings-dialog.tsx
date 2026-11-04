@@ -15,7 +15,8 @@ import {
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { UserSettings } from "@/lib/runtime/types";
@@ -67,6 +68,7 @@ const ADMIN_GROUP = { title: "Administration", items: [{ id: "users", label: "Us
 export default function SettingsDialog() {
     const { client, settingsOpen, setSettingsOpen, settingsSection, openSettings } = useRuntime();
     const [settings, setSettings] = useState<UserSettings | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const isAdmin = useIsAdmin();
     const groups = isAdmin ? [...GROUPS, ADMIN_GROUP] : GROUPS;
     const ALL = groups.flatMap((g) => g.items);
@@ -74,9 +76,11 @@ export default function SettingsDialog() {
 
     const reload = useCallback(async () => {
         if (!client) return;
+        setLoadError(null);
         try {
             setSettings(await client.settings());
         } catch (e) {
+            setLoadError(errorMessage(e));
             toast.error("Could not load settings", { description: errorMessage(e) });
         }
     }, [client]);
@@ -90,8 +94,12 @@ export default function SettingsDialog() {
     let content;
     if (needsSettings && !settings) {
         content = (
-            <div className="flex justify-center py-16">
-                <Spinner />
+            <div role="status" aria-busy={!loadError} className="space-y-6">
+                {loadError ? <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4">
+                    <h2 className="text-sm font-medium">Could not load settings</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">{loadError}</p>
+                    <Button variant="outline" size="sm" className="mt-3" onClick={() => void reload()}>Retry</Button>
+                </div> : <><span className="sr-only">Loading settings</span><Skeleton className="h-6 w-40" /><Skeleton className="h-4 w-64 max-w-full" />{[0, 1, 2].map((row) => <Skeleton key={row} className="h-24 w-full rounded-xl" />)}</>}
             </div>
         );
     } else if (section === "account") content = <AccountSection />;
@@ -115,7 +123,7 @@ export default function SettingsDialog() {
             {/* Narrow widths: the nav collapses into a select. */}
             <div className="border-b border-border p-3 pr-12 md:hidden">
                 <Select value={section} onValueChange={(v) => openSettings(v)}>
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger className="w-full" aria-label="Settings section">
                         <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -141,7 +149,7 @@ export default function SettingsDialog() {
                                 className={cn(
                                     "flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                     section === item.id
-                                        ? "bg-muted font-medium text-foreground"
+                                        ? "bg-primary/10 font-medium text-primary-text"
                                         : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
                                 )}
                             >
@@ -154,7 +162,7 @@ export default function SettingsDialog() {
             </nav>
 
             <div className="mt-10 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1 md:mt-10">
-                <div className="mx-auto w-full max-w-[760px] px-8 pt-2 pb-8">{content}</div>
+                <div className="mx-auto w-full max-w-[760px] px-4 pt-2 pb-8 sm:px-8">{content}</div>
             </div>
         </div>
         </DialogContent>

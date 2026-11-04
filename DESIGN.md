@@ -6,7 +6,7 @@ Floq is a focused desktop workspace for directing coding agents. Keep the interf
 
 ## Visual register
 
-- **Palette:** use the light and dark semantic CSS variables in `src/index.css`; do not add feature-specific brand colors for ordinary controls. Reserve status colors for status.
+- **Palette:** use the light and dark semantic CSS variables in `src/index.css`. The Flowless reference supplies the brand orange `#f97316`; pair it with ink on solid actions and use the separate high-contrast `primary-text` token for text. Keep status colors semantic.
 - **Typography:** use the existing system/Geist sans stack for interface text and Geist Mono for code and numeric data.
 - **Density and shape:** favor compact rows, small utility controls, subtle borders, and the existing rounded-md/lg scale. Dialogs fit their content up to a viewport-height cap; long forms scroll in the body, with stable dimensions reserved for flows that explicitly need them.
 - **Icons:** use Tabler icons and the shared provider brand marks. Icons must explain the action or model choice and retain an accessible text name on icon-only controls.
@@ -19,6 +19,16 @@ Floq is a focused desktop workspace for directing coding agents. Keep the interf
 ## Interaction baseline
 
 Controls use native button/link semantics where possible, visible keyboard focus, clear pointer affordance, and a meaningful disabled or loading state. Long dialog content scrolls inside a stable shell; paginated lists may load on scroll when the scroll container and retry state remain clear.
+
+## Theme and runtime mapping
+
+The runtime token source is `src/index.css` (Model B: runtime CSS is canonical; DESIGN.md mirrors accepted values). The light theme uses `#e8e8ec` and `#141416`; dark surfaces use graphite `#141418` with soft white `#ededef`. Both themes use Flowless orange `#f97316` for primary actions, with dark ink `#211007` on solid orange. Light focus uses darker orange `#c2410c`; dark focus uses `#fb923c`. Text uses `primary-text` (`#b54708` light, `#fb923c` dark) for contrast. Cards, popovers, inputs, borders, and sidebar surfaces use semantic variables. Shared glass surfaces use `--glass-surface`, `--glass-border`, `--glass-highlight`, and `--glass-shadow`; keep opacity restrained and text fully legible. Typography is Geist Variable for interface text and Geist Mono for code, terminal, and compact data.
+
+Keep focus rings clearly visible against both themes. Shared loading placeholders use `AsciiSkeleton` from `ascii-reveal`; data that has arrived can enter with `AsciiReveal`. Preserve final content geometry, keep dense placeholders still by default, and honor both OS and Floq reduced motion. Glass surfaces fall back to opaque surfaces when blur is unavailable, transparency is reduced, or forced colors are active. Do not add ambient movement behind working surfaces.
+
+## Home composer
+
+The composer is the primary home action. Keep its project, workspace, provider, model, and send controls in the existing shared flow. Prompt starter cards insert editable text into the composer and move focus there; they never submit directly and stay inert while a draft exists. The prompt field has a programmatic label and a stable help/status description.
 
 ## Project navigation
 

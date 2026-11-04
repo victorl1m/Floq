@@ -1,0 +1,16 @@
+{
+  "method": "TypeScript JSX AST check plus manual source review of premium scanner findings",
+  "jsxAwareViolations": [],
+  "strictScannerLimitations": [
+    "Capitalized React Select is reported as a native select; screens actually use the canonical Radix Select.",
+    "The exported NativeSelect is an explicitly allowed library variant; it is not a screen-local authored-popup replacement.",
+    "React Hook Form forms explicitly have noValidate; HTML-like scanner misses it after some JSX expressions.",
+    "Shared Textarea has resize-none; scanner reports capitalized Textarea callers.",
+    "Radix trigger/close asChild, calendar/library wrappers and forwarded props supply actions not inferred by the scanner."
+  ],
+  "confirmedFixes": [
+    "Native form validation ownership in project settings, canvas rename, keychain, agent creation and port forwarding.",
+    "Canvas mention selection now responds to native click/keyboard activation while mouse-down preserves editor selection."
+  ],
+  "strictAuditPassed": false
+}

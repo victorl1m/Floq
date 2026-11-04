@@ -11,6 +11,7 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
     SidebarRail,
+    useSidebar,
 } from "@/components/ui/sidebar";
 import CommandPalette from "@/components/sidebar/command-palette";
 import ProjectList from "@/components/sidebar/project-list";
@@ -27,10 +28,12 @@ const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
 
 export function AppSidebar() {
     const { view, navigate, setSearchOpen } = useRuntime();
+    const { setOpenMobile } = useSidebar();
 
     return (
         <>
             <Sidebar
+                aria-label="Workspace navigation"
                 collapsible="icon"
                 className="border-r-0"
                 style={{ top: 40, bottom: "var(--app-footer-height)", height: "auto" }}
@@ -41,7 +44,7 @@ export function AppSidebar() {
                             <SidebarMenuButton
                                 tooltip="Search"
                                 className="h-9 bg-sidebar-accent/60 text-muted-foreground"
-                                onClick={() => setSearchOpen(true)}
+                                onClick={() => { setOpenMobile(false); setSearchOpen(true); }}
                             >
                                 <IconSearch />
                                 <span>Search</span>
@@ -59,8 +62,9 @@ export function AppSidebar() {
                                         <SidebarMenuButton
                                             tooltip={item.label}
                                             isActive={view === item.view}
+                                            aria-current={view === item.view ? "page" : undefined}
                                             className="h-9"
-                                            onClick={() => navigate(item.view)}
+                                            onClick={() => { navigate(item.view); setOpenMobile(false); }}
                                         >
                                             <item.icon />
                                             <span>{item.label}</span>

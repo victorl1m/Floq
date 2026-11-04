@@ -7,6 +7,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Spinner } from "@/components/ui/spinner";
 import { errorMessage, useClient, useRuntime } from "@/lib/runtime/store";
 import { SavedCheck, SettingRow, SettingsGroup, SettingsPage, useSavedFlash } from "./ui";
@@ -57,8 +58,7 @@ function ChangePassword() {
                                     {name === "currentPassword" ? "Current password" : name === "newPassword" ? "New password" : "Confirm new password"}
                                 </FormLabel>
                                 <FormControl>
-                                    <Input
-                                        type="password"
+                                    <PasswordInput
                                         autoComplete={name === "currentPassword" ? "current-password" : "new-password"}
                                         {...field}
                                     />

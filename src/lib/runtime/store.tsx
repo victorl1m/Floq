@@ -11,6 +11,7 @@ import {
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
+import { runViewTransition } from "@/lib/view-transition";
 import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
 import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization } from "./types";
 
@@ -57,6 +58,11 @@ export function defaultBaseUrl(): string {
 }
 
 export type View = "home" | "tasks" | "skills" | "secrets" | "canvas" | "terminal" | "session";
+
+function canTransitionViewChange(from: View, to: View): boolean {
+  const simpleView = (view: View) => view === "home" || view === "tasks" || view === "skills" || view === "secrets";
+  return from !== to && simpleView(from) && simpleView(to);
+}
 
 interface HistoryEntry {
   view: View;
@@ -235,18 +241,25 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     const current = h.stack[h.index];
     if (current.view === entry.view && current.arg === entry.arg) return;
     const stack = [...h.stack.slice(0, h.index + 1), entry];
-    setHistory({ stack, index: stack.length - 1 });
-  }, []);
+    const update = () => setHistory({ stack, index: stack.length - 1 });
+    if (canTransitionViewChange(current.view, entry.view)) runViewTransition(update, performancePrefs.reduceMotion);
+    else update();
+  }, [performancePrefs.reduceMotion]);
 
   const go = useCallback((delta: number) => {
     const h = historyRef.current;
     const index = h.index + delta;
     if (index < 0 || index >= h.stack.length) return;
     const entry = h.stack[index];
-    if (entry.view === "session") setSelectedId(entry.arg);
-    if (entry.view === "canvas" && entry.arg) setActiveProjectId(entry.arg);
-    setHistory({ ...h, index });
-  }, []);
+    const update = () => {
+      if (entry.view === "session") setSelectedId(entry.arg);
+      if (entry.view === "canvas" && entry.arg) setActiveProjectId(entry.arg);
+      setHistory({ ...h, index });
+    };
+    const current = h.stack[h.index];
+    if (canTransitionViewChange(current.view, entry.view)) runViewTransition(update, performancePrefs.reduceMotion);
+    else update();
+  }, [performancePrefs.reduceMotion]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState("account");
   const openSettings = useCallback((section?: string) => {
