@@ -14,7 +14,9 @@ import { SettingsStore } from "./settings.js";
 import { AgentLinks } from "./links.js";
 import { CanvasNotes } from "./notes.js";
 import { Keychains } from "./keychains.js";
+import { WiredContext } from "./wiredContext.js";
 import { Orchestrator } from "./orchestrator.js";
+import { SubagentService } from "./subagents.js";
 import { Vault } from "./vault.js";
 import { SkillsService } from "./skills.js";
 import { GitReview } from "./gitReview.js";
@@ -53,11 +55,15 @@ const agentLinks = new AgentLinks(pool);
 const keychains = new Keychains(pool, config);
 manager.keychains = keychains;
 const canvasNotes = new CanvasNotes(pool);
+const wired = new WiredContext(pool, (userId, sessionId) => keychains.resolve(userId, sessionId));
+manager.wired = wired;
 const orchestrator = new Orchestrator(pool, manager, settings, agentLinks, keychains);
+const subagents = new SubagentService(pool, orchestrator, manager, settings);
+manager.subagents = subagents;
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
 
 await server.listen();
 log.info("runtime.listening", {

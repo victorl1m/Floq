@@ -5,6 +5,7 @@ import { cn } from "cn"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
+import { GlassSurface } from "@/components/ui/glass-surface"
 import { IconX } from "@tabler/icons-react"
 
 function Dialog({
@@ -33,13 +34,17 @@ function DialogClose({
 
 function DialogOverlay({
   className,
+  backdropBlur = false,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+}: React.ComponentProps<typeof DialogPrimitive.Overlay> & {
+  backdropBlur?: boolean
+}) {
   return (
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/35 duration-150 supports-backdrop-filter:backdrop-blur-sm dark:bg-black/65 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 isolate z-50 bg-black/35 duration-150 dark:bg-black/65 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        backdropBlur && "supports-backdrop-filter:backdrop-blur-sm",
         className
       )}
       {...props}
@@ -51,21 +56,25 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  overlayBackdropBlur = false,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  overlayBackdropBlur?: boolean
 }) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay backdropBlur={overlayBackdropBlur} />
       <DialogPrimitive.Content
+        asChild
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto overscroll-contain rounded-xl glass-panel p-4 text-sm text-popover-foreground duration-150 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+          "floq-frosted-dialog fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto overscroll-contain rounded-2xl p-4 text-sm text-popover-foreground duration-150 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
           className
         )}
         {...props}
       >
+        <GlassSurface>
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
@@ -80,6 +89,7 @@ function DialogContent({
             </Button>
           </DialogPrimitive.Close>
         )}
+        </GlassSurface>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

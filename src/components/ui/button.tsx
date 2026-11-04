@@ -2,6 +2,10 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
+import { Button as GlisseButton } from "glisse"
+import { useForcedColorsPreference, useMaterialPreference } from "@/lib/material-preference"
+
+const GLISSE_VARIANTS = new Set(["default", "destructive", "secondary", "outline"])
 
 const buttonVariants = cva(
   "group/button inline-flex shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -10,11 +14,11 @@ const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary-hover",
         outline:
-          "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+          "border-border bg-card hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
-          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-foreground/10 dark:aria-expanded:bg-foreground/10",
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary-text underline-offset-4 hover:underline",
@@ -45,19 +49,109 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
+  glisse,
+  shimmer = false,
+  loading = false,
+  children,
+  disabled,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    /** Force (true) or forbid (false) the Glisse material. Default: automatic by variant and size. */
+    glisse?: boolean
+    /** Restrained edge shimmer. Use on one primary action per view. */
+    shimmer?: boolean
+    /** Disables the button, sets aria-busy and shows a spinner. */
+    loading?: boolean
   }) {
-  const Comp = asChild ? Slot.Root : "button"
+  // Glass is reserved for labelled filled/secondary/outline buttons. Ghost, link and icon buttons
+  // stay flat so dense toolbars never stack backdrop filters.
+  const useGlisse = !asChild && (glisse ?? (GLISSE_VARIANTS.has(variant ?? "default") && !String(size).startsWith("icon")))
+  const classes = cn(buttonVariants({ variant, size }), useGlisse && "floq-button", shimmer && "button-shimmer", className)
+  const busy = loading ? { "aria-busy": true as const } : {}
+  const isDisabled = disabled || loading
+  const content = loading ? (
+    <>
+      <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" />
+      {children}
+    </>
+  ) : children
+
+  if (asChild) {
+    return (
+      <Slot.Root
+        data-slot="button"
+        data-variant={variant}
+        data-size={size}
+        data-shimmer={shimmer ? "true" : undefined}
+        className={classes}
+        {...(disabled ? { "aria-disabled": true } : {})}
+        {...props}
+      >{children}</Slot.Root>
+    )
+  }
+
+  if (!useGlisse) {
+    return (
+      <button
+        data-slot="button"
+        data-variant={variant}
+        data-size={size}
+        data-shimmer={shimmer ? "true" : undefined}
+        className={classes}
+        disabled={isDisabled}
+        {...busy}
+        {...props}
+      >{content}</button>
+    )
+  }
+
+  return <MaterialButton className={classes} variant={variant ?? "default"} size={size ?? "default"} shimmer={shimmer} disabled={isDisabled} {...busy} {...props}>{content}</MaterialButton>
+}
+
+function MaterialButton({
+  className,
+  variant,
+  size,
+  shimmer,
+  ...props
+}: React.ComponentProps<"button"> & {
+  variant: NonNullable<VariantProps<typeof buttonVariants>["variant"]>
+  size: NonNullable<VariantProps<typeof buttonVariants>["size"]>
+  shimmer: boolean
+}) {
+  const [material] = useMaterialPreference()
+  const forcedColors = useForcedColorsPreference()
+  const prefersReducedTransparency = React.useSyncExternalStore(
+    (onChange) => {
+      if (typeof window === "undefined" || !window.matchMedia) return () => {}
+      const query = window.matchMedia("(prefers-reduced-transparency: reduce)")
+      query.addEventListener("change", onChange)
+      return () => query.removeEventListener("change", onChange)
+    },
+    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-transparency: reduce)").matches,
+    () => false,
+  )
+  const dataProps = {
+    "data-slot": "button",
+    "data-floq-variant": variant,
+    "data-size": size,
+    "data-shimmer": shimmer ? "true" : undefined,
+  }
+
+  // Solid is a true rendering fallback: do not mount Glisse's refraction hooks.
+  if (forcedColors || material === "solid" || (material === "system" && prefersReducedTransparency)) {
+    return <button {...dataProps} className={className} {...props} />
+  }
 
   return (
-    <Comp
-      data-slot="button"
-      data-variant={variant}
-      data-size={size}
-      className={cn(buttonVariants({ variant, size, className }))}
+    <GlisseButton
+      type={props.type ?? "submit"}
+      variant={variant === "default" || variant === "destructive" ? "filled" : "glass"}
+      destructive={variant === "destructive"}
+      {...dataProps}
+      className={className}
       {...props}
     />
   )

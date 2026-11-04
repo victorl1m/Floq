@@ -3,9 +3,14 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
 import { useRuntime } from "@/lib/runtime/store";
+import { minimumContrastRatio, terminalTheme, useTerminalDark } from "@/lib/terminal-theme";
 import type { ServerFrame, SessionSummary } from "@/lib/runtime/types";
 
-const THEME = { background: "#0c0c0e", foreground: "#e4e4e7", cursor: "#0c0c0e", cursorAccent: "#0c0c0e", selectionBackground: "#3f3f46" };
+/** Read-only mirror: same palettes as the interactive terminal, with the cursor hidden (painted as background). */
+const mirrorTheme = (dark: boolean) => {
+  const t = terminalTheme(dark);
+  return { ...t, cursor: t.background, cursorAccent: t.background };
+};
 
 // Registry so menus can copy the latest output and inactive nodes can show the last lines.
 const snapshots = new Map<string, () => string>();
@@ -32,6 +37,10 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const id = session.id;
+  const dark = useTerminalDark();
+  const darkRef = useRef(dark);
+  darkRef.current = dark;
+  const termRef = useRef<Terminal | null>(null);
   const initial = useRef({ cols: session.cols, rows: session.rows });
 
   useEffect(() => {
@@ -93,7 +102,8 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
         rows: Math.min(initial.current.rows || 30, 200),
         fontSize: 13,
         fontFamily: MONO_FONT_FAMILY,
-        theme: THEME,
+        minimumContrastRatio: minimumContrastRatio(darkRef.current),
+        theme: mirrorTheme(darkRef.current),
         scrollback: 500,
         disableStdin: true,
         cursorBlink: false,
@@ -101,6 +111,7 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
         allowProposedApi: true,
       });
       term.open(stage);
+      termRef.current = term;
       snapshots.set(id, () => (term ? bufferText(term) : ""));
       observer = new ResizeObserver(rescale);
       observer.observe(host);
@@ -116,11 +127,21 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
       if (term) lastLines.set(id, bufferText(term, 14));
       snapshots.delete(id);
       term?.dispose();
+      termRef.current = null;
     };
   }, [client, id]);
 
+  // Live theme switch: no remount, buffer and stream untouched.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.minimumContrastRatio = minimumContrastRatio(dark);
+    term.options.theme = mirrorTheme(dark);
+    term.refresh(0, term.rows - 1);
+  }, [dark]);
+
   return (
-    <div ref={hostRef} className="size-full overflow-hidden bg-[#0c0c0e]" aria-label={`Live output of ${session.title} (view only)`}>
+    <div ref={hostRef} className="terminal-surface size-full overflow-hidden" aria-label={`Live output of ${session.title} (view only)`}>
       <div ref={stageRef} className="pointer-events-none w-max origin-top-left" />
     </div>
   );

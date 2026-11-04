@@ -4,9 +4,9 @@ import { cn } from "cn";
 
 export function SettingsPage({ title, description, children }: { title: string; description: string; children: ReactNode }) {
     return (
-        <div className="flex flex-col gap-6">
+        <div className="settings-page flex flex-col gap-7">
             <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+                <h1 className="page-heading font-semibold tracking-tight">{title}</h1>
                 <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{description}</p>
             </div>
             {children}
@@ -18,8 +18,8 @@ export function SettingsPage({ title, description, children }: { title: string; 
 export function SettingsGroup({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
     return (
         <section className="flex flex-col gap-2">
-            {title && <h2 className="px-1 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">{title}</h2>}
-            <div className={cn("glass-panel divide-y divide-border rounded-xl", className)}>{children}</div>
+            {title && <h2 className="px-1 text-sm font-medium text-muted-foreground">{title}</h2>}
+            <div className={cn("settings-group material-content divide-y divide-border rounded-2xl", className)}>{children}</div>
         </section>
     );
 }

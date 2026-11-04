@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // floq: agent-to-agent orchestration from inside a Floq terminal.
-//   floq list                              agents you can talk to
+//   floq list [--project NAME] [--here]    agents you can talk to: ALL the user's projects by default (--here: this project only)
+//   floq agents list [--project NAME]       same as list
+//   floq link <UUID|Name>                   wire yourself to an agent of any project (shown on the canvas)
 //   floq session restart                    restart this agent after replying to reload its configuration
 //   floq ask <UUID|Name> "prompt" [--timeout S] [--no-wait] [--chars N|--full]   message another agent, wait until it finishes, print its full reply
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
@@ -8,14 +10,16 @@
 //   floq note list | read N | write N TEXT | append N TEXT
 //   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | new [TEXT|-] [--color C]   canvas notes wired to this agent
 //   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only)
+//   floq subagent recruit|list|ask|result|dismiss   always-available Floq subagents (limits enforced by the runtime)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
+//   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to forward a port to their computer (waits up to 60s for their answer)
 //   floq skills list|search|preview|add|create|remove   find, install and author skills (add/create/remove: lead agents only)
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secret list|get NAME                    secrets available to this agent (linked keychains + global env vault); list prints names only; never print or commit values
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
 import { readdirSync, readFileSync } from "node:fs";
-import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
+import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 type SkillResponse = { skill: { source: string; skillId: string; name: string; provider: string; location: string; description: string }; files: { path: string; size: number }[]; markdown?: string; dryRun?: boolean; scope?: string; projectId?: string };
@@ -24,7 +28,9 @@ type ScopeResponse = ScopeResult & { scope: "project" | "global"; projectId?: st
 const help = `Floq agent coordination
 
 Commands:
-  floq list
+  floq list [--project NAME] [--here]    agents of ALL your user's projects (project, role, provider, state); --project filters by project name, --here keeps this project only
+  floq agents list [--project NAME]      same as "floq list"
+  floq link <UUID|Name>                  wire yourself to an agent of any project of this user (appears on the canvas; listed in both agents' wired context)
   floq session restart                   restart this agent to reload its current configuration
   floq models [--provider claude|codex]
   floq roles                             one line per agent role preset (compare, then pick)
@@ -33,14 +39,18 @@ Commands:
   floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
   floq check <UUID|Name> [--chars N | --full]
   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only; other agents ask the orchestrator with "floq ask")
+  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
+  floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
+  floq wired                             print what the user wired to you on the canvas (notes, keychain names, linked agents); re-read it after a context compaction
   floq sticky list                       canvas notes the user wired to this agent (id, color, first line)
   floq sticky read ID                    print a linked note's text
   floq sticky write ID TEXT|-            replace its text ("-" reads stdin)
   floq sticky append ID TEXT|-           add to the end of its text
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--x N --y N]   create a note; it is wired to you and appears on the canvas
+  floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq skills list [--project [UUID] | --global]
   floq skills search QUERY
   floq skills preview OWNER/REPO SKILL_ID   |   floq skills preview URL
@@ -56,6 +66,8 @@ Commands:
   floq secret get NAME                   print one value (prefer the NAME environment variable; never echo or commit it)
   floq secrets list
   floq secrets add NAME [--description TEXT]     (value from stdin or a hidden prompt; create only)
+
+Other projects: "floq list" shows agents of every project of this user; ask/check/wait/link work on any of them (unless the user turned off "Allow agents to talk across projects"). The receiver sees "[Message from agent NAME (project P, session UUID, hop N)]" and can reply with "floq ask UUID". Cross-project messages are rate-limited (10/min), capped at 8000 chars and loop-protected; never put secret values in them.
 
 Use immutable Floq UUIDs printed by list/recruit for agent references. Names are accepted
 for compatibility, but duplicate names are ambiguous. --isolated recruits into a managed
@@ -180,9 +192,9 @@ const usage = (): never => {
 };
 
 const allowedOptions: Record<string, string[]> = {
-  list: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
-  session: [],
-  recruit: ["provider", "model", "cwd", "role", "isolated"], connect: [], dismiss: [], note: [],
+  list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
+  session: [], port: ["protocol", "reason"],
+  recruit: ["provider", "model", "cwd", "role", "isolated"], subagent: ["task", "role", "provider", "model", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose"],
@@ -201,9 +213,20 @@ switch (command) {
     console.log(help);
     break;
   }
+  case "agents":
+    if (positional[0] !== "list" || positional.length !== 1) usage();
+  // falls through
   case "list": {
-    const { agents } = await call<{ agents: AgentEntry[] }>("agents/list");
+    if (named.project !== undefined && typeof named.project !== "string") usage();
+    const { agents } = await call<{ agents: AgentEntry[] }>("agents/list", { project: named.project, here: named.here === true });
     for (const a of agents) console.log(formatAgentListEntry(a));
+    if (!agents.length) console.log("no matching agents");
+    break;
+  }
+  case "link": {
+    if (positional.length !== 1) usage();
+    const r = await call<{ cross: boolean; project: string }>("agents/link", { name: positional[0] });
+    console.log("linked" + (r.cross ? " (agent in project " + JSON.stringify(r.project) + "; shown on the canvas as a cross-project wire)" : ""));
     break;
   }
   case "session": {
@@ -264,6 +287,15 @@ switch (command) {
     console.log(formatAgentReply("check", positional[0], r).text);
     break;
   }
+  case "port": {
+    const [sub, rawPort, ...extra] = positional;
+    if (sub !== "open" || !rawPort || extra.length || !/^\d{1,5}$/.test(rawPort)) usage();
+    if ((named.protocol !== undefined && typeof named.protocol !== "string") || (named.reason !== undefined && typeof named.reason !== "string")) usage();
+    const r = await call<{ status: string; message: string; port: number; localUrl?: string }>("ports/open", { port: Number(rawPort), protocol: named.protocol, purpose: named.reason });
+    console.log(r.status === "accepted" ? "accepted: " + r.message + (r.localUrl ? " URL: " + r.localUrl : "") : r.status + ": " + r.message);
+    process.exitCode = r.status === "accepted" ? 0 : 1;
+    break;
+  }
   case "note": {
     const [sub, name, ...text] = positional;
     if (sub === "list") {
@@ -274,6 +306,11 @@ switch (command) {
     } else if ((sub === "write" || sub === "append") && name) {
       await call("notes/write", { name, content: text.join(" "), append: sub === "append" });
     } else usage();
+    break;
+  }
+  case "wired": {
+    const { block } = await call<{ block: string }>("wired/get");
+    console.log(block || "nothing is wired to this agent on the canvas");
     break;
   }
   case "sticky": {
@@ -303,6 +340,38 @@ switch (command) {
     if (positional.length < 1) usage();
     const r = await call<Pick<AgentEntry, "name" | "id" | "provider" | "model">>("agents/recruit", buildRecruitPayload(positional, named));
     console.log(formatRecruitment(r));
+    break;
+  }
+  case "subagent": {
+    const [sub, first, ...rest] = positional;
+    const needId = () => { if (!first || (sub !== "ask" && rest.length)) usage(); return first; };
+    if (sub === "recruit") {
+      if (!first) usage();
+      const task = typeof named.task === "string" ? (named.task === "-" ? await readStdinText() : named.task) : rest.join(" ");
+      if (!task.trim()) { console.error("floq: --task TEXT is required"); process.exit(2); }
+      const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, wire: named["no-wire"] !== true });
+      console.log(formatSubagentRecruit(r));
+    } else if (sub === "list") {
+      if (first) usage();
+      const r = await call<{ subagents: SubagentEntry[]; limits: { maxDepth: number; maxChildren: number; maxTotal: number }; depth: number; canRecruit: boolean }>("agents/subagent/list");
+      for (const s of r.subagents) console.log(formatSubagentLine(s));
+      if (!r.subagents.length) console.log("no subagents yet");
+      console.log("you are at depth " + r.depth + " (max " + r.limits.maxDepth + "); " + (r.canRecruit ? "you can recruit" : "you cannot recruit now"));
+    } else if (sub === "ask") {
+      const id = needId();
+      if (!rest.length) usage();
+      const timeoutSec = typeof named.timeout === "string" ? Number(named.timeout) : undefined;
+      const r = await call<AgentReply>("agents/subagent/ask", { id, prompt: rest.join(" "), timeoutSec: Math.min(timeoutSec ?? 300, WAIT_CHUNK_SEC), wait: named["no-wait"] !== true });
+      const out = formatAgentReply("ask", id, r, timeoutSec ?? 300);
+      console.log(out.text);
+      process.exitCode = out.code;
+    } else if (sub === "result") {
+      const r = await call<AgentReply>("agents/subagent/result", { id: needId(), chars: typeof named.chars === "string" ? Number(named.chars) : undefined, full: named.full === true });
+      console.log(formatAgentReply("check", first, r).text);
+    } else if (sub === "dismiss") {
+      const r = await call<{ dismissed: number }>("agents/subagent/dismiss", { id: needId() });
+      console.log("dismissed " + r.dismissed + " agent" + (r.dismissed === 1 ? "" : "s"));
+    } else usage();
     break;
   }
   case "connect": {

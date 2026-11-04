@@ -13,7 +13,12 @@ export interface AgentLink {
   createdAt: string;
   lastMessageAt: string | null;
   messageCount: number;
+  /** Set when the wire joins an agent of another project: the end that is NOT in the project the list was requested for. */
+  foreign?: { sessionId: string; title: string; projectId: string | null; projectName: string; direction: "out" | "in" };
 }
+
+/** Present on events for messages that crossed projects (drives the "Agent A messaged Agent B in project X" toast). */
+export interface CrossProjectInfo { fromTitle: string; toTitle: string; fromProject: string; toProject: string; toProjectId?: string | null }
 
 export interface AgentMessageEvent {
   type: "agent-message";
@@ -24,6 +29,7 @@ export interface AgentMessageEvent {
   kind: MessageEventKind;
   preview: string;
   at: string;
+  cross?: CrossProjectInfo;
 }
 
 export const PREVIEW_CHARS = 200;
@@ -97,8 +103,20 @@ export class EventHub {
 }
 
 const COLS = "l.id, l.project_id, l.from_session_id, l.to_session_id, l.kind, l.created_at, l.last_message_at, l.message_count";
+const FOREIGN_COLS = "f.project_id AS f_project, t.project_id AS t_project, f.title AS f_title, t.title AS t_title, fp.name AS f_pname, tp.name AS t_pname";
 
-function toLink(r: Record<string, unknown>): AgentLink {
+function toLink(r: Record<string, unknown>, viewProject?: string | null): AgentLink {
+  const link = baseLink(r);
+  if (viewProject === undefined || r.f_project === undefined) return link;
+  const fromHere = (r.f_project ?? null) === viewProject;
+  const toHere = (r.t_project ?? null) === viewProject;
+  if (fromHere && toHere) return link;
+  const out = fromHere;
+  const other = out ? "t" : "f";
+  return { ...link, foreign: { sessionId: (out ? r.to_session_id : r.from_session_id) as string, title: String(r[other + "_title"] ?? "agent"), projectId: (r[other + "_project"] as string | null) ?? null, projectName: String(r[other + "_pname"] ?? ((r[other + "_project"] as string | null) ? "project" : "(scratch)")), direction: out ? "out" : "in" } };
+}
+
+function baseLink(r: Record<string, unknown>): AgentLink {
   return {
     id: r.id as string,
     projectId: (r.project_id as string | null) ?? null,
@@ -141,14 +159,16 @@ export class AgentLinks {
     if (!none && !UUID.test(projectId)) return [];
     await this.backfill(userId);
     const r = await this.pool.query(
-      `SELECT ${COLS} FROM agent_links l
+      `SELECT ${COLS}, ${FOREIGN_COLS} FROM agent_links l
        JOIN agent_sessions f ON f.id = l.from_session_id
        JOIN agent_sessions t ON t.id = l.to_session_id
-       WHERE f.user_id = $1 AND t.user_id = $1 AND ${none ? "f.project_id IS NULL" : "f.project_id = $2"}
+       LEFT JOIN floq_projects fp ON fp.id = f.project_id
+       LEFT JOIN floq_projects tp ON tp.id = t.project_id
+       WHERE f.user_id = $1 AND t.user_id = $1 AND ${none ? "(f.project_id IS NULL OR t.project_id IS NULL)" : "(f.project_id = $2 OR t.project_id = $2)"}
        ORDER BY l.created_at`,
       none ? [userId] : [userId, projectId],
     );
-    return r.rows.map(toLink);
+    return r.rows.map((row) => toLink(row, none ? null : projectId));
   }
 
   async createManual(userId: string, fromId: unknown, toId: unknown): Promise<AgentLink> {
@@ -157,13 +177,15 @@ export class AgentLinks {
     return this.upsert(fromId, toId, "manual", "none");
   }
 
-  async remove(userId: string, id: string): Promise<void> {
+  /** Returns the two sessions the removed wire joined, so their wired context can be refreshed. */
+  async remove(userId: string, id: string): Promise<string[]> {
     if (!UUID.test(id)) throw notFound("Link not found");
     const r = await this.pool.query(
-      "DELETE FROM agent_links l USING agent_sessions f WHERE l.id = $1 AND f.id = l.from_session_id AND f.user_id = $2",
+      "DELETE FROM agent_links l USING agent_sessions f WHERE l.id = $1 AND f.id = l.from_session_id AND f.user_id = $2 RETURNING l.from_session_id, l.to_session_id",
       [id, userId],
     );
     if (!r.rowCount) throw notFound("Link not found");
+    return [r.rows[0].from_session_id as string, r.rows[0].to_session_id as string];
   }
 
   /**
@@ -187,7 +209,7 @@ export class AgentLinks {
   }
 
   /** Upsert the link and push a live event. Never throws: wires are decoration, not a reason to fail an ask. */
-  async record(userId: string, fromId: string, toId: string, kind: LinkKind, bump: Bump, eventKind: MessageEventKind, text: string): Promise<void> {
+  async record(userId: string, fromId: string, toId: string, kind: LinkKind, bump: Bump, eventKind: MessageEventKind, text: string, cross?: CrossProjectInfo): Promise<void> {
     try {
       const link = await this.upsert(fromId, toId, kind, bump);
       this.hub.publish(userId, {
@@ -199,6 +221,7 @@ export class AgentLinks {
         kind: eventKind,
         preview: makePreview(text),
         at: new Date().toISOString(),
+        ...(cross ? { cross } : {}),
       });
     } catch {
       // best effort

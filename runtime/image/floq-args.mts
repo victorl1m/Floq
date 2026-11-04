@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export type NamedArgs = Record<string, string | boolean>;
 export interface ScopeResult { scope?: "global" | "project"; projectId?: string; dryRun?: boolean }
-export interface AgentEntry { self?: boolean; name: string; id: string; provider: string; model?: string | null; state: string; lead?: boolean }
+export interface AgentEntry { project?: { id: string | null; name: string; same: boolean }; role?: string | null; self?: boolean; name: string; id: string; provider: string; model?: string | null; state: string; lead?: boolean }
 export interface ModelEntry { id: string; label: string }
 export interface McpReview { name: string; type: "stdio" | "http"; summary: string; secrets?: { target: string; secret: string }[]; plaintext?: string[] }
 export interface McpServer { provider: string; name: string; transport: string; command?: string; urlHost?: string; usesSecrets?: boolean; secretNames?: string[]; protected?: boolean; source?: string }
@@ -12,7 +12,7 @@ export interface SkillSummary { provider: string; name: string; source: string; 
 export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
   const named: NamedArgs = {};
-  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full"]);
+  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
       positional.push(args[i]);
@@ -32,11 +32,22 @@ export function parseArgs(args: string[]): { positional: string[]; named: NamedA
 }
 
 export function formatAgentListEntry(agent: AgentEntry) {
-  return (agent.self ? "* " : "  ") + agent.name + "  " + agent.id + "  [" + agent.provider + ", configured model: " + (agent.model ?? "default") + ", " + agent.state + (agent.lead ? ", lead" : "") + "]";
+  const where = agent.project ? "  project " + JSON.stringify(agent.project.name) + (agent.project.same ? " (this project)" : "") : "";
+  return (agent.self ? "* " : "  ") + agent.name + "  " + agent.id + where + "  [" + agent.provider + ", configured model: " + (agent.model ?? "default") + ", " + agent.state + (agent.role ? ", role " + agent.role : "") + (agent.lead ? ", lead" : "") + "]";
 }
 
 export function formatRecruitment(agent: Pick<AgentEntry, "name" | "id" | "provider" | "model">) {
   return "recruited " + agent.name + " " + agent.id + " (" + agent.provider + ", configured model: " + (agent.model ?? "default") + ")";
+}
+
+export interface SubagentEntry { id: string; name: string; role: string; provider: string; model: string; state: string; depth: number; parentId?: string | null }
+
+export function formatSubagentRecruit(r: { id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean }) {
+  return "recruited subagent " + r.name + " " + r.id + " (role " + r.role + ", " + r.provider + ", model " + r.model + ", depth " + r.depth + (r.wired === false ? ", not wired" : ", wired to you") + "). Read its report with: floq subagent result " + r.id;
+}
+
+export function formatSubagentLine(s: SubagentEntry) {
+  return "  ".repeat(Math.max(0, s.depth - 1)) + s.name + "  " + s.id + "  [" + s.role + ", " + s.provider + ", " + s.state + ", depth " + s.depth + "]";
 }
 
 export interface RoleEntry { id: string; label: string; summary: string; capability: string; readOnly: boolean }

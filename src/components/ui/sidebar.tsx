@@ -23,10 +23,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { IconLayoutSidebar } from "@tabler/icons-react"
+import { GlassSurface } from "@/components/ui/glass-surface"
+import { SidebarResizeHandle } from "@/components/ui/sidebar-resize-handle"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH = "20rem"
+const SIDEBAR_WIDTH = "17rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
@@ -131,7 +133,7 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            "--sidebar-width": SIDEBAR_WIDTH,
+            "--sidebar-width": `var(--sidebar-user-width, ${SIDEBAR_WIDTH})`,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -161,7 +163,13 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, open, openMobile, setOpenMobile } = useSidebar()
+  const desktopSidebarRef = React.useRef<HTMLDivElement>(null)
+
+  React.useLayoutEffect(() => {
+    if (isMobile || open || !desktopSidebarRef.current?.contains(document.activeElement)) return
+    document.querySelector<HTMLButtonElement>('[data-slot="sidebar-trigger"]')?.focus({ preventScroll: true })
+  }, [isMobile, open])
 
   if (collapsible === "none") {
     return (
@@ -206,6 +214,10 @@ function Sidebar({
 
   return (
     <div
+      id="app-navigation-sidebar"
+      ref={desktopSidebarRef}
+      aria-hidden={!open}
+      inert={!open}
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
@@ -233,18 +245,21 @@ function Sidebar({
           // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
-            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
+            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+          "group-data-[collapsible=offcanvas]:pointer-events-none",
           className
         )}
         {...props}
       >
-        <div
+        <div className="sidebar-dust-backdrop" aria-hidden="true" />
+        <GlassSurface
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="glass-surface flex size-full flex-col border-r border-sidebar-border group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"
+          className="flex size-full flex-col overflow-hidden rounded-(--shell-radius) group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"
         >
           {children}
-        </div>
+        </GlassSurface>
+        {collapsible === "offcanvas" && <SidebarResizeHandle />}
       </div>
     </div>
   )
@@ -255,12 +270,16 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, open, openMobile, isMobile } = useSidebar()
+  const expanded = isMobile ? openMobile : open
 
   return (
     <Button
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
+      aria-expanded={expanded}
+      aria-controls={isMobile ? undefined : "app-navigation-sidebar"}
+      aria-label={expanded ? "Hide navigation" : "Show navigation"}
       variant="ghost"
       size="icon-sm"
       className={cn(className)}

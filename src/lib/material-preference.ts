@@ -23,6 +23,21 @@ function subscribe(callback: () => void) {
   };
 }
 
+function subscribeForcedColors(callback: () => void) {
+  if (typeof window === "undefined" || !window.matchMedia) return () => {};
+  const query = window.matchMedia("(forced-colors: active)");
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+
+function readForcedColors() {
+  return typeof window !== "undefined" && !!window.matchMedia?.("(forced-colors: active)").matches;
+}
+
+export function useForcedColorsPreference() {
+  return useSyncExternalStore(subscribeForcedColors, readForcedColors, () => false);
+}
+
 export function useMaterialPreference() {
   const value = useSyncExternalStore(subscribe, read, () => "glass" as const);
   const setValue = (next: MaterialPreference) => {

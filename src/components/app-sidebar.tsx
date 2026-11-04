@@ -10,13 +10,13 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
-    SidebarRail,
     useSidebar,
 } from "@/components/ui/sidebar";
 import CommandPalette from "@/components/sidebar/command-palette";
 import ProjectList from "@/components/sidebar/project-list";
 import UserCard from "@/components/sidebar/user-card";
 import { useRuntime, type View } from "@/lib/runtime/store";
+import { GlisseSurface } from "@/components/ui/glass-surface";
 
 const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
     { view: "home", label: "Home", icon: IconHome },
@@ -34,22 +34,23 @@ export function AppSidebar() {
         <>
             <Sidebar
                 aria-label="Workspace navigation"
-                collapsible="icon"
+                collapsible="offcanvas"
                 className="border-r-0"
-                style={{ top: 40, bottom: "var(--app-footer-height)", height: "auto" }}
             >
                 <SidebarHeader>
                     <SidebarMenu>
                         <SidebarMenuItem>
-                            <SidebarMenuButton
-                                tooltip="Search"
-                                className="h-9 bg-sidebar-accent/60 text-muted-foreground"
-                                onClick={() => { setOpenMobile(false); setSearchOpen(true); }}
-                            >
-                                <IconSearch />
-                                <span>Search</span>
-                                <Kbd className="ml-auto group-data-[collapsible=icon]:hidden">Ctrl K</Kbd>
-                            </SidebarMenuButton>
+                            <GlisseSurface className="sidebar-search-glass">
+                                <SidebarMenuButton
+                                    tooltip="Search"
+                                    className="h-9 rounded-[inherit] border-0 bg-transparent text-muted-foreground shadow-none hover:bg-transparent"
+                                    onClick={() => { setOpenMobile(false); setSearchOpen(true); }}
+                                >
+                                    <IconSearch />
+                                    <span>Search</span>
+                                    <Kbd className="ml-auto group-data-[collapsible=icon]:hidden">Ctrl K</Kbd>
+                                </SidebarMenuButton>
+                            </GlisseSurface>
                         </SidebarMenuItem>
                     </SidebarMenu>
                 </SidebarHeader>
@@ -79,7 +80,6 @@ export function AppSidebar() {
                 <SidebarFooter>
                     <UserCard />
                 </SidebarFooter>
-                <SidebarRail />
             </Sidebar>
             <CommandPalette />
         </>

@@ -270,18 +270,15 @@ export function MemoryUsageButton() {
     return (
         <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
-                <button
+                <Button variant="ghost" size="xs"
                     type="button"
                     title="Memory usage"
                     aria-label="Show memory usage details"
-                    className={cn(
-                        "-mr-2 inline-flex h-6 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] text-muted-foreground tabular-nums transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                        open && "bg-muted text-foreground",
-                    )}
+                    className={cn("-mr-2 gap-1.5 px-2 text-[11px] text-muted-foreground tabular-nums", open && "bg-muted text-foreground")}
                 >
                     <IconServer size={12} stroke={1.5} />
                     <span>{details ? formatMemory(details.total) : "—"}</span>
-                </button>
+                </Button>
             </PopoverTrigger>
             <MemoryPopoverContent
                 details={details}

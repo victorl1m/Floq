@@ -396,13 +396,13 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                         </div>
                     )}
                     {isCodex && (
-                        <button
+                        <Button variant="link" size="xs"
                             type="button"
-                            className="self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
+                            className="self-start px-0 text-muted-foreground"
                             onClick={() => setShowDetails((v) => !v)}
                         >
                             {showDetails ? "Hide details" : "Show details"}
-                        </button>
+                        </Button>
                     )}
                     <div className={cn("overflow-hidden rounded-xl border border-border", isCodex && !showDetails && "hidden")}>
                         <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">

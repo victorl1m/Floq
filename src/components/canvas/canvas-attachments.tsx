@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -118,9 +119,9 @@ export function AttachmentChips({ items, progress, uploading, onRemove, small }:
               <span className="min-w-0 flex-1 truncate" title={item.name}>{item.name}</span>
               {!small && <span className="shrink-0 tabular-nums text-muted-foreground">{formatBytes(item.size)}</span>}
               {uploading && value !== undefined && <span className="shrink-0" title={`${Math.round(value * 100)}%`}>{busy ? <Ring value={value} /> : null}</span>}
-              <button type="button" aria-label={`Remove ${item.name}`} disabled={uploading} className="absolute top-1/2 right-1 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-40" onClick={() => onRemove(item.id)}>
+              <Button variant="ghost" size="icon-xs" type="button" aria-label={`Remove ${item.name}`} disabled={uploading} className="absolute inset-y-0 right-1 my-auto size-4 rounded-full text-muted-foreground" onClick={() => onRemove(item.id)}>
                 <IconX size={small ? 10 : 12} />
-              </button>
+              </Button>
             </div>
           );
         })}

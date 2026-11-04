@@ -1,44 +1,1127 @@
 {
-  "environment": "Headless installed Chrome, isolated synthetic runtime, 1440x1000 and 390x844",
+  "environment": "Headless Chromium browser WebView surface, intercepted synthetic runtime, 1440x960 desktop, 390x844 narrow and 390x640 short viewport",
+  "synthetic_data": true,
+  "native_desktop_runtime_tested": false,
   "checks": [
-    "Sign-in autofill and password visibility",
-    "Home starter preserves editable prompt and focuses composer",
-    "Native workspace view transition runs on navigation",
-    "Board picker search, open, close, intentionally empty tab persistence and B shortcut",
-    "Actual ASCII skeleton paints at reserved row geometry",
-    "Skills search empty and clear",
-    "Secrets empty state",
-    "Glass and Solid appearance override OS reduced-transparency intentionally",
-    "Settings dialog, theme selector and popup keyboard semantics",
-    "Settings server failure exposes Retry and recovers",
-    "390px mobile navigation closes drawer, no horizontal page overflow",
-    "OS reduced-motion render",
-    "Floq device reduced-motion preference applies immediately"
+    {
+      "name": "Login narrow: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 390,
+        "cw": 390,
+        "sh": 844,
+        "ch": 844
+      }
+    },
+    {
+      "name": "Invitation narrow: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 390,
+        "cw": 390,
+        "sh": 844,
+        "ch": 844
+      }
+    },
+    {
+      "name": "Auth cards, inputs, and primary button expose intended corner radius",
+      "passed": true,
+      "details": {
+        ".auth-card": "24px",
+        ".auth-workflow": "18px",
+        "input": "12px",
+        "button.auth-submit": "11px"
+      }
+    },
+    {
+      "name": "Login password visibility toggle",
+      "passed": true
+    },
+    {
+      "name": "Glisse sidebar rim/refraction registers after deferred fit",
+      "passed": true,
+      "details": {
+        "reducedTransparency": false,
+        "material": "glass",
+        "hasRim": false,
+        "rimLength": 0,
+        "backgroundImagePresent": true,
+        "backdropFilter": "none",
+        "dustFilter": "none",
+        "glisseStyleTag": true
+      }
+    },
+    {
+      "name": "Home desktop: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 1440,
+        "cw": 1440,
+        "sh": 960,
+        "ch": 960
+      }
+    },
+    {
+      "name": "Home project picker supports pointer activation",
+      "passed": true,
+      "details": {
+        "pointerError": null,
+        "hitTarget": {
+          "tag": "SPAN",
+          "slot": null,
+          "text": "AGI Paulo - SARAH \u00b7 floq/research-pass"
+        }
+      }
+    },
+    {
+      "name": "Enabled primary CTA exposes the intended visible shimmer",
+      "passed": true,
+      "details": {
+        "radius": "10px",
+        "background": "rgb(249, 115, 22)",
+        "image": "url(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHIAAAAgCAYAAADOmyyBAAACv0lEQVR4Aeyb0WvaUBTGNbVGExVjE2chA93D6B5KQcTXDvfQsYdtf+q2h0EfVtZXEaH0YWUPUzBQp9GImphoanZPwIvtkOTJ5sIRDhwv5+Ln9+OcXAKXi+34aNrfs8Fg9F7XjU8Qw6HxEWP/HgwG4w/9vt7o9Xr1u7tuZQeu2H8gASAB91mSMoeKUmjKsvQVQlGkbxj796BYLHwvleQrVVXbPC8sbm9/v2m1WsdPgT4CSci/E0VBOjrKX4mi2IrH4+OnG/D78zhAWLiVSrF/evr6F8dx7vV18+W2EgoSIOZywkySsj/Jpul2EebRcqBarQ5tmx9vw/RBwjjlef5BEIRmtCSjml0OXFycmdlswt6MWR9kKpWs5POZ9q5NuB5NB6AzeT6XB3UcdGM6ndRwnIId7EUmkzfgNMslk4ljMlL/sPcXUDE4UC4ruigeKOQAxPGkG/F0Cq6wE1QpYeceHqYz/jOSrmLCpAOkG1Oc58U8JtWjaOoA6coEdiS1g+0EQbLNj6pHkNQKthMEyTY/qh5BUivYThAk2/yoegRJrYhyEqwNQQZ7xEQFgmQCU7BIBBnsERMVCJIJTMEiybtWzw0uw4ooOxCPx+Lcer22oywStYVzgFutFnPP8xLhyrEqag4QdgXSjA5nmg/DbncoR00g6gnngGVZr5ZL9547OSl35vOJFG4bVu3FgZA/Qroxt1gsVVV9ceOfWh1nOmm320rI/VgWEQcmk3nVtpcdkOODrNVq97OZm7q8vBFhESP6DpCRWncc5wC6EdT6ICE5P6/3UimngJ0JbkQ3YJwaxuztdGplSyX5x0YpBQkLAJOcgBJwUaTTGZTIJjzNgjERCMKiYJpmbTSaNEzTMrYhgrxHIGEBxixcFHEcK61pWrXf1xtwtQuv1O3/Sh14rtNrjeO6YcxXsix92YxT4LWJfwAAAP//8aWBJwAAAAZJREFUAwDKuYwXcfjyEwAAAABJRU5ErkJggg==\")",
+        "animation": "none",
+        "shimmer": {
+          "content": "\"\"",
+          "animation": "floq-edge-shimmer",
+          "duration": "5.5s",
+          "display": "block"
+        },
+        "disabled": false,
+        "rect": {
+          "w": 113.8125,
+          "h": 32
+        }
+      }
+    },
+    {
+      "name": "Enabled primary action suppresses continuous shimmer under reduced motion",
+      "passed": true,
+      "details": {
+        "normal": {
+          "content": "\"\"",
+          "animation": "floq-edge-shimmer",
+          "duration": "5.5s",
+          "display": "block"
+        },
+        "reducedMotion": {
+          "animation": "none",
+          "duration": "1e-05s",
+          "iterations": "1",
+          "transitions": "1e-05s"
+        }
+      }
+    },
+    {
+      "name": "Primary action disabled state suppresses shimmer",
+      "passed": true,
+      "details": {
+        "disabled": true,
+        "opacity": "0.5",
+        "shimmerDisplay": "none",
+        "animation": "floq-edge-shimmer"
+      }
+    },
+    {
+      "name": "Selected navigation accent appears only on keyboard focus",
+      "passed": true,
+      "details": {
+        "background": "rgb(44, 44, 46)",
+        "border": "rgb(56, 56, 58)",
+        "outline": "none",
+        "after": "rgb(245, 245, 247)"
+      }
+    },
+    {
+      "name": "shadcn surfaces and controls render rounded corners",
+      "passed": true,
+      "details": {
+        "sidebar": {
+          "radius": "18px",
+          "rect": {
+            "x": 8,
+            "y": 55,
+            "w": 256,
+            "h": 866
+          }
+        },
+        "selected_nav": {
+          "radius": "10px",
+          "rect": {
+            "x": 27,
+            "y": 124,
+            "w": 218,
+            "h": 36
+          }
+        },
+        "search": {
+          "radius": "10px",
+          "rect": {
+            "x": 19,
+            "y": 68,
+            "w": 234,
+            "h": 36
+          }
+        },
+        "composer": {
+          "radius": "18px",
+          "rect": {
+            "x": 343,
+            "y": 279.9375,
+            "w": 1024,
+            "h": 251
+          }
+        },
+        "primary_action": {
+          "radius": "10px",
+          "rect": {
+            "x": 1232.1875,
+            "y": 477.9375,
+            "w": 113.8125,
+            "h": 32
+          }
+        },
+        "project_action": {
+          "radius": "8px",
+          "rect": {
+            "x": 1254.515625,
+            "y": 97,
+            "w": 112.484375,
+            "h": 28
+          }
+        },
+        "workspace": {
+          "radius": "22px",
+          "rect": {
+            "x": 280,
+            "y": 48,
+            "w": 1150,
+            "h": 858
+          }
+        }
+      }
+    },
+    {
+      "name": "Sidebar resize rail removed while titlebar toggle remains",
+      "passed": true,
+      "details": {
+        "railCount": 0,
+        "toggleCount": 1
+      }
+    },
+    {
+      "name": "Sidebar container and inner material have no visible vertical divider",
+      "passed": true,
+      "details": {
+        "[data-slot=\"sidebar-container\"]": {
+          "borderRightWidth": "0px",
+          "borderRightColor": "rgb(56, 56, 58)",
+          "borderRightStyle": "solid",
+          "radius": "0px"
+        },
+        "[data-sidebar=\"sidebar\"]": {
+          "borderRightWidth": "1px",
+          "borderRightColor": "rgba(0, 0, 0, 0)",
+          "borderRightStyle": "solid",
+          "radius": "18px"
+        }
+      }
+    },
+    {
+      "name": "Agent row has no persistent purple orchestrator rail",
+      "passed": true,
+      "details": {
+        "background": "rgba(0, 0, 0, 0)",
+        "boxShadow": "none",
+        "border": "rgb(56, 56, 58)",
+        "ariaCurrent": null
+      }
+    },
+    {
+      "name": "Zero-recruit orchestrator uses an icon-only badge",
+      "passed": true,
+      "details": {
+        "badgeText": "",
+        "title": "Orchestrator \u00b7 0 agents"
+      }
+    },
+    {
+      "name": "Dense project list renders multiple workspaces and agents",
+      "passed": true,
+      "details": {
+        "items": 3,
+        "workspaces": 6,
+        "agents": 7,
+        "selected_row": {
+          "background": "rgb(44, 44, 46)",
+          "border": "rgb(56, 56, 58)",
+          "outline": "oklab(0.757644 0.0891158 0.131758 / 0.5)",
+          "outlineStyle": "none",
+          "rect": {
+            "x": 27,
+            "y": 372,
+            "w": 218,
+            "h": 32
+          }
+        }
+      }
+    },
+    {
+      "name": "Selected project remains readable and has no persistent focus outline",
+      "passed": true,
+      "details": {
+        "background": "rgb(44, 44, 46)",
+        "border": "rgb(56, 56, 58)",
+        "outline": "oklab(0.757644 0.0891158 0.131758 / 0.5)",
+        "outlineStyle": "none",
+        "rect": {
+          "x": 27,
+          "y": 372,
+          "w": 218,
+          "h": 32
+        }
+      }
+    },
+    {
+      "name": "OLED dark root is true black with neutral elevated sidebar",
+      "passed": true,
+      "details": {
+        "root": "rgba(0, 0, 0, 0)",
+        "body": "rgb(0, 0, 0)",
+        "sidebar": "rgba(0, 0, 0, 0)",
+        "backgroundToken": "#000",
+        "material": "glass"
+      }
+    },
+    {
+      "name": "Dark sidebar material has visible translucency/refraction treatment",
+      "passed": true,
+      "details": {
+        "theme_root": {
+          "classes": "dark",
+          "rootClasses": "dark",
+          "dataTheme": null,
+          "hasRim": false,
+          "rimLength": 0,
+          "background": "rgba(0, 0, 0, 0)",
+          "backgroundImagePresent": false,
+          "backdropFilter": "none",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "",
+          "filterToken": "",
+          "shadow": "none",
+          "border": "rgb(56, 56, 58)",
+          "borderWidth": "0px",
+          "radius": "0px",
+          "before": {
+            "content": "none",
+            "opacity": "1",
+            "filter": "none"
+          }
+        },
+        "sidebar": {
+          "classes": "floq-surface flex size-full flex-col rounded-[18px] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border",
+          "rootClasses": null,
+          "dataTheme": null,
+          "hasRim": false,
+          "rimLength": 0,
+          "background": "rgba(23, 23, 25, 0.72)",
+          "backgroundImagePresent": true,
+          "backdropFilter": "none",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "",
+          "filterToken": "",
+          "shadow": "rgba(255, 255, 255, 0.1) 0px 1px 0px 0px inset, rgba(255, 255, 255, 0.035) 1px 0px 0px 0px inset",
+          "border": "rgba(255, 255, 255, 0.09) rgba(0, 0, 0, 0) rgba(255, 255, 255, 0.09) rgba(255, 255, 255, 0.09)",
+          "borderWidth": "1px",
+          "radius": "18px",
+          "before": {
+            "content": "none",
+            "opacity": "1",
+            "filter": "none"
+          }
+        },
+        "sidebar_inner": {
+          "classes": "floq-surface flex size-full flex-col rounded-[18px] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border",
+          "rootClasses": null,
+          "dataTheme": null,
+          "hasRim": false,
+          "rimLength": 0,
+          "background": "rgba(23, 23, 25, 0.72)",
+          "backgroundImagePresent": true,
+          "backdropFilter": "none",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "",
+          "filterToken": "",
+          "shadow": "rgba(255, 255, 255, 0.1) 0px 1px 0px 0px inset, rgba(255, 255, 255, 0.035) 1px 0px 0px 0px inset",
+          "border": "rgba(255, 255, 255, 0.09) rgba(0, 0, 0, 0) rgba(255, 255, 255, 0.09) rgba(255, 255, 255, 0.09)",
+          "borderWidth": "1px",
+          "radius": "18px",
+          "before": {
+            "content": "none",
+            "opacity": "1",
+            "filter": "none"
+          }
+        },
+        "sidebar_container": {
+          "classes": "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex group-data-[collapsible=icon]:w-(--sidebar-width-icon) border-r-0",
+          "rootClasses": null,
+          "dataTheme": null,
+          "hasRim": false,
+          "rimLength": 0,
+          "background": "rgba(0, 0, 0, 0)",
+          "backgroundImagePresent": false,
+          "backdropFilter": "none",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "",
+          "filterToken": "",
+          "shadow": "none",
+          "border": "rgb(56, 56, 58)",
+          "borderWidth": "0px",
+          "radius": "0px",
+          "before": {
+            "content": "none",
+            "opacity": "1",
+            "filter": "none"
+          }
+        },
+        "home_composer": null,
+        "workspace": {
+          "classes": "workspace-frame workspace-surface workspace-view relative mt-[48px]! min-w-0 flex-1 overflow-hidden",
+          "rootClasses": null,
+          "dataTheme": null,
+          "hasRim": false,
+          "rimLength": 0,
+          "background": "rgb(0, 0, 0)",
+          "backgroundImagePresent": false,
+          "backdropFilter": "none",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "",
+          "filterToken": "",
+          "shadow": "none",
+          "border": "rgb(28, 28, 30)",
+          "borderWidth": "1px",
+          "radius": "22px",
+          "before": {
+            "content": "\"\"",
+            "opacity": "1",
+            "filter": "none"
+          }
+        },
+        "sidebar_dust": null,
+        "sidebar_search_glass": {
+          "classes": "lg-glass floq-glass rounded-xl sidebar-search-glass",
+          "rootClasses": null,
+          "dataTheme": null,
+          "hasRim": true,
+          "rimLength": 1281,
+          "background": "rgba(48, 48, 50, 0.62)",
+          "backgroundImagePresent": true,
+          "backdropFilter": "blur(5px) url(\"#glisse-backdrop-0\") saturate(1.5)",
+          "webkitBackdropFilter": null,
+          "filter": "none",
+          "opacity": "1",
+          "blurToken": "5px",
+          "filterToken": "url(\"#glisse-backdrop-0\") saturate(1.5)",
+          "shadow": "rgba(0, 0, 0, 0) 0px 1px 3px 0px",
+          "border": "rgb(245, 245, 247)",
+          "borderWidth": "0px",
+          "radius": "10px",
+          "before": {
+            "content": "none",
+            "opacity": "1",
+            "filter": "none"
+          }
+        }
+      }
+    },
+    {
+      "name": "Project row hover keeps layout geometry stable",
+      "passed": true,
+      "details": {
+        "before": {
+          "x": 27,
+          "y": 372,
+          "width": 218,
+          "height": 32
+        },
+        "hover": {
+          "x": 27,
+          "y": 372,
+          "width": 218,
+          "height": 32
+        }
+      }
+    },
+    {
+      "name": "Keyboard focus remains visible",
+      "passed": true,
+      "details": {
+        "tag": "BUTTON",
+        "label": "Toggle AGI Paulo - SARAH",
+        "focusVisible": true,
+        "outline": "none",
+        "outlineWidth": "1px",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(255, 159, 10) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+        "borderColor": "rgb(56, 56, 58)",
+        "ringColor": "#ff9f0a"
+      }
+    },
+    {
+      "name": "Project action popup stays inside viewport",
+      "passed": true,
+      "details": {
+        "x": 239.6806640625,
+        "y": 379.0021667480469,
+        "width": 184.518310546875,
+        "height": 63.428192138671875
+      }
+    },
+    {
+      "name": "Tasks desktop: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 1440,
+        "cw": 1440,
+        "sh": 960,
+        "ch": 960
+      }
+    },
+    {
+      "name": "Task detail: dialog opens",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 452.4229736328125,
+          "y": 222.93492126464844,
+          "width": 535.154052734375,
+          "height": 514.1301422119141
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "matrix3d(0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 1)",
+          "zIndex": "50",
+          "borderRadius": "18px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Task detail: dialog centered and bounded",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 452.4229736328125,
+          "y": 222.93492126464844,
+          "width": 535.154052734375,
+          "height": 514.1301422119141
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "matrix3d(0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 1)",
+          "zIndex": "50",
+          "borderRadius": "18px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Task detail: dialog scrim color follows the active theme",
+      "passed": true,
+      "details": {
+        "overlay": {
+          "background": "rgba(0, 0, 0, 0.62)",
+          "opacity": "0.346562",
+          "backdropFilter": "none",
+          "boxShadow": "none"
+        },
+        "rootClasses": "dark",
+        "parsedRGBA": [
+          0.0,
+          0.0,
+          0.0,
+          0.62
+        ],
+        "content": {
+          "position": "fixed",
+          "transform": "matrix3d(0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 0.955632, 0, 0, 0, 0, 1)",
+          "zIndex": "50",
+          "borderRadius": "18px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Board picker: dialog opens",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 528,
+          "y": 374.5,
+          "width": 384,
+          "height": 211
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "14px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Board picker: dialog centered and bounded",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 528,
+          "y": 374.5,
+          "width": 384,
+          "height": 211
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "14px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Board picker: dialog scrim color follows the active theme",
+      "passed": true,
+      "details": {
+        "overlay": {
+          "background": "rgba(0, 0, 0, 0.62)",
+          "opacity": "1",
+          "backdropFilter": "none",
+          "boxShadow": "none"
+        },
+        "rootClasses": "dark",
+        "parsedRGBA": [
+          0.0,
+          0.0,
+          0.0,
+          0.62
+        ],
+        "content": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "14px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Board picker Escape restores trigger focus",
+      "passed": true,
+      "details": [
+        {
+          "afterMs": 100,
+          "tag": "BUTTON",
+          "role": null,
+          "label": "Choose a board",
+          "text": "",
+          "slot": "button",
+          "title": "Choose a board (B)",
+          "bodyScrollLocked": true,
+          "dialogs": []
+        },
+        {
+          "afterMs": 300,
+          "tag": "BUTTON",
+          "role": null,
+          "label": "Choose a board",
+          "text": "",
+          "slot": "button",
+          "title": "Choose a board (B)",
+          "bodyScrollLocked": false,
+          "dialogs": []
+        },
+        {
+          "afterMs": 700,
+          "tag": "BUTTON",
+          "role": null,
+          "label": "Choose a board",
+          "text": "",
+          "slot": "button",
+          "title": "Choose a board (B)",
+          "bodyScrollLocked": false,
+          "dialogs": []
+        }
+      ]
+    },
+    {
+      "name": "Skills desktop: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 1440,
+        "cw": 1440,
+        "sh": 960,
+        "ch": 960
+      }
+    },
+    {
+      "name": "Secrets desktop: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 1440,
+        "cw": 1440,
+        "sh": 960,
+        "ch": 960
+      }
+    },
+    {
+      "name": "Settings Retry recovers after one synthetic 503",
+      "passed": true
+    },
+    {
+      "name": "Settings: dialog opens",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 160,
+          "y": 70,
+          "width": 1120,
+          "height": 820
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings: dialog centered and bounded",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 160,
+          "y": 70,
+          "width": 1120,
+          "height": 820
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings: dialog scrim color follows the active theme",
+      "passed": true,
+      "details": {
+        "overlay": {
+          "background": "rgba(0, 0, 0, 0.62)",
+          "opacity": "1",
+          "backdropFilter": "none",
+          "boxShadow": "none"
+        },
+        "rootClasses": "dark",
+        "parsedRGBA": [
+          0.0,
+          0.0,
+          0.0,
+          0.62
+        ],
+        "content": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.12) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.82) 0px 20px 54px -34px",
+          "background": "rgba(28, 28, 30, 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings light: dialog opens",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 160,
+          "y": 70,
+          "width": 1120,
+          "height": 820
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.96) 0px 1px 0px 0px inset, oklab(0.26871 -0.00206722 -0.0257585 / 0.38) 0px 18px 50px -34px",
+          "background": "oklab(0.990866 -0.000226498 -0.00282365 / 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings light: dialog centered and bounded",
+      "passed": true,
+      "details": {
+        "rect": {
+          "x": 160,
+          "y": 70,
+          "width": 1120,
+          "height": 820
+        },
+        "viewport": {
+          "w": 1440,
+          "h": 960
+        },
+        "computed": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.96) 0px 1px 0px 0px inset, oklab(0.26871 -0.00206722 -0.0257585 / 0.38) 0px 18px 50px -34px",
+          "background": "oklab(0.990866 -0.000226498 -0.00282365 / 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings light: dialog scrim color follows the active theme",
+      "passed": true,
+      "details": {
+        "overlay": {
+          "background": "rgba(25, 32, 44, 0.3)",
+          "opacity": "1",
+          "backdropFilter": "none",
+          "boxShadow": "none"
+        },
+        "rootClasses": "light",
+        "parsedRGBA": [
+          25.0,
+          32.0,
+          44.0,
+          0.3
+        ],
+        "content": {
+          "position": "fixed",
+          "transform": "none",
+          "zIndex": "50",
+          "borderRadius": "22px",
+          "boxShadow": "rgba(255, 255, 255, 0.96) 0px 1px 0px 0px inset, oklab(0.26871 -0.00206722 -0.0257585 / 0.38) 0px 18px 50px -34px",
+          "background": "oklab(0.990866 -0.000226498 -0.00282365 / 0.88)"
+        }
+      }
+    },
+    {
+      "name": "Settings dialog remains exposed after selecting Light",
+      "passed": true,
+      "details": {
+        "dialogCount": 1,
+        "dialogContent": {
+          "role": "dialog",
+          "ariaHidden": null,
+          "ariaModal": null,
+          "state": "open",
+          "chain": [
+            {
+              "tag": "DIV",
+              "slot": "dialog-content",
+              "role": "dialog",
+              "ariaHidden": null,
+              "ariaModal": null,
+              "inert": false,
+              "display": "flex",
+              "visibility": "visible"
+            },
+            {
+              "tag": "BODY",
+              "slot": null,
+              "role": null,
+              "ariaHidden": null,
+              "ariaModal": null,
+              "inert": false,
+              "display": "block",
+              "visibility": "visible"
+            },
+            {
+              "tag": "HTML",
+              "slot": null,
+              "role": null,
+              "ariaHidden": null,
+              "ariaModal": null,
+              "inert": false,
+              "display": "block",
+              "visibility": "visible"
+            }
+          ]
+        },
+        "overlay": {
+          "state": "open",
+          "display": "block",
+          "visibility": "visible"
+        },
+        "active": {
+          "tag": "BUTTON",
+          "role": "combobox",
+          "label": null,
+          "text": "Light"
+        }
+      }
+    },
+    {
+      "name": "Light Home heading and greeting are visibly rendered",
+      "passed": true,
+      "details": {
+        "text": "Start a new task",
+        "opacity": "1",
+        "visibility": "visible",
+        "color": "rgb(32, 38, 51)",
+        "rect": {
+          "x": 343,
+          "y": 178,
+          "w": 1024,
+          "h": 35.1875
+        }
+      }
+    },
+    {
+      "name": "Home narrow: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 390,
+        "cw": 390,
+        "sh": 844,
+        "ch": 844
+      }
+    },
+    {
+      "name": "Mobile navigation drawer closes with Escape",
+      "passed": true
+    },
+    {
+      "name": "Skills narrow: no horizontal document overflow",
+      "passed": true,
+      "details": {
+        "sw": 1440,
+        "cw": 1440,
+        "sh": 960,
+        "ch": 960
+      }
+    }
   ],
   "errors": [],
-  "warnings": [
+  "console_errors": [
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/events?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/sessions/agi-agent-1/stream?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/sessions/agi-agent-2/stream?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/events?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/sessions/agi-agent-1/stream?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/sessions/agi-agent-2/stream?token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/tasks/realtime?boardId=board-demo&token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
+    "WebSocket connection to 'ws://synthetic-runtime.invalid/v1/tasks/realtime?boardId=board-demo&token=synthetic-token' failed: Error in connection establishment: net::ERR_NAME_NOT_RESOLVED",
     "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
   ],
-  "accessibility": [
+  "failed_responses": [
     {
-      "label": "Sign-in password",
-      "violations": []
-    },
-    {
-      "label": "Home dark",
-      "violations": []
-    },
-    {
-      "label": "Board picker",
-      "violations": []
-    },
-    {
-      "label": "Secrets dark",
-      "violations": []
-    },
-    {
-      "label": "Settings light",
-      "violations": []
+      "url": "http://synthetic-runtime.invalid/v1/settings",
+      "status": 503
     }
+  ],
+  "fixture_requests": [
+    "POST /v1/setup/lookup",
+    "GET /api/auth/get-session",
+    "GET /v1/me/role",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/me/role",
+    "GET /v1/providers/usage",
+    "GET /v1/organizations",
+    "GET /v1/info",
+    "GET /v1/projects",
+    "GET /v1/sessions",
+    "GET /v1/projects/project-agi/notes",
+    "GET /v1/projects/project-agi/keychains",
+    "GET /v1/projects/project-agi/links",
+    "GET /v1/projects/project-agi/events",
+    "GET /v1/vault",
+    "GET /v1/organizations/org-demo/boards",
+    "GET /v1/task-boards/board-demo",
+    "GET /v1/projects/project-agi/skills",
+    "GET /v1/mcp",
+    "GET /v1/keychains",
+    "GET /v1/vault",
+    "GET /v1/settings",
+    "GET /v1/sessions",
+    "GET /v1/settings",
+    "GET /v1/projects",
+    "GET /v1/sessions",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /api/auth/get-session",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/me/role",
+    "GET /v1/providers/usage",
+    "GET /v1/organizations",
+    "GET /v1/info",
+    "GET /v1/projects",
+    "GET /v1/sessions",
+    "GET /v1/me/role",
+    "GET /api/auth/get-session",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/providers/status",
+    "GET /v1/me/role",
+    "GET /v1/providers/usage",
+    "GET /v1/organizations",
+    "GET /v1/info",
+    "GET /v1/projects",
+    "GET /v1/sessions",
+    "GET /v1/me/role",
+    "GET /v1/organizations/org-demo/boards",
+    "GET /v1/keychains",
+    "GET /v1/vault",
+    "GET /v1/skills",
+    "GET /v1/mcp"
+  ],
+  "screenshots": [
+    "after-login-dark-rounded.png",
+    "after-login-dark.png",
+    "before-login.png",
+    "board-picker.png",
+    "canvas-profile-final-current-build.png",
+    "canvas-profile-final-production.png",
+    "canvas-profile-stage2-glass-bounded.png",
+    "canvas-profile-stage2-lifecycle.png",
+    "canvas-profile-stage2-sidebar-ab.png",
+    "current-dark-home-material.png",
+    "current-dark-selected-project.png",
+    "current-dark-settings-material.png",
+    "current-light-home-material.png",
+    "current-light-settings-material.png",
+    "current-login.png",
+    "current-native-dark-home-settled.png",
+    "current-native-dark-home.png",
+    "current-native-dark-settings.png",
+    "current-native-os-login.png",
+    "debug-auth-fixture.png",
+    "debug-auth.png",
+    "final-dark-home-glass.png",
+    "final-dark-login-glass.png",
+    "final-dark-selected-project-glass.png",
+    "final-dark-settings-glass.png",
+    "final-dark-settings-solid.png",
+    "final-dark-settings-system.png",
+    "final-light-home-glass.png",
+    "final-light-settings-glass.png",
+    "glass-no-reduced-transparency.png",
+    "home-empty.png",
+    "home-light-verified-no-preference.png",
+    "home-light-verified-reduce.png",
+    "home-narrow.png",
+    "home-populated-dark.png",
+    "home-populated-light.png",
+    "home-primary-enabled.png",
+    "home-profile-final-current-build.png",
+    "home-profile-final-production.png",
+    "home-profile-stage2-glass-bounded.png",
+    "home-profile-stage2-lifecycle.png",
+    "home-profile-stage2-sidebar-ab.png",
+    "home-selected-nav-pointer-rest.png",
+    "invitation-narrow.png",
+    "live-transparency-check.png",
+    "login-narrow.png",
+    "login-password.png",
+    "login.png",
+    "material-solid-current-production.png",
+    "material-system-reduced-production.png",
+    "projects-populated-selected.png",
+    "secrets-empty.png",
+    "secrets-populated.png",
+    "settings-dark.png",
+    "settings-light.png",
+    "settings-load-error.png",
+    "sidebar-ab-base-blur-off.png",
+    "sidebar-ab-normal.png",
+    "sidebar-ab-search-glass-off.png",
+    "skills-empty.png",
+    "skills-no-results.png",
+    "skills-populated.png",
+    "task-detail-dialog.png",
+    "tasks-empty.png",
+    "tasks-populated.png",
+    "terminal-dialog-after-followfix.png",
+    "terminal-dialog-current-post-overlayfix-filter-off.png",
+    "terminal-dialog-current-post-overlayfix.png",
+    "terminal-dialog-current.png",
+    "terminal-dialog-final-current-build.png",
+    "terminal-dialog-final-production.png",
+    "terminal-dialog-glass-off-diagnostic.png",
+    "terminal-dialog-glass-on-repeat.png",
+    "terminal-dialog-post-gate-current-filter-off.png",
+    "terminal-dialog-post-gate-current-retry-filter-off.png",
+    "terminal-dialog-post-gate-current-retry.png",
+    "terminal-dialog-post-gate-current.png",
+    "terminal-dialog-stage1-button-glass-off.png",
+    "terminal-dialog-stage1-buttons-output.png",
+    "terminal-dialog-stage1-buttons.png",
+    "terminal-dialog-stage1-solid-control.png",
+    "terminal-dialog-stage2-glass-bounded.png",
+    "terminal-dialog-stage2-lifecycle.png",
+    "terminal-dialog-stage2-sidebar-ab.png",
+    "terminal-overlay-blur-off-diagnostic.png"
   ]
 }

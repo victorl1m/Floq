@@ -1,3 +1,91 @@
+---
+name: Floq
+description: A focused workspace for running and directing coding agents.
+colors:
+  oled-black: "#000000"
+  charcoal: "#1c1c1e"
+  charcoal-raised: "#2c2c2e"
+  pearl-background: "#e7e9ee"
+  pearl-surface: "#fbfcfe"
+  ink: "#202633"
+  primary-orange: "#f97316"
+  primary-orange-hover: "#ea580c"
+  primary-orange-text-light: "#b54708"
+  primary-orange-foreground: "#211007"
+  text-dark: "#f5f5f7"
+  secondary-text-dark: "#98989d"
+  border-dark: "#38383a"
+typography:
+  display:
+    fontFamily: "Geist Variable, SF Pro Display, system-ui, sans-serif"
+    fontSize: "48px"
+    fontWeight: 500
+    lineHeight: 1.06
+    letterSpacing: "-0.035em"
+  title:
+    fontFamily: "Geist Variable, SF Pro Text, system-ui, sans-serif"
+    fontSize: "30px"
+    fontWeight: 500
+    lineHeight: 1.1
+    letterSpacing: "-0.045em"
+  body:
+    fontFamily: "Geist Variable, SF Pro Text, system-ui, sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 1.5
+  label:
+    fontFamily: "Geist Variable, SF Pro Text, system-ui, sans-serif"
+    fontSize: "13px"
+    fontWeight: 500
+    lineHeight: 1.35
+  mono:
+    fontFamily: "Geist Mono Variable, SF Mono, ui-monospace, monospace"
+    fontSize: "13px"
+    fontWeight: 400
+    lineHeight: 1.45
+rounded:
+  nav: "10px"
+  control: "12px"
+  compact-card: "16px"
+  dialog: "18px"
+  settings-dialog: "22px"
+  canvas-card: "14px"
+  workspace: "22px"
+spacing:
+  xxs: "4px"
+  xs: "8px"
+  sm: "12px"
+  md: "16px"
+  lg: "24px"
+  xl: "32px"
+components:
+  button-primary:
+    backgroundColor: "{colors.primary-orange}"
+    textColor: "{colors.primary-foreground}"
+    rounded: "{rounded.control}"
+    height: "36px"
+    padding: "0 12px"
+  sidebar-selection:
+    backgroundColor: "{colors.charcoal-raised}"
+    textColor: "{colors.text-dark}"
+    rounded: "{rounded.nav}"
+    height: "32px"
+  dialog-dark:
+    backgroundColor: "{colors.charcoal}"
+    textColor: "{colors.text-dark}"
+    rounded: "{rounded.dialog}"
+  sidebar-search:
+    backgroundColor: "{colors.charcoal}"
+    textColor: "{colors.text-dark}"
+    rounded: "{rounded.nav}"
+    height: "36px"
+    padding: "0 10px"
+  canvas-agent-card:
+    backgroundColor: "{colors.charcoal}"
+    textColor: "{colors.text-dark}"
+    rounded: "{rounded.canvas-card}"
+---
+
 # Floq interface design
 
 ## North star
@@ -6,11 +94,13 @@ Floq is a focused desktop workspace for directing coding agents. Keep the interf
 
 ## Visual register
 
-- **Palette:** use the light and dark semantic CSS variables in `src/index.css`. The Flowless reference supplies the brand orange `#f97316`; pair it with ink on solid actions and use the separate high-contrast `primary-text` token for text. Keep status colors semantic.
-- **Typography:** use the existing system/Geist sans stack for interface text and Geist Mono for code and numeric data.
-- **Density and shape:** favor compact rows, small utility controls, subtle borders, and the existing rounded-md/lg scale. Dialogs fit their content up to a viewport-height cap; long forms scroll in the body, with stable dimensions reserved for flows that explicitly need them.
-- **Icons:** use Tabler icons and the shared provider brand marks. Icons must explain the action or model choice and retain an accessible text name on icon-only controls.
-- **Motion:** use short state transitions only where they clarify change; respect reduced motion.
+- **Palette:** light mode uses cool pearl (`#e7e9ee`) with white content surfaces and ink (`#202633`). Dark mode is OLED black (`#000000`) with Apple charcoal surfaces (`#1c1c1e`, `#2c2c2e`) and white / secondary gray text. Flowless orange (`#f97316`) marks primary actions and useful emphasis; selection is neutral. Status colors stay semantic.
+- **Typography:** use the existing Geist Variable sans stack for interface text and Geist Mono for code and numeric data. Use a clear scale: page headings 28–32 px, dialog headings 16–20 px, controls and dense data 13–14 px.
+- **Density and shape:** preserve compact project navigation (32 px project/workspace rows and 28 px agent rows) and stable utility-action slots. Use rounded rectangles with a deliberate hierarchy: 20–24 px workspace panels, 18–24 px dialogs, 10–12 px fields and controls, and 10 px navigation rows. Keep row geometry stable on hover, selection, and keyboard focus.
+- **Surfaces:** keep the root and workspace canvas flat. Use real Glisse refraction only on a few small controls: the primary sign-in and Start agent actions and the compact sidebar search surface. Use lightweight translucent fills and static highlights for broad planes such as the sidebar, composer, settings groups, and canvas cards. Floating menus use a bounded 10 px CSS backdrop blur; dialog surfaces use 8 px, except the expanded terminal shell, whose viewport remains unblurred and whose content stays opaque. The full-window scrim remains a flat dim layer. Avoid pixel-map refraction on full-window shells and large, continuously recomposited blur layers. The selected navigation row is one neutral rounded surface with no brand rail. Keyboard focus remains visibly distinct.
+- **Notifications:** use one Sonner stack at the top center, below the native titlebar. Toasts use the same restrained pearl / charcoal translucent material and local 10 px blur as menus, with semantic status icons, clear text, compact actions, and natural wrapping. Keep the standard live-region, dismissal, action, and timeout behavior. On narrow screens, stay inside the safe area and available width.
+- **Icons:** use Tabler icons and shared provider marks. Icons explain an action or model choice and retain accessible names on icon-only controls.
+- **Motion:** preserve existing purposeful transitions only where they clarify state; do not add ambient movement. Respect OS and Floq reduced-motion settings.
 
 ## Token ownership
 
@@ -22,9 +112,9 @@ Controls use native button/link semantics where possible, visible keyboard focus
 
 ## Theme and runtime mapping
 
-The runtime token source is `src/index.css` (Model B: runtime CSS is canonical; DESIGN.md mirrors accepted values). The light theme uses `#e8e8ec` and `#141416`; dark surfaces use graphite `#141418` with soft white `#ededef`. Both themes use Flowless orange `#f97316` for primary actions, with dark ink `#211007` on solid orange. Light focus uses darker orange `#c2410c`; dark focus uses `#fb923c`. Text uses `primary-text` (`#b54708` light, `#fb923c` dark) for contrast. Cards, popovers, inputs, borders, and sidebar surfaces use semantic variables. Shared glass surfaces use `--glass-surface`, `--glass-border`, `--glass-highlight`, and `--glass-shadow`; keep opacity restrained and text fully legible. Typography is Geist Variable for interface text and Geist Mono for code, terminal, and compact data.
+The runtime token source is `src/index.css` (Model B: runtime CSS is canonical; DESIGN.md mirrors accepted values). Light uses `#e7e9ee` / `#202633`; OLED dark uses `#000000` / `#f5f5f7`, with elevated surfaces `#1c1c1e` and `#2c2c2e`. Both themes use Flowless orange `#f97316` for primary actions; focus uses a clear orange ring (`#c2410c` light, `#ff9f0a` dark). Main text uses foreground tokens; orange is not used for selected navigation labels or rails. Cards, popovers, inputs, borders, and sidebar surfaces consume semantic variables. The `glass` preference keeps Glisse's runtime `--lg-filter` and `--lg-rim` intact on opt-in controls; floating menus, ordinary dialogs, and Sonner toasts use localized CSS blur, while broad shell surfaces use static alpha fills and highlights. `system` follows OS reduced transparency; `solid` renders popup, dialog, and toast surfaces opaque and without blur. Keep working content readable. Typography is Geist Variable for interface text and Geist Mono for code, terminal, and compact data.
 
-Keep focus rings clearly visible against both themes. Shared loading placeholders use `AsciiSkeleton` from `ascii-reveal`; data that has arrived can enter with `AsciiReveal`. Preserve final content geometry, keep dense placeholders still by default, and honor both OS and Floq reduced motion. Glass surfaces fall back to opaque surfaces when blur is unavailable, transparency is reduced, or forced colors are active. Do not add ambient movement behind working surfaces.
+Keep focus rings clearly visible against both themes. Shared loading placeholders use `AsciiSkeleton` from `ascii-reveal`; data that has arrived can enter with `AsciiReveal`. Preserve final content geometry, keep dense placeholders still by default, and honor both OS and Floq reduced motion. The System material follows the OS transparency preference; Glass remains an explicit opt-in and Solid is opaque. All materials use accessible forced-color fallbacks, and browsers without backdrop-filter get an opaque surface. Do not add ambient movement behind working surfaces.
 
 ## Home composer
 

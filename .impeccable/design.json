@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-04T04:33:00Z",
+  "title": "Design System: Floq",
+  "extensions": {
+    "colorMeta": {
+      "oled-black": {
+        "role": "neutral",
+        "displayName": "OLED Black",
+        "canonical": "#000000",
+        "tonalRamp": ["#000000", "#09090b", "#18181b", "#1c1c1e", "#27272a", "#2c2c2e", "#3f3f46", "#71717a"]
+      },
+      "charcoal": {
+        "role": "neutral",
+        "displayName": "Apple Charcoal",
+        "canonical": "#1c1c1e",
+        "tonalRamp": ["#000000", "#09090b", "#18181b", "#1c1c1e", "#27272a", "#2c2c2e", "#3f3f46", "#71717a"]
+      },
+      "charcoal-raised": {
+        "role": "neutral",
+        "displayName": "Raised Charcoal",
+        "canonical": "#2c2c2e",
+        "tonalRamp": ["#000000", "#09090b", "#18181b", "#1c1c1e", "#27272a", "#2c2c2e", "#3f3f46", "#71717a"]
+      },
+      "pearl-background": {
+        "role": "neutral",
+        "displayName": "Cool Pearl",
+        "canonical": "#e7e9ee",
+        "tonalRamp": ["#202633", "#374151", "#596476", "#8a94a3", "#b8c0cb", "#d6dbe4", "#e7e9ee", "#fbfcfe"]
+      },
+      "pearl-surface": {
+        "role": "neutral",
+        "displayName": "Pearl Surface",
+        "canonical": "#fbfcfe",
+        "tonalRamp": ["#202633", "#374151", "#596476", "#8a94a3", "#b8c0cb", "#d6dbe4", "#e7e9ee", "#fbfcfe"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#202633",
+        "tonalRamp": ["#11151c", "#202633", "#273142", "#374151", "#596476", "#8a94a3", "#b8c0cb", "#e7e9ee"]
+      },
+      "primary-orange": {
+        "role": "primary",
+        "displayName": "Flowless Orange",
+        "canonical": "#f97316",
+        "tonalRamp": ["#431407", "#7c2d12", "#9a3412", "#c2410c", "#ea580c", "#f97316", "#fdba74", "#ffedd5"]
+      },
+      "primary-orange-hover": {
+        "role": "primary",
+        "displayName": "Flowless Orange Hover",
+        "canonical": "#ea580c",
+        "tonalRamp": ["#431407", "#7c2d12", "#9a3412", "#c2410c", "#ea580c", "#f97316", "#fdba74", "#ffedd5"]
+      },
+      "primary-orange-text-light": {
+        "role": "primary-text",
+        "displayName": "Accessible Orange Text",
+        "canonical": "#b54708",
+        "tonalRamp": ["#431407", "#7c2d12", "#9a3412", "#b54708", "#c2410c", "#ea580c", "#fdba74", "#ffedd5"]
+      },
+      "primary-orange-foreground": {
+        "role": "primary-foreground",
+        "displayName": "Orange Button Text",
+        "canonical": "#211007",
+        "tonalRamp": ["#100803", "#211007", "#392010", "#573318", "#7c4a24", "#a36a3c", "#d19c72", "#f3dcc8"]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "Primary Dark Text",
+        "canonical": "#f5f5f7",
+        "tonalRamp": ["#1c1c1e", "#2c2c2e", "#3f3f46", "#71717a", "#98989d", "#c7c7cc", "#e5e5ea", "#f5f5f7"]
+      },
+      "secondary-text-dark": {
+        "role": "neutral",
+        "displayName": "Secondary Dark Text",
+        "canonical": "#98989d",
+        "tonalRamp": ["#1c1c1e", "#2c2c2e", "#3f3f46", "#71717a", "#98989d", "#c7c7cc", "#e5e5ea", "#f5f5f7"]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Dark Hairline",
+        "canonical": "#38383a",
+        "tonalRamp": ["#000000", "#09090b", "#18181b", "#1c1c1e", "#2c2c2e", "#38383a", "#525256", "#71717a"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Login headline and rare primary statements." },
+      "title": { "displayName": "Page title", "purpose": "Screen and workspace headings." },
+      "body": { "displayName": "Body", "purpose": "Forms, descriptions, and readable content." },
+      "label": { "displayName": "Control label", "purpose": "Compact control and section labels." },
+      "mono": { "displayName": "Code and data", "purpose": "Terminal output, paths, and numeric data." }
+    },
+    "shadows": [
+      { "name": "glass-light", "value": "0 18px 44px -32px rgba(28,38,54,0.35), 0 2px 8px rgba(28,38,54,0.06)", "purpose": "Light-mode broad surface depth." },
+      { "name": "glass-dark", "value": "0 18px 44px -30px rgba(0,0,0,0.8)", "purpose": "Dark-mode surface separation against OLED black." }
+    ],
+    "motion": [
+      { "name": "control-state", "value": "140ms ease", "purpose": "Small color and state changes on navigation and controls." },
+      { "name": "workspace-transition", "value": "180ms ease", "purpose": "Reduced workspace view transition; no ambient background motion." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "520px" },
+      { "name": "auth-single-column", "value": "860px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The orange action that submits a primary task, such as signing in or starting an agent.",
+      "html": "<button class=\"floq-button lg-button\">Start agent</button>",
+      "css": ".floq-button { border-radius: 12px; min-height: 36px; padding: 0 12px; background: #f97316; color: #211007; } .floq-button:focus-visible { outline: 2px solid #fb923c; outline-offset: 2px; }"
+    },
+    {
+      "name": "Sidebar search surface",
+      "kind": "nav",
+      "refersTo": "sidebar-search",
+      "description": "A compact Glisse surface around the workspace search action.",
+      "html": "<div class=\"sidebar-search-glass floq-glass\"><button>Search</button></div>",
+      "css": ".sidebar-search-glass { border-radius: 10px; --lg-blur: 5px; --lg-glass-bend: .22; --lg-glass-dispersion: .08; }"
+    },
+    {
+      "name": "Dialog surface",
+      "kind": "card",
+      "refersTo": "dialog-dark",
+      "description": "A rounded, translucent static shell that keeps the full-screen backdrop unblurred.",
+      "html": "<section class=\"floq-surface\">Dialog content</section>",
+      "css": ".floq-surface { border-radius: 18px; border: 1px solid rgba(255,255,255,.13); background: rgba(28,28,30,.88); box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }"
+    },
+    {
+      "name": "Canvas agent card",
+      "kind": "card",
+      "refersTo": "canvas-agent-card",
+      "description": "A calm translucent card with a subtle static highlight; terminal text remains opaque.",
+      "html": "<article class=\"canvas-agent-card-material\">Agent session</article>",
+      "css": ".canvas-agent-card-material { border-radius: 14px; background: rgba(26,26,28,.84); background-image: linear-gradient(145deg,rgba(255,255,255,.07),transparent 45%); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A focused workspace for running and directing coding agents.",
+    "overview": "Floq keeps agent sessions, projects, tasks, and terminal work in one focused desktop workspace. Its visual system favors clear hierarchy, stable compact navigation, and rounded functional surfaces. Dark mode is OLED black with neutral Apple charcoal; the light mode uses cool pearl and ink. Flowless orange marks primary actions and keyboard focus.\n\nReal Glisse refraction stays on a few small controls. Broad areas use lightweight static translucency and highlights to keep motion responsive. Dense data, terminal output, and code remain crisp and opaque.",
+    "keyCharacteristics": [
+      "OLED black and neutral charcoal in dark mode; cool pearl and ink in light mode.",
+      "Orange is reserved for primary actions and useful focus emphasis.",
+      "Rounded workspaces, dialogs, fields, and compact navigation rows.",
+      "Glisse optics on bounded controls; static translucent fills on broad planes."
+    ],
+    "rules": [
+      { "name": "One Selection Signal", "body": "Active navigation uses one neutral capsule; no orange rail or stacked outline.", "section": "colors" },
+      { "name": "Compact Glisse", "body": "Keep pixel-map refraction on compact controls; broad shells use static translucent surfaces.", "section": "elevation" },
+      { "name": "Content Stays Readable", "body": "Keep terminal output and code opaque; avoid blur behind dense content.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use Geist Variable and Geist Mono for interface and terminal/data text.",
+      "Do preserve the compact project tree geometry and reserved utility-action slots.",
+      "Do keep a visible keyboard focus ring and respect Solid/System reduced-transparency modes."
+    ],
+    "donts": [
+      "Don't add colored rails to selected navigation rows.",
+      "Don't put full-window Glisse refraction maps or blur on terminal content.",
+      "Don't add ambient animation behind working surfaces."
+    ]
+  }
+}

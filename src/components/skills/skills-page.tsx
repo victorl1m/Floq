@@ -270,10 +270,10 @@ export default function SkillsPage() {
 
   return <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-5 p-5 md:gap-6 md:p-8">
     <header className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0"><p className="text-[11px] font-medium uppercase tracking-[.16em] text-muted-foreground">Agent toolkit</p><h1 className="mt-1 text-xl font-semibold tracking-tight">Skills</h1><p className="mt-1 max-w-2xl text-sm text-muted-foreground">Review installed skills and MCP servers, add a skill to one project, or install an MCP server.</p></div>
+      <div className="min-w-0"><h1 className="page-heading mt-1 font-semibold tracking-tight">Skills</h1><p className="mt-1 max-w-2xl text-sm text-muted-foreground">Review installed skills and MCP servers, add a skill to one project, or install an MCP server.</p></div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">{refreshButton}{tab === "mcps"
-        ? <Button onClick={() => setMcpAddOpen(true)}><IconPlus />Add MCP server</Button>
-        : <Button disabled={projects.length === 0} title={projects.length === 0 ? "Add or import a project first" : undefined} onClick={() => { clearForm(); setAddProjectId(project?.id ?? activeProjectId ?? ""); setAddOpen(true); }}><IconPlus />Add skill</Button>}</div>
+        ? <Button shimmer onClick={() => setMcpAddOpen(true)}><IconPlus />Add MCP server</Button>
+        : <Button shimmer disabled={projects.length === 0} title={projects.length === 0 ? "Add or import a project first" : undefined} onClick={() => { clearForm(); setAddProjectId(project?.id ?? activeProjectId ?? ""); setAddOpen(true); }}><IconPlus />Add skill</Button>}</div>
     </header>
 
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/30 p-3 lg:flex-row lg:items-center">
@@ -338,7 +338,7 @@ export default function SkillsPage() {
           {preview && <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{preview.skill.name}</p><p className="truncate text-xs text-muted-foreground">{preview.skill.source}</p></div><div className="flex shrink-0 items-center gap-1"><Button type="button" variant="outline" size="xs" aria-label="Open skill in reader" onClick={() => openPreview(preview)}><IconCode />Open</Button><Button type="button" variant="ghost" size="icon-xs" aria-label="Close skill preview" onClick={() => { setPreview(null); setPreviewState("idle"); }}><IconX /></Button></div></div><p className="text-xs text-muted-foreground">{preview.files.length} files · SKILL.md {(preview.files.find((file) => file.path.toLowerCase() === "skill.md")?.size ?? new TextEncoder().encode(preview.markdown).length).toLocaleString()} bytes</p><pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-background p-3 font-mono text-[11px] leading-relaxed">{preview.markdown}</pre></div>}
           {formError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{formError}</p>}
         </div>
-        <DialogFooter className="shrink-0"><Button variant="outline" disabled={saving} onClick={() => setAddOpen(false)}>Cancel</Button>{addMode === "write" ? <Button type="button" disabled={saving || !addProject} onClick={() => void createSkill()}>{saving ? "Adding…" : "Add skill"}</Button> : <Button type="button" disabled={saving || !addProject || !preview} onClick={() => addMode === "url" ? void installUrl() : void installPreview()}>{saving ? "Installing…" : "Install skill"}</Button>}</DialogFooter>
+        <DialogFooter className="shrink-0"><Button variant="outline" disabled={saving} onClick={() => setAddOpen(false)}>Cancel</Button>{addMode === "write" ? <Button shimmer type="button" disabled={saving || !addProject} onClick={() => void createSkill()}>{saving ? "Adding…" : "Add skill"}</Button> : <Button shimmer type="button" disabled={saving || !addProject || !preview} onClick={() => addMode === "url" ? void installUrl() : void installPreview()}>{saving ? "Installing…" : "Install skill"}</Button>}</DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open && !deleteBusy) setDeleting(null); }}>

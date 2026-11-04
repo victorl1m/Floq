@@ -17,6 +17,7 @@ import { loadComposerPrefs } from "@/lib/prefs";
 import { useUsableProviders } from "./use-usable-providers";
 import SetupAgentsDialog from "./setup-agents-dialog";
 import { PROVIDER_LABEL, ProviderIcon } from "./provider";
+import { providerThemeProps } from "@/lib/provider-theme";
 import ProjectPicker from "@/components/projects/project-picker";
 import CloneDialog from "@/components/home/clone-dialog";
 
@@ -90,8 +91,8 @@ export default function NewAgentDialog() {
         try {
             const session = await client.createSession(input);
             upsertSession(session);
-            // Started from the canvas: stay on it, centre the new node and show its terminal in the dialog instead of navigating to the old view.
-            if (view === "canvas" && session.projectId) focusOnCanvas(session, { dialog: true });
+            // Started from the canvas: stay on it and select + centre the new node. The terminal dialog opens only on an explicit "Open".
+            if (view === "canvas" && session.projectId) focusOnCanvas(session);
             else openSession(session, newAgentOrigin);
             setNewAgentOpen(false);
             reset();
@@ -147,30 +148,31 @@ export default function NewAgentDialog() {
                                 return (
                                     <button
                                         key={id}
+                                        {...providerThemeProps(id)}
                                         type="button"
                                         role="radio"
                                         aria-checked={selected}
                                         onClick={() => setChosen(id)}
                                         className={cn(
-                                            "relative flex items-center gap-2.5 rounded-xl border p-3 text-left text-sm font-medium outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring",
-                                            selected ? "border-border bg-muted" : "border-border"
+                                            "relative flex items-center gap-2.5 rounded-xl border p-3 text-left text-sm font-medium outline-none transition-colors hover:bg-muted/50 dark:hover:bg-foreground/[0.07] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                                            selected ? "border-(--provider-accent) bg-(--provider-tint)" : "border-border"
                                         )}
                                     >
                                         <ProviderIcon provider={id} className="size-5" />
                                         {PROVIDER_LABEL[id]}
-                                        {selected && <IconCheck className="absolute top-2 right-2 size-4 text-primary-text" />}
+                                        {selected && <IconCheck className="absolute top-2 right-2 size-4 text-(--provider-accent)" />}
                                     </button>
                                 );
                             })}
                         </div>
                         {hasMissing && (
-                            <button
+                            <Button variant="link" size="xs"
                                 type="button"
-                                className="self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
+                                className="self-start px-0 text-muted-foreground"
                                 onClick={() => setSetupOpen(true)}
                             >
                                 + Connect another agent
-                            </button>
+                            </Button>
                         )}
                     </div>
                 )}

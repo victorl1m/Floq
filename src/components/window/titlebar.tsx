@@ -47,7 +47,7 @@ function TitlebarButton({
 
 export default function Titlebar() {
     const [isMaximized, setIsMaximized] = useState(false);
-    const { user, view, activeProjectId, openCanvas, canGoBack, canGoForward, goBack, goForward } = useRuntime();
+    const { user, view, activeProjectId, canvasProjectId, openCanvas, canGoBack, canGoForward, goBack, goForward } = useRuntime();
     const rightSidebar = useRightSidebar();
     const { open: sidebarOpen, isMobile } = useSidebar();
     const sidebarUsesTitlebarWidth = sidebarOpen && !isMobile;
@@ -130,8 +130,8 @@ export default function Titlebar() {
                 </Button>
             )}
 
-            {!auth && (view === "session" || view === "terminal") && (
-                <Button variant="ghost" size="icon-sm" className="mr-1 shrink-0" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>
+            {!auth && ((view === "session" || view === "terminal") || (view === "canvas" && !!canvasProjectId)) && (
+                <Button data-right-sidebar-trigger="true" variant="ghost" size="icon-sm" className="mr-1 shrink-0" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>
                     <IconLayoutSidebarRight />
                 </Button>
             )}

@@ -1,3 +1,4 @@
+import { providerThemeProps } from "@/lib/provider-theme";
 import { IconCheck, IconChevronDown } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -97,13 +98,22 @@ export default function ModelSelect({ options, value, onChange, variant = "field
             <DropdownMenuTrigger asChild>
                 {compact ? (
                     <Button variant="ghost" size="sm" className="text-muted-foreground" aria-label="Model" disabled={disabled}>
-                        <BrandIcon className="size-3.5" />
+                        <BrandIcon {...providerThemeProps(provider)} className="size-3.5 text-(--provider-accent)" />
                         {selected?.label}
                         <IconChevronDown className="size-3" />
                     </Button>
                 ) : (
-                    <Button variant="outline" className="w-full justify-between font-normal" aria-label="Model" disabled={disabled}>
-                        <span className="flex min-w-0 items-center gap-2"><BrandIcon className="size-4 shrink-0" /><span className="truncate">{selected?.label}</span></span>
+                    // A form field, not a toolbar button: flat (no Glisse glass, whose hover tint and
+                    // centred layout are tuned for buttons) and styled like SelectTrigger so it matches
+                    // the Role select and Title input.
+                    <Button
+                        variant="outline"
+                        glisse={false}
+                        className="h-8 w-full justify-between rounded-lg border-input bg-transparent pr-2 pl-2.5 font-normal text-foreground transition-colors hover:bg-muted/70 active:bg-muted aria-expanded:border-ring dark:focus-visible:border-ring dark:aria-expanded:border-ring aria-expanded:bg-transparent dark:bg-input/30 dark:hover:bg-input/50 dark:active:bg-input/60 dark:aria-expanded:bg-input/30"
+                        aria-label="Model"
+                        disabled={disabled}
+                    >
+                        <span className="flex min-w-0 items-center gap-2"><BrandIcon {...providerThemeProps(provider)} className="size-4 shrink-0 text-(--provider-accent)" /><span className="truncate">{selected?.label}</span></span>
                         <IconChevronDown className="size-4 text-muted-foreground" />
                     </Button>
                 )}
@@ -123,7 +133,7 @@ export default function ModelSelect({ options, value, onChange, variant = "field
                     return (
                         <DropdownMenuItem key={option.value || "default"} onClick={() => onChange(option.value)} className="gap-2">
                             {option.value === (selected?.value ?? "")
-                                ? <IconCheck className="size-4 shrink-0" />
+                                ? <IconCheck {...providerThemeProps(provider)} className="size-4 shrink-0 text-(--provider-accent)" />
                                 : <span aria-hidden="true" className="size-4 shrink-0" />}
                             <span className="flex min-w-0 flex-1 flex-col">
                                 <span className="truncate">{option.label}</span>

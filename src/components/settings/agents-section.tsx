@@ -1,16 +1,72 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { IconChevronDown } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/agents/provider";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useClient } from "@/lib/runtime/store";
-import type { ProviderId, SettingsPatch, UserSettings } from "@/lib/runtime/types";
+import type { ProviderId, SettingsPatch, SubagentPolicy, UserSettings } from "@/lib/runtime/types";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 
 interface Props {
     settings: UserSettings;
     onChange: (settings: UserSettings) => void;
+}
+
+/** Read-only view of the fixed instruction every agent carries; loaded when first opened. */
+function FixedInstructionPreview() {
+    const client = useClient();
+    const regionId = useId();
+    const [open, setOpen] = useState(false);
+    const [policy, setPolicy] = useState<SubagentPolicy | null>(null);
+    const [error, setError] = useState<string | null>(null);
+
+    async function toggle() {
+        const next = !open;
+        setOpen(next);
+        if (next && !policy) {
+            try {
+                setPolicy(await client.subagentPolicy());
+                setError(null);
+            } catch (e) {
+                setError(errorMessage(e));
+            }
+        }
+    }
+
+    return (
+        <div className="flex flex-col gap-3 p-4">
+            <div>
+                <Button type="button" variant="outline" size="sm" aria-expanded={open} aria-controls={regionId} onClick={() => void toggle()}>
+                    <IconChevronDown aria-hidden="true" className={open ? "" : "-rotate-90"} />
+                    {open ? "Hide fixed instruction" : "Show fixed instruction"}
+                </Button>
+            </div>
+            <div id={regionId} hidden={!open}>
+                {error ? (
+                    <p role="alert" className="text-xs text-destructive">Could not load the instruction: {error}</p>
+                ) : !policy ? (
+                    <p role="status" className="text-xs text-muted-foreground">Loading the instruction…</p>
+                ) : (
+                    <div className="flex flex-col gap-2">
+                        <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
+                            Read-only. Floq adds this to every agent at start and resume, after any role prompt, so roles and notes cannot remove it.
+                            Limits: depth {policy.limits.maxDepth}, {policy.limits.maxChildren} subagents per agent, {policy.limits.maxTotal} in total.
+                        </p>
+                        <textarea
+                            readOnly
+                            aria-label="Fixed Floq subagent instruction (read-only)"
+                            value={policy.instruction}
+                            rows={12}
+                            className="w-full resize-y rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+                        />
+                    </div>
+                )}
+            </div>
+        </div>
+    );
 }
 
 export default function AgentsSection({ settings, onChange }: Props) {
@@ -48,6 +104,32 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         </SelectContent>
                     </Select>
                 </SettingRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Subagents">
+                <SettingRow
+                    label="Always recruit subagents"
+                    htmlFor="always-recruit"
+                    description="Every agent is told, in a fixed instruction, to split independent work across Floq subagents that appear wired to it on the canvas, instead of working alone or using provider-native subagents. Each subagent is a full session and uses your quota. Off: agents only recruit when you ask. Applies to new and resumed sessions."
+                >
+                    <Switch
+                        id="always-recruit"
+                        checked={settings.alwaysRecruitSubagents !== false}
+                        onCheckedChange={(v) => void patch({ alwaysRecruitSubagents: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Allow agents to talk across projects"
+                    htmlFor="allow-cross-project"
+                    description="Agents can find and message your agents in other projects (floq list, floq ask, floq link). A message is only text typed to the other agent: it never changes its permissions. Messages are rate-limited and loop-protected, and you get a notice when one arrives. Never reaches other users' agents. Off: agents only see their own project."
+                >
+                    <Switch
+                        id="allow-cross-project"
+                        checked={settings.allowCrossProjectAgents !== false}
+                        onCheckedChange={(v) => void patch({ allowCrossProjectAgents: v })}
+                    />
+                </SettingRow>
+                <FixedInstructionPreview />
             </SettingsGroup>
 
             <SettingsGroup title="Permissions">

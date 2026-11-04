@@ -83,6 +83,8 @@ export interface CreateSessionInput {
   provider: ProviderId;
   title?: string;
   cwd?: string;
+  /** Shell sessions only: start in the user's own home directory (no project). Mutually exclusive with cwd/project/workspace. */
+  home?: boolean;
   projectId?: string;
   workspaceId?: string;
   /** Start in a new managed Git worktree; only valid for a registered project. */

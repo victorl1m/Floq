@@ -13,9 +13,11 @@ import { streamToFile, validAttachmentName } from "./attachments.js";
 import type { Readable } from "node:stream";
 import { mergeSecretEnv } from "./secrets.js";
 import type { Keychains } from "./keychains.js";
+import { buildWiredNotice, type WireRef, type WiredContext } from "./wiredContext.js";
 import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
-import { buildSessionEnv, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
+import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
+import { buildSessionEnv, detectVersion, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
@@ -29,7 +31,9 @@ import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, read
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
+import { composeSystemBlocks } from "./subagents.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
+import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
 import type { RuntimeProfile } from "./settings.js";
@@ -243,6 +247,10 @@ export class SessionManager {
   credentials!: CredentialBroker;
   /** Keychains linked to agents (set at startup); absent in tests that do not need them. */
   keychains?: Keychains;
+  /** Notes, keychains and agents wired to each agent, persisted so every start and resume re-injects them (set at startup). */
+  wired?: WiredContext;
+  /** Fixed always-recruit-subagents policy block, injected for every agent start and resume (set at startup). */
+  subagents?: { blockFor(userId: string, sessionId: string): Promise<string> };
   private readonly logins = new Map<string, LoginState>();
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
@@ -1040,6 +1048,14 @@ export class SessionManager {
       );
       args.unshift(...trustArgs);
     }
+    // Provider-native subagents are always disabled (start and resume, any role, regardless of the recruit setting); Floq recruiting is the only path.
+    if (row.provider === "codex") args.unshift(...nativeSubagentBlockArgs("codex"));
+    if (row.provider === "claude") args.push(...nativeSubagentBlockArgs("claude", { version: detectVersion(definition.bin).version, warn: (message) => log.warn("subagent.native_block_degraded", { sessionId: row.id, message }) }));
+    // Wired context rides in the provider's system-level instructions on EVERY start and resume, so it survives compaction and restarts.
+    const wiredBlock0 = this.wired && row.provider !== "shell" ? await this.wired.blockFor(row.user_id, row.id) : "";
+    // The fixed Floq subagent policy rides in the same system-level text (one flag: a second --append-system-prompt would not combine), first and always present for agents.
+    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", wiredBlock0);
+    if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);
     const env = buildSessionEnv(this.config, row.provider, profile, row.id);
@@ -1067,7 +1083,7 @@ export class SessionManager {
         log.warn("codex.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
       try {
-        syncCodexManagedGuidance(codexHome, handle.uid);
+        syncCodexManagedGuidance(codexHome, handle.uid, wiredBlock);
       } catch (error) {
         log.warn("codex.managed_guidance_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
@@ -1308,6 +1324,8 @@ export class SessionManager {
     if (input.provider === "shell" && (input.prompt !== undefined || input.specKit)) {
       throw badRequest("prompt and specKit are not supported for shell sessions");
     }
+    let homeShell = false;
+    try { homeShell = wantsHomeShell(input); } catch (error) { throw badRequest(error instanceof Error ? error.message : "invalid home", "invalid_home"); }
     const codexModels = input.provider === "codex" && typeof input.model === "string" && input.model
       ? await this.codexModels(userId)
       : undefined;
@@ -1367,6 +1385,8 @@ export class SessionManager {
       projectCwd = project.cwd;
       projectGitUrl = project.gitUrl;
       branch = workspace.branch;
+    } else if (homeShell) {
+      cwd = HOME_CWD;
     } else {
     try {
       cwd = safeRelative(input.cwd?.trim() || "workspace/" + id.slice(0, 8));
@@ -1926,6 +1946,20 @@ export class SessionManager {
       log.warn("secret.sync_failed", { sessionId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
     }
     return true;
+  }
+
+  /** Tell a running agent its wires changed (typed like `floq ask`). Returns false when it is not live. Never throws. */
+  async notifyWired(userId: string, sessionId: string, added: WireRef[], removed: WireRef[], block: string): Promise<boolean> {
+    const live = this.findLive(sessionId, userId);
+    if (!live || !live.isAlive || live.provider === "shell") return false;
+    const text = buildWiredNotice(added, removed, block);
+    if (!text) return false;
+    try {
+      live.write(text);
+      await new Promise((r) => setTimeout(r, 300));
+      live.write(String.fromCharCode(13));
+      return true;
+    } catch { return false; }
   }
 
   /** Set or clear the role preset of an existing session (user-initiated only; the HTTP layer enforces who may call). */

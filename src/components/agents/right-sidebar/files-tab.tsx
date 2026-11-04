@@ -122,13 +122,13 @@ function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeCl
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/70 bg-background/20 px-3">
         {onBack && <Button type="button" variant="ghost" size="icon-xs" aria-label="Back to file tree" title="Back to file tree" onClick={onBack}><IconArrowLeft /></Button>}
         <Breadcrumb path={label ? `${label}/${path}` : path} />
         {file && !error && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
         <Button type="button" variant="ghost" size="icon-xs" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy />}</Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto bg-muted/20">
+      <div className="min-h-0 flex-1 overflow-auto bg-muted/10">
         {error ? <PanelError message={error} onRetry={() => setVersion((value) => value + 1)} />
           : !file ? <RowSkeletons count={10} rowClass="h-3.5" />
           : file.binary ? <PanelEmpty icon={<IconFiles />} title="Binary file" hint="Text preview is not available." />
@@ -315,11 +315,11 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
 
   const tree = (
     <div className={cn("flex min-h-0 flex-col", split ? "w-[42%] min-w-48 shrink-0 border-r border-border" : "flex-1")}>
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border/70 bg-background/20 px-3 py-2">
         <div className="relative min-w-0 flex-1">
           <IconSearch aria-hidden className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input aria-label="Filter loaded files" placeholder="Filter files" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setQuery(""); if (event.key === "ArrowDown") { event.preventDefault(); treeRef.current?.focus(); } }} className="h-7 pr-6 pl-7 text-xs" />
-          {query && <button type="button" aria-label="Clear filter" onClick={() => setQuery("")} className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"><IconX className="size-3" /></button>}
+          {query && <Button variant="ghost" size="icon-xs" type="button" aria-label="Clear filter" onClick={() => setQuery("")} className="absolute inset-y-0 right-1.5 my-auto size-5 text-muted-foreground"><IconX className="size-3" /></Button>}
         </div>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Collapse all folders" title="Collapse all" onClick={() => setExpanded({})}><IconFoldersOff /></Button>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh files" title="Refresh files" onClick={refresh}><IconRefresh /></Button>
@@ -360,7 +360,7 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
                 return (
                   <div key={row.key} style={{ paddingLeft: pad + 16 }} className={cn("flex h-6 items-center gap-2 pr-2 text-xs", row.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
                     {row.tone === "loading" ? <span className="h-2.5 w-24 animate-pulse rounded-sm bg-muted" /> : <span className="min-w-0 truncate">{row.text}</span>}
-                    {row.retry !== undefined && <button type="button" onClick={() => load(row.retry!)} className="shrink-0 underline underline-offset-2 hover:text-foreground">Retry</button>}
+                    {row.retry !== undefined && <Button variant="link" size="xs" type="button" onClick={() => load(row.retry!)} className="h-auto shrink-0 p-0 text-inherit underline">Retry</Button>}
                   </div>
                 );
               }

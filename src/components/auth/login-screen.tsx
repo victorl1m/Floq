@@ -2,11 +2,14 @@ import { useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
+import { IconArrowRight, IconCode, IconFolder, IconLock, IconServer, IconTerminal2 } from "@tabler/icons-react";
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "@/lib/runtime/client";
 import { Button } from "@/components/ui/button";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
 import IconBrandFlowless from "@/components/ui/brand/IconBrandFlowless";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { GlassSurface } from "@/components/ui/glass-surface";
+import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
+import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
 import {
     Form,
     FormControl,
@@ -57,9 +60,10 @@ function RootError({ message }: { message?: string }) {
 
 function SubmitButton({ busy, disabled, children }: { busy: boolean; disabled?: boolean; children: ReactNode }) {
     return (
-        <Button type="submit" size="lg" className="w-full" disabled={busy || disabled}>
+        <Button type="submit" size="lg" className="auth-submit w-full" glisse shimmer disabled={busy || disabled}>
             {busy && <Spinner />}
             {children}
+            {!busy && <IconArrowRight aria-hidden="true" className="ml-auto size-4" />}
         </Button>
     );
 }
@@ -361,15 +365,13 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
     );
 }
 
-/** Required, unclosable sign-in dialog. */
+/** Dedicated sign-in surface; account and invitation flows share the same form owner. */
 export default function LoginScreen() {
     const [initialUrl] = useState(defaultBaseUrl);
     const [step, setStep] = useState<Step>("email");
     const [serverUrl, setServerUrl] = useState(initialUrl);
     const [email, setEmail] = useState("");
     const [pendingInvitationToken, setPendingInvitationToken] = useState<string | null>(null);
-
-    const blockClose = (event: Event) => event.preventDefault();
 
     const heading =
         step === "invite" ? "Join an organization" : step === "setup" ? "Set up your administrator" : step === "password" ? "Welcome back" : "Sign in to Floq";
@@ -383,25 +385,24 @@ export default function LoginScreen() {
               : "Connect to your Floq Runtime to run agents in the cloud.";
 
     return (
-        <>
-            <div
-                aria-hidden
-                className="fixed inset-x-0 top-[40px] bottom-0 z-[35] bg-background/80 backdrop-blur-sm bg-[radial-gradient(ellipse_at_top,var(--muted),transparent_65%)] before:absolute before:inset-0 before:bg-[linear-gradient(to_right,var(--border)_1px,transparent_1px),linear-gradient(to_bottom,var(--border)_1px,transparent_1px)] before:bg-[size:48px_48px] before:opacity-40 before:mask-[radial-gradient(ellipse_at_center,black,transparent_75%)]"
-            />
-            {/* Non-modal: Radix modal mode would disable pointer events on the titlebar and trap focus. */}
-            <Dialog open modal={false}>
-                <DialogContent
-                    showCloseButton={false}
-                    style={{ top: "calc(50% + 20px)", maxHeight: "calc(100dvh - 4rem)", maxWidth: "calc(100vw - 2rem)" }}
-                    onEscapeKeyDown={blockClose}
-                    onPointerDownOutside={blockClose}
-                    onInteractOutside={blockClose}
-                    className="max-h-[calc(100dvh-4rem)] gap-6 overflow-y-auto p-6 sm:max-w-[400px] sm:p-8"
-                >
-                    <DialogHeader className="items-center gap-3 text-center">
-                        <IconBrandFloq size={48} className="text-foreground" />
-                        <DialogTitle className="text-xl font-semibold tracking-tight">{heading}</DialogTitle>
-                        <DialogDescription>{subtitle}</DialogDescription>
+        <section className="auth-screen" aria-label="Floq sign in">
+            <div className="auth-layout">
+                <div className="auth-story">
+                    <div className="auth-wordmark"><span className="auth-logo"><IconBrandFloq size={28} /></span><span>Floq</span></div>
+                    <h2>Your agents.<br />One workspace.</h2>
+                    <p className="auth-story-description">Bring your projects, Claude Code, and Codex together.</p>
+                    <GlassSurface className="auth-workflow rounded-[18px]" aria-label="How Floq works">
+                        <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconFolder size={19} /></span><div><strong>Bring your project</strong><span>Start with the code you call home.</span></div></div>
+                        <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconCode size={19} /></span><div><strong>Give your agents a direction</strong><span>Build with Claude Code and Codex.</span></div></div>
+                        <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconTerminal2 size={19} /></span><div><strong>Keep the work in view</strong><span>Follow every task, terminal, and change.</span></div></div>
+                    </GlassSurface>
+                    <div className="auth-providers"><span className="inline-flex items-center gap-2"><IconBrandClaude className="size-4" />Claude Code</span><span className="inline-flex items-center gap-2"><IconBrandCodex className="size-4" />Codex</span><span className="auth-provider-note">Your runtime. Your workspace.</span></div>
+                </div>
+                <GlassSurface className="auth-card rounded-[24px]">
+                    <div className="auth-form-heading">
+                        <span className="auth-form-symbol"><IconLock size={21} aria-hidden="true" /></span>
+                        <h1 className="text-[1.65rem] font-semibold tracking-tight leading-tight">{heading}</h1>
+                        <p className="text-sm leading-relaxed text-muted-foreground">{subtitle}</p>
                         {step !== "email" && step !== "invite" && (
                             <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs">
                                 <span className="max-w-56 truncate">{email}</span>
@@ -410,9 +411,9 @@ export default function LoginScreen() {
                                 </Button>
                             </div>
                         )}
-                    </DialogHeader>
+                    </div>
 
-                    <div key={step} className="animate-in fade-in-0 slide-in-from-right-2 duration-200">
+                    <div key={step} className="auth-form-content">
                         {step === "email" && (
                             <EmailStep
                                 initialUrl={serverUrl}
@@ -449,7 +450,7 @@ export default function LoginScreen() {
                     </div>
 
                     {step === "email" && (
-                        <div className="flex flex-col items-center gap-2 border-t pt-4 text-xs text-muted-foreground">
+                        <div className="auth-invitation">
                             <span>Invited to an organization?</span>
                             <Button type="button" variant="link" className="h-auto px-1" onClick={() => setStep("invite")}>
                                 Join with an invitation
@@ -457,11 +458,10 @@ export default function LoginScreen() {
                         </div>
                     )}
 
-                    <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-                        Powered by <IconBrandFlowless size={14} /> Flowless
-                    </p>
-                </DialogContent>
-            </Dialog>
-        </>
+                    <div className="auth-card-footer"><IconServer size={14} aria-hidden="true" /><span>Connected through your Floq Runtime</span></div>
+                </GlassSurface>
+                <p className="auth-credit">Powered by <IconBrandFlowless size={14} /> Flowless</p>
+            </div>
+        </section>
     );
 }

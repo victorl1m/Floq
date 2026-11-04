@@ -186,6 +186,8 @@ export interface CreateSessionInput {
   provider: ProviderId;
   title?: string;
   cwd?: string;
+  /** Shell sessions only: open in the runtime user's home directory, no project. */
+  home?: boolean;
   projectId?: string;
   workspaceId?: string;
   isolated?: boolean;
@@ -211,6 +213,10 @@ export interface UserSettings {
   /** Absent on older runtimes. */
   gitCoauthor?: boolean;
   gitCoauthorAvailable?: boolean;
+  /** Absent on older runtimes (treated as on). */
+  alwaysRecruitSubagents?: boolean;
+  /** Absent on older runtimes (treated as on). */
+  allowCrossProjectAgents?: boolean;
 }
 
 export interface SettingsPatch {
@@ -219,6 +225,16 @@ export interface SettingsPatch {
   gitName?: string | null;
   gitEmail?: string | null;
   gitCoauthor?: boolean;
+  alwaysRecruitSubagents?: boolean;
+  allowCrossProjectAgents?: boolean;
+}
+
+/** The fixed Floq subagent policy, read-only (GET /v1/subagents/policy). */
+export interface SubagentPolicy {
+  enabled: boolean;
+  limits: { maxDepth: number; maxChildren: number; maxTotal: number };
+  tools: Array<{ name: string; command: string; summary: string }>;
+  instruction: string;
 }
 
 export type Exposure = "tool" | "env";
@@ -242,6 +258,8 @@ export interface AgentLink {
   createdAt: string;
   lastMessageAt: string | null;
   messageCount: number;
+  /** Wire to an agent of another project: the end outside the requested project. */
+  foreign?: { sessionId: string; title: string; projectId: string | null; projectName: string; direction: "out" | "in" };
 }
 
 // --- canvas notes + agent secrets (runtime/src/notes.ts, secrets.ts) ---
@@ -257,10 +275,14 @@ export interface CanvasNote {
   h: number;
   /** Agents wired to the note; they can read and edit it and create notes with `floq sticky`. */
   linkedSessionIds: string[];
+  /** Name of the `floq note` this card mirrors; null for plain canvas notes. */
+  title?: string | null;
+  /** False until the canvas has picked and saved a spot for a note an agent created. */
+  placed?: boolean;
   createdAt: string;
   updatedAt: string;
 }
-export interface CanvasNoteInput { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number }
+export interface CanvasNoteInput { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string }
 /**
  * A canvas wallet of secrets, linked to agents with wires. Names only: values are write-only and never returned.
  * Mutations (secret set/delete, link/unlink) return the updated Keychain with appliesOnNextStart = true when a live
@@ -295,7 +317,28 @@ export interface AgentMessageEvent {
   kind: "ask" | "reply" | "recruit";
   preview: string;
   at: string;
+  /** Set when the message crossed projects. */
+  cross?: { fromTitle: string; toTitle: string; fromProject: string; toProject: string };
 }
+
+/** An agent's request (`floq port open`) to forward a port; the runtime waits for the user's answer for timeoutMs. */
+export interface PortRequest {
+  id: string;
+  sessionId: string;
+  agentName: string;
+  port: number;
+  protocol: "http" | "https" | "tcp";
+  purpose: string;
+  privileged: boolean;
+  /** Time left on the runtime's own clock when this snapshot was taken. */
+  remainingMs: number;
+  timeoutMs: number;
+}
+
+/** Live frames for port requests on the `/v1/events` socket. */
+export type PortRequestFrame =
+  | { type: "port-request"; request: PortRequest }
+  | { type: "port-request-resolved"; id: string; sessionId: string; status: "accepted" | "denied" | "timeout" | "cancelled" | "failed" };
 
 export interface DeviceFlow {
   flowId: string;

@@ -12,6 +12,7 @@ import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
 import { runViewTransition } from "@/lib/view-transition";
+import { useUndoDelete } from "@/lib/use-undo-delete";
 import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
 import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization } from "./types";
 
@@ -139,7 +140,13 @@ interface RuntimeContextValue {
   selectedTerminalId: string | null;
   selectShell: (id: string | null) => void;
   selectSession: (id: string | null) => void;
+  /** Soft delete with Undo (grace period, then the real DELETE). Resolves at once; failures surface as a toast and the session reappears. */
   deleteSession: (id: string) => Promise<void>;
+  deleteSessions: (ids: string[]) => void;
+  /** Restore the most recent soft delete (Ctrl/Cmd+Z). */
+  undoLastDelete: () => void;
+  /** Ids hidden while their delete is pending. `sessions`, tabs and selection already exclude them. */
+  pendingDeleteIds: ReadonlySet<string>;
   newAgentOpen: boolean;
   newAgentOrigin: "agent" | "terminal";
   setNewAgentOpen: (open: boolean, origin?: "agent" | "terminal") => void;
@@ -191,7 +198,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<Connection | null>(loadConnection);
   const [ready, setReady] = useState(() => connection === null);
   const [info, setInfo] = useState<RuntimeInfo | null>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [allSessions, setSessions] = useState<SessionSummary[]>([]);
   const [projects, setProjects] = useState<RuntimeProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
@@ -640,7 +647,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       // next to its agents (and stays listed in the Terminal view too).
       const targetArea = area === "terminal" && session.provider === "shell" ? "terminal" : "agent";
       const project = session.projectId ? projects.find((item) => item.id === session.projectId) : undefined;
-      if (project) {
+      if (targetArea === "terminal") {
+        // The standalone Terminal view never selects (or clears) the active project.
+      } else if (project) {
         setActiveProjectId(project.id);
         const workspace = project.workspaces.find((item) => item.id === session.worktreeId || item.cwd === session.cwd);
         setActiveWorkspaceId(workspace?.id ?? project.workspaces[0]?.id ?? null);
@@ -724,10 +733,16 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setNewAgentOpen(open);
   }, []);
 
-  const deleteSession = useCallback(
+  /** The real delete, run once the undo grace period is over. "Already gone" counts as success. */
+  const performDelete = useCallback(
     async (id: string) => {
-      if (!client) return;
-      await client.deleteSession(id);
+      const current = clientRef.current;
+      if (!current) throw new Error("Not signed in");
+      try {
+        await current.deleteSession(id);
+      } catch (error) {
+        if (!(error instanceof RuntimeError && error.status === 404)) throw error;
+      }
       mutation.current++;
       setSessions((list) => list.filter((s) => s.id !== id));
       setAgentTabIds((opened) => opened.filter((o) => o !== id));
@@ -735,10 +750,39 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       setOpenedIds((opened) => opened.filter((o) => o !== id));
       setSelectedId((current) => (current === id ? null : current));
       setShellId((current) => (current === id ? null : current));
-      void refresh();
+      // Canvas layout is kept through the grace period so Undo restores it; drop it for good now.
+      const prefs = userPreferencesRef.current;
+      const strip = <T,>(byProject: Record<string, Record<string, T>> | undefined) => {
+        if (!byProject) return byProject;
+        return Object.fromEntries(Object.entries(byProject).map(([project, map]) => [project, Object.fromEntries(Object.entries(map ?? {}).filter(([key]) => key !== id))]));
+      };
+      if (Object.values(prefs.canvasPositions ?? {}).some((map) => id in (map ?? {})) || Object.values(prefs.canvasSizes ?? {}).some((map) => id in (map ?? {}))) {
+        updateUserPreferences({ canvasPositions: strip(prefs.canvasPositions), canvasSizes: strip(prefs.canvasSizes) } as UserPreferencePatch);
+      }
     },
-    [client, refresh],
+    [updateUserPreferences],
   );
+  const sendDeleteOnUnload = useCallback((id: string) => clientRef.current?.deleteSessionKeepalive(id), []);
+  const { pendingDeleteIds, deleteSessions: softDeleteSessions, undoLastDelete, announcement } = useUndoDelete({
+    performDelete,
+    sendOnUnload: sendDeleteOnUnload,
+    signedIn: client !== null && ready,
+    allSessions,
+  });
+  const allSessionsRef = useRef(allSessions);
+  allSessionsRef.current = allSessions;
+  const deleteSessions = useCallback((ids: string[]) => {
+    softDeleteSessions(ids.flatMap((id) => allSessionsRef.current.filter((session) => session.id === id)));
+  }, [softDeleteSessions]);
+  const deleteSession = useCallback(async (id: string) => deleteSessions([id]), [deleteSessions]);
+
+  // Every consumer sees sessions, tabs and selection without the ids whose delete is pending.
+  const visibleSessions = useMemo(() => pendingDeleteIds.size === 0 ? allSessions : allSessions.filter((s) => !pendingDeleteIds.has(s.id)), [allSessions, pendingDeleteIds]);
+  const visibleOpenedIds = useMemo(() => openedIds.filter((id) => !pendingDeleteIds.has(id)), [openedIds, pendingDeleteIds]);
+  const visibleAgentTabIds = useMemo(() => agentTabIds.filter((id) => !pendingDeleteIds.has(id)), [agentTabIds, pendingDeleteIds]);
+  const visibleTerminalTabIds = useMemo(() => terminalTabIds.filter((id) => !pendingDeleteIds.has(id)), [terminalTabIds, pendingDeleteIds]);
+  const visibleSelectedId = selectedId && pendingDeleteIds.has(selectedId) ? (visibleAgentTabIds[visibleAgentTabIds.length - 1] ?? null) : selectedId;
+  const visibleShellId = shellId && pendingDeleteIds.has(shellId) ? (visibleTerminalTabIds[visibleTerminalTabIds.length - 1] ?? null) : shellId;
 
   const value = useMemo<RuntimeContextValue>(
     () => ({
@@ -747,7 +791,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       client: signedIn ? client : null,
       user: signedIn ? (connection?.user ?? null) : null,
       info,
-      sessions,
+      sessions: visibleSessions,
       projects,
       projectsLoading,
       projectsError,
@@ -759,13 +803,13 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       createProject,
       updateProject,
       selectProject,
-      selectedId,
-      shellId,
+      selectedId: visibleSelectedId,
+      shellId: visibleShellId,
       loaded,
-      openedIds,
-      agentTabIds,
-      terminalTabIds,
-      selectedTerminalId: shellId,
+      openedIds: visibleOpenedIds,
+      agentTabIds: visibleAgentTabIds,
+      terminalTabIds: visibleTerminalTabIds,
+      selectedTerminalId: visibleShellId,
       signIn,
       lookup,
       setupAdmin,
@@ -791,6 +835,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       selectShell,
       selectSession,
       deleteSession,
+      deleteSessions,
+      undoLastDelete,
+      pendingDeleteIds,
       newAgentOpen,
       newAgentOrigin,
       setNewAgentOpen: setNewAgentDialog,
@@ -819,7 +866,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       signedIn,
       client,
       info,
-      sessions,
+      visibleSessions,
       projects,
       projectsLoading,
       projectsError,
@@ -829,12 +876,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       createProject,
       updateProject,
       selectProject,
-      selectedId,
-      shellId,
+      visibleSelectedId,
+      visibleShellId,
       loaded,
-      openedIds,
-      agentTabIds,
-      terminalTabIds,
+      visibleOpenedIds,
+      visibleAgentTabIds,
+      visibleTerminalTabIds,
       signIn,
       lookup,
       setupAdmin,
@@ -860,6 +907,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       selectShell,
       selectSession,
       deleteSession,
+      deleteSessions,
+      undoLastDelete,
+      pendingDeleteIds,
       newAgentOpen,
       newAgentOrigin,
       setNewAgentDialog,
@@ -881,7 +931,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <RuntimeContext.Provider value={value}>{children}</RuntimeContext.Provider>;
+  return (
+    <RuntimeContext.Provider value={value}>
+      {children}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement}</div>
+    </RuntimeContext.Provider>
+  );
 }
 
 export function isUnauthorized(error: unknown): boolean {

@@ -244,7 +244,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
                 <ProviderIcon provider={session.provider} className="size-3" />
                 <span className={cn("size-1.5 rounded-full", STATE_DOT[session.state])} />
                 <span className="max-w-32 truncate">{session.title}</span>
-                <button type="button" aria-label={`Remove ${session.title}`} className="rounded p-0.5 hover:bg-background" onClick={() => removeTarget(session.id)}><IconX size={10} /></button>
+                <Button variant="ghost" size="icon-xs" type="button" aria-label={`Remove ${session.title}`} className="size-4 rounded" onClick={() => removeTarget(session.id)}><IconX size={10} /></Button>
               </span>
             ))}
             {!all && targets.length === 0 && <span className="text-destructive">No agent to send to</span>}

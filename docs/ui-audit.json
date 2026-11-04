@@ -39,7 +39,7 @@
     {
       "category": "violation",
       "file": "src/components/home/home-view.tsx",
-      "line": 33,
+      "line": 35,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -66,7 +66,7 @@
     {
       "category": "violation",
       "file": "src/components/tasks/tasks-page.tsx",
-      "line": 415,
+      "line": 426,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -75,7 +75,7 @@
     {
       "category": "violation",
       "file": "src/components/ui/alert-dialog.tsx",
-      "line": 156,
+      "line": 160,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -84,7 +84,7 @@
     {
       "category": "violation",
       "file": "src/components/ui/alert-dialog.tsx",
-      "line": 174,
+      "line": 178,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -111,7 +111,7 @@
     {
       "category": "violation",
       "file": "src/components/ui/dialog.tsx",
-      "line": 72,
+      "line": 75,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -120,7 +120,7 @@
     {
       "category": "violation",
       "file": "src/components/ui/dialog.tsx",
-      "line": 118,
+      "line": 122,
       "message": "Enabled literal button has no detectable action or submit behavior.",
       "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
       "ruleId": "affordance.actionless-button",
@@ -183,7 +183,7 @@
     {
       "category": "violation",
       "file": "src/components/auth/login-screen.tsx",
-      "line": 94,
+      "line": 98,
       "message": "Application-owned form does not declare its validation owner.",
       "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
       "ruleId": "form.novalidate-missing",
@@ -192,7 +192,7 @@
     {
       "category": "violation",
       "file": "src/components/auth/login-screen.tsx",
-      "line": 162,
+      "line": 166,
       "message": "Application-owned form does not declare its validation owner.",
       "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
       "ruleId": "form.novalidate-missing",
@@ -201,7 +201,7 @@
     {
       "category": "violation",
       "file": "src/components/auth/login-screen.tsx",
-      "line": 233,
+      "line": 237,
       "message": "Application-owned form does not declare its validation owner.",
       "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
       "ruleId": "form.novalidate-missing",
@@ -210,7 +210,7 @@
     {
       "category": "violation",
       "file": "src/components/auth/login-screen.tsx",
-      "line": 296,
+      "line": 300,
       "message": "Application-owned form does not declare its validation owner.",
       "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
       "ruleId": "form.novalidate-missing",
@@ -273,7 +273,7 @@
     {
       "category": "violation",
       "file": "src/components/settings/appearance-section.tsx",
-      "line": 16,
+      "line": 18,
       "message": "Native select conflicts with recorded Select/Listbox ownership: authored.",
       "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
       "ruleId": "ownership.native-select-conflict",
@@ -336,7 +336,7 @@
     {
       "category": "violation",
       "file": "src/components/tasks/tasks-page.tsx",
-      "line": 481,
+      "line": 492,
       "message": "Native select conflicts with recorded Select/Listbox ownership: authored.",
       "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
       "ruleId": "ownership.native-select-conflict",
@@ -353,7 +353,7 @@
     }
   ],
   "mode": "strict",
-  "projectRoot": "C:\\Users\\Victor\\Desktop\\floq",
+  "projectRoot": "C:\\Users\\Victor\\Desktop\\Projects\\SolutionsLucy\\Floq",
   "schemaVersion": 1,
   "summary": {
     "errors": 39,

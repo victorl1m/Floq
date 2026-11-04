@@ -4,6 +4,7 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { IconPlus, IconArrowUp, IconArrowRight, IconChevronDown, IconBug, IconCode, IconSparkles } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -12,18 +13,20 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
-import { Spinner } from "@/components/ui/spinner";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/agents/provider";
+import { providerThemeProps } from "@/lib/provider-theme";
 import CloneDialog from "./clone-dialog";
 import SetupAgentsDialog from "@/components/agents/setup-agents-dialog";
 import { useUsableProviders } from "@/components/agents/use-usable-providers";
-import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@/components/ui/skeleton";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
+import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE, isOrchestrator } from "@/lib/runtime/orchestrator";
 import type { CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
 import ProjectPicker from "@/components/projects/project-picker";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { GlassSurface } from "@/components/ui/glass-surface";
+import { MatrixTrail } from "@/components/ui/matrix-trail";
 
 function greeting(): string {
     const hour = new Date().getHours();
@@ -47,12 +50,40 @@ const promptStarters = [
 ];
 
 export default function HomeView() {
-    const { client, user, info, upsertSession, openSession, refresh, projects, projectsLoading, activeProjectId, activeWorkspaceId, selectProject, createProject } = useRuntime();
+    const { client, user, info, upsertSession, focusOnCanvas, openCanvas, sessions, refresh, projects, projectsLoading, activeProjectId, activeWorkspaceId, selectProject, createProject } = useRuntime();
     const [prefs, setPrefs] = useState(loadComposerPrefs);
     const [prompt, setPrompt] = useState("");
     const [cloneOpen, setCloneOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const area = useRef<HTMLTextAreaElement>(null);
+    const typing = useRef<number | null>(null);
+    const stopTyping = () => { if (typing.current !== null) { window.clearInterval(typing.current); typing.current = null; } };
+    useEffect(() => stopTyping, []);
+    // Types a starter into the composer character by character; any manual edit cancels it.
+    const typePrompt = (text: string) => {
+        stopTyping();
+        area.current?.focus();
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { setPrompt(text); return; }
+        const chars = Array.from(text);
+        const step = Math.max(1, Math.ceil(chars.length / 70));
+        const old = Array.from(prompt);
+        const eraseStep = Math.max(2, Math.ceil(old.length / 14));
+        let left = old.length;
+        let i = 0;
+        // Phase 1: quickly erase whatever is there; phase 2: type the new starter.
+        typing.current = window.setInterval(() => {
+            if (left > 0) {
+                left = Math.max(0, left - eraseStep);
+                setPrompt(old.slice(0, left).join(""));
+                return;
+            }
+            i = Math.min(chars.length, i + step);
+            setPrompt(chars.slice(0, i).join(""));
+            if (i >= chars.length) stopTyping();
+        }, 18);
+    };
+    // Starters stay clickable while a starter's own text is in the input; text the user typed is protected.
+    const promptIsStarter = !prompt.trim() || promptStarters.some((s) => s.prompt.startsWith(prompt));
     const { loading, usable, hasMissing, reload: reloadStatus } = useUsableProviders();
     const [connecting, setConnecting] = useState(false);
     // A remembered provider that is no longer connected falls back to the first connected one.
@@ -82,6 +113,12 @@ export default function HomeView() {
 
     const name = user?.name?.trim().split(/\s+/)[0] || user?.email.split("@")[0] || "";
     const canSend = prompt.trim().length > 0 && !busy && usable.length > 0 && !!selectedProject;
+    // Why "Start agent" is disabled, most blocking reason first (shown as a tooltip on the button).
+    const disabledReason = busy || canSend ? null
+        : !selectedProject ? (projectsLoading ? "Loading projects…" : "No project selected")
+            : loading ? "Checking connected providers…"
+                : usable.length === 0 ? "Connect Claude or Codex to start an agent"
+                    : "Describe your task first";
 
     async function send() {
         if (!client || !canSend) return;
@@ -97,12 +134,31 @@ export default function HomeView() {
         input.specKit = true;
         input.lead = true;
         if (model) input.model = model;
+        const projectName = selectedProject.displayName || selectedProject.name;
         setBusy(true);
         try {
-            const session = await client.createSession(input);
+            // A project needs one orchestrator. Check the live list (the store may be stale); fall back to the store.
+            let known = sessions;
+            try { known = await client.sessions(); } catch { /* use the store's list */ }
+            const hasOrchestrator = known.some((s) => s.projectId === selectedProject.id && isOrchestrator(s));
+            const orchestratorInput: CreateSessionInput = { ...input, title: "Orchestrator", role: ORCHESTRATOR_ROLE, model: model || "auto" };
+            delete orchestratorInput.prompt;
+            // Concurrently: the user's task must never depend on the orchestrator succeeding.
+            const [taskResult, orchestratorResult] = await Promise.allSettled([
+                client.createSession(input),
+                hasOrchestrator ? Promise.resolve(null) : client.createSession(orchestratorInput),
+            ]);
+            if (orchestratorResult.status === "fulfilled" && orchestratorResult.value) {
+                upsertSession(orchestratorResult.value);
+                toast.success(`Orchestrator added to ${projectName}`, { description: ORCHESTRATOR_HINT });
+            } else if (orchestratorResult.status === "rejected") {
+                toast.warning("Could not add an orchestrator", { description: errorMessage(orchestratorResult.reason) });
+            }
+            if (taskResult.status === "rejected") throw taskResult.reason;
+            const session = taskResult.value;
             upsertSession(session);
             setPrompt("");
-            openSession(session);
+            focusOnCanvas(session);
             void refresh();
         } catch (e) {
             toast.error("Could not create agent", { description: errorMessage(e) });
@@ -119,35 +175,38 @@ export default function HomeView() {
     }
 
     return (
-        <div className="absolute inset-0 overflow-y-auto px-5 py-8 sm:px-10 lg:px-14 lg:py-12">
-            <FloqReveal selector="[data-home-reveal]" className="relative mx-auto flex w-full max-w-5xl flex-col gap-8">
-                <header className="flex items-center justify-between gap-4 border-b border-border/60 pb-5">
+        <div className="absolute inset-0">
+        <MatrixTrail />
+        <div data-matrix-bg className="absolute inset-0 overflow-y-auto px-5 py-8 sm:px-10 lg:px-14 lg:py-12">
+            <div data-matrix-bg className="relative mx-auto flex w-full max-w-5xl flex-col gap-8">
+                <header data-matrix-quiet className="flex items-center justify-between gap-4 border-b border-border/60 pb-5">
                     <span className="flex items-center gap-2 text-sm font-medium"><IconBrandFloq size={20} variant="brand" />Home</span>
                     <Button data-ascii="skip" variant="outline" size="sm" onClick={() => setCloneOpen(true)}><IconPlus />New project</Button>
                 </header>
-                <div data-home-reveal className="space-y-3">
-                    <h1 className="text-3xl font-medium tracking-tight sm:text-4xl">Start a new task</h1>
+                <div data-matrix-quiet className="space-y-3">
+                    <h1 className="page-heading text-3xl font-medium tracking-tight sm:text-4xl">Start a new task</h1>
                     <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">{greeting()}{name ? `, ${name}` : ""}. Choose a project and tell your agent what to build.</p>
                 </div>
 
-                <div className="flex flex-col gap-1">
-                    <GlassSurface data-ascii="skip" className="glass-key-surface flex flex-col rounded-2xl p-4 transition-colors focus-within:border-ring/70 focus-within:ring-2 focus-within:ring-ring/30 sm:p-5">
-                        <div className="mb-3 flex items-center gap-3 px-1">
-                            <label htmlFor="home-prompt" className="text-sm font-medium">Task</label>
+                <div data-matrix-bg className="flex flex-col gap-1">
+                    <GlassSurface data-ascii="skip" data-matrix-bg data-matrix-exclude className="home-task-composer glass-key-surface flex flex-col rounded-2xl p-4 sm:p-5">
+                        <div data-matrix-bg className="mb-3 flex items-center gap-3 px-1">
+                            <label data-matrix-quiet htmlFor="home-prompt" className="text-sm font-medium">Task</label>
                         </div>
                         <textarea
+                            data-matrix-quiet
                             id="home-prompt"
                             ref={area}
                             rows={3}
                             value={prompt}
                             disabled={busy}
-                            onChange={(e) => setPrompt(e.target.value)}
+                            onChange={(e) => { stopTyping(); setPrompt(e.target.value); }}
                             onKeyDown={onKeyDown}
                             aria-describedby="home-help"
                             placeholder="Describe what you want to build, change, or fix?"
-                            className="min-h-28 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+                            className="home-prompt-field min-h-28 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:ring-0"
                         />
-                        <div className="mt-4 flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row sm:items-center">
+                        <div data-matrix-bg data-matrix-quiet className="mt-4 flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row sm:items-center">
                             <ProjectPicker
                                 projects={projects}
                                 selectedProjectId={activeProjectId}
@@ -203,25 +262,37 @@ export default function HomeView() {
                                     />
                                 )}
 
-                                <Button
-                                    size="default"
-                                    className="h-9 rounded-xl px-3"
-                                    aria-label={busy ? "Preparing project and starting agent" : "Start agent"}
-                                    aria-busy={busy}
-                                    disabled={!canSend}
-                                    onClick={() => void send()}
-                                >
-                                    <span className="hidden sm:inline">Start agent</span>{busy ? <Spinner /> : <IconArrowUp />}
-                                </Button>
+                                <Tooltip open={disabledReason ? undefined : false}>
+                                    <TooltipTrigger asChild>
+                                        {/* A disabled button swallows pointer events, so the span carries hover/focus for the reason. */}
+                                        <span tabIndex={disabledReason ? 0 : -1} className="inline-flex rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-describedby={disabledReason ? "home-start-reason" : undefined}>
+                                            <Button
+                                                {...providerThemeProps(provider)}
+                                                size="default"
+                                                className="h-9 rounded-xl px-3 [--primary:var(--provider-accent)] [--lg-fill:var(--provider-accent)] [--primary-foreground:var(--provider-accent-foreground)] [--primary-hover:color-mix(in_oklab,var(--provider-accent)_88%,var(--foreground))]"
+                                                glisse
+                                                shimmer
+                                                aria-label={busy ? "Preparing project and starting agent" : "Start agent"}
+                                                aria-busy={busy}
+                                                loading={busy}
+                                                disabled={!canSend && !busy}
+                                                onClick={() => void send()}
+                                            >
+                                                <span className="hidden sm:inline">Start agent</span>{!busy && <IconArrowUp />}
+                                            </Button>
+                                        </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="bottom">{disabledReason}</TooltipContent>
+                                </Tooltip>
+                                {disabledReason && <span id="home-start-reason" className="sr-only">{disabledReason}</span>}
                             </div>
                         </div>
                     </GlassSurface>
-                    <p id="home-help" role="status" aria-live="polite" className="min-h-4 px-1 text-xs text-muted-foreground">
+                    <p id="home-help" role="status" aria-live="polite" className="sr-only">
                         {busy
                             ? selectedProject ? `Starting an agent in ${selectedProject.displayName || selectedProject.name}…` : "Starting your agent…"
-                            : !selectedProject ? "Choose or import a project to start an agent."
-                                : needsConnect ? <button type="button" className="underline" onClick={() => setConnecting(true)}>Connect Claude or Codex to start</button>
-                                    : prompt.trim() ? "Clear your prompt to choose a different starter." : "Choose a starter or describe the work for your agent."}
+                            : needsConnect ? "Connect Claude or Codex to start an agent."
+                                : "Describe the work for your agent. Press Enter to send, or Shift+Enter for a new line."}
                     </p>
                     <p className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1 pt-1 text-xs text-muted-foreground">
                         {needsConnect ? (
@@ -268,10 +339,10 @@ export default function HomeView() {
                     />
                 </div>
                 <div className="grid gap-8 pb-8 md:grid-cols-2 md:gap-12">
-                    <section aria-labelledby="home-projects-title" className="min-w-0">
+                    <section data-matrix-quiet aria-labelledby="home-projects-title" className="min-w-0">
                         <h2 id="home-projects-title" className="mb-4 text-base font-medium">Projects</h2>
                         <div className="divide-y divide-border/60">
-                            {projects.slice(0, 4).map((project) => <Button key={project.id} type="button" variant="ghost" aria-pressed={project.id === activeProjectId} className="h-auto w-full justify-start gap-3 rounded-lg px-2 py-3 text-left" onClick={() => { selectProject(project.id, project.workspaces?.[0]?.id); area.current?.focus(); }}>
+                            {projects.slice(0, 4).map((project) => <Button key={project.id} type="button" variant="ghost" aria-pressed={project.id === activeProjectId} className="home-list-row h-auto w-full justify-start gap-3 rounded-lg px-2 py-3 text-left" onClick={() => openCanvas(project.id, project.workspaces?.[0]?.id)}>
                                 <ProjectMark project={project} className="size-5" />
                                 <span className="flex min-w-0 flex-1 flex-col gap-1"><span className="truncate font-medium">{project.displayName || project.name}</span><span className="truncate font-mono text-xs text-muted-foreground">{project.workspaces?.[0]?.branch || project.workspaces?.[0]?.name || "Project checkout"}</span></span>
                                 <IconArrowRight className="size-4 text-muted-foreground" />
@@ -280,14 +351,15 @@ export default function HomeView() {
                             {projectsLoading && <div role="status" aria-label="Loading projects" className="space-y-4 py-3"><Skeleton rows={1} className="h-4 w-3/4" /><Skeleton rows={1} className="h-4 w-1/2" /></div>}
                         </div>
                     </section>
-                    <section aria-labelledby="home-starters-title" className="min-w-0">
+                    <section data-matrix-quiet aria-labelledby="home-starters-title" className="min-w-0">
                         <h2 id="home-starters-title" className="mb-4 text-base font-medium">Start with</h2>
                         <div role="group" aria-label="Prompt starters" className="divide-y divide-border/60">
-                            {promptStarters.map((starter) => <Button key={starter.label} type="button" variant="ghost" disabled={busy || !!prompt.trim()} className="h-auto w-full justify-start gap-3 rounded-lg px-2 py-4 text-left" onClick={() => { setPrompt(starter.prompt); requestAnimationFrame(() => area.current?.focus()); }}><starter.icon aria-hidden="true" className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1">{starter.label}</span><IconArrowRight className="size-4 text-muted-foreground" /></Button>)}
+                            {promptStarters.map((starter) => <Button key={starter.label} type="button" variant="ghost" disabled={busy || !promptIsStarter} className="home-list-row h-auto w-full justify-start gap-3 rounded-lg px-2 py-4 text-left" onClick={() => typePrompt(starter.prompt)}><starter.icon aria-hidden="true" className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1">{starter.label}</span><IconArrowRight className="size-4 text-muted-foreground" /></Button>)}
                         </div>
                     </section>
                 </div>
-            </FloqReveal>
+            </div>
+        </div>
         </div>
     );
 }

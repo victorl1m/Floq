@@ -36,3 +36,10 @@ dist-ssr
 *.key
 *.p12
 *.keystore
+
+# Redesign working notes, screenshots and reports
+docs/redesign/
+
+# Python caches (probe scripts)
+__pycache__/
+*.pyc

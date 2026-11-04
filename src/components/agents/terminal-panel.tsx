@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { IconLayoutColumns, IconPlus, IconRobot, IconTerminal2, IconX } from "@tabler/icons-react";
+import { IconHome, IconLayoutColumns, IconPlus, IconRobot, IconTerminal2, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import { homeRelativeCwd, shellLocationLabel } from "@/lib/runtime/shell-location";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { createPortal } from "react-dom";
@@ -14,9 +14,6 @@ import type { SessionSummary } from "@/lib/runtime/types";
 import SessionTerminal, { STATE_DOT } from "./session-terminal";
 import { isLive } from "./provider";
 import { ProviderIcon } from "./provider";
-import ProjectPicker from "@/components/projects/project-picker";
-import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
-import CloneDialog from "@/components/home/clone-dialog";
 import { chooseSplitPeer, resolveSplitPeer, visibleSplitIds } from "@/lib/runtime/terminal-split";
 import {
     DropdownMenu,
@@ -54,11 +51,9 @@ export default function TerminalPanel() {
         setNewAgentOpen,
         closeTab,
         projects,
-        projectsLoading,
         activeProjectId,
         activeWorkspaceId,
         selectProject,
-        createProject,
         userPreferences,
         updateUserPreferences,
     } = useRuntime();
@@ -68,13 +63,11 @@ export default function TerminalPanel() {
     const slot = useTitlebarSlot();
     const creating = useRef(false);
     const [shellError, setShellError] = useState<string | null>(null);
-    const [newTerminalProjectOpen, setNewTerminalProjectOpen] = useState(false);
-    const [cloneProjectOpen, setCloneProjectOpen] = useState(false);
-    const [newTerminalBusy, setNewTerminalBusy] = useState(false);
     const [splitSelection, setSplitSelection] = useState<{ primaryId: string; peerId: string } | null>(null);
     const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
 
-    async function newShell(projectId?: string | null, workspaceId?: string | null): Promise<boolean> {
+    /** Opens a shell: in a project workspace, or (`home`) in the runtime user's home directory with no project. */
+    async function newShell({ projectId, workspaceId, home }: { projectId?: string | null; workspaceId?: string | null; home?: boolean } = {}): Promise<boolean> {
         if (!client || creating.current) return false;
         creating.current = true;
         setShellError(null);
@@ -82,12 +75,12 @@ export default function TerminalPanel() {
             const session = await client.createSession({
                 provider: "shell",
                 title: "Terminal",
-                ...(projectId ? { projectId } : {}),
-                ...(workspaceId ? { workspaceId } : {}),
+                ...(home || !projectId ? { home: true } : { projectId, ...(workspaceId ? { workspaceId } : {}) }),
             });
             upsertSession(session);
             // From the Terminal view stay there; from a project, join its tab strip beside the agents.
-            openSession(session, view === "terminal" ? "terminal" : "agent");
+            // A home terminal has no project strip to join, so it always opens in the Terminal view.
+            openSession(session, view === "terminal" || !session.projectId ? "terminal" : "agent");
             void refresh();
             return true;
         } catch (e) {
@@ -122,14 +115,15 @@ export default function TerminalPanel() {
         if (view !== "terminal") wasTerminal.current = false;
         if (view !== "terminal" || !loaded || supported !== true) return;
         if (terminalTabs.length === 0) {
-            if (shells.length > 0) {
-                openSession(shells.find((s) => isLive(s.state)) ?? shells[0], "terminal");
+            // Reopen only project-less shells: a project's terminal belongs to its canvas.
+            const homeShells = shells.filter((s) => !s.projectId);
+            if (homeShells.length > 0) {
+                openSession(homeShells.find((s) => isLive(s.state)) ?? homeShells[0], "terminal");
                 return;
             }
             if (entering && !creating.current) {
                 wasTerminal.current = true;
-                if (activeProjectId) void newShell(activeProjectId, activeWorkspaceId);
-                else setNewTerminalProjectOpen(true);
+                void newShell({ home: true });
             }
             return;
         }
@@ -242,12 +236,13 @@ export default function TerminalPanel() {
     function addNewTerminal() {
         const projectId = primarySession ? primarySession.projectId : activeProjectId;
         const workspaceId = primarySession ? primarySession.worktreeId : activeWorkspaceId;
-        if (!projectId) {
-            setNewTerminalProjectOpen(true);
+        // The Terminal view only creates home terminals; with no project in context also open in the user's home.
+        if (view === "terminal" || !projectId) {
+            void newShell({ home: true });
             return;
         }
         selectProject(projectId, workspaceId);
-        void newShell(projectId, workspaceId);
+        void newShell({ projectId, workspaceId });
     }
 
     const addSessionMenu = (
@@ -260,6 +255,9 @@ export default function TerminalPanel() {
             <DropdownMenuContent align="start" className="w-48 min-w-[192px] whitespace-nowrap">
                 <DropdownMenuItem onSelect={addNewAgent}><IconRobot />New agent</DropdownMenuItem>
                 <DropdownMenuItem onSelect={addNewTerminal}><IconTerminal2 />New terminal</DropdownMenuItem>
+                {view !== "terminal" && (primarySession ? primarySession.projectId : activeProjectId) && (
+                    <DropdownMenuItem onSelect={() => void newShell({ home: true })}><IconHome />New terminal in ~</DropdownMenuItem>
+                )}
             </DropdownMenuContent>
         </DropdownMenu>
     );
@@ -301,19 +299,20 @@ export default function TerminalPanel() {
                                 <div key={session.id} className={cn("group flex h-7 shrink-0 items-center gap-1.5 rounded-md pr-1 pl-2.5 text-xs", active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50")}>
                                     <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
                                     <ProviderIcon provider={session.provider} />
-                                    <button type="button" className="max-w-40 truncate" title={[project?.displayName || project?.name, session.branch, session.title].filter(Boolean).join(" · ")} onClick={() => activateSession(session, "terminal")}>
+                                    <button type="button" className="max-w-40 truncate" title={[shellLocationLabel(session, project?.displayName || project?.name), session.branch, session.title].filter(Boolean).join(" · ")} onClick={() => activateSession(session, "terminal")}>
                                         {session.title}
                                     </button>
-                                    <button
+                                    {!session.projectId && <span className="shrink-0 font-mono text-[10px] text-muted-foreground" aria-label={`Working directory ${homeRelativeCwd(session.cwd)}`}>{homeRelativeCwd(session.cwd)}</span>}
+                                    <Button variant="ghost" size="icon-xs"
                                         type="button"
                                         aria-label={session.provider === "shell" ? `Stop terminal ${session.title}` : `Close tab ${session.title}`}
                                         title={session.provider === "shell" ? `Stop terminal ${session.title}` : `Close tab and put ${session.title} to sleep`}
                                         disabled={closingIds.includes(session.id)}
-                                        className="rounded p-0.5 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                                        className="size-4 rounded text-muted-foreground"
                                         onClick={() => session.provider === "shell" ? void closeShell(session.id) : void closeAgent(session, "terminal")}
                                     >
                                         <IconX className="size-3" />
-                                    </button>
+                                    </Button>
                                 </div>
                             );
                         })}
@@ -336,16 +335,16 @@ export default function TerminalPanel() {
                                     {session.title}
                                 </button>
                                 {tabBranchLabel(session) && <span className="max-w-24 truncate text-[10px] text-muted-foreground/70">{tabBranchLabel(session)}</span>}
-                                <button
+                                <Button variant="ghost" size="icon-xs"
                                     type="button"
                                     aria-label={session.provider === "shell" ? `Stop terminal ${session.title}` : `Close tab ${session.title}`}
                                     title={session.provider === "shell" ? `Stop terminal ${session.title}` : isLive(session.state) ? `Close tab and put ${session.title} to sleep` : `Close tab ${session.title}`}
                                     disabled={closingIds.includes(session.id)}
-                                    className="rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                                    className="size-4 rounded text-muted-foreground"
                                     onClick={() => session.provider === "shell" ? void closeShell(session.id) : void closeAgent(session, "agent")}
                                 >
                                     <IconX className="size-3" />
-                                </button>
+                                </Button>
                             </div>
                         );
                     })}
@@ -376,14 +375,14 @@ export default function TerminalPanel() {
                                     <ProviderIcon provider={session.provider} />
                                     <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
                                     <span className="min-w-0 flex-1 truncate">{session.title}</span>
-                                    <button
+                                    <Button variant="ghost" size="icon-xs"
                                         type="button"
-                                        className="cursor-pointer rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:bg-muted"
+                                        className="size-5 rounded text-muted-foreground"
                                         aria-label="Close split view"
                                         onClick={closeSplit}
                                     >
                                         <IconX className="size-3.5" />
-                                    </button>
+                                    </Button>
                                 </div>
                             )}
                             <div className={cn("absolute inset-x-0 bottom-0", split ? "top-7" : "top-0")}>
@@ -419,11 +418,14 @@ export default function TerminalPanel() {
                             </EmptyMedia>
                             <EmptyTitle>No terminal open</EmptyTitle>
                             <EmptyDescription>
-                        {shellError ? <span className="text-destructive">{shellError}</span> : "Choose a project to open a terminal."}
+                        {shellError ? <span role="alert" className="text-destructive">{shellError}</span> : "Opens in your home folder (~), no project needed. Project terminals are created on the project's canvas."}
                             </EmptyDescription>
                         </EmptyHeader>
                         <EmptyContent>
-                            <Button onClick={() => setNewTerminalProjectOpen(true)}>Choose project</Button>
+                            <Button onClick={() => void newShell({ home: true })}>
+                                <IconTerminal2 />
+                                {shellError ? "Try again" : "Open terminal"}
+                            </Button>
                         </EmptyContent>
                     </Empty>
                 )}
@@ -449,53 +451,6 @@ export default function TerminalPanel() {
                     </Empty>
                 )}
             </div>
-            <AppDialog
-                open={newTerminalProjectOpen}
-                onOpenChange={(open) => !newTerminalBusy && setNewTerminalProjectOpen(open)}
-                icon={<IconTerminal2 />}
-                title="New terminal"
-                description="Choose a project and workspace for this terminal."
-                footer={
-                    <>
-                        <Button type="button" variant="outline" disabled={newTerminalBusy} onClick={() => setNewTerminalProjectOpen(false)}>Cancel</Button>
-                        <Button
-                            type="button"
-                            disabled={newTerminalBusy || projectsLoading || !activeProjectId}
-                            onClick={() => {
-                                if (!activeProjectId) return;
-                                setNewTerminalBusy(true);
-                                void newShell(activeProjectId, activeWorkspaceId).then((opened) => {
-                                    if (opened) setNewTerminalProjectOpen(false);
-                                }).finally(() => setNewTerminalBusy(false));
-                            }}
-                        >
-                            {newTerminalBusy && <Spinner />}
-                            {newTerminalBusy ? "Opening..." : "Open terminal"}
-                        </Button>
-                    </>
-                }
-            >
-                {shellError && <ErrorBanner>{shellError}</ErrorBanner>}
-                <div className="flex flex-col gap-2">
-                    <Label className="text-sm">Project</Label>
-                    <ProjectPicker
-                        projects={projects}
-                        selectedProjectId={activeProjectId}
-                        selectedWorkspaceId={activeWorkspaceId}
-                        onSelect={(project, workspaceId) => selectProject(project.id, workspaceId)}
-                        onAddProject={() => setCloneProjectOpen(true)}
-                        disabled={newTerminalBusy || projectsLoading}
-                    />
-                </div>
-            </AppDialog>
-            <CloneDialog
-                open={cloneProjectOpen}
-                onOpenChange={setCloneProjectOpen}
-                onClone={async (repo) => {
-                    const project = await createProject({ gitUrl: repo.url, name: repo.label });
-                    selectProject(project.id, project.workspaces[0]?.id);
-                }}
-            />
         </div>
     );
 }

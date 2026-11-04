@@ -37,30 +37,7 @@ import { ProviderIcon, isLive } from "./provider";
 import { resumeHint, sleepReasonText } from "./sleep-copy";
 import { formatDistanceToNowStrict } from "date-fns";
 import { openRightSidebar } from "@/lib/right-sidebar";
-
-const THEME = {
-    background: "#0c0c0e",
-    foreground: "#e4e4e7",
-    cursor: "#e4e4e7",
-    cursorAccent: "#0c0c0e",
-    selectionBackground: "#3f3f46",
-    black: "#18181b",
-    red: "#f87171",
-    green: "#4ade80",
-    yellow: "#facc15",
-    blue: "#60a5fa",
-    magenta: "#c084fc",
-    cyan: "#22d3ee",
-    white: "#e4e4e7",
-    brightBlack: "#52525b",
-    brightRed: "#fca5a5",
-    brightGreen: "#86efac",
-    brightYellow: "#fde047",
-    brightBlue: "#93c5fd",
-    brightMagenta: "#d8b4fe",
-    brightCyan: "#67e8f9",
-    brightWhite: "#fafafa",
-};
+import { minimumContrastRatio, terminalTheme, useTerminalDark } from "@/lib/terminal-theme";
 
 interface Props {
     sessionId: string;
@@ -73,12 +50,14 @@ interface Props {
     focusOnActive?: boolean;
     /** For hidden sessions that are not in the store (e.g. provider login): no toolbar or overlay. */
     embedded?: { session: SessionSummary; onSession: (session: SessionSummary) => void };
+    /** Use an alpha terminal background when displayed over the expanded glass dialog. */
+    transparentBackground?: boolean;
     /** Called with every chunk of terminal output. */
     onOutput?: (data: string) => void;
 }
 
 /** One xterm instance + stream socket per session. Stays mounted while the session is open. */
-export default function SessionTerminal({ sessionId, active, titlebarActions = true, titlebarTitle = true, focusOnActive = true, embedded, onOutput }: Props) {
+export default function SessionTerminal({ sessionId, active, titlebarActions = true, titlebarTitle = true, focusOnActive = true, embedded, onOutput, transparentBackground = false }: Props) {
     const { client, sessions, upsertSession, resumeRequest, consumeResumeRequest } = useRuntime();
     const session = embedded?.session ?? sessions.find((s) => s.id === sessionId);
     const live = session ? isLive(session.state) : false;
@@ -111,6 +90,9 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const canUploadRef = useRef(false);
 
     const slot = useTitlebarSlot();
+    const dark = useTerminalDark();
+    const themeRef = useRef({ dark, transparentBackground });
+    themeRef.current = { dark, transparentBackground };
     const [termPrefs] = useTerminalPrefs();
     const [performancePrefs] = usePerformancePrefs();
     const [termReady, setTermReady] = useState(false);
@@ -255,7 +237,9 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             scrollback: effectiveScrollback(loadPerformancePrefs()),
             smoothScrollDuration: 0,
             allowProposedApi: true,
-            theme: THEME,
+            allowTransparency: transparentBackground,
+            minimumContrastRatio: minimumContrastRatio(themeRef.current.dark),
+            theme: terminalTheme(themeRef.current.dark, transparentBackground),
             // Clicking a link opens it directly (no native confirm dialog).
             linkHandler: { activate: (_event, uri) => void openExternal(uri), allowNonHttpProtocols: false },
         });
@@ -472,7 +456,9 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
 
     // Stream connection: only while the session is live; reconnects with backoff from the last seq.
     useEffect(() => {
-        if (!client || (!live && !canReplayTerminal) || !termReady) return;
+        // Keep the xterm instance mounted for scrollback, but only read the PTY while visible.
+        // Hidden tabs reconnect from lastSeqRef when activated, avoiding duplicate streams beside canvas mirrors.
+        if (!client || !active || (!live && !canReplayTerminal) || !termReady) return;
         let stopped = false;
         let attempt = 0;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -554,7 +540,16 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             wsRef.current = null;
             ws?.close();
         };
-    }, [client, live, canReplayTerminal, sessionId, termReady]);
+    }, [client, active, live, canReplayTerminal, sessionId, termReady]);
+
+    // Live theme switch: swap colours on the open terminal (scrollback and stream untouched, no remount).
+    useEffect(() => {
+        const term = termRef.current;
+        if (!term) return;
+        term.options.minimumContrastRatio = minimumContrastRatio(dark);
+        term.options.theme = terminalTheme(dark, transparentBackground);
+        term.refresh(0, term.rows - 1);
+    }, [dark, transparentBackground, termReady]);
 
     // Refit and focus when the tab becomes visible.
     useEffect(() => {
@@ -638,8 +633,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     slot,
                 )}
             <div
-                className="relative min-h-0 flex-1"
-                style={{ backgroundColor: THEME.background }}
+                className={cn("relative min-h-0 flex-1", !transparentBackground && "terminal-surface")}
                 onDragEnter={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); if (canUploadRef.current) setDropHover(true); } }}
                 onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; if (canUploadRef.current) setDropHover(true); } }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropHover(false); }}
@@ -667,7 +661,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                         }}
                     />
                     <div className="absolute top-2 right-11 z-10 flex items-center gap-1">
-                        {uploading && <span role="status" aria-live="polite" className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1 text-xs text-zinc-200"><Spinner className="size-3" />Uploading</span>}
+                        {uploading && <span role="status" aria-live="polite" className="flex items-center gap-1.5 rounded-md border border-border bg-popover/90 px-2 py-1 text-xs text-popover-foreground"><Spinner className="size-3" />Uploading</span>}
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <Button variant="ghost" size="icon-sm" aria-label="Upload files to terminal" disabled={!canUploadRef.current || uploadingRef.current} onClick={() => fileInputRef.current?.click()}>
@@ -740,16 +734,16 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     </div>
                 )}
                 {!live && !embedded && (
-                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/45 p-4 text-center backdrop-blur-[1px]">
+                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center terminal-scrim p-4 text-center">
                         <div className="flex max-h-full w-full max-w-sm flex-col items-center gap-3 overflow-y-auto py-2">
-                            <div className="flex max-w-full items-center gap-2 text-zinc-400">
+                            <div className="flex max-w-full items-center gap-2 text-muted-foreground">
                                 <ProviderIcon provider={session.provider} />
                                 <span className="truncate text-xs">{session.title}</span>
                             </div>
-                            <p className="text-sm font-medium text-zinc-100">{overlayTitle}</p>
-                            <div className="flex flex-col gap-1 text-xs text-zinc-400">
+                            <p className="text-sm font-medium text-foreground">{overlayTitle}</p>
+                            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                                 {session.state === "failed" ? (
-                                    <p className="text-zinc-300">
+                                    <p className="text-foreground/80">
                                         {session.exitCode !== null ? `Process exited with code ${session.exitCode}. ` : "The process stopped unexpectedly. "}
                                         Review the terminal output for details, then resume to try again.
                                     </p>
@@ -768,14 +762,14 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                                 disabled={busy !== null}
                                 aria-busy={busy === "resume"}
                                 onClick={() => void resume()}
-                                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-300 focus-visible:ring-zinc-300/50"
+                                className="dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 dark:focus-visible:ring-zinc-300/50"
                             >
                                 {busy === "resume" ? <Spinner /> : <IconPlayerPlay />}
                                 {busy === "resume" ? "Resuming" : "Resume"}
                             </Button>
                             <div role="status" aria-live="polite" className="text-xs">
                                 {busy === "resume" && <span className="sr-only">Resuming</span>}
-                                {resumeError && <p className="text-red-300">Could not resume: {resumeError}</p>}
+                                {resumeError && <p className="text-destructive dark:text-red-300">Could not resume: {resumeError}</p>}
                             </div>
                         </div>
                     </div>
