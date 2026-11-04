@@ -1,0 +1,200 @@
+# Build macOS
+#
+# Builds the Floq desktop app (Tauri 2) on macos-latest (Apple Silicon) as a
+# UNIVERSAL app (arm64 + x86_64) and produces a .dmg and a .app.tar.gz.
+# Signing and notarization are optional and only happen when secrets exist.
+#
+# Triggers
+#   - push to main (ignoring docs/**, **.md and runtime/**; the Node runtime is
+#     not part of the desktop bundle)
+#   - push of a tag matching v* (path filters are not evaluated for tag pushes)
+#   - pull_request to main (same path filters; no secrets are used)
+#   - workflow_dispatch (manual)
+#
+# Outputs
+#   - Workflow artifact "floq-macos-<version>-<sha>" (14 days retention)
+#   - On a v* tag: the installers are also attached to a DRAFT GitHub Release
+#     for that tag.
+#
+# How to cut a release: bump the version, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+# Review and publish the draft release in the GitHub UI once the Windows and
+# macOS workflows have both finished.
+#
+# Release race (this workflow and "Build macOS" run in parallel on the same tag):
+#   We deliberately do NOT let tauri-action create the release (tagName input).
+#   Two independent workflows could both see "no release" and create duplicates.
+#   Instead the `release` job runs `gh release view || gh release create` and
+#   retries once on "already exists", then `gh release upload --clobber`.
+#   Whoever gets there first creates the draft; the other reuses it.
+#
+# Secrets (ALL OPTIONAL; without them the build succeeds unsigned, and Gatekeeper
+#   will warn users). Never available on pull_request, so forks get nothing:
+#     APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
+#     APPLE_CERTIFICATE_PASSWORD  password of that .p12
+#     APPLE_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
+#     APPLE_ID, APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID
+#                                 -> notarization (needs the three above too)
+#   Tauri treats an env var that is merely set (even empty) as "sign me", so the
+#   "Wire optional signing" step exports these to later steps only when non-empty.
+#   Updater signing (TAURI_SIGNING_PRIVATE_KEY) is omitted: the updater is not
+#   enabled in tauri.conf.json.
+#
+# Repo settings: Actions enabled. Workflow permissions can stay "Read repository
+#   contents" because the release job requests `contents: write` itself.
+#
+# Hardening note: third-party actions are pinned to major tags; consider pinning
+# them to full commit SHAs later (e.g. with Dependabot or pinact).
+
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'runtime/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'runtime/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (macos-latest, universal)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    outputs:
+      artifact: ${{ steps.meta.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Compute artifact name
+        id: meta
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "artifact=floq-macos-${version}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+
+      - name: Wire optional signing and notarization
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            } >> "$GITHUB_ENV"
+            echo "Signing enabled."
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              {
+                echo "APPLE_ID=$APPLE_ID"
+                echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+              } >> "$GITHUB_ENV"
+              echo "Notarization enabled."
+            fi
+          else
+            echo "No signing secrets; building unsigned."
+          fi
+
+      - name: Build with Tauri
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: .
+          args: --target universal-apple-darwin --bundles app,dmg
+
+      - name: Archive .app
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -n1)
+          [ -n "$app" ] || { echo "No .app produced" >&2; exit 1; }
+          # ditto-free tar keeps the bundle layout; xattrs/symlinks are preserved.
+          tar -czf "$bundle/macos/$(basename "$app").tar.gz" -C "$bundle/macos" "$(basename "$app")"
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach to draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist-installers
+
+      - name: Create draft release if missing (race tolerant) and upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          create() {
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Floq $TAG" --generate-notes --verify-tag
+          }
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if ! create 2> create.err; then
+              if grep -qi 'already exists' create.err; then
+                echo "Release created concurrently by the other workflow; reusing it."
+              else
+                cat create.err >&2
+                # One retry for transient errors, then require the release to exist.
+                sleep 5
+                create || gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+              fi
+            fi
+          fi
+          mapfile -t files < <(find dist-installers -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \))
+          [ "${#files[@]}" -gt 0 ] || { echo "No macOS artifacts found" >&2; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
