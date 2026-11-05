@@ -39,7 +39,7 @@ export function nodePosition(
   nodeHeight = DEFAULT_NODE_SIZE.height,
   nodeWidth = DEFAULT_NODE_SIZE.width,
   parentHeight = DEFAULT_NODE_SIZE.height,
-  siblingPositions: readonly { x: number; y: number }[] = [],
+  siblingPositions: readonly { x: number; y: number; width: number; height: number }[] = [],
 ) {
   if (saved?.[id]) return saved[id];
   const parent = parentId ? saved?.[parentId] : undefined;
@@ -47,7 +47,7 @@ export function nodePosition(
     const autoParent = automatic[parentId!];
     let x = (automatic[id]?.x ?? parent.x) + (autoParent ? parent.x - autoParent.x : 0);
     const y = parent.y + parentHeight + GAP_Y;
-    const overlapsSibling = (left: number) => siblingPositions.some((point) => left < point.x + nodeWidth && left + nodeWidth > point.x && y < point.y + nodeHeight && y + nodeHeight > point.y);
+    const overlapsSibling = (left: number) => siblingPositions.some((point) => left < point.x + point.width && left + nodeWidth > point.x && y < point.y + point.height && y + nodeHeight > point.y);
     while (overlapsSibling(x)) x += nodeWidth + GAP_X;
     return { x, y };
   }
