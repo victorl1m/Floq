@@ -8,7 +8,7 @@ import { MessageInbox, typeMessage } from "../src/messageDelivery.ts";
 import { buildWiredBlock, buildWiredNotice } from "../src/wiredContext.ts";
 import { buildSubagentInstruction } from "../src/subagents.ts";
 import {
-  Approvals, APPROVAL_DEFAULT_TTL_MS, APPROVAL_MAX_TTL_MS, MAX_PENDING_PER_SESSION, RATE_MAX_PER_WINDOW, type ApprovalAgent, type ApprovalFrame,
+  Approvals, APPROVAL_DEFAULT_TTL_MS, WAITER_GONE_MS, APPROVAL_MAX_TTL_MS, MAX_PENDING_PER_SESSION, RATE_MAX_PER_WINDOW, type ApprovalAgent, type ApprovalFrame,
 } from "../src/approvals.ts";
 import {
   APPROVAL_ID, APPROVAL_REDACTED, actionHash, cleanActionText, containsApprovalMarker, formatApprovalLine, isIrreversibleAction, neutralizeApprovalMarker, neutralizeDeep, newApprovalId,
@@ -192,6 +192,22 @@ test("cancel by the requester only; ended sessions cancel their requests", async
   const g = await ask(gone.approvals);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal((await gone.approvals.verify(U, B, g.id)).status, "CANCELLED");
+});
+
+test("a --wait request is withdrawn when its waiter stops polling; one without --wait stays pending", async () => {
+  const { approvals, frames, advance } = make();
+  const waited = await ask(approvals, "git push origin main", { waiting: true });
+  const plain = await ask(approvals, "npm publish");
+  advance(WAITER_GONE_MS - 1_000);
+  await approvals.status(U, A, waited.id); // a poll keeps it alive
+  advance(WAITER_GONE_MS - 1_000);
+  assert.equal((await approvals.verify(U, B, waited.id)).status, "PENDING");
+  advance(2_000);
+  assert.equal((await approvals.verify(U, B, waited.id)).status, "CANCELLED");
+  assert.ok(frames.some((f) => f.type === "approval-resolved" && f.id === waited.id && f.status === "cancelled"));
+  await assert.rejects(approvals.resolve(U, waited.id, "allow"), /no longer pending/);
+  assert.equal((await approvals.verify(U, B, plain.id)).status, "PENDING");
+  assert.match((await approvals.status(U, A, waited.id)).message, /stopped waiting/);
 });
 
 // ---------- user-only resolve and verify scoping ----------

@@ -87,6 +87,13 @@ function useAnnouncement(item: ApprovalItem, seconds: number): string {
  * Focus Deny so a stray Enter or Space never grants anything, but without the keyboard focus ring: a ring on Deny
  * at open read as "Deny is selected / hovered" next to the primary Allow. Tab or arrow keys still show the ring.
  */
+/** Enter or Space aimed at the Deny / Allow buttons: swallowed so only a click (or Ctrl/Cmd+Enter for Allow) decides. */
+function isDecisionKey(event: React.KeyboardEvent): boolean {
+  if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return false;
+  if (event.metaKey || event.ctrlKey) return false;
+  return !!(event.target as Element | null)?.closest?.("[data-slot=approval-deny], [data-slot=approval-allow]");
+}
+
 function focusDenyQuietly(root: HTMLElement | null) {
   root?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true, focusVisible: false } as FocusOptions);
 }
@@ -170,8 +177,8 @@ export function ApprovalCard({ item, autoFocusDeny, onAnswer, error, busy }: {
         <div className="flex items-center gap-2">
           {pending ? (
             <>
-              <Button type="button" variant="outline" data-slot="approval-deny" data-autofocus={autoFocusDeny ? "" : undefined} disabled={!!busy} onClick={() => onAnswer("deny")} className="hover:border-foreground/30 hover:bg-foreground/[0.06] active:bg-foreground/10 dark:hover:border-foreground/25 dark:hover:bg-foreground/10 dark:active:bg-foreground/15">{busy === "deny" ? "Denying..." : "Deny"}</Button>
-              <Button type="button" data-slot="approval-allow" disabled={!!busy} onClick={() => onAnswer("allow")} className="hover:shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_28%,transparent)] active:bg-primary-hover active:shadow-none">
+              <Button type="button" variant="outline" data-slot="approval-deny" data-autofocus={autoFocusDeny ? "" : undefined} disabled={!!busy} onClick={() => onAnswer("deny")} className="hover:border-destructive/45 hover:bg-destructive/10 hover:text-destructive active:bg-destructive/15 dark:hover:border-destructive/50 dark:hover:bg-destructive/15 dark:hover:text-destructive dark:active:bg-destructive/20">{busy === "deny" ? "Denying..." : "Deny"}</Button>
+              <Button type="button" data-slot="approval-allow" disabled={!!busy} onClick={() => onAnswer("allow")} className="hover:-translate-y-px hover:shadow-[0_6px_16px_-6px_color-mix(in_oklch,var(--primary)_70%,transparent)] active:translate-y-px active:bg-primary-hover active:shadow-none motion-reduce:hover:translate-y-0">
                 {busy === "allow" ? "Allowing..." : "Allow once"}
                 <Kbd aria-hidden="true" className="ml-1 border-white/45 bg-white/15 text-white shadow-none dark:bg-white/15">{isMac ? "⌘↵" : "Ctrl+↵"}</Kbd>
               </Button>
@@ -284,8 +291,12 @@ export function ApprovalHost() {
               focusDenyQuietly(body.current);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void answer("allow"); }
+              // Ctrl/Cmd+Enter is the only keyboard shortcut: it allows. Plain Enter or Space on Deny / Allow (the dialog
+              // can pop up mid-typing, with focus on Deny) must never decide anything, so the decision takes a click.
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void answer("allow"); return; }
+              if (isDecisionKey(event)) event.preventDefault();
             }}
+            onKeyUp={(event) => { if (isDecisionKey(event)) event.preventDefault(); }}
             className="floq-surface floq-frosted-dialog fixed top-1/2 left-1/2 max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[30rem] -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-[22px] p-5 text-sm text-popover-foreground shadow-(--shadow-elev-3) outline-none duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 motion-reduce:animate-none"
           >
             <>

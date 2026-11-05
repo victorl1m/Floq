@@ -276,7 +276,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         }
         case "approvals/request": {
           const parties = await orchestrator.approvalParties(userId, sessionId, body.target);
-          return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, ttlSec: body.timeoutSec }));
+          return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, ttlSec: body.timeoutSec, waiting: body.wait === true }));
         }
         case "approvals/status":
           return send(res, 200, await approvals.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));

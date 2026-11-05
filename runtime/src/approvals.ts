@@ -22,6 +22,12 @@ export const MAX_PENDING_PER_USER = 12;
 export const RATE_WINDOW_MS = 10 * 60_000;
 export const RATE_MAX_PER_WINDOW = 10;
 const ACTIVE_POLL_MS = 90_000;
+/**
+ * A request made with `floq approval request --wait` has a waiter that long-polls status (each poll lasts at most 55 s).
+ * When no poll arrives for this long the waiter is gone (interrupted, killed, timed out), so nobody would act on an
+ * answer: the request is withdrawn instead of staying on the user's screen, where a late Allow would grant to no one.
+ */
+export const WAITER_GONE_MS = 75_000;
 
 export type ApprovalStatus = "pending" | "granted" | "denied" | "expired" | "cancelled" | "consumed";
 
@@ -44,6 +50,8 @@ export interface ApprovalRecord {
   validUntil: number | null;
   decidedAt: number | null;
   ttlMs: number;
+  /** Requested with --wait: withdrawn when the waiter stops polling (see WAITER_GONE_MS). */
+  waiter?: boolean;
 }
 
 /** What the user's app shows. */
@@ -96,6 +104,8 @@ export interface RequestInput {
   action: unknown;
   detail?: unknown;
   ttlSec?: unknown;
+  /** True when the requester blocks on the answer (`--wait`). */
+  waiting?: unknown;
 }
 
 interface Timers { expiry?: NodeJS.Timeout; liveness?: NodeJS.Timeout }
@@ -176,6 +186,10 @@ export class Approvals {
   private refresh(a: ApprovalRecord): void {
     const t = this.now();
     if (a.status === "pending" && t >= a.expiresAt) this.settle(a, "expired");
+    else if (a.status === "pending" && a.waiter && t - (this.polled.get(a.id) ?? a.createdAt) >= WAITER_GONE_MS) {
+      log.info("agent.approval_waiter_gone", this.ids(a));
+      this.settle(a, "cancelled");
+    }
     else if (a.status === "granted" && a.validUntil != null && t >= a.validUntil) this.settle(a, "expired");
   }
 
@@ -228,7 +242,10 @@ export class Approvals {
       if (a.userId !== userId) continue;
       this.refresh(a);
       if (a.status !== "pending") continue;
-      if (a.requester.id === input.requester.id && a.target.id === input.target.id && a.actionHash === hash) return { approval: this.view(a, t), id: a.id, deduped: true };
+      if (a.requester.id === input.requester.id && a.target.id === input.target.id && a.actionHash === hash) {
+        if (input.waiting === true) { a.waiter = true; this.polled.set(a.id, t); }
+        return { approval: this.view(a, t), id: a.id, deduped: true };
+      }
       if (a.requester.id === input.requester.id) forSession++;
       forUser++;
     }
@@ -239,12 +256,14 @@ export class Approvals {
     this.requests.set(input.requester.id, recent);
 
     const id = newApprovalId();
-    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + ttlMs, validUntil: null, decidedAt: null, ttlMs };
+    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + ttlMs, validUntil: null, decidedAt: null, ttlMs, waiter: input.waiting === true };
     this.records.set(id, a);
+    if (a.waiter) this.polled.set(id, t);
     const timers: Timers = {
       expiry: setTimeout(() => this.refresh(a), ttlMs + 20),
       liveness: setInterval(() => {
         if (this.options.isAlive && !this.options.isAlive(userId, input.requester.id)) { if (a.status === "pending") this.settle(a, "cancelled"); }
+        else this.refresh(a);
       }, this.options.livenessMs ?? 2_000),
     };
     timers.expiry?.unref();
@@ -316,7 +335,7 @@ export class Approvals {
       : a.status === "granted" ? `granted by the user for agent ${a.target.name} (${a.target.id}): "${a.action}". Single use; the target confirms with: floq approval verify ${a.id} --consume`
       : a.status === "denied" ? "denied by the user. Do not do it."
       : a.status === "consumed" ? "granted and already used"
-      : a.status === "cancelled" ? "cancelled" : "expired: the user did not answer in time (or the grant lapsed). Nothing was approved.";
+      : a.status === "cancelled" ? "cancelled: withdrawn by the agent (or it stopped waiting). Nothing was approved." : "expired: the user did not answer in time (or the grant lapsed). Nothing was approved.";
     return { id: a.id, status: a.status, action: a.action, target: a.target.name, targetSessionId: a.target.id, expiresAt: new Date(a.expiresAt).toISOString(), ...(a.validUntil ? { validUntil: new Date(a.validUntil).toISOString() } : {}), message };
   }
 

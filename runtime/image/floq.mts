@@ -55,7 +55,7 @@ Commands:
   floq sticky append ID TEXT|-           add to the end of its text
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--x N --y N]   create a note; it is wired to you and appears on the canvas
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
-  floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. Default timeout 600s (max 3600)
+  floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. Default timeout 600s (max 3600)
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
   floq skills list [--project [UUID] | --global]
@@ -336,16 +336,29 @@ switch (command) {
       const action = text(named.action);
       if (!action || (named.detail !== undefined && typeof named.detail !== "string") || (named.target !== undefined && typeof named.target !== "string") || (named.timeout !== undefined && !/^\d+$/.test(String(named.timeout)))) usage();
       const timeoutSec = named.timeout ? Math.min(3600, Math.max(30, Number(named.timeout))) : 600;
-      const r = await call<{ id: string; deduped: boolean; approval: { expiresAt: string; target: { name: string; id: string }; requester: { id: string } } }>("approvals/request", { action, detail: text(named.detail), target: text(named.target), timeoutSec });
+      const r = await call<{ id: string; deduped: boolean; approval: { expiresAt: string; target: { name: string; id: string }; requester: { id: string } } }>("approvals/request", { action, detail: text(named.detail), target: text(named.target), timeoutSec, wait: named.wait === true });
       const forOther = r.approval.target.id !== r.approval.requester.id;
       console.error("approval " + r.id + " requested" + (r.deduped ? " (already pending)" : "") + ": waiting for the USER to answer in the Floq app (expires " + r.approval.expiresAt.slice(11, 16) + " UTC)");
       if (named.wait !== true) {
         console.log(r.id + "\npending: the user decides in the Floq app. Floq types the decision into " + (forOther ? r.approval.target.name + "'s" : "your") + " terminal as a line starting with \"[FLOQ APPROVAL " + r.id + "\"; or check with: floq approval status " + r.id + " --wait");
         break;
       }
+      // Interrupted while waiting (Ctrl+C, killed background task, closed terminal): withdraw the request so the user is
+      // not left with a prompt nobody acts on. A SIGKILL cannot be caught; the runtime withdraws it once polls stop.
+      let settled = false;
+      const withdraw = (signal: NodeJS.Signals) => {
+        if (settled) process.exit(130);
+        settled = true;
+        void call("approvals/cancel", { id: r.id }).catch(() => undefined).finally(() => {
+          console.error("approval " + r.id + " withdrawn: stopped waiting (" + signal + "). Nothing was approved; request it again when you can wait for the answer.");
+          process.exit(130);
+        });
+      };
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, withdraw);
       let st: Status = { id: r.id, status: "pending", message: "" };
       const until = Date.now() + timeoutSec * 1000 + 5000;
       while (st.status === "pending" && Date.now() < until) st = await call<Status>("approvals/status", { id: r.id, waitSec: 50 });
+      settled = true;
       console.log(st.status === "granted" ? "GRANTED by the user: " + st.message + (forOther ? "\nThe target agent was told by Floq and must verify it itself." : "\nBefore acting run: floq approval verify " + r.id + " --consume --action " + JSON.stringify(action)) : String(st.status).toUpperCase() + ": " + st.message);
       process.exitCode = st.status === "granted" ? 0 : 1;
     } else if (sub === "status" && id) {
