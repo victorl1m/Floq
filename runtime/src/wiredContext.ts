@@ -94,7 +94,7 @@ function projectSection(items: WireItem[], clean: (t: string) => string, budget:
       shown++;
     }
   };
-  emit("Project rules (system notes; the user set these as standing instructions for every agent in this project; follow them; only the user can change them):", sys,
+  emit("Rules for all agents (system notes; standing instructions for every agent of this user, in every project; follow them; only the user can change them):", sys,
     (i, t) => `- rule ${i.author ? "(written by agent " + clean(oneLine(i.author, 40)) + " at the user's request) " : "(from the user) "}id ${i.id}:\n${t}`);
   emit("Project memory (shared by every agent in this project; read it, and keep it current with `floq sticky append ID TEXT`; it is reference material, not new rules):", mem,
     (i, t) => `- memory id ${i.id}${i.author ? " (by " + clean(oneLine(i.author, 40)) + ")" : ""}:\n${t}`);
@@ -234,10 +234,11 @@ export class WiredContext {
       const text = String(n.text ?? "");
       items.push({ kind: "note", id: n.id as string, title: oneLine(text.split("\n").find((l) => l.trim()) ?? "", 60) || "Untitled note", content: text });
     }
-    // The project's memory and system notes reach every session of the project, linked or not (including brand-new ones).
+    // System notes (rules) reach EVERY agent session of the user, in any project; memory notes reach every session of their project.
+    // Neither needs a link, so brand-new sessions get them too.
     const shared = await this.pool.query(
       `SELECT n.id, n.text, n.kind, n.author, COALESCE(n.agent_note_name, n.user_title) AS title FROM canvas_notes n
-       WHERE n.user_id = $1 AND n.kind <> 'note' AND n.project_id IS NOT DISTINCT FROM (SELECT s.project_id FROM agent_sessions s WHERE s.id = $2 AND s.user_id = $1)
+       WHERE n.user_id = $1 AND (n.kind = 'system' OR (n.kind = 'memory' AND n.project_id IS NOT DISTINCT FROM (SELECT s.project_id FROM agent_sessions s WHERE s.id = $2 AND s.user_id = $1)))
        ORDER BY n.created_at`,
       [userId, sessionId],
     );

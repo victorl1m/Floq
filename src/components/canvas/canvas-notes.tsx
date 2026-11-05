@@ -40,7 +40,7 @@ export const COLOR_KEYS = Object.keys(COLORS) as NoteColor[];
 export const KINDS: Record<NoteKind, { label: string; icon: Icon; hint: string; badge: string | null }> = {
   note: { label: "Note", icon: IconNote, hint: "Only agents you wire to it can read and edit it.", badge: null },
   memory: { label: "Memory", icon: IconBrain, hint: "Project memory: every agent in this project reads it and can edit it.", badge: "text-violet-700 bg-violet-500/15 dark:text-violet-300" },
-  system: { label: "System", icon: IconShieldLock, hint: "Project rules: every agent in this project follows them. Agents can read them but only you can edit or delete them.", badge: "text-amber-700 bg-amber-500/15 dark:text-amber-300" },
+  system: { label: "System", icon: IconShieldLock, hint: "Rules for all agents: every agent you run follows them, in every project. Agents can read them but only you can edit or delete them.", badge: "text-amber-700 bg-amber-500/15 dark:text-amber-300" },
 };
 export const KIND_KEYS = Object.keys(KINDS) as NoteKind[];
 
@@ -280,7 +280,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
           )}
           {kind.badge && (
             <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px]", kind.badge)} title={kind.hint + (note.author ? ` Created by agent ${note.author}.` : "")}>
-              {note.kind === "system" ? "System · agents read-only" : "Memory · all agents"}
+              {note.kind === "system" ? "System · all agents, read-only" : "Memory · all agents"}
             </span>
           )}
           {linked.length > 0 && note.kind !== "system" && note.kind !== "memory" && (

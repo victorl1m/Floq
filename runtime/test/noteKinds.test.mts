@@ -37,7 +37,7 @@ test("kind validation", () => {
   assert.throws(() => parseNoteFields({ kind: 3 }, false), /kind must be one of/);
 });
 
-test("memory and system notes reach every session of the project, linked or not, and never other projects", async (t) => {
+test("memory notes reach every session of their project; system notes reach every session in every project", async (t) => {
   const { db, notes, wired } = await setup();
   t.after(() => db.close());
   const mem = await notes.agentCreate(U, S1, { text: "build with pnpm", kind: "memory", color: "green" });
@@ -54,12 +54,17 @@ test("memory and system notes reach every session of the project, linked or not,
   assert.match(block, /written by agent Alice/);
   assert.ok(!block.includes("private"));
   assert.ok(block.indexOf("never push to main") < block.indexOf("build with pnpm"), "rules come first");
-  assert.equal(await wired.blockFor(U, S3), "", "other project sees nothing");
+  const other = await wired.blockFor(U, S3);
+  assert.match(other, /never push to main/, "system notes are general: other projects get them too");
+  assert.ok(!other.includes("build with pnpm"), "memory stays in its project");
+  assert.match(other, /Rules for all agents/);
 
   assert.deepEqual((await notes.agentList(U, S2)).map((n) => n.kind).sort(), ["memory", "system"]);
   assert.equal((await notes.agentRead(U, S2, mem.id)).text, "build with pnpm");
   await assert.rejects(notes.agentRead(U, S2, plain.id), /not linked/);
   await assert.rejects(notes.agentRead(U, S3, mem.id), /not linked/);
+  assert.equal((await notes.agentRead(U, S3, sys.id)).text, "never push to main");
+  assert.deepEqual((await notes.agentList(U, S3)).map((n) => n.kind), ["system"]);
 
   // Memory is writable by any agent of the project; the change is reported as an update to running agents.
   await notes.agentWrite(U, S2, mem.id, "also lint", true);

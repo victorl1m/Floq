@@ -4,7 +4,7 @@ import { log } from "./logger.js";
 
 export const NOTE_COLORS = ["yellow", "blue", "green", "pink", "purple", "gray"] as const;
 export type NoteColor = (typeof NOTE_COLORS)[number];
-/** note: wired to chosen agents. memory: project memory every agent of the project reads and edits. system: project rules every agent follows; only the user edits them. */
+/** note: wired to chosen agents. memory: project memory every agent of the project reads and edits. system: general rules every agent of the user follows, in every project; only the user edits them. */
 export const NOTE_KINDS = ["note", "memory", "system"] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 
@@ -302,13 +302,22 @@ export class CanvasNotes {
     return r.rows.map((x: { id: string }) => x.id);
   }
 
-  /** Linked notes plus the project's memory and system notes, which every agent of the project sees without a link. */
+  /** Sessions that read a shared note: system notes reach every agent of the user, memory notes the agents of its project. */
+  async sharedNoteSessionIds(userId: string, note: { kind: string; projectId: string | null }): Promise<string[]> {
+    if (note.kind === "memory") return this.projectSessionIds(userId, note.projectId);
+    if (note.kind !== "system") return [];
+    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell' ORDER BY created_at LIMIT 500", [userId]);
+    return r.rows.map((x: { id: string }) => x.id);
+  }
+
+  /** Linked notes plus the project's memory notes and all system notes, which agents see without a link. */
   async agentList(userId: string, sessionId: string): Promise<CanvasNote[]> {
     const r = await this.pool.query(
       `SELECT ${COLS} FROM canvas_notes n
        WHERE n.user_id = $1 AND (
          EXISTS (SELECT 1 FROM canvas_note_links k WHERE k.note_id = n.id AND k.session_id = $2)
-         OR (n.kind <> 'note' AND n.project_id IS NOT DISTINCT FROM (SELECT s.project_id FROM agent_sessions s WHERE s.id = $2 AND s.user_id = $1)))
+         OR n.kind = 'system'
+         OR (n.kind = 'memory' AND n.project_id IS NOT DISTINCT FROM (SELECT s.project_id FROM agent_sessions s WHERE s.id = $2 AND s.user_id = $1)))
        ORDER BY n.created_at`,
       [userId, sessionId],
     );
@@ -319,7 +328,8 @@ export class CanvasNotes {
     if (typeof id !== "string" || !UUID.test(id)) throw badRequest("note id required", "invalid_note");
     const note = await this.get(userId, id);
     if (note.linkedSessionIds.includes(sessionId)) return note;
-    if (note.kind !== "note") {
+    if (note.kind === "system") return note; // general rules: every agent of the user may read them
+    if (note.kind === "memory") {
       const s = await this.sessionInfo(userId, sessionId);
       if ((s.project_id ?? null) === note.projectId) return note;
     }
@@ -329,7 +339,7 @@ export class CanvasNotes {
   /** Replaces or appends the text. A concurrent edit by the user is last-writer-wins; the UI polls and picks the change up. System notes are the user's rules: agents cannot change them. */
   async agentWrite(userId: string, sessionId: string, id: unknown, text: unknown, append: boolean): Promise<CanvasNote> {
     const note = await this.agentRead(userId, sessionId, id);
-    if (note.kind === "system") throw new HttpError(403, "system_note_readonly", "This is a system note (project rules): only the user can edit or delete it. Ask the user, or put your own notes in a memory or regular note");
+    if (note.kind === "system") throw new HttpError(403, "system_note_readonly", "This is a system note (rules for all agents): only the user can edit or delete it. Ask the user, or put your own notes in a memory or regular note");
     if (typeof text !== "string") throw badRequest("text required", "invalid_note");
     const next = append && note.text ? note.text + (note.text.endsWith("\n") ? "" : "\n") + text : text;
     return this.patch(userId, note.id, { text: next });
