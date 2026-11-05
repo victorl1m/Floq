@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { conflict } from "./errors.js";
 import { safeRelative } from "./shard.js";
@@ -18,6 +18,24 @@ const PROJECT_DIR = new RegExp(`^\\.floq/projects/${UUID}$`, "i");
 export type CheckoutKind = "project" | "worktree";
 
 export interface WorkspaceRow { id: string; cwd: string; isWorktree: boolean }
+
+/** Count ordinary files and symlinks without following links; null means the directory could not be inspected. */
+export function countPlainFiles(root: string): number | null {
+  let count = 0;
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) visit(path);
+      else count += 1;
+    }
+  };
+  try {
+    const stat = lstatSync(root);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return 1;
+    visit(root);
+    return count;
+  } catch { return null; }
+}
 
 export interface PlannedCheckout {
   workspaceId: string;

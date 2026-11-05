@@ -96,7 +96,7 @@ interface RuntimeContextValue {
   activeWorkspaceId: string | null;
   activeWorkspaceCwd: string | null;
   refreshProjects: (force?: boolean) => Promise<void>;
-  createProject: (input: { gitUrl: string; name?: string }) => Promise<RuntimeProject>;
+  createProject: (input: { gitUrl?: string; name?: string }) => Promise<RuntimeProject>;
   /** Persist a workspace's sidebar expanded/collapsed state on the server (optimistic). */
   setWorkspaceNavExpanded: (projectId: string, workspaceId: string, expanded: boolean) => Promise<void>;
   /** Collapse or expand every workspace of a project (one request). */
@@ -409,7 +409,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const retryProjects = useCallback(() => refreshProjects(true), [refreshProjects]);
 
-  const createProject = useCallback(async (input: { gitUrl: string; name?: string }) => {
+  const createProject = useCallback(async (input: { gitUrl?: string; name?: string }) => {
     if (!client) throw new Error("Not signed in");
     const project = await client.createProject(input);
     projectsRefresh.current.markMutation();

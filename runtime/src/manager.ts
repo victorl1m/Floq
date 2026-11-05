@@ -27,7 +27,7 @@ import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
 import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } from "./claudeSettings.js";
 import { isAllowedProjectImage } from "./projectImage.js";
 import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
-import { countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
+import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
@@ -192,6 +192,14 @@ function projectNameFromUrl(value: string): string {
   return segment.replace(/\.git$/i, "").slice(0, 120) || "Project";
 }
 
+function validateProjectName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw badRequest("name must be a non-empty string of at most 120 characters", "invalid_project");
+  const name = value.trim();
+  if (!name || name.length > 120) throw badRequest("name must be a non-empty string of at most 120 characters", "invalid_project");
+  return name;
+}
+
 function branchFromCheckout(dir: string): string | null {
   try {
     const head = readFileSync(join(dir, ".git", "HEAD"), "utf8").trim();
@@ -229,6 +237,28 @@ function safeWorkspaceBranch(home: string, cwd: string): { ok: boolean; branch: 
     if (/^[0-9a-f]{40,64}$/i.test(head)) return { ok: true, branch: null };
     return { ok: false, branch: null };
   } catch { return { ok: false, branch: null }; }
+}
+
+function safePlainProjectRoot(home: string, cwd: string, projectId: string): string | null {
+  const expected = `.floq/projects/${projectId}`;
+  try {
+    if (safeRelative(cwd) !== expected) return null;
+    const root = realpathSync(home);
+    let current = root;
+    for (const part of expected.split("/")) {
+      current = join(current, part);
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
+      current = realpathSync(current);
+      if (!insidePath(root, current)) return null;
+    }
+    try {
+      lstatSync(join(current, ".git"));
+      return null;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? current : null;
+    }
+  } catch { return null; }
 }
 
 interface LoginState {
@@ -546,7 +576,13 @@ export class SessionManager {
     return result.rows[0] as Row;
   }
 
-  async createProject(userId: string, profile: RuntimeProfile, gitUrlValue: string, requestedName?: string): Promise<RuntimeProject> {
+  async createProject(userId: string, profile: RuntimeProfile, gitUrlValue?: string, requestedName?: string): Promise<RuntimeProject> {
+    const name = validateProjectName(requestedName);
+    if (gitUrlValue === undefined) {
+      if (!name) throw badRequest("name is required when gitUrl is not provided", "invalid_project");
+      return this.createNamedProject(userId, name);
+    }
+    if (typeof gitUrlValue !== "string" || !gitUrlValue.trim()) throw badRequest("gitUrl must be a non-empty string", "invalid_project");
     const gitUrl = gitUrlValue.trim();
     const normalized = normalizeGitUrl(gitUrl);
     const key = userId + "\0" + normalized;
@@ -566,7 +602,7 @@ export class SessionManager {
       try {
         await this.clone(gitUrl, target, profile, handle);
         this.assertLifecycleOpen();
-        const name = requestedName?.trim().slice(0, 120) || projectNameFromUrl(gitUrl);
+        const projectName = name ?? projectNameFromUrl(gitUrl);
         const branch = branchFromCheckout(target);
         const client = await this.pool.connect();
         let projectId: string = id;
@@ -576,7 +612,7 @@ export class SessionManager {
             `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd)
              VALUES($1,$2,$3,$4,$5,$6)
              ON CONFLICT (user_id,normalized_git_url) WHERE normalized_git_url IS NOT NULL DO NOTHING
-             RETURNING id`, [id,userId,name,gitUrl,normalized,cwd],
+             RETURNING id`, [id,userId,projectName,gitUrl,normalized,cwd],
           );
           if (!inserted.rows[0]) {
             const winner = await client.query("SELECT id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2 FOR UPDATE", [userId, normalized]);
@@ -611,6 +647,73 @@ export class SessionManager {
     }).finally(() => this.projectCreates.delete(key));
     this.projectCreates.set(key, task);
     return task;
+  }
+
+  private async createNamedProject(userId: string, name: string): Promise<RuntimeProject> {
+    return this.withShardActivity(userId, async () => {
+      const handle = await this.shards.wake(userId);
+      this.assertLifecycleOpen();
+      const id = randomUUID();
+      const workspaceId = randomUUID();
+      const cwd = ".floq/projects/" + id;
+      const target = this.shards.driver.hostPath(handle, cwd);
+      this.ensureProjectParent(handle);
+      let targetCreated = false;
+      let commitAttempted = false;
+      let rollbackConfirmed = false;
+      let discardClient: Error | undefined;
+      try {
+        mkdirSync(target);
+        targetCreated = true;
+        lchownSync(target, handle.uid, handle.uid);
+        const client = await this.pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query(
+            `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd)
+             VALUES($1,$2,$3,NULL,NULL,$4)`, [id,userId,name,cwd],
+          );
+          await client.query(
+            `INSERT INTO floq_project_workspaces(id,user_id,project_id,cwd,name,branch,is_worktree)
+             VALUES($1,$2,$3,$4,'Main',$5,FALSE)`, [workspaceId,userId,id,cwd,null],
+          );
+          commitAttempted = true;
+          await client.query("COMMIT");
+        } catch (error) {
+          try {
+            await client.query("ROLLBACK");
+            rollbackConfirmed = true;
+          } catch (rollbackError) {
+            discardClient = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+          }
+          throw error;
+        } finally { client.release(discardClient); }
+        const project = await this.project(userId, id);
+        if (!project) throw new Error("Created project could not be loaded");
+        return project;
+      } catch (error) {
+        const resolved = resolve(target);
+        const home = resolve(handle.mountPath);
+        if (targetCreated && insidePath(home, resolved)) {
+          if (!commitAttempted) rmSync(resolved, { recursive: true, force: true });
+          else {
+            // COMMIT can fail after the database accepted it. A missing row is safe to act on only after
+            // ROLLBACK was confirmed; otherwise a fresh lookup may race a still-unresolved commit.
+            try {
+              const registered = await this.pool.query("SELECT id FROM floq_projects WHERE id=$1 AND user_id=$2", [id, userId]);
+              if (!registered.rows[0]) {
+                if (rollbackConfirmed) rmSync(resolved, { recursive: true, force: true });
+              }
+              else {
+                const project = await this.project(userId, id);
+                if (project) return project;
+              }
+            } catch { /* Database state is uncertain, so keep the files rather than risk deleting a registered project. */ }
+          }
+        }
+        throw error;
+      }
+    });
   }
 
   async listProjects(userId: string): Promise<RuntimeProject[]> {
@@ -730,7 +833,14 @@ export class SessionManager {
         if (!present) report.state = "missing";
         else {
           const head = safeWorkspaceBranch(handle.mountPath, item.cwd);
-          if (!head.ok) report.state = "unreadable";
+          if (!head.ok) {
+            const plainRoot = item.kind === "project" ? safePlainProjectRoot(handle.mountPath, item.cwd, projectId) : null;
+            if (plainRoot) {
+              const fileCount = countPlainFiles(plainRoot);
+              if (fileCount === null) report.state = "unreadable";
+              else { report.uncommittedFiles = fileCount; report.state = "ok"; }
+            } else report.state = "unreadable";
+          }
           else {
             report.branch = head.branch;
             try {

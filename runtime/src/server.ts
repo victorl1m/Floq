@@ -237,6 +237,23 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     return { scope, projectId };
   }
 
+  function projectCreateInput(body: Record<string, unknown>): { name?: string; gitUrl?: string } {
+    let gitUrl: string | undefined;
+    if (body.gitUrl !== undefined) {
+      if (typeof body.gitUrl !== "string" || !body.gitUrl.trim()) throw badRequest("gitUrl must be a non-empty string", "invalid_project");
+      gitUrl = body.gitUrl.trim();
+    }
+    let name: string | undefined;
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 120) {
+        throw badRequest("name must be a non-empty string of at most 120 characters", "invalid_project");
+      }
+      name = body.name.trim();
+    }
+    if (!gitUrl && !name) throw badRequest("name is required when gitUrl is not provided", "invalid_project");
+    return { name, gitUrl };
+  }
+
   function requireSubagents(): SubagentService {
     if (!subagents) throw new HttpError(503, "subagents_unavailable", "Subagents are not configured");
     return subagents;
@@ -295,6 +312,12 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { secrets: await vault.reveal(userId, null, "env", sessionId) });
         case "agents/list":
           return send(res, 200, { agents: await orchestrator.list(userId, sessionId, { project: body.project, here: body.here === true }) });
+        case "projects/create": {
+          if (method !== "POST") return send(res, 405, { error: { code: "method_not_allowed", message: "Use POST" } });
+          const input = projectCreateInput(body);
+          const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name);
+          return send(res, 201, { project });
+        }
         case "agents/link": {
           const r = await orchestrator.link(userId, sessionId, body.name);
           if (wired) for (const id of new Set(r.ids)) {
@@ -918,10 +941,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (url.pathname === "/v1/projects") {
       if (method === "GET") return send(res, 200, { projects: await manager.listProjects(userId) });
       if (method === "POST") {
-        const body = await readJson<{ gitUrl?: unknown; name?: unknown }>(req);
-        if (typeof body.gitUrl !== "string" || !body.gitUrl.trim()) throw badRequest("gitUrl is required", "invalid_project");
-        if (body.name !== undefined && (typeof body.name !== "string" || body.name.length > 120)) throw badRequest("name must be at most 120 characters", "invalid_project");
-        const project = await manager.createProject(userId, await settings.profile(userId), body.gitUrl, body.name as string | undefined);
+        const input = projectCreateInput(await readJson<Record<string, unknown>>(req));
+        const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name);
         return send(res, 201, { project });
       }
     }

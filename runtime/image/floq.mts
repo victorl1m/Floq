@@ -3,14 +3,15 @@
 //   floq list [--project NAME] [--here]    agents you can talk to: ALL the user's projects by default (--here: this project only)
 //   floq agents list [--project NAME]       same as list
 //   floq link <UUID|Name>                   wire yourself to an agent of any project (shown on the canvas)
+//   floq project create --name NAME [--git-url URL]   create a named project, optionally cloning a repository
 //   floq session restart                    restart this agent after replying to reload its configuration
 //   floq ask <UUID|Name> "prompt" [--timeout S] [--no-wait] [--chars N|--full]   message another agent, wait until it finishes, print its full reply
 //   floq ask <UUID|Name> - | --file PATH   long message from stdin or a file (anything over 4000 chars must use one of these)
 //   floq inbox list | read ID               messages other agents sent you that were too long to type into your terminal
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
 //   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
-//   floq note list | read N | write N TEXT | append N TEXT
-//   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | new [TEXT|-] [--color C] [--kind note|memory|system]   canvas notes: wired to this agent, plus the project's memory/system notes
+//   floq note list | read N | write N TEXT | append N TEXT | delete N
+//   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | delete ID | new [TEXT|-] [--color C] [--kind note|memory|system]   canvas notes: wired to this agent, plus the project's memory/system notes
 //   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only)
 //   floq subagent recruit|list|ask|result|dismiss   always-available Floq subagents (limits enforced by the runtime)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
@@ -36,6 +37,7 @@ Commands:
   floq list [--project NAME] [--here]    agents of ALL your user's projects (project, role, provider, state); --project filters by project name, --here keeps this project only
   floq agents list [--project NAME]      same as "floq list"
   floq link <UUID|Name>                  wire yourself to an agent of any project of this user (appears on the canvas; listed in both agents' wired context)
+  floq project create --name NAME [--git-url URL]   create an empty named project or import a Git repository
   floq session restart                   restart this agent to reload its current configuration
   floq models [--provider claude|codex]
   floq roles                             one line per agent role preset (compare, then pick)
@@ -243,6 +245,7 @@ const allowedOptions: Record<string, string[]> = {
   session: [], port: ["protocol", "reason"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
+  project: ["name", "git-url"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose"],
   secret: [],
@@ -585,6 +588,29 @@ switch (command) {
     if (positional.length < 1) usage();
     await call("agents/dismiss", { name: positional[0] });
     console.log("dismissed");
+    break;
+  }
+  case "project": {
+    const [sub, ...args] = positional;
+    if (sub !== "create" || args.length) usage();
+    const rawName = named.name;
+    const rawGitUrl = named["git-url"];
+    if (rawName !== undefined && (typeof rawName !== "string" || !rawName.trim() || rawName.trim().length > 120)) {
+      console.error("floq: --name must be a non-empty name of at most 120 characters");
+      usage();
+    }
+    if (rawGitUrl !== undefined && (typeof rawGitUrl !== "string" || !rawGitUrl.trim())) {
+      console.error("floq: --git-url must be a non-empty URL");
+      usage();
+    }
+    const name = typeof rawName === "string" ? rawName.trim() : undefined;
+    const gitUrl = typeof rawGitUrl === "string" ? rawGitUrl.trim() : undefined;
+    if (!name && !gitUrl) {
+      console.error("floq: --name is required unless --git-url is provided");
+      usage();
+    }
+    const r = await call<{ project: { id: string; name: string; cwd: string } }>("projects/create", { name, gitUrl });
+    console.log("created project " + JSON.stringify(r.project.name) + " (" + r.project.id + ")\nworkspace: " + r.project.cwd);
     break;
   }
   case "skills": {

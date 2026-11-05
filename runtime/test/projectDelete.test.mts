@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -241,6 +241,43 @@ test("dirty worktrees and the main checkout are detected before deletion", async
   // Status is read-only.
   assert.ok(existsSync(a.abs));
   assert.equal(await s.count(`SELECT count(*)::int AS n FROM floq_projects WHERE id=$1`, [a.id]), 1);
+});
+
+test("a non-Git managed project reports its files as deletable content without invoking Git", async (t) => {
+  const s = await setup(t);
+  const project = await s.project(U1, "Notes", { makeRepo: false });
+  mkdirSync(project.abs, { recursive: true });
+  mkdirSync(join(project.abs, "nested"));
+  writeFileSync(join(project.abs, "readme.txt"), "keep track of this\n");
+  writeFileSync(join(project.abs, "nested", "draft.md"), "draft\n");
+  let gitCalls = 0;
+  const originalGit = s.manager.runWorkspaceGit;
+  s.manager.runWorkspaceGit = async (...args: unknown[]) => { gitCalls++; return originalGit(...args as [unknown, string, string[]]); };
+
+  const status = await s.manager.projectDeleteStatus(U1, project.id);
+  const main = status.checkouts.find((checkout: { kind: string }) => checkout.kind === "project");
+  assert.equal(gitCalls, 0);
+  assert.equal(main.state, "ok");
+  assert.equal(main.uncommittedFiles, 2);
+  assert.equal(status.dirtyMainCheckout, true);
+  assert.equal(status.unreadableCheckouts, 0);
+  assert.equal(existsSync(join(project.abs, "readme.txt")), true, "the status check is read-only");
+});
+
+test("a symlinked managed project parent is not scanned as plain project content", async (t) => {
+  const s = await setup(t);
+  const project = await s.project(U1, "Outside", { makeRepo: false });
+  mkdirSync(join(s.outside, project.id), { recursive: true });
+  writeFileSync(join(s.outside, project.id, "private.txt"), "outside data\n");
+  mkdirSync(join(s.home, ".floq"), { recursive: true });
+  dirLink(s.outside, join(s.home, ".floq", "projects"));
+
+  const status = await s.manager.projectDeleteStatus(U1, project.id);
+  const main = status.checkouts.find((checkout: { kind: string }) => checkout.kind === "project");
+  assert.equal(main.state, "unreadable");
+  assert.equal(main.uncommittedFiles, null);
+  assert.equal(status.dirtyMainCheckout, false);
+  assert.equal(readFileSync(join(s.outside, project.id, "private.txt"), "utf8"), "outside data\n");
 });
 
 test("planCheckouts and removeManagedCheckout enforce the managed patterns", () => {

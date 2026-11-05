@@ -12,6 +12,10 @@ function fakeManager(home) {
   const pool = {
     async query(sql, values = []) {
       queries.push(sql);
+      if (sql === "SELECT id FROM floq_projects WHERE id=$1 AND user_id=$2") {
+        const row = projects.find((p) => p.id === values[0] && p.user_id === values[1]);
+        return { rows: row ? [{ id: row.id }] : [] };
+      }
       if (sql.includes("SELECT id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2")) {
         const row = projects.find((p) => p.user_id === values[0] && p.normalized_git_url === values[1]);
         return { rows: row ? [{ id: row.id }] : [] };
@@ -44,6 +48,10 @@ function fakeManager(home) {
           queries.push(sql);
           if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
           if (sql.startsWith("INSERT INTO floq_projects")) {
+            if (sql.includes("VALUES($1,$2,$3,NULL,NULL,$4)")) {
+              projects.push({ id: values[0], user_id: values[1], name: values[2], git_url: null, normalized_git_url: null, cwd: values[3], created_at: new Date() });
+              return { rows: [{ id: values[0] }] };
+            }
             const duplicate = projects.some((p) => p.user_id === values[1] && p.normalized_git_url === values[4]);
             if (duplicate) return { rows: [] };
             projects.push({ id: values[0], user_id: values[1], name: values[2], git_url: values[3], normalized_git_url: values[4], cwd: values[5], created_at: new Date() });
@@ -54,7 +62,7 @@ function fakeManager(home) {
             return { rows: row ? [{ id: row.id }] : [] };
           }
           if (sql.startsWith("INSERT INTO floq_project_workspaces")) {
-            workspaces.push({ id: values[0], user_id: values[1], project_id: values[2], cwd: values[3], name: "Main", branch: values[4], is_worktree: false, created_at: new Date() });
+            workspaces.push({ id: values[0], user_id: values[1], project_id: values[2], cwd: values[3], name: "Main", branch: values[4] ?? null, is_worktree: false, created_at: new Date() });
             return { rows: [] };
           }
           throw new Error("Unexpected fake transaction query: " + sql);
@@ -63,7 +71,7 @@ function fakeManager(home) {
       };
     },
   };
-  const handle = { mountPath: home, uid: 0 };
+  const handle = { mountPath: home, uid: process.getuid?.() ?? 0 };
   const manager = Object.create(SessionManager.prototype);
   Object.assign(manager, {
     pool,
@@ -112,6 +120,265 @@ test("repository import clones before returning a persistent selectable project 
     const duplicate = await manager.createProject("user-a", {}, "https://EXAMPLE.test/organization/repo");
     assert.equal(duplicate.id, first.id);
     assert.equal(clones, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("plain project creation persists a UUID-managed empty directory and Main workspace without cloning", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects, workspaces } = fakeManager(home);
+    let clones = 0;
+    manager.clone = async () => { clones++; throw new Error("plain project must not clone"); };
+
+    const project = await manager.createProject("user-a", {}, undefined, "  Research Hub  ");
+
+    assert.equal(project.name, "Research Hub");
+    assert.match(project.cwd, /^\.floq\/projects\/[0-9a-f-]{36}$/i);
+    assert.equal(project.gitUrl, null);
+    assert.equal(project.workspaces.length, 1);
+    assert.deepEqual({ cwd: project.workspaces[0].cwd, name: project.workspaces[0].name, branch: project.workspaces[0].branch, isWorktree: project.workspaces[0].isWorktree }, {
+      cwd: project.cwd, name: "Main", branch: null, isWorktree: false,
+    });
+    assert.equal(clones, 0);
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0].git_url, null);
+    assert.equal(workspaces.length, 1);
+    assert.deepEqual((await import("node:fs")).readdirSync(join(home, project.cwd)), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("plain project names are validated before the managed directory is allocated", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects } = fakeManager(home);
+
+    for (const name of ["", "   ", "x".repeat(121)]) {
+      await assert.rejects(manager.createProject("user-a", {}, undefined, name), { code: "invalid_project" });
+    }
+
+    assert.deepEqual((await import("node:fs")).readdirSync(join(home, ".floq", "projects")), []);
+    assert.equal(projects.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("same-name plain project requests create distinct projects", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects, workspaces } = fakeManager(home);
+
+    const [first, second] = await Promise.all([
+      manager.createProject("user-a", {}, undefined, "Scratch"),
+      manager.createProject("user-a", {}, undefined, "Scratch"),
+    ]);
+
+    assert.notEqual(first.id, second.id);
+    assert.equal(projects.length, 2);
+    assert.equal(workspaces.length, 2);
+    assert.notEqual(first.cwd, second.cwd);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("plain project creation remains tenant-scoped even when names match", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects } = fakeManager(home);
+    const a = await manager.createProject("user-a", {}, undefined, "Shared name");
+    const b = await manager.createProject("user-b", {}, undefined, "Shared name");
+    assert.notEqual(a.id, b.id);
+    assert.equal((await manager.listProjects("user-a")).length, 1);
+    assert.equal((await manager.listProjects("user-b")).length, 1);
+    assert.deepEqual(projects.map((p) => p.user_id), ["user-a", "user-b"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a session created for a plain project binds to its Main workspace", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects, workspaces } = fakeManager(home);
+    const project = await manager.createProject("user-a", {}, undefined, "Workspace");
+    const launchedRows = [];
+    const originalQuery = manager.pool.query.bind(manager.pool);
+    manager.pool.query = async (sql, values = []) => {
+      if (sql === "SELECT * FROM floq_projects WHERE id=$1 AND user_id=$2") {
+        const row = projects.find((candidate) => candidate.id === values[0] && candidate.user_id === values[1]);
+        return { rows: row ? [row] : [] };
+      }
+      if (sql.includes("SELECT * FROM floq_project_workspaces WHERE project_id=$1 AND user_id=$2")) {
+        const row = workspaces.find((candidate) => candidate.project_id === values[0] && candidate.user_id === values[1]);
+        return { rows: row ? [row] : [] };
+      }
+      if (sql.startsWith("INSERT INTO agent_sessions")) {
+        const row = { id: values[0], user_id: values[1], provider: values[2], title: values[3], cwd: values[4], git_url: values[5], project_cwd: values[10], project_id: values[11], workspace_id: values[12], branch: values[13] };
+        launchedRows.push(row);
+        return { rows: [row] };
+      }
+      return originalQuery(sql, values);
+    };
+    manager.config = { providers: { claude: "claude" }, models: { claude: [] }, defaultCols: 80, defaultRows: 24, maxSessions: 10 };
+    manager.capacityReservations = { reserve: () => () => {} };
+    manager.launch = async (row) => ({ toSummary: () => ({ cwd: row.cwd }) });
+
+    const session = await manager.create("user-a", {}, { provider: "claude", projectId: project.id });
+
+    assert.equal(session.cwd, project.cwd);
+    assert.deepEqual({ cwd: launchedRows[0].cwd, git_url: launchedRows[0].git_url, project_cwd: launchedRows[0].project_cwd, project_id: launchedRows[0].project_id, workspace_id: launchedRows[0].workspace_id, branch: launchedRows[0].branch }, {
+      cwd: project.cwd, git_url: null, project_cwd: project.cwd, project_id: project.id, workspace_id: project.workspaces[0].id, branch: null,
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("database registration failure removes only the new plain project directory", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects } = fakeManager(home);
+    const existing = join(home, ".floq", "projects", "existing");
+    mkdirSync(existing);
+    writeFileSync(join(existing, "keep.txt"), "existing user data\n");
+    manager.pool.connect = async () => ({
+      async query(sql) {
+        if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [] };
+        if (sql.startsWith("INSERT INTO floq_projects")) throw new Error("simulated registration failure");
+        throw new Error("Unexpected fake transaction query: " + sql);
+      },
+      release() {},
+    });
+
+    await assert.rejects(manager.createProject("user-a", {}, undefined, "Will fail"), /simulated registration failure/);
+
+    assert.deepEqual((await import("node:fs")).readdirSync(join(home, ".floq", "projects")), ["existing"]);
+    assert.equal(readFileSync(join(existing, "keep.txt"), "utf8"), "existing user data\n");
+    assert.equal(projects.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a rejected plain-project COMMIT removes the new directory when no row was committed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects, workspaces } = fakeManager(home);
+    manager.pool.connect = async () => ({
+      async query(sql, values = []) {
+        if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [] };
+        if (sql.startsWith("INSERT INTO floq_projects")) return { rows: [{ id: values[0] }] };
+        if (sql.startsWith("INSERT INTO floq_project_workspaces")) return { rows: [] };
+        if (sql === "COMMIT") throw new Error("simulated COMMIT failure");
+        throw new Error("Unexpected fake transaction query: " + sql);
+      },
+      release() {},
+    });
+
+    await assert.rejects(manager.createProject("user-a", {}, undefined, "Commit fails"), /simulated COMMIT failure/);
+
+    assert.deepEqual((await import("node:fs")).readdirSync(join(home, ".floq", "projects")), []);
+    assert.equal(projects.length, 0);
+    assert.equal(workspaces.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a rejected plain-project COMMIT preserves and returns the project when registration committed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects, workspaces } = fakeManager(home);
+    let pendingProject;
+    let pendingWorkspace;
+    manager.pool.connect = async () => ({
+      async query(sql, values = []) {
+        if (sql === "BEGIN") return { rows: [] };
+        if (sql === "ROLLBACK") return { rows: [] };
+        if (sql.startsWith("INSERT INTO floq_projects")) {
+          pendingProject = { id: values[0], user_id: values[1], name: values[2], git_url: null, normalized_git_url: null, cwd: values[3], created_at: new Date() };
+          return { rows: [{ id: values[0] }] };
+        }
+        if (sql.startsWith("INSERT INTO floq_project_workspaces")) {
+          pendingWorkspace = { id: values[0], user_id: values[1], project_id: values[2], cwd: values[3], name: "Main", branch: null, is_worktree: false, created_at: new Date() };
+          return { rows: [] };
+        }
+        if (sql === "COMMIT") {
+          projects.push(pendingProject);
+          workspaces.push(pendingWorkspace);
+          throw new Error("COMMIT response was lost after commit");
+        }
+        throw new Error("Unexpected fake transaction query: " + sql);
+      },
+      release() {},
+    });
+
+    const project = await manager.createProject("user-a", {}, undefined, "Commit uncertain");
+
+    assert.equal(project.id, projects[0].id);
+    assert.equal(workspaces[0].project_id, project.id);
+    assert.equal((await import("node:fs")).existsSync(join(home, project.cwd)), true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a rejected COMMIT and ROLLBACK preserve storage when lookup cannot see a row", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager, projects } = fakeManager(home);
+    let projectCwd;
+    let releaseError;
+    manager.pool.connect = async () => ({
+      async query(sql, values = []) {
+        if (sql === "BEGIN") return { rows: [] };
+        if (sql.startsWith("INSERT INTO floq_projects")) {
+          projectCwd = values[3];
+          return { rows: [{ id: values[0] }] };
+        }
+        if (sql.startsWith("INSERT INTO floq_project_workspaces")) return { rows: [] };
+        if (sql === "COMMIT") throw new Error("simulated COMMIT connection loss");
+        if (sql === "ROLLBACK") throw new Error("simulated ROLLBACK connection loss");
+        throw new Error("Unexpected fake transaction query: " + sql);
+      },
+      release(error) { releaseError = error; },
+    });
+
+    await assert.rejects(manager.createProject("user-a", {}, undefined, "Uncertain commit"), /simulated COMMIT connection loss/);
+
+    assert.equal(projects.length, 0, "the immediate lookup reports no registered row");
+    assert.equal((await import("node:fs")).existsSync(join(home, projectCwd)), true, "uncertain transaction outcome preserves storage");
+    assert.match(releaseError?.message ?? "", /simulated ROLLBACK connection loss/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("provided project names are validated before Git cloning", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-projects-"));
+  try {
+    mkdirSync(join(home, ".floq", "projects"), { recursive: true });
+    const { manager } = fakeManager(home);
+    let clones = 0;
+    manager.clone = async () => { clones++; };
+    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/team/repo.git", " "), { code: "invalid_project" });
+    await assert.rejects(manager.createProject("user-a", {}, "https://example.test/team/repo.git", "x".repeat(121)), { code: "invalid_project" });
+    assert.equal(clones, 0);
+    assert.deepEqual((await import("node:fs")).readdirSync(join(home, ".floq", "projects")), []);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
