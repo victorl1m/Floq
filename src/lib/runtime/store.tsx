@@ -88,6 +88,10 @@ interface RuntimeContextValue {
   user: AuthUser | null;
   info: RuntimeInfo | null;
   sessions: SessionSummary[];
+  /** Conversations of removed agents: kept by the server, hidden from the canvas, restorable from the Conversations tab. */
+  archivedSessions: SessionSummary[];
+  /** Brings an archived conversation back (resumes it) and returns it. */
+  restoreConversation: (id: string) => Promise<SessionSummary>;
   projects: RuntimeProject[];
   projectsLoading: boolean;
   projectsError: string | null;
@@ -710,6 +714,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const restoreConversation = useCallback(async (id: string): Promise<SessionSummary> => {
+    const current = clientRef.current;
+    if (!current) throw new Error("Not signed in");
+    const restored = await current.resumeSession(id);
+    upsertSession({ ...restored, archived: false });
+    return restored;
+  }, [upsertSession]);
+
   const selectSession = useCallback((id: string | null) => setSelectedId(id), []);
 
   const openSession = useCallback(
@@ -815,7 +827,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         if (!(error instanceof RuntimeError && error.status === 404)) throw error;
       }
       mutation.current++;
-      setSessions((list) => list.filter((s) => s.id !== id));
+      // The server keeps an agent's conversation (archived); only terminals vanish.
+      setSessions((list) => list.flatMap((s) => s.id !== id ? [s] : s.provider === "shell" ? [] : [{ ...s, archived: true, state: "sleeping" as const, activity: undefined }]));
       setAgentTabIds((opened) => opened.filter((o) => o !== id));
       setTerminalTabIds((opened) => opened.filter((o) => o !== id));
       setOpenedIds((opened) => opened.filter((o) => o !== id));
@@ -882,7 +895,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, [client, refreshProjects, updateUserPreferences]);
 
   // Every consumer sees sessions, tabs and selection without the ids whose delete is pending.
-  const visibleSessions = useMemo(() => pendingDeleteIds.size === 0 ? allSessions : allSessions.filter((s) => !pendingDeleteIds.has(s.id)), [allSessions, pendingDeleteIds]);
+  const visibleSessions = useMemo(() => allSessions.filter((s) => !s.archived && !pendingDeleteIds.has(s.id)), [allSessions, pendingDeleteIds]);
+  const archivedSessions = useMemo(() => allSessions.filter((s) => s.archived), [allSessions]);
   const visibleOpenedIds = useMemo(() => openedIds.filter((id) => !pendingDeleteIds.has(id)), [openedIds, pendingDeleteIds]);
   const visibleAgentTabIds = useMemo(() => agentTabIds.filter((id) => !pendingDeleteIds.has(id)), [agentTabIds, pendingDeleteIds]);
   const visibleTerminalTabIds = useMemo(() => terminalTabIds.filter((id) => !pendingDeleteIds.has(id)), [terminalTabIds, pendingDeleteIds]);
@@ -897,6 +911,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       user: signedIn ? (connection?.user ?? null) : null,
       info,
       sessions: visibleSessions,
+      archivedSessions,
+      restoreConversation,
       projects,
       projectsLoading,
       projectsError,
@@ -975,6 +991,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       client,
       info,
       visibleSessions,
+      archivedSessions,
+      restoreConversation,
       projects,
       projectsLoading,
       projectsError,

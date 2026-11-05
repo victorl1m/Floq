@@ -35,6 +35,8 @@ export interface SessionSummary {
   /** Role preset id this agent was recruited with, or null (generalist). */
   role?: string | null;
   /** Session that recruited this one via the floq CLI, or null. */
+  /** True once the agent was removed: the conversation is kept and listed under Conversations, not on the canvas. */
+  archived?: boolean;
   parentSessionId?: string | null;
   /** Number of per-agent secrets attached (never their values). Set on the session list. */
   secretCount?: number;

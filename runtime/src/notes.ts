@@ -298,7 +298,7 @@ export class CanvasNotes {
 
   /** Sessions of the project (or of the scratch canvas) that read its memory/system notes; used to refresh their wired context. */
   async projectSessionIds(userId: string, projectId: string | null): Promise<string[]> {
-    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2::uuid AND provider <> 'shell' ORDER BY created_at LIMIT 200", [userId, projectId]);
+    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2::uuid AND provider <> 'shell' AND archived_at IS NULL ORDER BY created_at LIMIT 200", [userId, projectId]);
     return r.rows.map((x: { id: string }) => x.id);
   }
 
@@ -306,7 +306,7 @@ export class CanvasNotes {
   async sharedNoteSessionIds(userId: string, note: { kind: string; projectId: string | null }): Promise<string[]> {
     if (note.kind === "memory") return this.projectSessionIds(userId, note.projectId);
     if (note.kind !== "system") return [];
-    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell' ORDER BY created_at LIMIT 500", [userId]);
+    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell' AND archived_at IS NULL ORDER BY created_at LIMIT 500", [userId]);
     return r.rows.map((x: { id: string }) => x.id);
   }
 
