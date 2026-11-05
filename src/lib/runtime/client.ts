@@ -360,6 +360,15 @@ export class RuntimeClient {
     return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, patch)).project;
   }
 
+  projectBranches(projectId: string, workspaceId: string): Promise<{ currentBranch: string | null; branches: string[] }> {
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branches`, undefined, { timeoutMs: 30_000 });
+  }
+
+  /** Checks out a local branch in the workspace. Fails if agents are live, the tree is dirty or the branch is held by another worktree. */
+  async switchProjectBranch(projectId: string, workspaceId: string, branch: string): Promise<RuntimeProject> {
+    return (await this.call<{ project: RuntimeProject }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branch`, { branch }, { timeoutMs: 60_000 })).project;
+  }
+
   async setWorkspaceNavExpanded(projectId: string, workspaceId: string, navExpanded: boolean): Promise<void> {
     await this.call("PATCH", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { navExpanded });
   }
