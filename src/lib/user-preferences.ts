@@ -12,6 +12,8 @@ export interface UserPreferences {
     canvasPositions: Record<string, Record<string, { x: number; y: number }>>;
     /** Resized Agent Canvas node sizes: project id -> session id -> size. */
     canvasSizes: Record<string, Record<string, { width: number; height: number }>>;
+    /** Which branch's canvas each main-checkout agent belongs to: project id -> session id -> branch. `resume` = was running when the branch was left. */
+    canvasBranchSessions: Record<string, Record<string, { branch: string; resume?: boolean }>>;
     /** Last Agent Canvas viewport per project, restored on open instead of re-fitting. */
     canvasViewports: Record<string, { x: number; y: number; zoom: number }>;
     /** Project whose Agent Canvas was open last; restored after a reload. */
@@ -33,6 +35,7 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     canvasPositions: {},
     canvasSizes: {},
     canvasViewports: {},
+    canvasBranchSessions: {},
     lastCanvasProjectId: null,
     recentForwardPorts: {},
 };
@@ -73,6 +76,21 @@ function sizeMaps(value: unknown): UserPreferences["canvasSizes"] {
             if (typeof width === "number" && typeof height === "number" && Number.isFinite(width) && Number.isFinite(height) && width >= 100 && height >= 60 && width <= 4000 && height <= 4000) sizes[id] = { width, height };
         }
         result[project] = sizes;
+    }
+    return result;
+}
+
+function branchSessionMaps(value: unknown): UserPreferences["canvasBranchSessions"] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: UserPreferences["canvasBranchSessions"] = {};
+    for (const [project, sessions] of Object.entries(value)) {
+        if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) continue;
+        const tags: Record<string, { branch: string; resume?: boolean }> = {};
+        for (const [id, tag] of Object.entries(sessions)) {
+            const { branch, resume } = (tag ?? {}) as { branch?: unknown; resume?: unknown };
+            if (typeof branch === "string" && branch) tags[id] = resume === true ? { branch, resume: true } : { branch };
+        }
+        result[project] = tags;
     }
     return result;
 }
@@ -121,6 +139,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             canvasPositions: positionMaps(parsed.canvasPositions),
             canvasSizes: sizeMaps(parsed.canvasSizes),
             canvasViewports: viewportMap(parsed.canvasViewports),
+            canvasBranchSessions: branchSessionMaps(parsed.canvasBranchSessions),
             lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
             recentForwardPorts: portListMap(parsed.recentForwardPorts),
         };

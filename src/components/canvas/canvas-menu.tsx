@@ -1,6 +1,6 @@
 import {
   IconArrowsExchange, IconArrowsMaximize, IconCopy, IconLayoutDistributeHorizontal, IconLink, IconLinkOff,
-  IconMap, IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconRefresh, IconWindowMaximize, IconTextResize,
+  IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconRefresh, IconWindowMaximize, IconTextResize,
   IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconKey, IconNote, IconLock, IconCrown, IconCrownOff,
 } from "@tabler/icons-react";
 import {
@@ -30,7 +30,6 @@ export interface MenuApi {
   titleOf: (id: string) => string;
   collapsed: (id: string) => boolean;
   hasMirrorText: (id: string) => boolean;
-  showMiniMap: boolean;
   showActivity: boolean;
   linkMode: boolean;
   newAgentHere: (flow: { x: number; y: number }) => void;
@@ -55,7 +54,6 @@ export interface MenuApi {
   relayout: () => void;
   fit: () => void;
   selectAll: () => void;
-  toggleMiniMap: () => void;
   toggleActivity: () => void;
   resetZoom: () => void;
   focus: (session: SessionSummary) => void;
@@ -107,7 +105,6 @@ function PaneMenu({ flow, api }: { flow: { x: number; y: number }; api: MenuApi 
       )}
       <ContextMenuItem onSelect={api.resetZoom}><IconZoomReset />Reset zoom</ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuCheckboxItem checked={api.showMiniMap} onSelect={api.toggleMiniMap}><IconMap />Mini map</ContextMenuCheckboxItem>
       <ContextMenuCheckboxItem checked={api.showActivity} onSelect={api.toggleActivity}><IconActivity />Activity panel</ContextMenuCheckboxItem>
     </ContextMenuContent>
   );

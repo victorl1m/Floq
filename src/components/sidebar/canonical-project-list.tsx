@@ -1,27 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { ORCHESTRATOR_HINT, ORCHESTRATOR_TEXT, isOrchestrator, orchestratorLabel, recruitCounts, setOrchestrator } from "@/lib/runtime/orchestrator";
 import {
   IconChevronRight,
-  IconCrown,
   IconCopy,
   IconChevronsDown,
   IconChevronsUp,
   IconDots,
-  IconExternalLink,
-  IconEye,
-  IconEyeOff,
-  IconFiles,
   IconFolderOpen,
-  IconGitCompare,
   IconLayoutKanban,
-  IconTerminal2,
   IconX,
   IconFolder,
   IconFolderPlus,
   IconGitBranch,
-  IconMoon,
   IconPencil,
-  IconPlayerPlay,
   IconPlus,
   IconRefresh,
   IconTrash,
@@ -36,22 +26,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub, SidebarMenuSubItem } from "@/components/ui/sidebar";
+import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
-import { ProviderIcon, isLive } from "@/components/agents/provider";
-import { ActivityIndicator, agentActivity } from "@/components/agents/activity-indicator";
+import { ProviderIcon } from "@/components/agents/provider";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
 import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
 import { copyText } from "@/lib/clipboard";
-import { openRightSidebar } from "@/lib/right-sidebar";
 import { isTauri } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { RuntimeProject, SessionState, SessionSummary } from "@/lib/runtime/types";
+import type { RuntimeProject, SessionSummary } from "@/lib/runtime/types";
 import { cn } from "cn";
 import { addFolder, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
 import { DndButton, DndRow, EmptyFolderDrop, InlineRename, ProjectDnd, RootEndDrop, RowAction, useSavedLayout } from "@/components/sidebar/project-folder";
@@ -66,7 +53,6 @@ const MENU = "w-48 min-w-[192px] whitespace-nowrap";
 const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES = 32 * 1024;
 const SOURCE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const DOT: Record<SessionState, string> = { running: "bg-emerald-500", starting: "bg-amber-400 animate-pulse", sleeping: "bg-muted-foreground/40", exited: "bg-muted-foreground/40", failed: "bg-destructive" };
 
 async function projectImageThumbnail(file: File): Promise<string> {
   if (!SOURCE_IMAGE_TYPES.has(file.type)) throw new Error("Choose a PNG, JPEG, WebP, or GIF image.");
@@ -99,14 +85,10 @@ async function projectImageThumbnail(file: File): Promise<string> {
   }
 }
 
-function StateDot({ state }: { state: SessionState }) {
-  return <span role="img" title={state} aria-label={state} className={cn("size-1.5 shrink-0 rounded-full", DOT[state])} />;
-}
-
 type EditState = { kind: "project"; project: RuntimeProject } | null;
 
 export default function CanonicalProjectList() {
-  const { loaded, openedIds, projects, projectsLoading, projectsError, retryProjects, sessions, selectedId, selectedTerminalId, view, canvasProjectId, openCanvas, focusOnCanvas, openSession, closeTab, client, upsertSession, deleteSession, setNewAgentOpen, navigate, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, userPreferences, updateUserPreferences, setWorkspaceNavExpanded, setProjectNavExpanded } = useRuntime();
+  const { loaded, projects, projectsLoading, projectsError, retryProjects, canvasProjectId, openCanvas, client, upsertSession, deleteSession, setNewAgentOpen, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, setProjectNavExpanded } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   useProjectFoldersSync();
@@ -126,7 +108,6 @@ export default function CanonicalProjectList() {
   const [saving, setSaving] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
-  const recruits = useMemo(() => recruitCounts(sessions), [sessions]);
   const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [deletingWorktree, setDeletingWorktree] = useState<WorktreeDeleteTarget | null>(null);
   const [deletingProject, setDeletingProject] = useState<RuntimeProject | null>(null);
@@ -267,16 +248,6 @@ export default function CanonicalProjectList() {
     }
   }
 
-  async function resume(session: SessionSummary) {
-    if (!client) return;
-    try { upsertSession(await client.resumeSession(session.id)); openSession(session); }
-    catch (error) { toast.error("Could not resume", { description: errorMessage(error) }); }
-  }
-  async function sleep(session: SessionSummary) {
-    if (!client) return;
-    try { upsertSession(await client.sleepSession(session.id)); }
-    catch (error) { toast.error("Could not sleep", { description: errorMessage(error) }); }
-  }
   async function confirmDelete() {
     const target = deleting;
     setDeleting(null);
@@ -306,70 +277,15 @@ export default function CanonicalProjectList() {
   function reveal(path: string) {
     revealItemInDir(path).catch((error) => toast.error("Could not open the folder", { description: errorMessage(error) }));
   }
-  async function openTerminalHere(projectId: string, workspaceId: string) {
-    if (!client) return;
-    try {
-      const session = await client.createSession({ provider: "shell", title: "Terminal", projectId, workspaceId });
-      upsertSession(session);
-      openSession(session, "agent");
-    } catch (error) { toast.error("Could not open a terminal", { description: errorMessage(error) }); }
-  }
-  function hideSession(session: SessionSummary) {
-    closeTab(session.id);
-    updateUserPreferences({ hiddenSessionIds: { ...userPreferences.hiddenSessionIds, [session.id]: true } });
-  }
-  function restoreSession(session: SessionSummary) {
-    const { [session.id]: _removed, ...rest } = userPreferences.hiddenSessionIds;
-    updateUserPreferences({ hiddenSessionIds: rest });
-  }
-
-  function renderAgent(session: SessionSummary) {
-    const hidden = !!userPreferences.hiddenSessionIds[session.id];
-    const live = isLive(session.state);
-    const recruited = recruits.get(session.id);
-    return <ContextMenu key={session.id}><ContextMenuTrigger asChild><SidebarMenuSubItem className={cn("group/agent-row relative", ROW_OPEN)}>
-      <SidebarMenuButton title={`${recruited !== undefined ? `${orchestratorLabel(recruited)} · ` : ""}${session.title} · ${session.provider} · ${session.state}${session.role ? ` · ${session.role}` : ""}`} isActive={((view === "terminal" || view === "session") && session.id === (view === "terminal" ? selectedTerminalId : selectedId)) || (view === "canvas" && session.id === selectedId)} className="h-7 gap-1.5 pr-14! text-[13px] font-normal" onClick={() => focusOnCanvas(session)}>
-        <span className="flex h-3 w-4 shrink-0 items-center justify-center">{agentActivity(session) ? <ActivityIndicator session={session} /> : <StateDot state={session.state} />}</span><span className="shrink-0 [&_svg]:size-3.5"><ProviderIcon provider={session.provider} /></span><span className="min-w-0 truncate">{session.title}</span>{recruited !== undefined && <IconCrown className={cn("size-3.5 shrink-0", ORCHESTRATOR_TEXT)} aria-label={orchestratorLabel(recruited)} />}
-      </SidebarMenuButton>
-      <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/agent-row:opacity-100 md:group-focus-within/agent-row:opacity-100" aria-label={`Actions for ${session.title}`}><IconDots /></RowAction></DropdownMenuTrigger>
-        <DropdownMenuContent side="right" align="start" className={MENU}>
-          {!isLive(session.state) && <DropdownMenuItem onClick={() => void resume(session)}><IconPlayerPlay />Resume</DropdownMenuItem>}
-          {session.state === "running" && <DropdownMenuItem onClick={() => void sleep(session)}><IconMoon />Sleep</DropdownMenuItem>}
-          <DropdownMenuSeparator /><DropdownMenuItem onClick={() => { setRenaming(session); setRenameTitle(session.title); setRenameError(null); }}><IconPencil />Rename conversation</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void copyText(session.id).then(() => toast.success("Agent ID copied")).catch(() => toast.error("Could not copy the agent ID"))}><IconCopy />Copy agent ID</DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" onClick={() => setDeleting(session)}><IconTrash />Delete</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </SidebarMenuSubItem></ContextMenuTrigger>
-      <ContextMenuContent className={CTX}>
-        <ContextMenuItem onClick={() => focusOnCanvas(session, { dialog: true })}><IconExternalLink />Open</ContextMenuItem>
-        {session.projectId && <ContextMenuItem onClick={() => focusOnCanvas(session)}><IconLayoutKanban />Open in canvas</ContextMenuItem>}
-        {!live && <ContextMenuItem onClick={() => void resume(session)}><IconPlayerPlay />{session.state === "sleeping" ? "Resume" : "Restart"}</ContextMenuItem>}
-        <ContextMenuSeparator />
-        <ContextMenuItem onClick={() => { setRenaming(session); setRenameTitle(session.title); setRenameError(null); }}><IconPencil />Rename conversation</ContextMenuItem>
-        {isOrchestrator(session)
-          ? <ContextMenuItem onClick={() => client && void setOrchestrator(client, session, false, upsertSession, toast)}><IconCrown />Remove orchestrator role</ContextMenuItem>
-          : <ContextMenuItem title={ORCHESTRATOR_HINT} onClick={() => client && void setOrchestrator(client, session, true, upsertSession, toast)}><IconCrown />Set as orchestrator</ContextMenuItem>}
-        <ContextMenuItem onClick={() => copy(session.title, "Title")}><IconCopy />Copy title</ContextMenuItem>
-        <ContextMenuItem onClick={() => copy(session.id, "Agent ID")}><IconCopy />Copy agent ID</ContextMenuItem>
-        <ContextMenuSeparator />
-        {hidden
-          ? <ContextMenuItem onClick={() => restoreSession(session)}><IconEye />Restore to sidebar</ContextMenuItem>
-          : <ContextMenuItem disabled={live} onClick={() => hideSession(session)}><IconEyeOff />{live ? "Hide (agent is running)" : "Hide from sidebar"}</ContextMenuItem>}
-        <ContextMenuItem variant="destructive" onClick={() => setDeleting(session)}><IconTrash />Delete</ContextMenuItem>
-      </ContextMenuContent></ContextMenu>;
-  }
-
   function renderProject(project: RuntimeProject) {
-    const workspaces = project.workspaces ?? [];
     const currentFolder = containerOf(layout, project.id) ?? null;
     return <SidebarMenuItem key={project.id}>
       <div className="group/project">
         <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row", ROW_OPEN)}>
-          <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-14! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
+          <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-8! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
             <ProjectMark project={project} className="text-muted-foreground [&:is(img)]:bg-sidebar-accent/40 [&:is(img)]:ring-1 [&:is(img)]:ring-sidebar-border/70" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
           </DndButton></SidebarMenuButton>
-          <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/project-row:opacity-100 md:group-focus-within/project-row:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
+          <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="chevron" reveal="md:group-hover/project-row:opacity-100 md:group-focus-within/project-row:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className={MENU}>
               <DropdownMenuItem onClick={() => openProjectEdit(project)}><IconPencil />Project settings</DropdownMenuItem>
               <DropdownMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent here</DropdownMenuItem>
@@ -401,48 +317,6 @@ export default function CanonicalProjectList() {
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" onClick={() => setDeletingProject(project)}><IconTrash />Delete project…</ContextMenuItem>
           </ContextMenuContent></ContextMenu>
-        <div>
-          <SidebarMenuSub className="mx-0 translate-x-0 gap-0 border-0 py-0 pl-3 pr-0">
-            {workspaces.map((workspace) => {
-              const agents = sessionsForWorkspace(project.id, workspace, sessions).filter((session) => session.provider !== "shell" && (!userPreferences.hiddenSessionIds[session.id] || isLive(session.state) || openedIds.includes(session.id)));
-              const label = workspace.branch || workspace.name || "Main";
-              const workspaceExpanded = workspace.navExpanded !== false;
-              return <SidebarMenuSubItem key={workspace.id} className="relative">
-                <Collapsible open={workspaceExpanded} onOpenChange={(open) => void setWorkspaceNavExpanded(project.id, workspace.id, open)} className="group/workspace">
-                  <ContextMenu><ContextMenuTrigger asChild><div className={cn("group/workspace-row relative", ROW_OPEN)}>
-                    <CollapsibleTrigger asChild><SidebarMenuButton className={cn("h-8 gap-1.5 text-[13px] text-muted-foreground", workspace.isWorktree ? "pr-20!" : "pr-14!")} title={`${label} · ${workspace.cwd}`}>
-                      <IconGitBranch /><span className="min-w-0 truncate">{label}</span>
-                    </SidebarMenuButton></CollapsibleTrigger>
-                    {workspace.isWorktree && <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="third" reveal="md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100" aria-label={`Actions for worktree ${label}`}><IconDots /></RowAction></DropdownMenuTrigger>
-                      <DropdownMenuContent side="right" align="start" className={MENU}>
-                        <DropdownMenuItem variant="destructive" onClick={() => setDeletingWorktree({ project, workspace })}><IconTrash />Delete worktree</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>}
-                    <Tooltip><TooltipTrigger asChild><RowAction slot="second" reveal="md:group-hover/workspace-row:opacity-100 md:group-focus-within/workspace-row:opacity-100" aria-label={`New agent in ${label}`} onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus /></RowAction></TooltipTrigger><TooltipContent>New agent in {label}</TooltipContent></Tooltip>
-                    <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${workspaceExpanded ? "Collapse" : "Expand"} agents in ${label}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/workspace:rotate-90" /></RowAction></CollapsibleTrigger>
-                  </div></ContextMenuTrigger>
-                    <ContextMenuContent className={CTX}>
-                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); setNewAgentOpen(true); }}><IconPlus />New agent here</ContextMenuItem>
-                      <ContextMenuItem disabled={!client} onClick={() => void openTerminalHere(project.id, workspace.id)}><IconTerminal2 />Open terminal here</ContextMenuItem>
-                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); navigate("home"); }}><IconExternalLink />Open workspace</ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); openRightSidebar("changes"); }}><IconGitCompare />Show changes</ContextMenuItem>
-                      <ContextMenuItem onClick={() => { selectProject(project.id, workspace.id); openRightSidebar("files"); }}><IconFiles />Show files</ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem disabled={!workspace.branch} onClick={() => copy(workspace.branch ?? "", "Branch name")}><IconGitBranch />{workspace.branch ? "Copy branch name" : "Copy branch name (no branch)"}</ContextMenuItem>
-                      <ContextMenuItem onClick={() => copy(workspace.cwd, "Path")}><IconCopy />Copy path</ContextMenuItem>
-                      <ContextMenuItem disabled={!isTauri()} onClick={() => reveal(workspace.cwd)}><IconFolderOpen />{isTauri() ? "Reveal in file explorer" : "Reveal (desktop app only)"}</ContextMenuItem>
-                      {workspace.isWorktree && <><ContextMenuSeparator /><ContextMenuItem variant="destructive" onClick={() => setDeletingWorktree({ project, workspace })}><IconTrash />Delete worktree</ContextMenuItem></>}
-                    </ContextMenuContent></ContextMenu>
-                  <CollapsibleContent>
-                    <SidebarMenuSub className="mx-0 translate-x-0 gap-1 border-0 py-1 pl-3 pr-0">{agents.length ? agents.map(renderAgent) : <SidebarMenuSubItem><span className="block px-2 py-1 text-xs text-muted-foreground">No agents</span></SidebarMenuSubItem>}</SidebarMenuSub>
-                  </CollapsibleContent>
-                </Collapsible>
-              </SidebarMenuSubItem>;
-            })}
-            {workspaces.length === 0 && <SidebarMenuSubItem><span className="block px-2 py-1 text-xs text-muted-foreground">No workspaces</span></SidebarMenuSubItem>}
-          </SidebarMenuSub>
-        </div>
       </div>
     </SidebarMenuItem>;
   }

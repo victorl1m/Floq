@@ -299,13 +299,13 @@
   -ms-overflow-style: none;
 }
 .canvas-topbar-tools::-webkit-scrollbar { display: none; width: 0; height: 0; }
-@container canvas-stage (min-width: 760px) {
+@container canvas-stage (min-width: 620px) {
   .canvas-topbar-layout { display: flex; min-width: 0; align-items: center; gap: 0.5rem; }
   .canvas-topbar-identity { order: 1; flex: 1 1 0%; }
   .canvas-topbar-tools { order: 2; flex: 0 1 auto; min-width: 0; max-width: 58%; justify-content: center; overflow-x: auto; }
-  .canvas-topbar-actions { order: 3; flex: 0 0 auto; }
+  .canvas-topbar-actions { order: 3; flex: 1 1 0%; justify-content: flex-end; }
 }
-@container canvas-stage (max-width: 759px) {
+@container canvas-stage (max-width: 619px) {
   .canvas-topbar-layout {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: "identity actions" "tools tools";
@@ -1241,7 +1241,9 @@
 
 .floq-glass.lg-glass {
   --lg-glass: var(--glass-surface);
-  --lg-edge: var(--glass-border);
+  /* Glisse bakes the edge into a 0.5px line in a 1x bitmap, which aliases to dim/gappy pixels on the rounded corners.
+     Keep the bitmap for the rim light only and draw the edge with an inset shadow, which follows border-radius exactly. */
+  --lg-edge: transparent;
   --lg-drop: var(--glass-drop);
   --lg-rim-shine: 0.38;
   --lg-glass-bend: 0.52;
@@ -1249,6 +1251,10 @@
   --lg-blur: 12px;
   border: 0;
   color: var(--popover-foreground);
+}
+.floq-glass.lg-glass,
+.floq-glass.lg-glass[data-rim] {
+  box-shadow: inset 0 0 0 1px var(--glass-border), 0 1px 3px var(--lg-drop);
 }
 .sidebar-search-glass.lg-glass {
   --lg-blur: 5px;

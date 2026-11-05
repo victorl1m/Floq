@@ -4,7 +4,6 @@ import {
   BackgroundVariant,
   ConnectionMode,
   MarkerType,
-  MiniMap,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -21,7 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconNotes, IconKey, IconLayoutDistributeHorizontal, IconLink, IconMap, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
+  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconNotes, IconKey, IconLayoutDistributeHorizontal, IconLink, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -53,9 +52,9 @@ import { CanvasCtx, type CanvasCtxValue, type LiveWire } from "./canvas-context"
 import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
 import { DEFAULT_NODE_SIZE, layoutFloors } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
+import BranchSwitcher from "./branch-switcher";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
-import { agentActivity } from "@/components/agents/activity-indicator";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
 import { setCanvasSidebarSession } from "@/lib/right-sidebar";
 
@@ -70,18 +69,6 @@ const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: 
   medium: DEFAULT_NODE_SIZE,
   large: { width: 860, height: 540 },
 };
-const MAP_COLOR = { running: "#10b981", working: "#0ea5e9", waiting: "#f59e0b", sleeping: "var(--muted-foreground)", failed: "var(--destructive)" } as const;
-
-function minimapColor(node: AgentNode) {
-  if ((node.type as string) === "keychain") return KC_AMBER;
-  if ((node.type as string) === "note") return "color-mix(in oklab, var(--muted-foreground) 45%, transparent)";
-  const session = node.data.session;
-  const activity = agentActivity(session);
-  if (activity) return MAP_COLOR[activity];
-  if (session.state === "running" || session.state === "starting") return MAP_COLOR.running;
-  if (session.state === "failed" || session.state === "exited") return MAP_COLOR.failed;
-  return MAP_COLOR.sleeping;
-}
 
 function ShortcutTip({ label, keys, children }: { label: string; keys?: string; children: React.ReactElement }) {
   return (
@@ -128,7 +115,7 @@ function AgentCanvas() {
   const canvasTheme: "light" | "dark" = resolvedTheme === "light" ? "light" : "dark";
   const {
     sessions, deleteSessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
-    client, upsertSession, canvasFocus, consumeCanvasFocus,
+    client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects,
   } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
   // Fit options: with floors, leave room above the top band's label for the floating toolbar. Updated once the floors are known.
@@ -139,10 +126,21 @@ function AgentCanvas() {
   const projectName = project ? project.displayName?.trim() || project.name : "Project";
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const projectSessions = useMemo(
-    () => activeProjectId ? sessions.filter((session) => session.projectId === activeProjectId) : [],
-    [sessions, activeProjectId],
-  );
+  // Each branch has its own canvas: ground-workspace sessions tagged with another branch are hidden (untagged ones belong to the current branch).
+  const groundWorkspace = useMemo(() => project?.workspaces.find((workspace) => workspace.cwd === project.cwd), [project?.workspaces, project?.cwd]);
+  const currentBranch = groundWorkspace?.branch || null;
+  const branchTags = activeProjectId ? userPreferences.canvasBranchSessions[activeProjectId] : undefined;
+  const projectSessions = useMemo(() => {
+    if (!activeProjectId) return [];
+    const all = sessions.filter((session) => session.projectId === activeProjectId);
+    if (!groundWorkspace || !currentBranch || !branchTags) return all;
+    const hidden = new Set<string>();
+    for (const session of sessionsForWorkspace(activeProjectId, groundWorkspace, all)) {
+      const tag = branchTags[session.id];
+      if (tag && tag.branch !== currentBranch) hidden.add(session.id);
+    }
+    return hidden.size ? all.filter((session) => !hidden.has(session.id)) : all;
+  }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags]);
   const sessionById = useCallback((id: string) => projectSessions.find((session) => session.id === id), [projectSessions]);
   const titleOf = useCallback((id: string) => sessionById(id)?.title ?? "agent", [sessionById]);
 
@@ -486,7 +484,6 @@ function AgentCanvas() {
   // ---- tools / chrome ----
   const [tool, setTool] = useState<"pan" | "select">("pan");
   const [linkMode, setLinkMode] = useState<{ from: string | null } | null>(null);
-  const [showMiniMap, setShowMiniMap] = useState(true);
   const [showActivity, setShowActivity] = useState(false);
   const [activityFilter, setActivityFilter] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -634,6 +631,100 @@ function AgentCanvas() {
     requestAnimationFrame(() => void fitView({ duration: 200, ...fitOptsRef.current }));
   }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback]);
 
+  // ---- branch canvases ----
+  type BranchTag = { branch: string; resume?: boolean };
+  const writeBranchTags = useCallback((projectId: string, update: (tags: Record<string, BranchTag>) => Record<string, BranchTag>) => {
+    const prefs = prefsRef.current;
+    const next = { canvasBranchSessions: { ...prefs.canvasBranchSessions, [projectId]: update({ ...prefs.canvasBranchSessions[projectId] }) } };
+    prefsRef.current = { ...prefs, ...next };
+    updateUserPreferences(next);
+  }, [updateUserPreferences]);
+
+  const [switching, setSwitching] = useState(false);
+  const switchingRef = useRef(false);
+
+  // Untagged ground sessions belong to the branch checked out now; tag them once so a later switch can tell them apart.
+  useEffect(() => {
+    if (!activeProjectId || !groundWorkspace || !currentBranch || switchingRef.current) return;
+    const tags = prefsRef.current.canvasBranchSessions[activeProjectId] ?? {};
+    const untagged = sessionsForWorkspace(activeProjectId, groundWorkspace, sessions.filter((session) => session.projectId === activeProjectId)).filter((session) => !tags[session.id]);
+    if (untagged.length === 0) return;
+    writeBranchTags(activeProjectId, (current) => {
+      for (const session of untagged) current[session.id] ??= { branch: currentBranch };
+      return current;
+    });
+  }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags, writeBranchTags]);
+
+  // Branches held by other worktrees cannot be checked out in the main checkout.
+  const inWorktreeBranches = useMemo(
+    () => new Set(orderedWorkspaces.filter((workspace) => workspace.id !== groundWorkspaceId && workspace.branch).map((workspace) => workspace.branch as string)),
+    [orderedWorkspaces, groundWorkspaceId],
+  );
+  const loadBranches = useCallback(async () => {
+    if (!client || !activeProjectId || !groundWorkspaceId) throw new Error("The runtime is not connected");
+    return client.projectBranches(activeProjectId, groundWorkspaceId);
+  }, [client, activeProjectId, groundWorkspaceId]);
+
+  const switchBranch = async (target: string) => {
+    const projectId = activeProjectId;
+    const leaving = currentBranch;
+    if (!client || !projectId || !groundWorkspace || !leaving || target === leaving || switchingRef.current) return;
+    switchingRef.current = true;
+    setSwitching(true);
+    const isRunning = (session: SessionSummary) => session.state === "running" || session.state === "starting";
+    const projectAll = () => sessionsRef.current.filter((session) => session.projectId === projectId);
+    const groundIds = new Set(sessionsForWorkspace(projectId, groundWorkspace, projectSessions).map((session) => session.id));
+    const wasRunning = new Set(projectAll().filter(isRunning).map((session) => session.id));
+
+    // a. Remember which branch each visible ground agent belongs to, and which ones were live.
+    writeBranchTags(projectId, (tags) => {
+      for (const id of groundIds) tags[id] = wasRunning.has(id) ? { branch: leaving, resume: true } : { branch: leaving };
+      return tags;
+    });
+
+    const slept: SessionSummary[] = [];
+    const resumeOne = async (session: SessionSummary): Promise<boolean> => {
+      try { upsertSession(await client.resumeSession(session.id)); return true; }
+      catch (error) { toast.error(`Could not wake ${session.title}`, { description: errorMessage(error) }); return false; }
+    };
+    try {
+      // b. Sleep every live agent of the project (the server refuses to switch otherwise).
+      for (const session of projectAll().filter(isRunning)) {
+        const updated = await client.sleepSession(session.id);
+        slept.push(session);
+        upsertSession(updated);
+      }
+      // c. Check the branch out.
+      await client.switchProjectBranch(projectId, groundWorkspace.id, target);
+      await refreshProjects(true);
+    } catch (error) {
+      for (const session of slept) await resumeOne(session);
+      writeBranchTags(projectId, (tags) => {
+        for (const id of groundIds) if (tags[id]) tags[id] = { branch: tags[id].branch };
+        return tags;
+      });
+      toast.error(`Could not switch to ${target}`, { description: errorMessage(error) });
+      switchingRef.current = false;
+      setSwitching(false);
+      return;
+    }
+
+    // d. Wake what was live on the target branch, plus the worktree agents slept for the switch.
+    const targetTags = prefsRef.current.canvasBranchSessions[projectId] ?? {};
+    const toWake = projectAll().filter((session) => targetTags[session.id]?.branch === target && targetTags[session.id]?.resume);
+    writeBranchTags(projectId, (tags) => {
+      for (const session of toWake) tags[session.id] = { branch: target };
+      return tags;
+    });
+    const woken = new Set(toWake.map((session) => session.id));
+    for (const session of [...toWake, ...slept.filter((item) => !groundIds.has(item.id) && !woken.has(item.id))]) await resumeOne(session);
+    toast.success(`Switched to ${target}`);
+    switchingRef.current = false;
+    setSwitching(false);
+    // e. The canvas is new (possibly empty): refit once its nodes are in.
+    setTimeout(() => requestAnimationFrame(() => void fitView({ duration: 200, ...fitOptsRef.current })), 150);
+  };
+
   const openNewAgent = useCallback(() => {
     selectProject(activeProjectId, groundWorkspaceId ?? project?.workspaces[0]?.id);
     setNewAgentOpen(true);
@@ -735,7 +826,6 @@ function AgentCanvas() {
     titleOf,
     collapsed: (id) => collapsed.has(id),
     hasMirrorText: (id) => getMirrorText(id) !== null,
-    showMiniMap,
     showActivity,
     linkMode: linkMode !== null,
     nodeCount: nodes.length,
@@ -767,7 +857,6 @@ function AgentCanvas() {
     relayout,
     fit: () => void fitView({ duration: 200, ...fitOptsRef.current }),
     selectAll: () => selectNodes("all"),
-    toggleMiniMap: () => setShowMiniMap((value) => !value),
     toggleActivity: () => setShowActivity((value) => !value),
     resetZoom: () => void zoomTo(1, { duration: 200 }),
     focus: openTerminal,
@@ -915,9 +1004,13 @@ function AgentCanvas() {
     return () => document.removeEventListener("keydown", onDocKeyDown);
   }, []);
 
+  const branchSwitcher = currentBranch && groundWorkspaceId ? (
+    <BranchSwitcher currentBranch={currentBranch} inWorktree={inWorktreeBranches} busy={switching} load={loadBranches} onSwitch={(branch) => void switchBranch(branch)} />
+  ) : null;
+
   if (projectSessions.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+      <div className="relative flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
         <IconTopologyStar3 size={28} stroke={1.5} />
         <p className="text-sm font-medium text-foreground">{projectName} has no agents yet</p>
         <p className="text-xs">Start an agent and the sessions it recruits will appear here.</p>
@@ -925,6 +1018,7 @@ function AgentCanvas() {
           <IconPlus size={14} />
           New agent
         </Button>
+        {branchSwitcher && <div className="absolute right-0 bottom-0">{branchSwitcher}</div>}
       </div>
     );
   }
@@ -995,28 +1089,7 @@ function AgentCanvas() {
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
               <FloorBands floors={floors} />
               <CanvasControls />
-              {showMiniMap && (
-                <>
-                  <MiniMap
-                    pannable
-                    zoomable
-                    position="bottom-right"
-                    style={{ width: 140, height: 90 }}
-                    className="m-2! overflow-hidden rounded-md! border border-border bg-card/95! shadow-sm"
-                    nodeColor={minimapColor}
-                    nodeStrokeColor={(node) => (recruits.has(node.id) ? "var(--primary-text)" : "transparent")}
-                    nodeStrokeWidth={3}
-                    nodeBorderRadius={3}
-                    maskColor="color-mix(in oklab, var(--background) 65%, transparent)"
-                    maskStrokeColor="var(--primary)"
-                    maskStrokeWidth={1.5}
-                    aria-label="Canvas overview"
-                  />
-                  <Panel position="bottom-right" className="m-2! mb-[98px]! mr-2!">
-                    <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full border border-border bg-card/80" aria-label="Hide mini map" title="Hide mini map" onClick={() => setShowMiniMap(false)}><IconX size={10} /></Button>
-                  </Panel>
-                </>
-              )}
+              {branchSwitcher && <Panel position="bottom-right" className="m-0!">{branchSwitcher}</Panel>}
 
               <Panel position="top-left" className="m-2! w-[calc(100%-1rem)]">
                 <div className="canvas-topbar w-full rounded-2xl border border-border/70 p-1.5 shadow-sm">
@@ -1060,7 +1133,6 @@ function AgentCanvas() {
                         <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet"); }, <IconNotes size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200, ...fitOptsRef.current }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Mini map">{toolButton(showMiniMap, "Mini map", () => setShowMiniMap((value) => !value), <IconMap size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Activity">{toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}</ShortcutTip>
                       </div>
                     </div>
