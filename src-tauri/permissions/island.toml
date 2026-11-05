@@ -1,0 +1,26 @@
+[[permission]]
+identifier = "allow-island-bridge"
+description = "Allow the island window to publish layout and intent messages only."
+commands.allow = ["island_intent", "island_set_layout"]
+
+[[permission]]
+identifier = "allow-main-commands"
+description = "Allow the main window to use the existing application and desktop commands."
+commands.allow = [
+  "greet",
+  "get_memory_details",
+  "inspect_dropped_file",
+  "upload_dropped_file",
+  "cancel_dropped_upload",
+  "download_to_downloads",
+  "open_dav_mount",
+  "eject_dav_mount",
+  "native_material_support",
+  "native_material",
+  "set_native_material",
+  "port_forward_start",
+  "port_forward_stop",
+  "island_publish",
+  "get_desktop_preferences",
+  "set_desktop_preference"
+]

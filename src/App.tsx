@@ -28,6 +28,7 @@ import { useEffect, useLayoutEffect } from "react";
 import { useMaterialPreference } from "@/lib/material-preference";
 import { useNativeMaterial } from "@/lib/native-material";
 import { usePerformancePrefs } from "@/lib/prefs";
+import { useIslandBridge } from "./components/island/main-bridge";
 import { Skeleton } from "@/components/ui/skeleton";
 
 function App() {
@@ -37,6 +38,7 @@ function App() {
   useLayoutEffect(() => { document.documentElement.dataset.material = material; }, [material]);
   useNativeMaterial(material);
 
+  const islandReady = useIslandBridge();
   const pendingApprovals = usePendingApprovals();
   useEffect(() => {
     const title = titleWithPending(view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
@@ -83,7 +85,7 @@ function App() {
       {user && ready && <ActivePortWatcher />}
       {user && ready && <PortRequestHost />}
       {/* Root-level and outside every view: user approvals must reach the user on any screen. */}
-      {user && ready && <ApprovalHost />}
+      {user && ready && <ApprovalHost suppressed={islandReady} />}
       {user && ready && <SubagentToaster />}
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}

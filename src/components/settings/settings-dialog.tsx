@@ -31,6 +31,8 @@ import OrganizationSection from "./organization-section";
 import GitSection from "./git-section";
 import RuntimeSection from "./runtime-section";
 import UsersSection from "./users-section";
+import DesktopSection from "./desktop-section";
+import { isTauri } from "@tauri-apps/api/core";
 import { useIsAdmin } from "./use-admin";
 
 type Item = { id: string; label: string; icon: ComponentType<{ className?: string }> };
@@ -56,6 +58,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
     {
         title: "App",
         items: [
+            ...(isTauri() && /Windows/i.test(navigator.userAgent) ? [{ id: "desktop", label: "Desktop", icon: IconServer }] : []),
             { id: "runtime", label: "Runtime", icon: IconServer },
             { id: "advanced", label: "Advanced", icon: IconAdjustmentsAlt },
             { id: "about", label: "About", icon: IconInfoCircle },
@@ -109,6 +112,7 @@ export default function SettingsDialog() {
     else if (section === "organization") content = <OrganizationSection />;
     else if (section === "accounts") content = <AccountsSection />;
     else if (section === "git" && settings) content = <GitSection settings={settings} onChange={setSettings} reload={reload} />;
+    else if (section === "desktop") content = <DesktopSection />;
     else if (section === "runtime") content = <RuntimeSection />;
     else if (section === "users") content = <UsersSection />;
     else if (section === "advanced" && settings) content = <AdvancedSection settings={settings} onChange={setSettings} />;

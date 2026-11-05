@@ -14,6 +14,8 @@ import type {
   DevicePoll,
   PortRequest,
   ApprovalRequest,
+  DecisionView,
+  DecisionAnswer,
   GithubRepoPage,
   Exposure,
   RuntimeInfo,
@@ -769,6 +771,10 @@ export class RuntimeClient {
   /** The user's decision on an approval. Only the signed-in user can do this; rejects once it expired. */
   resolveApproval = (id: string, decision: "allow" | "deny") =>
     this.call<{ status: string }>("POST", `/v1/approvals/${encodeURIComponent(id)}/resolve`, { decision });
+
+  decisions = async () => (await this.call<{ decisions: DecisionView[] }>("GET", "/v1/decisions")).decisions;
+  resolveDecision = (id: string, answers: DecisionAnswer[]) => this.call<{ status: string }>("POST", `/v1/decisions/${encodeURIComponent(id)}/resolve`, { answers });
+  decisionTerminal = (id: string) => this.call<{ status: string }>("POST", `/v1/decisions/${encodeURIComponent(id)}/terminal`, {});
 
   /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
   eventsUrl(): string {

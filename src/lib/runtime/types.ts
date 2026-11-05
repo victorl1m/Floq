@@ -531,3 +531,8 @@ export interface SessionDisplay {
   port: number | null;
   token: string | null;
 }
+
+export interface DecisionQuestion { id: string; question: string; header?: string; options: { id: string; label: string; description?: string }[]; multiSelect: boolean; allowText: boolean }
+export interface DecisionAnswer { questionId: string; optionIds: string[]; text: string }
+export interface DecisionView { id: string; source: 'cli' | 'native'; sessionId: string; projectId: string; sessionName: string; provider: 'claude' | 'codex' | null; questions: DecisionQuestion[]; status: 'pending' | 'answered' | 'cancelled' | 'expired'; createdAt: string; expiresAt: string; answerMode: 'direction' | 'hook' | 'keys' | 'terminal'; response?: { answers: DecisionAnswer[] }; deliveryStatus?: 'pending' | 'delivered' | 'failed' }
+export type DecisionFrame = { type: 'decision-request' | 'decision-updated'; decision: DecisionView } | { type: 'decision-resolved'; id: string; sessionId: string; status: 'answered' | 'cancelled' | 'expired'; response?: { answers: DecisionAnswer[] }; deliveryStatus?: 'pending' | 'delivered' | 'failed' };

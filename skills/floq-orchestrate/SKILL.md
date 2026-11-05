@@ -51,6 +51,10 @@ floq wait "$REVIEWER_UUID"   # only needed after a timeout, or to re-read the la
 
 Never poll in a shell loop and never grep terminal output for spinner or status words ("Baked for", "Worked for", ...): they are cosmetic and change between versions. Use `ask`, `wait` and the `status:` line. If a reply is missing, run `floq check "$ID" --full` rather than asking the agent to resend. Inspect the reply as a report, then verify important claims in the workspace.
 
+## Ask the user for direction
+
+Use `floq decision request --question "..." [--options-json '[{"id":"a","label":"..."}]'] [--detail "..."] [--ttl SECONDS] [--wait]` to request direction from the user. The command emits JSON; `--wait` waits for the answer and returns it as JSON. Use `floq decision status ID [--wait]` or `floq decision cancel ID` to check or withdraw it. A decision is direction, not approval for irreversible or outward-facing actions; use the approval flow above where required.
+
 ## Share coordination context
 
 Use shared notes for durable plans, decisions, and handoffs longer than a short message:

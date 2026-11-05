@@ -210,6 +210,17 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       decided_at TIMESTAMPTZ
     );
     CREATE INDEX IF NOT EXISTS agent_approvals_user_idx ON agent_approvals (user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_decisions (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      requester_session_id UUID NOT NULL, requester_project_id UUID,
+      source TEXT NOT NULL CHECK (source IN ('cli','native')), provider TEXT,
+      provider_request_id TEXT, questions JSONB NOT NULL, response JSONB,
+      status TEXT NOT NULL CHECK (status IN ('pending','answered','cancelled','expired')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL,
+      decided_at TIMESTAMPTZ, meta JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_decisions_provider_request_idx ON agent_decisions (requester_session_id, provider_request_id) WHERE provider_request_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS agent_decisions_user_idx ON agent_decisions (user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS vault_secrets (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       name TEXT NOT NULL,

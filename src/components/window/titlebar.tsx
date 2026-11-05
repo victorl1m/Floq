@@ -131,7 +131,7 @@ export default function Titlebar() {
             )}
 
             {!auth && ((view === "session" || view === "terminal") || (view === "canvas" && !!canvasProjectId)) && (
-                <Button data-right-sidebar-trigger="true" variant="ghost" size="icon-sm" className="mr-1 shrink-0" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>
+                <Button data-right-sidebar-trigger="true" variant="ghost" size="icon-sm" className="mr-1 shrink-0 text-muted-foreground! transition-colors hover:text-foreground!" aria-label={rightSidebar.open ? "Hide project panel" : "Show project panel"} aria-pressed={rightSidebar.open} title="Project panel" onClick={toggleRightSidebar}>
                     <IconLayoutSidebarRight />
                 </Button>
             )}

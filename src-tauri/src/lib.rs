@@ -1,4 +1,6 @@
 mod port_forward;
+mod island;
+mod desktop;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -9,7 +11,7 @@ use std::{
     },
 };
 use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
-use tauri::Manager;
+use tauri::{Manager, WebviewWindow};
 #[cfg(windows)]
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
 #[cfg(windows)]
@@ -37,6 +39,14 @@ struct MemoryDetails {
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+fn require_main(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err("This command is only available to the main window".into())
+    }
 }
 
 fn collect_process_tree(system: &System, root: Pid) -> Vec<ProcessMemory> {
@@ -123,7 +133,7 @@ struct UploadProgress {
 
 /// Validate a dropped path (regular, non-empty, within the safety cap) without reading it.
 #[tauri::command]
-fn inspect_dropped_file(path: String) -> Result<DroppedFileInfo, String> {
+fn inspect_file(path: String) -> Result<DroppedFileInfo, String> {
     let file_path = Path::new(&path);
     let name = file_path
         .file_name()
@@ -143,10 +153,17 @@ fn inspect_dropped_file(path: String) -> Result<DroppedFileInfo, String> {
     Ok(DroppedFileInfo { name, size: metadata.len() })
 }
 
+#[tauri::command]
+fn inspect_dropped_file(window: WebviewWindow, path: String) -> Result<DroppedFileInfo, String> {
+    require_main(&window)?;
+    inspect_file(path)
+}
+
 /// Stream a dropped file from disk to the runtime's attachment endpoint (PUT, raw body) without
 /// loading it into memory, emitting `floq-upload-progress` events. Returns the response body.
 #[tauri::command]
 async fn upload_dropped_file(
+    window: WebviewWindow,
     app: tauri::AppHandle,
     uploads: tauri::State<'_, Uploads>,
     upload_id: String,
@@ -158,10 +175,11 @@ async fn upload_dropped_file(
     use tauri::Emitter;
     use tokio::io::AsyncReadExt;
 
+    require_main(&window)?;
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("Invalid upload URL".into());
     }
-    let info = inspect_dropped_file(path.clone())?;
+    let info = inspect_file(path.clone())?;
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| "Could not read this file".to_string())?;
@@ -243,12 +261,14 @@ async fn upload_dropped_file(
 
 /// Abort an in-flight dropped-file upload; the runtime removes the partial file when the connection closes.
 #[tauri::command]
-fn cancel_dropped_upload(uploads: tauri::State<'_, Uploads>, upload_id: String) {
+fn cancel_dropped_upload(window: WebviewWindow, uploads: tauri::State<'_, Uploads>, upload_id: String) -> Result<(), String> {
+    require_main(&window)?;
     if let Ok(map) = uploads.0.lock() {
         if let Some(flag) = map.get(&upload_id) {
             flag.store(true, Ordering::Relaxed);
         }
     }
+    Ok(())
 }
 
 /// Name a downloaded file safely: the server's Content-Disposition filename, reduced to one harmless path component.
@@ -340,7 +360,8 @@ fn valid_download_url(url: &reqwest::Url) -> bool {
 /// Only links on the runtime's own origin are fetched, redirects are refused, and the file name comes from the response.
 /// Returns the saved path. Never overwrites: a taken name becomes "name (1).ext".
 #[tauri::command]
-async fn download_to_downloads(app: tauri::AppHandle, url: String, origin: String, fallback_name: String) -> Result<String, String> {
+async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, url: String, origin: String, fallback_name: String) -> Result<String, String> {
+    require_main(&window)?;
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
@@ -537,7 +558,8 @@ fn open_dav_blocking(url: reqwest::Url, map_drive: bool) -> Result<String, Strin
 
 /// Open the project's read-only WebDAV share in the OS file manager. `map_drive` (Windows) maps the first free drive letter instead.
 #[tauri::command]
-async fn open_dav_mount(dav_url: String, origin: String, map_drive: bool) -> Result<String, String> {
+async fn open_dav_mount(window: WebviewWindow, dav_url: String, origin: String, map_drive: bool) -> Result<String, String> {
+    require_main(&window)?;
     let url = same_origin_url(&dav_url, &origin)?;
     if !valid_dav_url(&url) {
         return Err("Invalid share address".into());
@@ -549,7 +571,8 @@ async fn open_dav_mount(dav_url: String, origin: String, map_drive: bool) -> Res
 
 /// Best-effort disconnect of a share mapped with `net use` (Windows). The server-side revoke is what actually ends access.
 #[tauri::command]
-async fn eject_dav_mount(dav_url: String, origin: String) -> Result<(), String> {
+async fn eject_dav_mount(window: WebviewWindow, dav_url: String, origin: String) -> Result<(), String> {
+    require_main(&window)?;
     let url = same_origin_url(&dav_url, &origin)?;
     if !valid_dav_url(&url) {
         return Err("Invalid share address".into());
@@ -677,11 +700,15 @@ fn native_material(state: tauri::State<'_, NativeMaterial>) -> String {
 
 #[tauri::command]
 fn set_native_material(
+    window: WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeMaterial>,
     material: String,
     theme: Option<String>,
 ) -> String {
+    if require_main(&window).is_err() {
+        return "none".into();
+    }
     let Some(window) = app.get_webview_window("main") else {
         return "none".into();
     };
@@ -692,14 +719,54 @@ fn set_native_material(
     applied.to_string()
 }
 
+#[tauri::command]
+async fn port_forward_start(
+    window: WebviewWindow,
+    state: tauri::State<'_, port_forward::Forwards>,
+    port: u16,
+    url: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    port_forward::port_forward_start(state, port, url).await
+}
+
+#[tauri::command]
+fn port_forward_stop(
+    window: WebviewWindow,
+    state: tauri::State<'_, port_forward::Forwards>,
+    port: u16,
+) -> Result<(), String> {
+    require_main(&window)?;
+    port_forward::port_forward_stop(state, port);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if argv.iter().any(|arg| arg == "--background") {
+                return;
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(port_forward::Forwards::default())
         .manage(Uploads::default())
         .manage(NativeMaterial::default())
+        .manage(island::IslandRuntime::default())
+        .manage(desktop::DesktopState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Floq")
+                .args(["--background"])
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             greet,
             get_memory_details,
@@ -712,8 +779,13 @@ pub fn run() {
             native_material_support,
             native_material,
             set_native_material,
-            port_forward::port_forward_start,
-            port_forward::port_forward_stop
+            port_forward_start,
+            port_forward_stop,
+            island::island_publish,
+            island::island_intent,
+            island::island_set_layout,
+            desktop::get_desktop_preferences,
+            desktop::set_desktop_preference
         ])
         .setup(|app| {
             // Handle window creation here: Tauri panics if an automatically
@@ -721,7 +793,8 @@ pub fn run() {
             let result = (|| -> tauri::Result<()> {
                 for config in &app.config().app.windows {
                     let builder = tauri::WebviewWindowBuilder::from_config(app, config)?
-                        .general_autofill_enabled(false);
+                        .general_autofill_enabled(false)
+                        .visible(config.label != "main" || !desktop::is_background_launch());
                     // Transparent only where a native backdrop is available (Win10 1809+, Win11, macOS).
                     #[cfg(any(windows, target_os = "macos"))]
                     let builder = if !native_material_support_list().is_empty() {
@@ -761,6 +834,28 @@ pub fn run() {
                             eprintln!("Failed to disable WebView2 password autosave: {error}");
                         }
                     })?;
+                }
+                let material_available = !native_material_support_list().is_empty();
+                match island::create_window(app.handle(), material_available) {
+                    Ok(island) => {
+                        if material_available {
+                            let support = native_material_support_list();
+                            let default = if support.contains(&"mica") { "mica" } else { support.first().copied().unwrap_or("none") };
+                            if apply_native_material(&island, default, None) == "none" {
+                                let _ = island.set_background_color(Some(tauri::window::Color(245, 246, 248, 255)));
+                            }
+                        }
+                        island::start_hover_monitor(app.handle().clone());
+                    }
+                    Err(error) => eprintln!("Failed to create the approval island: {error}"),
+                }
+                if let Err(error) = desktop::initialize(app.handle()) {
+                    eprintln!("Failed to create desktop tray: {error}");
+                    if desktop::is_background_launch() {
+                        if let Some(main) = app.get_webview_window("main") {
+                            let _ = main.show();
+                        }
+                    }
                 }
                 Ok(())
             })();

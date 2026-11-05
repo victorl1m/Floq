@@ -325,7 +325,6 @@ export default function CanonicalProjectList() {
             <DropdownMenuContent side="right" align="start" className={MENU}>
               <DropdownMenuItem onClick={() => openProjectEdit(project)}><IconPencil />Project settings</DropdownMenuItem>
               <DropdownMenuItem onClick={() => { selectProject(project.id); setNewAgentOpen(true); }}><IconPlus />New agent here</DropdownMenuItem>
-              {folders.filter((folder) => folder.id !== currentFolder).map((folder) => <DropdownMenuItem key={folder.id} onClick={() => moveProject(project.id, folder.id)}><IconFolder />Move to {folder.name}</DropdownMenuItem>)}
               {currentFolder !== null && <DropdownMenuItem onClick={() => moveProject(project.id, null)}><IconX />Move out of folder</DropdownMenuItem>}
               <DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => setDeletingProject(project)}><IconTrash />Delete project…</DropdownMenuItem>
             </DropdownMenuContent>

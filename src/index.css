@@ -1102,6 +1102,9 @@
   background: var(--sidebar-accent);
   box-shadow: none;
 }
+.sidebar-nav [data-sidebar="menu-button"][data-active="true"] {
+  background: transparent;
+}
 [data-sidebar="menu-button"][data-active="true"] > svg {
   color: var(--muted-foreground);
 }

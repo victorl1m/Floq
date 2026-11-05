@@ -1,0 +1,33 @@
+{
+ "session_id": "REDACTED",
+ "transcript_path": "REDACTED",
+ "cwd": "REDACTED",
+ "scratchpad_dir": "REDACTED",
+ "prompt_id": "REDACTED",
+ "permission_mode": "bypassPermissions",
+ "effort": {
+  "level": "medium"
+ },
+ "hook_event_name": "PreToolUse",
+ "tool_name": "AskUserQuestion",
+ "tool_input": {
+  "questions": [
+   {
+    "question": "Which color do you prefer?",
+    "header": "Color",
+    "options": [
+     {
+      "label": "Red",
+      "description": "Red"
+     },
+     {
+      "label": "Blue",
+      "description": "Blue"
+     }
+    ],
+    "multiSelect": false
+   }
+  ]
+ },
+ "tool_use_id": "REDACTED"
+}

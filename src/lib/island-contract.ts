@@ -1,0 +1,18 @@
+import type { ApprovalRequest, DecisionView } from './runtime/types';
+
+export type AttentionItem = { kind: 'approval'; id: string; createdAt: string; approval: ApprovalRequest } | { kind: 'decision'; id: string; createdAt: string; decision: DecisionView };
+export interface IslandSnapshot { epoch: string; revision: number; connected: boolean; items: AttentionItem[]; busy: string[]; error?: string }
+export type IslandIntent = { type: 'ready' } | { type: 'approval'; id: string; decision: 'allow' | 'deny' } | { type: 'decision'; id: string; answers: DecisionAnswer[] } | { type: 'terminal'; id: string };
+export interface DecisionAnswer { questionId: string; optionIds: string[]; text: string }
+export function orderAttention<T extends {kind: string; createdAt: string; id: string}>(items: T[]): T[] {
+  return [...items].sort((a,b) => Number(b.kind === 'approval') - Number(a.kind === 'approval') || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+export function acceptSnapshot(current: {epoch:string; revision:number} | null, next: {epoch:string; revision:number}): boolean {
+  return !current || current.epoch !== next.epoch || next.revision > current.revision;
+}
+export function validAnswers(questions: {id:string; options:{id:string}[]; multiSelect:boolean; allowText:boolean}[], answers: DecisionAnswer[]): boolean {
+  return answers.some(a => a.optionIds.length > 0 || !!a.text.trim()) && answers.every(a => {
+    const q = questions.find(q => q.id === a.questionId);
+    return !!q && (q.multiSelect || a.optionIds.length <= 1) && new Set(a.optionIds).size === a.optionIds.length && a.optionIds.every(id => q.options.some(o => o.id === id)) && (q.allowText || !a.text.trim());
+  }) && new Set(answers.map(a => a.questionId)).size === answers.length && answers.reduce((n,a) => n+a.text.length,0) <= 8000;
+}

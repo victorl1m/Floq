@@ -41,6 +41,7 @@ import { registerWithInvitation } from "./invitationRegistration.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
 import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
+import { Decisions } from "./decisions.js";
 import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
 import { visibleDebugLinks } from "./debugLinks.js";
@@ -102,6 +103,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text),
   });
   void approvals.init();
+  const decisions = new Decisions({ pool, scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
+  const decisionsReady = decisions.init();
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.
   manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
@@ -361,6 +364,19 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           manager.displays.announce(userId, sessionId);
           return send(res, 200, { announced: true, port: lease.port });
         }
+        case "decisions/request": {
+          await decisionsReady;
+          const { requester } = await orchestrator.approvalParties(userId, sessionId, undefined);
+          return send(res, 200, await decisions.request(userId, { sessionId, projectId: requester.projectId, sessionName: requester.name, questions: body.questions, ttlMs: body.ttlMs, wait: body.wait === true }));
+        }
+        case "decisions/native-request": {
+          await decisionsReady;
+          const { requester } = await orchestrator.approvalParties(userId, sessionId, undefined);
+          if (requester.provider !== "claude" || typeof body.providerRequestId !== "string" || !body.providerRequestId || body.providerRequestId.length > 256) throw badRequest("Invalid native request");
+          return send(res, 200, await decisions.request(userId, { sessionId, projectId: requester.projectId, sessionName: requester.name, questions: body.questions, ttlMs: body.ttlMs, wait: true, source: "native", provider: "claude", providerRequestId: body.providerRequestId, answerMode: "hook" }));
+        }
+        case "decisions/status": return send(res, 200, await decisions.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));
+        case "decisions/cancel": return send(res, 200, await decisions.cancel(userId, sessionId, body.id));
         case "approvals/request": {
           const parties = await orchestrator.approvalParties(userId, sessionId, body.target);
           return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, ttlSec: body.timeoutSec, waiting: body.wait === true }));
@@ -1083,6 +1099,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, await approvals.resolve(userId, approvalAnswer[1], body.decision));
     }
 
+    if (url.pathname === "/v1/decisions" && method === "GET") return send(res, 200, { decisions: decisions.list(userId) });
+    const decisionAnswer = /^\/v1\/decisions\/([\w-]+)\/(resolve|terminal)$/.exec(url.pathname);
+    if (decisionAnswer && method === "POST") {
+      if (decisionAnswer[2] === "terminal") return send(res, 200, await decisions.terminal(userId, decisionAnswer[1]));
+      const body = await readJson<{ answers?: unknown }>(req);
+      return send(res, 200, await decisions.resolve(userId, decisionAnswer[1], body.answers));
+    }
+
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
     if (portsMatch && method === "GET") {
       const live = manager.getLive(portsMatch[1], userId);
@@ -1240,8 +1264,9 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
           const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offDecisions = decisions.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
-          const offAll = () => { off(); offPorts(); offApprovals(); offDisplays(); };
+          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offDisplays(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });
