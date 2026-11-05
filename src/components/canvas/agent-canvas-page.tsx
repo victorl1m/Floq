@@ -8,6 +8,8 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useNodesState,
+  useNodesInitialized,
+  useNodes,
   useOnViewportChange,
   useReactFlow,
   useStore,
@@ -17,6 +19,7 @@ import {
   type Node,
   type Edge,
   type NodeChange,
+  type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -62,7 +65,41 @@ import { askConfirm } from "@/components/ui/ask-dialog";
 const NO_PROJECT_MARK = { imageUrl: null, gitUrl: null } as const;
 
 // Defined once outside the components so React Flow does not remount nodes/edges on every render.
-const nodeTypes = { agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes };
+const EMPTY_CANVAS_ID = "empty-canvas";
+type EmptyCanvasNode = Node<{ projectName: string; disabled: boolean; onCreate: () => void }, "empty">;
+
+function EmptyCanvasCard({ data }: NodeProps<EmptyCanvasNode>) {
+  return (
+    <div className="nodrag nopan flex h-full flex-col items-center justify-center gap-2 rounded-[14px] bg-card p-6 text-center text-muted-foreground"
+      style={{ boxShadow: "0 8px 24px oklch(from var(--canvas-bg, var(--background)) calc(l * 0.7) c h / 0.35)" }}>
+      <IconTopologyStar3 size={28} stroke={1.5} aria-hidden />
+      <p className="text-sm font-medium text-foreground">{data.projectName} has no agents yet</p>
+      <p className="text-xs">Start an agent and the sessions it recruits will appear here.</p>
+      <Button type="button" size="sm" className="mt-1" disabled={data.disabled} onClick={data.onCreate}>
+        <IconPlus size={14} />New agent
+      </Button>
+    </div>
+  );
+}
+
+// Wait for measurement before fitting, including the empty -> first agent transition.
+function EmptyCanvasViewport({ empty, projectId }: { empty: boolean; projectId: string | null }) {
+  const initialized = useNodesInitialized();
+  const graphNodes = useNodes();
+  const { fitView } = useReactFlow();
+  const previous = useRef<{ empty: boolean; projectId: string | null } | null>(null);
+  useEffect(() => {
+    if (!initialized || (!empty && !graphNodes.some((node) => node.type === "agent"))) return;
+    const before = previous.current;
+    if ((empty && (!before?.empty || before.projectId !== projectId)) || (!empty && before?.empty && before.projectId === projectId)) {
+      void fitView({ nodes: empty ? [{ id: EMPTY_CANVAS_ID }] : undefined, padding: 0.3, maxZoom: 1, duration: 0 });
+    }
+    previous.current = { empty, projectId };
+  }, [initialized, graphNodes, empty, projectId, fitView]);
+  return null;
+}
+
+const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes };
 const edgeTypes = { wire: WireEdgeView, ...keychainEdgeTypes, ...noteEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
@@ -446,6 +483,7 @@ function AgentCanvas() {
 
   // A different project is a different graph: refit once its nodes are in.
   useEffect(() => {
+    if (projectSessions.length === 0) return;
     const frame = requestAnimationFrame(() => {
       const saved = savedViewportRef.current;
       if (saved) void setViewport(saved);
@@ -793,11 +831,19 @@ function AgentCanvas() {
   );
   fitOptsRef.current = fitViewOptions;
 
-  const allNodes = useMemo(() => [...notes.nodes, ...keychains.nodes, ...nodes] as Node[], [notes.nodes, keychains.nodes, nodes]);
+  const emptyCanvas = projectSessions.length === 0;
+  const allNodes = useMemo(() => [
+    ...notes.nodes, ...keychains.nodes, ...nodes,
+    ...(emptyCanvas ? [{ id: EMPTY_CANVAS_ID, type: "empty", position: { x: 0, y: 0 },
+      width: 360, height: 208, style: { width: 360, height: 208 },
+      draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
+      data: { projectName, disabled: !activeProjectId, onCreate: openNewAgent },
+    }] : []),
+  ] as Node[], [notes.nodes, keychains.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
     const forKeychain = (change: NodeChange<Node>) => "id" in change && isKeychainId(change.id);
-    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change));
+    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
     const noteChanges = changes.filter(forNote);
     const keychainChanges = changes.filter(forKeychain);
     if (keychainChanges.length) keychains.onNodesChange(keychainChanges);
@@ -1015,21 +1061,6 @@ function AgentCanvas() {
     <BranchSwitcher currentBranch={currentBranch} inWorktree={inWorktreeBranches} busy={switching} load={loadBranches} onSwitch={(branch) => void switchBranch(branch)} />
   ) : null;
 
-  if (projectSessions.length === 0) {
-    return (
-      <div className="relative flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-        <IconTopologyStar3 size={28} stroke={1.5} />
-        <p className="text-sm font-medium text-foreground">{projectName} has no agents yet</p>
-        <p className="text-xs">Start an agent and the sessions it recruits will appear here.</p>
-        <Button type="button" size="sm" className="mt-1" disabled={!activeProjectId} onClick={openNewAgent}>
-          <IconPlus size={14} />
-          New agent
-        </Button>
-        {branchSwitcher && <div className="absolute right-0 bottom-0">{branchSwitcher}</div>}
-      </div>
-    );
-  }
-
   const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
     <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
@@ -1059,17 +1090,17 @@ function AgentCanvas() {
               edgeTypes={edgeTypes}
               onNodesChange={onNodesChangeAll}
               onNodeDragStart={(_, node) => { if (isNoteId(node.id)) notes.dragStart(node); else if (isKeychainId(node.id)) keychains.dragStart(node); }}
-              onMoveEnd={(_, view) => saveViewport(view)}
-              defaultViewport={savedViewport}
+              onMoveEnd={(_, view) => { if (!emptyCanvas) saveViewport(view); }}
+              defaultViewport={emptyCanvas ? undefined : savedViewport}
               onNodeDragStop={(_, node) => { if (isNoteId(node.id)) { notes.dragEnd(node); return; } if (isKeychainId(node.id)) { keychains.dragEnd(node); return; } persistNode(node.id, { position: { x: node.position.x, y: node.position.y } }); computeLive(); }}
               onNodeDoubleClick={(_, node) => { if (node.type === "agent") openTerminal((node as AgentNode).data.session); }}
               onNodeClick={(_, node) => {
                 setSelectedEdgeId(null);
-                if (!linkMode) return;
+                if (node.id === EMPTY_CANVAS_ID || !linkMode) return;
                 if (linkMode.from === null) setLinkMode({ from: node.id });
                 else if (linkMode.from !== node.id) { connectNodes(linkMode.from, node.id); setLinkMode(null); }
               }}
-              onNodeContextMenu={(_, node) => { setMenuTarget({ kind: "node", id: node.id }); setSelectedEdgeId(null); selectNodes(new Set([node.id])); }}
+              onNodeContextMenu={(_, node) => { if (node.id === EMPTY_CANVAS_ID) return; setMenuTarget({ kind: "node", id: node.id }); setSelectedEdgeId(null); selectNodes(new Set([node.id])); }}
               onEdgeMouseEnter={(_, edge) => setHoverEdgeId(edge.id)}
               onEdgeMouseLeave={() => setHoverEdgeId(null)}
               onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
@@ -1087,12 +1118,13 @@ function AgentCanvas() {
               selectionOnDrag={tool === "select"}
               panOnDrag={tool === "select" ? [1] : true}
               onlyRenderVisibleElements
-              fitView={!savedViewport}
+              fitView={emptyCanvas || !savedViewport}
               fitViewOptions={fitViewOptions}
               minZoom={0.1}
               colorMode={canvasTheme}
               proOptions={{ hideAttribution: true }}
             >
+              <EmptyCanvasViewport empty={emptyCanvas} projectId={activeProjectId} />
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
               <FloorBands floors={floors} />
               <CanvasControls />
