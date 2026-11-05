@@ -10,8 +10,8 @@
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
 //   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
 //   floq note list | read N | write N TEXT | append N TEXT
-//   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | new [TEXT|-] [--color C]   canvas notes wired to this agent
-//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only)
+//   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | new [TEXT|-] [--color C] [--kind note|memory|system]   canvas notes: wired to this agent, plus the project's memory/system notes
+//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only)
 //   floq subagent recruit|list|ask|result|dismiss   always-available Floq subagents (limits enforced by the runtime)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
@@ -42,18 +42,18 @@ Commands:
   floq inbox list | read ID              full text of messages sent to you that were too long to type into your terminal (you only see a preview and an inbox id)
   floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
   floq check <UUID|Name> [--chars N | --full]
-  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated]   (orchestrator only; other agents ask the orchestrator with "floq ask")
-  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
+  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only; other agents ask the orchestrator with "floq ask")
+  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
   floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
   floq wired                             print what the user wired to you on the canvas (notes, keychain names, linked agents); re-read it after a context compaction
-  floq sticky list                       canvas notes the user wired to this agent (id, color, first line)
-  floq sticky read ID                    print a linked note's text
-  floq sticky write ID TEXT|-            replace its text ("-" reads stdin)
+  floq sticky list                       canvas notes the user wired to this agent plus the project's memory/system notes (id, kind, color, first line)
+  floq sticky read ID                    print a note's text
+  floq sticky write ID TEXT|-            replace its text ("-" reads stdin); refused on system notes (only the user edits those)
   floq sticky append ID TEXT|-           add to the end of its text
-  floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--x N --y N]   create a note; it is wired to you and appears on the canvas
+  floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: project rules every agent follows, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. Default timeout 600s (max 3600)
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
@@ -216,7 +216,7 @@ const usage = (): never => {
 const allowedOptions: Record<string, string[]> = {
   list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   session: [], port: ["protocol", "reason"], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
-  recruit: ["provider", "model", "cwd", "role", "isolated"], subagent: ["task", "role", "provider", "model", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
+  recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose"],
@@ -412,11 +412,11 @@ switch (command) {
     // Canvas notes wired to this agent on the canvas (separate from the named shared notes of "floq note").
     const [sub, id, ...words] = positional;
     const textOf = async (parts: string[]) => (parts.join(" ") === "-" ? await readStdinText() : parts.join(" "));
-    type Sticky = { id: string; color: string; text: string };
+    type Sticky = { id: string; color: string; kind?: string; text: string };
     if (sub === "list") {
       const { notes } = await call<{ notes: Sticky[] }>("sticky/list");
-      for (const n of notes) console.log(n.id + "  " + n.color + "  " + (n.text.split("\n")[0].slice(0, 60) || "(empty)"));
-      if (!notes.length) console.log("no notes are linked to this agent; ask the user to wire one on the canvas, or run: floq sticky new TEXT");
+      for (const n of notes) console.log(n.id + "  " + (n.kind ?? "note") + "  " + n.color + "  " + (n.text.split("\n")[0].slice(0, 60) || "(empty)"));
+      if (!notes.length) console.log("no notes are linked to this agent and the project has no memory/system notes; ask the user to wire one on the canvas, or run: floq sticky new TEXT");
     } else if (sub === "read" && id && words.length === 0) {
       process.stdout.write((await call<Sticky>("sticky/read", { id })).text + "\n");
     } else if ((sub === "write" || sub === "append") && id && words.length) {
@@ -426,14 +426,14 @@ switch (command) {
       const parts = id === undefined ? [] : [id, ...words];
       const text = await textOf(parts);
       const num = (v: string | boolean | undefined) => (typeof v === "string" ? Number(v) : undefined);
-      const note = await call<Sticky>("sticky/create", { text, color: typeof named.color === "string" ? named.color : undefined, x: num(named.x), y: num(named.y) });
+      const note = await call<Sticky>("sticky/create", { text, color: typeof named.color === "string" ? named.color : undefined, kind: typeof named.kind === "string" ? named.kind : undefined, x: num(named.x), y: num(named.y) });
       console.log(note.id);
     } else usage();
     break;
   }
   case "recruit": {
     if (positional.length < 1) usage();
-    const r = await call<Pick<AgentEntry, "name" | "id" | "provider" | "model">>("agents/recruit", buildRecruitPayload(positional, named));
+    const r = await call<Pick<AgentEntry, "name" | "id" | "provider" | "model"> & { skills?: string[] }>("agents/recruit", buildRecruitPayload(positional, named));
     console.log(formatRecruitment(r));
     break;
   }
@@ -444,7 +444,7 @@ switch (command) {
       if (!first) usage();
       const task = typeof named.task === "string" ? (named.task === "-" ? await readStdinText() : named.task) : rest.join(" ");
       if (!task.trim()) { console.error("floq: --task TEXT is required"); process.exit(2); }
-      const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, wire: named["no-wire"] !== true });
+      const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean; skills?: string[] }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, skills: named.skill, wire: named["no-wire"] !== true });
       console.log(formatSubagentRecruit(r));
     } else if (sub === "list") {
       if (first) usage();

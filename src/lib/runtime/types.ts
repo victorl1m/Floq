@@ -315,11 +315,17 @@ export interface AgentLink {
 
 // --- canvas notes + agent secrets (runtime/src/notes.ts, secrets.ts) ---
 export type NoteColor = "yellow" | "blue" | "green" | "pink" | "purple" | "gray";
+/** note: wired agents only. memory: project memory every agent of the project reads and edits. system: project rules every agent follows; only the user can edit them. */
+export type NoteKind = "note" | "memory" | "system";
 export interface CanvasNote {
   id: string;
   projectId: string | null;
   text: string;
   color: NoteColor;
+  /** Defaults to "note" for older runtimes. */
+  kind?: NoteKind;
+  /** Name of the agent that created the note; null/absent when the user did. */
+  author?: string | null;
   x: number;
   y: number;
   w: number;
@@ -335,7 +341,7 @@ export interface CanvasNote {
   createdAt: string;
   updatedAt: string;
 }
-export interface CanvasNoteInput { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
+export interface CanvasNoteInput { text?: string; color?: NoteColor; kind?: NoteKind; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
 /**
  * A canvas wallet of secrets, linked to agents with wires. Names only: values are write-only and never returned.
  * Mutations (secret set/delete, link/unlink) return the updated Keychain with appliesOnNextStart = true when a live

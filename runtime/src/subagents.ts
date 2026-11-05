@@ -53,7 +53,7 @@ export interface ToolSpec {
 }
 
 export const TOOL_SPECS: readonly ToolSpec[] = [
-  { name: "floq_recruit_subagent", command: 'floq subagent recruit "Name" --task "..." [--role ID] [--provider claude|codex] [--model ID] [--no-wire]', summary: "Start a subagent session on the canvas, wired to you by default." },
+  { name: "floq_recruit_subagent", command: 'floq subagent recruit "Name" --task "..." [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]', summary: "Start a subagent session on the canvas, wired to you by default." },
   { name: "floq_list_subagents", command: "floq subagent list", summary: "List your subagents with id, role, depth and status." },
   { name: "floq_message_subagent", command: 'floq subagent ask ID "message" [--no-wait]', summary: "Send a message to a subagent; waits for its reply unless --no-wait." },
   { name: "floq_subagent_result", command: "floq subagent result ID [--full]", summary: "Read a subagent's status and last reply without blocking." },
@@ -262,7 +262,7 @@ export class SubagentService {
     return run;
   }
 
-  async recruit(userId: string, sessionId: string, input: { name?: unknown; task?: unknown; role?: unknown; provider?: unknown; model?: unknown; wire?: unknown }) {
+  async recruit(userId: string, sessionId: string, input: { name?: unknown; task?: unknown; role?: unknown; provider?: unknown; model?: unknown; wire?: unknown; skills?: unknown }) {
     if (typeof input.task !== "string" || !input.task.trim() || input.task.length > 20_000 || input.task.includes("\u0000")) {
       throw badRequest("task required (max 20000 chars)", "invalid_task");
     }
@@ -281,7 +281,7 @@ export class SubagentService {
       const created = await this.orchestrator.recruit(
         userId,
         sessionId,
-        { name, provider: input.provider ?? me.provider, model: input.model, role: role?.id ?? GENERALIST_ID, prompt: buildSubagentBrief(me.title, depth, task), wire: input.wire !== false },
+        { name, provider: input.provider ?? me.provider, model: input.model, role: role?.id ?? GENERALIST_ID, prompt: buildSubagentBrief(me.title, depth, task), wire: input.wire !== false, skills: input.skills },
         { skipOrchestratorCheck: true },
       );
       log.info("subagent.recruit", { userId, parentId: me.id, id: created.id, depth });

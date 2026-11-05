@@ -34,8 +34,10 @@ test("recruit CLI keeps worktree isolation opt-in and parses --isolated as a fla
   assert.equal(formatModel("claude", { id: "haiku", label: "Haiku" }), "claude\thaiku\tHaiku");
   const parsed = parseArgs(["Haiku A", "--provider", "claude", "--model", "haiku", "--cwd", "workspace/repo", "--isolated", "--role", "write a haiku"]);
   assert.deepEqual(buildRecruitPayload(parsed.positional, parsed.named), {
-    name: "Haiku A", provider: "claude", model: "haiku", cwd: "workspace/repo", role: "write a haiku", isolated: true,
+    name: "Haiku A", provider: "claude", model: "haiku", cwd: "workspace/repo", role: "write a haiku", isolated: true, skills: undefined,
   });
+  assert.equal(buildRecruitPayload(["A"], parseArgs(["A", "--skill", "artifact-design,docs"]).named).skills, "artifact-design,docs");
+  assert.equal(formatRecruitment({ id, name: "Builder", provider: "claude", model: "haiku", skills: ["artifact-design"] }), "recruited Builder " + id + " (claude, configured model: haiku, skills: artifact-design)");
   const help = spawnSync(process.execPath, ["dist/image/floq.mjs", "--help"], { cwd: new URL("..", import.meta.url), env: { PATH: process.env.PATH } });
   assert.equal(help.status, 0);
   for (const flag of ["--model", "--cwd", "--isolated", "floq models"]) assert.ok(help.stdout.toString().includes(flag));
@@ -118,7 +120,7 @@ test("recruit forwards an explicit configured model and returns the canonical Fl
   const settings = { profile: async () => ({}) };
   const orchestrator = new Orchestrator({ query: async () => ({ rows }) }, manager, settings);
   assert.deepEqual(await orchestrator.recruit("user", leadId, { name: "Haiku A", provider: "claude", model: "haiku" }), {
-    id: workerId, name: "Haiku A", provider: "claude", model: "haiku", state: "running",
+    id: workerId, name: "Haiku A", provider: "claude", model: "haiku", state: "running", skills: [],
   });
   assert.equal(createdInput.model, "haiku");
 });

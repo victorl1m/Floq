@@ -14,6 +14,7 @@ import { log } from "./logger.js";
 import { neutralizeApprovalMarker } from "./approvalText.js";
 import { MessageInbox, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
 import type { ProviderId, SessionSummary } from "./types.js";
+import { parseRecruitSkills } from "./recruitSkills.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const QUIET_MS = 5_000;
@@ -418,7 +419,8 @@ export class Orchestrator {
   }
 
   /** `skipOrchestratorCheck` is only for SubagentService, which enforces its own depth/children/total limits. `prompt` is the first message. */
-  async recruit(userId: string, sessionId: string, input: { name?: unknown; provider?: unknown; model?: unknown; cwd?: unknown; role?: unknown; isolated?: unknown; prompt?: unknown; wire?: unknown }, options: { skipOrchestratorCheck?: boolean } = {}) {
+  async recruit(userId: string, sessionId: string, input: { name?: unknown; provider?: unknown; model?: unknown; cwd?: unknown; role?: unknown; isolated?: unknown; prompt?: unknown; wire?: unknown; skills?: unknown }, options: { skipOrchestratorCheck?: boolean } = {}) {
+    const skills = parseRecruitSkills(input.skills);
     const me = await this.caller(userId, sessionId);
     if (!options.skipOrchestratorCheck) assertCanRecruit(me, await this.rows(userId), (a, b) => this.sameProject(a, b));
     const name = typeof input.name === "string" ? input.name.trim() : "";
@@ -471,6 +473,7 @@ export class Orchestrator {
       projectGitUrl: me.git_url,
       isolated: input.isolated === true,
       parentSessionId: me.id,
+      skills,
     });
     if (rolePreset !== undefined) {
       // Preset roles are injected into the first message by SessionManager.create.
@@ -483,7 +486,7 @@ export class Orchestrator {
       }, 6_000).unref();
     }
     if (input.wire !== false) await this.links?.record(userId, me.id, created.id, "recruit", "none", "recruit", roleText || "Recruited " + name + (provider === "codex" ? " (codex)" : ""));
-    return { id: created.id, name, provider, model: created.model ?? "default", state: created.state };
+    return { id: created.id, name, provider, model: created.model ?? "default", state: created.state, skills };
   }
 
   async dismiss(userId: string, sessionId: string, name: unknown) {

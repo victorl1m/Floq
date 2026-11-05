@@ -55,6 +55,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS branch TEXT;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS role TEXT;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS parent_session_id UUID;
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS recruit_skills TEXT[];
     UPDATE agent_sessions AS child SET project_cwd = child.cwd
       WHERE child.project_cwd IS NULL AND EXISTS (
         SELECT 1 FROM agent_sessions AS repo
@@ -291,6 +292,11 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS agent_note_name TEXT;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS placed BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS user_title TEXT;
+    ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'note';
+    ALTER TABLE canvas_notes DROP CONSTRAINT IF EXISTS canvas_notes_kind_check;
+    ALTER TABLE canvas_notes ADD CONSTRAINT canvas_notes_kind_check CHECK (kind IN ('note','memory','system'));
+    ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS author TEXT;
+    CREATE INDEX IF NOT EXISTS canvas_notes_kind_idx ON canvas_notes(user_id, project_id) WHERE kind <> 'note';
     CREATE UNIQUE INDEX IF NOT EXISTS canvas_notes_agent_name_idx ON canvas_notes(user_id, COALESCE(project_id, '00000000-0000-0000-0000-000000000000'::uuid), agent_note_name) WHERE agent_note_name IS NOT NULL;
     CREATE TABLE IF NOT EXISTS agent_wired_memory (
       session_id UUID PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
