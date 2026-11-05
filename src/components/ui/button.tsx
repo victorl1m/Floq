@@ -2,10 +2,8 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
-import { Button as GlisseButton } from "glisse"
-import { useForcedColorsPreference, useMaterialPreference } from "@/lib/material-preference"
 
-const GLISSE_VARIANTS = new Set(["default", "destructive", "secondary", "outline"])
+const MATERIAL_VARIANTS = new Set(["default", "destructive", "secondary", "outline"])
 
 const buttonVariants = cva(
   "group/button inline-flex shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -49,7 +47,7 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
-  glisse,
+  material,
   shimmer = false,
   loading = false,
   children,
@@ -58,17 +56,17 @@ function Button({
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
-    /** Force (true) or forbid (false) the Glisse material. Default: automatic by variant and size. */
-    glisse?: boolean
+    /** Force (true) or forbid (false) the floq-button styling. Default: automatic by variant and size. */
+    material?: boolean
     /** Restrained edge shimmer. Use on one primary action per view. */
     shimmer?: boolean
     /** Disables the button, sets aria-busy and shows a spinner. */
     loading?: boolean
   }) {
-  // Glass is reserved for labelled filled/secondary/outline buttons. Ghost, link and icon buttons
-  // stay flat so dense toolbars never stack backdrop filters.
-  const useGlisse = !asChild && (glisse ?? (GLISSE_VARIANTS.has(variant ?? "default") && !String(size).startsWith("icon")))
-  const classes = cn(buttonVariants({ variant, size }), useGlisse && "floq-button", shimmer && "button-shimmer", className)
+  // The floq-button material is reserved for labelled filled/secondary/outline buttons. Ghost, link and
+  // icon buttons stay flat.
+  const useMaterial = !asChild && (material ?? (MATERIAL_VARIANTS.has(variant ?? "default") && !String(size).startsWith("icon")))
+  const classes = cn(buttonVariants({ variant, size }), useMaterial && "floq-button", shimmer && "button-shimmer", className)
   const busy = loading ? { "aria-busy": true as const } : {}
   const isDisabled = disabled || loading
   const content = loading ? (
@@ -92,68 +90,17 @@ function Button({
     )
   }
 
-  if (!useGlisse) {
-    return (
-      <button
-        data-slot="button"
-        data-variant={variant}
-        data-size={size}
-        data-shimmer={shimmer ? "true" : undefined}
-        className={classes}
-        disabled={isDisabled}
-        {...busy}
-        {...props}
-      >{content}</button>
-    )
-  }
-
-  return <MaterialButton className={classes} variant={variant ?? "default"} size={size ?? "default"} shimmer={shimmer} disabled={isDisabled} {...busy} {...props}>{content}</MaterialButton>
-}
-
-function MaterialButton({
-  className,
-  variant,
-  size,
-  shimmer,
-  ...props
-}: React.ComponentProps<"button"> & {
-  variant: NonNullable<VariantProps<typeof buttonVariants>["variant"]>
-  size: NonNullable<VariantProps<typeof buttonVariants>["size"]>
-  shimmer: boolean
-}) {
-  const [material] = useMaterialPreference()
-  const forcedColors = useForcedColorsPreference()
-  const prefersReducedTransparency = React.useSyncExternalStore(
-    (onChange) => {
-      if (typeof window === "undefined" || !window.matchMedia) return () => {}
-      const query = window.matchMedia("(prefers-reduced-transparency: reduce)")
-      query.addEventListener("change", onChange)
-      return () => query.removeEventListener("change", onChange)
-    },
-    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-transparency: reduce)").matches,
-    () => false,
-  )
-  const dataProps = {
-    "data-slot": "button",
-    "data-floq-variant": variant,
-    "data-size": size,
-    "data-shimmer": shimmer ? "true" : undefined,
-  }
-
-  // Solid is a true rendering fallback: do not mount Glisse's refraction hooks.
-  if (forcedColors || material !== "glass" || prefersReducedTransparency) {
-    return <button {...dataProps} className={className} {...props} />
-  }
-
   return (
-    <GlisseButton
-      type={props.type ?? "submit"}
-      variant={variant === "default" || variant === "destructive" ? "filled" : "glass"}
-      destructive={variant === "destructive"}
-      {...dataProps}
-      className={className}
+    <button
+      data-slot="button"
+      {...(useMaterial ? { "data-floq-variant": variant ?? "default" } : { "data-variant": variant })}
+      data-size={size}
+      data-shimmer={shimmer ? "true" : undefined}
+      className={classes}
+      disabled={isDisabled}
+      {...busy}
       {...props}
-    />
+    >{content}</button>
   )
 }
 

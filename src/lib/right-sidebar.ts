@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type RightSidebarTab = "changes" | "files" | "conversations";
+export type RightSidebarTab = "changes" | "files" | "conversations" | "app";
 export const RIGHT_SIDEBAR_MIN = 260;
 export const RIGHT_SIDEBAR_MAX = 720;
 
@@ -13,7 +13,7 @@ interface RightSidebarState {
 }
 
 const KEY = "floq.right-sidebar.v1";
-const TABS: RightSidebarTab[] = ["changes", "files", "conversations"];
+const TABS: RightSidebarTab[] = ["changes", "files", "conversations", "app"];
 const clamp = (width: number) => Math.min(RIGHT_SIDEBAR_MAX, Math.max(RIGHT_SIDEBAR_MIN, Math.round(width)));
 
 function load(): RightSidebarState {

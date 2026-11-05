@@ -269,8 +269,7 @@ export default function HomeView() {
                                             <Button
                                                 {...providerThemeProps(provider)}
                                                 size="default"
-                                                className="h-9 rounded-xl px-3 [--primary:var(--provider-accent)] [--lg-fill:var(--provider-accent)] [--primary-foreground:var(--provider-accent-foreground)] [--primary-hover:color-mix(in_oklab,var(--provider-accent)_88%,var(--foreground))]"
-                                                glisse
+                                                className="h-9 rounded-xl px-3 [--primary:var(--provider-accent)] [--primary-foreground:var(--provider-accent-foreground)] [--primary-hover:color-mix(in_oklab,var(--provider-accent)_88%,var(--foreground))]"
                                                 shimmer
                                                 aria-label={busy ? "Preparing project and starting agent" : "Start agent"}
                                                 aria-busy={busy}

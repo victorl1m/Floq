@@ -1,18 +1,21 @@
 import { useSyncExternalStore } from "react";
+import { defaultMaterialChoice, useNativeMaterialSupport, type MaterialChoice } from "@/lib/native-material";
 
-export type MaterialPreference = "glass" | "system" | "solid";
+export type MaterialPreference = MaterialChoice;
 const KEY = "floq.material";
 const EVENT = "floq:material";
 let storageFallback: MaterialPreference | null = null;
 
-function read(): MaterialPreference {
+/** The stored choice, or null when none is stored (or it is a retired value: "glass", "system"). */
+function read(): MaterialPreference | null {
   if (storageFallback) return storageFallback;
   try {
     const value = localStorage.getItem(KEY);
-    if (value === "solid" || value === "system" || value === "glass") return value;
+    if (value === "mica" || value === "acrylic" || value === "solid") return value;
+    // Retired values migrate to the platform default.
+    if (value !== null) localStorage.removeItem(KEY);
   } catch { /* Device storage is optional. */ }
-  // Default is the cheap path: Glisse refraction on every button is opt-in ("glass").
-  return "system";
+  return null;
 }
 
 function subscribe(callback: () => void) {
@@ -39,8 +42,11 @@ export function useForcedColorsPreference() {
   return useSyncExternalStore(subscribeForcedColors, readForcedColors, () => false);
 }
 
+/** "mica" | "acrylic" | "solid". Unset defaults to Mica (vibrancy on macOS) where supported, else Solid. */
 export function useMaterialPreference() {
-  const value = useSyncExternalStore(subscribe, read, () => "system" as const);
+  const stored = useSyncExternalStore(subscribe, read, () => null);
+  const support = useNativeMaterialSupport();
+  const value: MaterialPreference = stored ?? defaultMaterialChoice(support);
   const setValue = (next: MaterialPreference) => {
     try { localStorage.setItem(KEY, next); storageFallback = null; } catch { storageFallback = next; }
     document.documentElement.dataset.material = next;

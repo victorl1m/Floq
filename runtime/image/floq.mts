@@ -16,11 +16,14 @@
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
 //   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to forward a port to their computer (waits up to 60s for their answer)
+//   floq display start|env|stop|status           virtual display (Xpra) for GUI apps; the user sees it in Floq's App window panel
 //   floq skills list|search|preview|add|create|remove   find, install and author skills (add/create/remove: lead agents only)
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secret list|get NAME                    secrets available to this agent (linked keychains + global env vault); list prints names only; never print or commit values
 //   floq secrets list|add                        list secret names; create a new tool-only secret (add: lead only)
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { abstractSocketProblems, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
 import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatDelivery, messageSource, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -55,6 +58,7 @@ Commands:
   floq sticky append ID TEXT|-           add to the end of its text
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
+  floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. Default timeout 600s (max 3600)
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
@@ -208,6 +212,25 @@ async function waitChunked(first: AgentReply, firstSec: number, total: number, n
   return reply;
 }
 
+function abstractListeners() {
+  try { return parseAbstractListeners(readFileSync("/proc/net/unix", "utf8")); } catch { return []; }
+}
+/** Socket inodes of every process visible here: the sandbox has its own pid namespace, so that is this session. */
+function ownSocketInodes(): Set<string> {
+  const inodes = new Set<string>();
+  for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+    let fds: string[];
+    try { fds = readdirSync("/proc/" + pid + "/fd"); } catch { continue; }
+    for (const fd of fds) {
+      try {
+        const match = /^socket:\[(\d+)\]$/.exec(readlinkSync("/proc/" + pid + "/fd/" + fd));
+        if (match) inodes.add(match[1]);
+      } catch { /* closed */ }
+    }
+  }
+  return inodes;
+}
+
 const usage = (): never => {
   console.error('usage: floq --help');
   process.exit(2);
@@ -215,7 +238,7 @@ const usage = (): never => {
 
 const allowedOptions: Record<string, string[]> = {
   list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
-  session: [], port: ["protocol", "reason"], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
+  session: [], port: ["protocol", "reason"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
@@ -324,6 +347,81 @@ switch (command) {
     const r = await call<{ status: string; message: string; port: number; localUrl?: string }>("ports/open", { port: Number(rawPort), protocol: named.protocol, purpose: named.reason });
     console.log(r.status === "accepted" ? "accepted: " + r.message + (r.localUrl ? " URL: " + r.localUrl : "") : r.status + ": " + r.message);
     process.exitCode = r.status === "accepted" ? 0 : 1;
+    break;
+  }
+  case "display": {
+    const [sub, ...extra] = positional;
+    if (extra.length || (sub !== "start" && sub !== "stop" && sub !== "status" && sub !== "env")) usage();
+    const slot = displayFromEnv(process.env);
+    if ("error" in slot) { console.error("floq: " + slot.error); process.exit(2); }
+    const status = () => call<{ running: boolean; port: number | null }>("display/status");
+    if (sub === "status") {
+      const r = await status();
+      console.log((r.running ? "running" : "stopped") + ": display " + slot.display + (r.port ? ", port " + r.port : ""));
+      process.exitCode = r.running ? 0 : 1;
+      break;
+    }
+    if (sub === "env") {
+      // Only for a running display whose abstract X socket is held by this session: never hand out a name another user could own.
+      const r = await status();
+      if (!r.running) { console.error("floq: no display running; run \"floq display start\" first"); process.exit(1); }
+      const problems = abstractSocketProblems(abstractListeners(), ownSocketInodes(), slot.display, true);
+      if (problems.length) { console.error("floq: refusing the display: " + problems.join("; ") + ". Tell the user."); process.exit(1); }
+      console.log(displayEnvExports(slot.display));
+      break;
+    }
+    if (spawnSync("sh", ["-c", "command -v xpra"], { stdio: "ignore" }).status !== 0) {
+      console.error("floq: xpra is not installed in this runtime image (it ships in the app-debug image target: docker build --target app-debug)");
+      process.exit(3);
+    }
+    const env = { ...process.env, XDG_RUNTIME_DIR: DISPLAY_PATHS.runtime, XAUTHORITY: DISPLAY_PATHS.xauthority };
+    const stopXpra = () => spawnSync("xpra", xpraStopArgs(slot.display), { env, stdio: "ignore" });
+    if (sub === "stop") {
+      const r = spawnSync("xpra", xpraStopArgs(slot.display), { env, stdio: "inherit" });
+      process.exitCode = r.status ?? 1;
+      break;
+    }
+    if ((await status()).running) {
+      const problems = abstractSocketProblems(abstractListeners(), ownSocketInodes(), slot.display, true);
+      if (problems.length) { stopXpra(); console.error("floq: display stopped: " + problems.join("; ")); process.exit(1); }
+      await call("display/started");
+      console.log("already running: display " + slot.display + ". Now run: eval \"$(floq display env)\" before launching GUI apps (the user sees them in Floq's App window panel)");
+      break;
+    }
+    // Abstract socket names are global on this server: refuse a display number someone else already holds.
+    const before = abstractSocketProblems(abstractListeners(), ownSocketInodes(), slot.display, false);
+    if (before.length) { console.error("floq: cannot start the display: " + before.join("; ") + ". Tell the user."); process.exit(1); }
+    // The runtime probes the port (other users could have bound it) and may move this session to a spare one.
+    const { port } = await call<{ display: string; port: number }>("display/prepare");
+    for (const dir of [DISPLAY_PATHS.sockets, DISPLAY_PATHS.logs, DISPLAY_PATHS.runtime]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const logPath = DISPLAY_PATHS.logs + "/floq-display-start.log";
+    const out = openSync(logPath, "a");
+    // XPRA_PASSWORD only in xpra's own environment (auth=env); never on the command line.
+    const child = spawn("xpra", xpraStartArgs(slot.display, port), { env: { ...env, XPRA_PASSWORD: slot.token }, stdio: ["ignore", out, out], detached: true });
+    closeSync(out);
+    let exitCode: number | null | undefined;
+    child.once("exit", (code) => { exitCode = code; });
+    child.unref();
+    let running = false;
+    for (let i = 0; i < 60 && !running; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      running = (await status()).running;
+      if (!running && exitCode !== undefined && exitCode !== 0) break;
+    }
+    if (!running) {
+      let tail = "";
+      try { tail = readFileSync(logPath, "utf8").split("\n").slice(-30).join("\n"); } catch { /* no log */ }
+      console.error("floq: the display did not start (log: " + logPath + ", xpra logs in " + DISPLAY_PATHS.logs + ")\n" + tail);
+      process.exit(1);
+    }
+    const after = abstractSocketProblems(abstractListeners(), ownSocketInodes(), slot.display, true);
+    if (after.length) {
+      stopXpra();
+      console.error("floq: display stopped for safety: " + after.join("; ") + ". Tell the user.");
+      process.exit(1);
+    }
+    await call("display/started");
+    console.log("running: display " + slot.display + ". Now run: eval \"$(floq display env)\" in the shell that launches GUI apps (sets DISPLAY and XAUTHORITY); the user sees and uses them in Floq's App window panel. Stop with: floq display stop");
     break;
   }
   case "approval": {

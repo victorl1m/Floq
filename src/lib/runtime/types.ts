@@ -492,6 +492,18 @@ export interface SessionPort {
   address: string;
 }
 
+/** Mirrors runtime/src/debugLinks.ts DebugLink: an app URL seen in the session's output whose port(s) it listens on. */
+export interface SessionDebugLink {
+  kind: "preview" | "devtools" | "vm-service";
+  url: string;
+  /** Local port == remote port once forwarded. */
+  port: number;
+  /** Also needs these forwarded (DevTools -> VM service). */
+  extraPorts?: number[];
+  label: string;
+  detectedAt: number;
+}
+
 /** An agent asking the USER to approve an irreversible or outward-facing action (`floq approval request`). */
 export interface ApprovalAgentRef { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null }
 export interface ApprovalRequest {
@@ -510,3 +522,10 @@ export interface ApprovalRequest {
 export type ApprovalFrame =
   | { type: "approval-request"; approval: ApprovalRequest }
   | { type: "approval-resolved"; id: string; status: "granted" | "denied" | "expired" | "cancelled" | "consumed"; requesterSessionId: string; targetSessionId: string };
+
+/** GET /v1/sessions/:id/display: the session's Xpra display (runtime display.ts). token only while running. */
+export interface SessionDisplay {
+  running: boolean;
+  port: number | null;
+  token: string | null;
+}

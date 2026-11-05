@@ -79,9 +79,10 @@ const side = (rect: Rect, position: Position, shift = 0): Anchor => {
 };
 
 /** Natural floating route first; if it crosses another node, try detours over/under the row and keep the least-crossing one. */
-export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number): Curve {
+export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number, recruit = false): Curve {
   const natural = (() => {
-    const a = anchor(from, to), b = anchor(to, from);
+    const a = recruit ? side(from, Position.Bottom, fan) : anchor(from, to);
+    const b = recruit ? side(to, Position.Top, fan) : anchor(to, from);
     const horizontal = a.position === Position.Left || a.position === Position.Right;
     const reach = Math.max(40, (horizontal ? Math.abs(a.x - b.x) : Math.abs(a.y - b.y)) * 0.35);
     const shifted = (p: Anchor): Anchor => (horizontal ? { ...p, y: p.y + fan } : { ...p, x: p.x + fan });
@@ -92,7 +93,8 @@ export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number): Cur
     const left = Math.min(from.x, to.x), right = Math.max(from.x + from.width, to.x + to.width);
     const between = obstacles.filter((rect) => rect.x < right && rect.x + rect.width > left);
     for (const position of [Position.Bottom, Position.Top] as const) {
-      const a = side(from, position, fan), b = side(to, position, fan);
+      const a = recruit ? side(from, Position.Bottom, fan) : side(from, position, fan);
+      const b = recruit ? side(to, Position.Top, fan) : side(to, position, fan);
       const edgeY = position === Position.Bottom
         ? Math.max(a.y, b.y, ...between.map((rect) => rect.y + rect.height)) + 36
         : Math.min(a.y, b.y, ...between.map((rect) => rect.y)) - 36;
@@ -142,7 +144,7 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
     const obstacles = others.filter((item) => item.id !== source && item.id !== target).map((item) => item.rect);
     const [index, count] = fanKey.split("/").map(Number);
     const fan = (index - (count - 1) / 2) * 16;
-    const curve = route(from, to, obstacles, fan);
+    const curve = route(from, to, obstacles, fan, link.kind === "recruit");
     // Label: first sample along the wire that is not painted over any node; null = hide it.
     let label: Pt | null = null;
     for (const t of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]) {

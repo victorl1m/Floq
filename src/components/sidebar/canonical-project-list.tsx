@@ -179,7 +179,7 @@ export default function CanonicalProjectList() {
     saveLayout(scope, removeFolderFromLayout(layout, folder.id));
     toast(`Folder “${folder.name}” removed`, {
       icon: <IconTrash className="size-4" aria-hidden="true" />,
-      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list.` : "The folder was empty. Undo brings it back.",
+      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list. Undo restores the folder.` : "The folder was empty. Undo brings it back.",
       action: { label: "Undo", onClick: () => {
         const current = loadProjectFolders(scope);
         if (!current.some((item) => item.id === folder.id)) saveProjectFolders(scope, [...current, folder]);

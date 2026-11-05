@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventHub, authorizeManualLink, makePreview, mergeLink, type AgentMessageEvent } from "../dist/links.js";
+import { AgentLinks, EventHub, authorizeManualLink, makePreview, mergeLink, type AgentMessageEvent } from "../src/links.ts";
 
 const make = () => ({ id: "l1", projectId: "p1", fromSessionId: "a", toSessionId: "b" });
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -61,4 +61,44 @@ test("manual links require both sessions owned by the caller, distinct, in one p
   assert.throws(() => authorizeManualLink("u1", s("a", "u1", "p"), undefined), /not found/i);
   assert.throws(() => authorizeManualLink("u1", s("a", "u1", "p"), s("b", "u1", "q")), /different projects/);
   assert.throws(() => authorizeManualLink("u1", s("a", "u1", null), s("b", "u1", "p")), /different projects/);
+});
+
+test("recruit upsert creates the recruiter-to-child recruit edge and removes a stale reverse manual edge", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const query = async (sql: string, values?: unknown[]) => {
+      calls.push({ sql, values });
+      if (sql.includes("SELECT id, user_id, project_id FROM agent_sessions")) return { rows: [{ id: "parent", user_id: "u1", project_id: "p1" }] };
+      if (sql.includes("SELECT id, project_id, from_session_id, to_session_id, kind, created_at")) return { rows: [{ id: "l1", project_id: "p1", from_session_id: "parent", to_session_id: "child", kind: "recruit", created_at: NOW, last_message_at: null, message_count: 3 }] };
+      return { rows: [] };
+  };
+  const pool = { connect: async () => ({ query, release: () => undefined }) };
+  const service = new AgentLinks(pool as never);
+  const result = await service.upsert("parent", "child", "recruit", "none");
+
+  assert.deepEqual([result.fromSessionId, result.toSessionId, result.kind], ["parent", "child", "recruit"]);
+  assert.equal(result.messageCount, 3);
+  const insert = calls.find((call) => call.sql.includes("INSERT INTO agent_links"));
+  assert.deepEqual(insert?.values?.slice(1, 3), ["parent", "child"]);
+  assert.match(insert?.sql ?? "", /kind = 'recruit'/);
+  assert.ok(calls.some((call) => /message_count = f\.message_count \+ r\.message_count/.test(call.sql)));
+  assert.ok(calls.some((call) => /DELETE FROM agent_links/.test(call.sql)));
+  assert.ok(calls.some((call) => call.sql === "BEGIN"));
+  assert.ok(calls.some((call) => call.sql === "COMMIT"));
+});
+
+test("recruit backfill removes a reverse edge and checks only for the canonical parent-to-child edge", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const query = async (sql: string, values?: unknown[]) => { calls.push({ sql, values }); return { rows: [] }; };
+  const pool = { connect: async () => ({ query, release: () => undefined }) };
+  await new AgentLinks(pool as never).backfill("u1");
+
+  const reorient = calls.find((call) => call.sql.includes("UPDATE agent_links l SET from_session_id = c.parent_session_id"));
+  assert.match(reorient?.sql ?? "", /NOT EXISTS[\s\S]*f\.from_session_id = c\.parent_session_id AND f\.to_session_id = c\.id/);
+  assert.deepEqual(reorient?.values, ["u1"]);
+  assert.ok(calls.some((call) => /message_count = f\.message_count \+ r\.message_count/.test(call.sql)));
+  assert.ok(calls.some((call) => /DELETE FROM agent_links l USING agent_sessions c/.test(call.sql)));
+  const insert = calls.find((call) => call.sql.includes("INSERT INTO agent_links"));
+  assert.match(insert?.sql ?? "", /ON CONFLICT \(from_session_id, to_session_id\) DO UPDATE SET kind = 'recruit'/);
+  assert.ok(calls.some((call) => call.sql === "BEGIN"));
+  assert.ok(calls.some((call) => call.sql === "COMMIT"));
 });

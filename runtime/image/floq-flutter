@@ -1,0 +1,47 @@
+#!/bin/sh
+# Floq: run Flutter/Dart from a per-user shadow of the read-only SDK (app-debug image, spec 1).
+# Agent sandboxes see /usr read-only, but the flutter tool writes stamps and a lockfile in bin/cache on every run.
+# The shadow in $HOME has real copies of bin/ and the small bin/cache files and symlinks to the read-only bulk
+# (dart-sdk, engine artifacts, web SDK, packages, .git): a few MB per user instead of 2+ GB. Rebuilt when the image's SDK changes.
+set -eu
+# No telemetry prompts or uploads from agent sandboxes.
+export FLUTTER_SUPPRESS_ANALYTICS=true
+SEED="${FLOQ_FLUTTER_SEED:-/usr/local/flutter}"
+SHADOW="${FLOQ_FLUTTER_SHADOW:-$HOME/.floq/sdk/flutter}"
+tool=$(basename "$0")
+case "$tool" in flutter|dart) ;; *) tool=flutter ;; esac
+want=$(cat "$SEED/.floq-seed" 2>/dev/null || echo unknown)
+
+build() {
+  tmp="$SHADOW.tmp.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp/bin/cache"
+  for entry in "$SEED"/* "$SEED"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=$(basename "$entry")
+    case "$name" in bin|.floq-seed) ;; *) ln -s "$entry" "$tmp/$name" ;; esac
+  done
+  for entry in "$SEED"/bin/* "$SEED"/bin/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=$(basename "$entry")
+    [ "$name" = cache ] || cp -R "$entry" "$tmp/bin/$name"
+  done
+  for entry in "$SEED"/bin/cache/* "$SEED"/bin/cache/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=$(basename "$entry")
+    if [ -d "$entry" ] || [ "$name" = flutter_tools.snapshot ]; then ln -s "$entry" "$tmp/bin/cache/$name"; else cp "$entry" "$tmp/bin/cache/$name"; fi
+  done
+  chmod -R u+w "$tmp/bin"
+  printf '%s\n' "$want" > "$tmp/.floq-seed"
+  rm -rf "$SHADOW"
+  mv "$tmp" "$SHADOW"
+}
+
+if [ "$(cat "$SHADOW/.floq-seed" 2>/dev/null || true)" != "$want" ]; then
+  mkdir -p "$(dirname "$SHADOW")"
+  exec 9>"$(dirname "$SHADOW")/.flutter.lock"
+  flock 9
+  [ "$(cat "$SHADOW/.floq-seed" 2>/dev/null || true)" = "$want" ] || build
+  exec 9>&-
+fi
+exec "$SHADOW/bin/$tool" "$@"

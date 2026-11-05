@@ -1,6 +1,8 @@
 import { readdir, readFile, readlink } from "node:fs/promises";
-import { connect, type Socket } from "node:net";
+import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import type { WebSocket } from "ws";
+import { procNetTcpPaths } from "./netns.js";
 
 /**
  * Port forwarding support. Sandboxed sessions run under bwrap WITHOUT --unshare-net (see shard.ts), so a
@@ -16,8 +18,30 @@ export interface ListeningPort {
   address: string;
 }
 
-interface RawListener extends ListeningPort {
+export interface RawListener extends ListeningPort {
   inode: string;
+  /** uid that owns the listening socket (/proc/net/tcp column 8). */
+  uid: number;
+}
+
+/** Manual-tunnel limits: the port must be listened on by the session's uid, and by no other uid. */
+export interface ManualTunnelOptions {
+  denyPorts: readonly number[];
+  /** uid the session's processes run as; null when unknown, which refuses every manual tunnel. */
+  uid: number | null;
+  /** Every LISTEN socket on the host (all sandboxes share the network namespace). */
+  listeners: readonly RawListener[];
+}
+
+/**
+ * Manual tunnels are fail-closed: the session's uid must be known, must listen on the port, and no other uid may.
+ * Re-check right before connecting (see server.ts): while the owner holds the port, no other uid can bind it
+ * (SO_REUSEPORT requires the same effective uid), so a port that passes here cannot be swapped for another tenant's.
+ */
+export function manualPortOwned(listeners: readonly RawListener[], port: number, uid: number | null): boolean {
+  if (uid === null) return false;
+  const onPort = listeners.filter((l) => l.port === port);
+  return onPort.length > 0 && onPort.every((l) => l.uid === uid);
 }
 
 const TCP_LISTEN = "0A";
@@ -54,8 +78,9 @@ export function parseProcNetTcp(text: string, v6: boolean): RawListener[] {
     const [addr, portHex] = cols[1].split(":");
     const port = Number.parseInt(portHex ?? "", 16);
     const inode = cols[9];
-    if (!addr || !Number.isInteger(port) || port < 1 || port > 65535 || !inode || inode === "0") continue;
-    out.push({ port, address: v6 ? hexToIpv6(addr) : hexToIpv4(addr), inode });
+    const uid = Number.parseInt(cols[7], 10);
+    if (!addr || !Number.isInteger(port) || port < 1 || port > 65535 || !inode || inode === "0" || !Number.isInteger(uid)) continue;
+    out.push({ port, address: v6 ? hexToIpv6(addr) : hexToIpv4(addr), inode, uid });
   }
   return out;
 }
@@ -78,12 +103,14 @@ export function databasePort(databaseUrl: string): number {
 export function tunnelTarget(
   ports: ListeningPort[],
   port: number,
-  manual?: { denyPorts: readonly number[] },
+  manual?: ManualTunnelOptions,
 ): { host: string; port: number } | null {
   const found = ports.find((p) => p.port === port);
   if (!found) {
     // Explicit user request for a port detection has not seen (yet): loopback only, unprivileged, never a Floq internal port.
     if (!manual || !Number.isInteger(port) || port < MIN_MANUAL_PORT || port > 65535 || manual.denyPorts.includes(port)) return null;
+    // All sandboxes share the host network namespace: only a port the session's own uid listens on (fail closed).
+    if (!manualPortOwned(manual.listeners, port, manual.uid)) return null;
     return { host: "127.0.0.1", port };
   }
   const host = found.address === "0.0.0.0" ? "127.0.0.1" : found.address === "::" ? "::1" : found.address;
@@ -122,16 +149,31 @@ async function socketInodes(pids: number[]): Promise<Set<string>> {
   return inodes;
 }
 
+/**
+ * /proc/net/tcp and tcp6 of the host (netnsPid undefined), or of the network namespace the process lives in. With a
+ * per-user netns, null (no live process to read the namespace from) yields NO tables: it must never fall back to the host's.
+ */
+async function readTcpTables(netnsPid?: number | null): Promise<[string, string]> {
+  if (netnsPid === null) return ["", ""];
+  const [p4, p6] = netnsPid !== undefined ? procNetTcpPaths(netnsPid) : ["/proc/net/tcp", "/proc/net/tcp6"];
+  return Promise.all([readFile(p4, "utf8").catch(() => ""), readFile(p6, "utf8").catch(() => "")]);
+}
+
+/** Every LISTEN socket on the host (v4 + v6), or in the per-user namespace of `netnsPid`. Empty off Linux or on read failure. */
+export async function listAllListeners(netnsPid?: number | null): Promise<RawListener[]> {
+  if (process.platform !== "linux") return [];
+  const [v4, v6] = await readTcpTables(netnsPid);
+  return [...parseProcNetTcp(v4, false), ...parseProcNetTcp(v6, true)];
+}
+
 /** TCP ports the process tree rooted at `pid` is listening on. Empty off Linux or on any read failure. */
-export async function listSessionPorts(pid: number | null): Promise<ListeningPort[]> {
+export async function listSessionPorts(pid: number | null, inNetns = false): Promise<ListeningPort[]> {
   if (pid === null || process.platform !== "linux") return [];
   try {
     const inodes = await socketInodes(await descendants(pid));
     if (!inodes.size) return [];
-    const [v4, v6] = await Promise.all([
-      readFile("/proc/net/tcp", "utf8").catch(() => ""),
-      readFile("/proc/net/tcp6", "utf8").catch(() => ""),
-    ]);
+    // With a per-user netns the session's sockets live in ITS namespace: read that process's net tables, not the host's.
+    const [v4, v6] = await readTcpTables(inNetns ? pid : undefined);
     return selectSessionPorts([...parseProcNetTcp(v4, false), ...parseProcNetTcp(v6, true)], inodes);
   } catch {
     return [];
@@ -139,7 +181,7 @@ export async function listSessionPorts(pid: number | null): Promise<ListeningPor
 }
 
 /** Pipe one WebSocket (binary frames) to one TCP connection, with backpressure and close propagation. */
-export function pipeTunnel(ws: WebSocket, target: { host: string; port: number }, connectFn: typeof connect = connect): Socket {
+export function pipeTunnel(ws: WebSocket, target: { host: string; port: number }, connectFn: (target: { host: string; port: number }) => Duplex = connect): Duplex {
   const socket = connectFn({ host: target.host, port: target.port });
   const closeBoth = (code = 1000, reason = "") => {
     socket.destroy();

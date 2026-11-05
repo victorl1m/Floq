@@ -31,7 +31,7 @@ export function useProjectFoldersSync(): void {
       meta: { load: () => loadSyncMeta(scope), save: (meta) => saveSyncMeta(scope, meta) },
       timers: { set: (fn, ms) => window.setTimeout(fn, ms), clear: (handle) => window.clearTimeout(handle as number) },
       backup: (doc) => backupLocalDoc(scope, doc),
-      onRepeatedFailure: () => toast.error("Couldn't save your project folders", { id: "project-folders-sync", description: "Your changes are kept on this device and will sync when the connection to the runtime returns." }),
+      onRepeatedFailure: () => toast.error("Could not save your project folders", { id: "project-folders-sync", description: "Your changes are kept on this device and will sync when the connection to the runtime returns." }),
     });
     let lastPull = 0;
     const pull = (force = false) => {

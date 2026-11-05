@@ -1,5 +1,6 @@
 import type { PtyProcess } from "./pty.js";
 import { log } from "./logger.js";
+import { DebugLinkTracker, type DebugLink } from "./debugLinks.js";
 import type { ProviderId, ServerFrame, SessionState, SessionSummary } from "./types.js";
 
 export interface OutputChunk {
@@ -65,6 +66,8 @@ export class Session {
   private readonly chunks: OutputChunk[] = [];
   private _bufferedBytes = 0;
   private _droppedBytes = 0;
+  /** Preview / DevTools URLs seen in this run's output (app-debug spec 1). */
+  private readonly debugLinkTracker = new DebugLinkTracker();
 
   private readonly listeners = new Set<SessionListener>();
   private disposed = false;
@@ -157,6 +160,11 @@ export class Session {
     return this.ptyExited;
   }
 
+  /** Detected app links; the server filters them by the ports the session listens on. */
+  get debugLinks(): DebugLink[] {
+    return this.debugLinkTracker.links();
+  }
+
   whenExited(): Promise<void> {
     return this.exitedPromise;
   }
@@ -178,6 +186,7 @@ export class Session {
       this._droppedBytes += removedBytes;
     }
 
+    try { this.debugLinkTracker.feed(data, this._lastActivity); } catch { /* detection must never break output */ }
     this.emit({ type: "output", seq, data, ts: this._lastActivity });
   }
 
@@ -188,6 +197,7 @@ export class Session {
     this._signal = signal;
     this._state = exitCode === 0 ? "exited" : "failed";
     this._pid = null;
+    this.debugLinkTracker.clear();
     log.info("session.exit", { sessionId: this.id, exitCode, signal });
     this.emit({ type: "exit", session: this.toSummary() });
   }

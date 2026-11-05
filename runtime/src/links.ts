@@ -140,17 +140,46 @@ export class AgentLinks {
 
   /** Synthesize 'recruit' links for sessions that have a parent_session_id but no link yet. */
   async backfill(userId: string): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO agent_links (project_id, from_session_id, to_session_id, kind)
-       SELECT c.project_id, c.parent_session_id, c.id, 'recruit'
-       FROM agent_sessions c JOIN agent_sessions p ON p.id = c.parent_session_id AND p.user_id = c.user_id
-       WHERE c.user_id = $1
-         AND NOT EXISTS (SELECT 1 FROM agent_links x
-           WHERE (x.from_session_id = c.parent_session_id AND x.to_session_id = c.id)
-              OR (x.from_session_id = c.id AND x.to_session_id = c.parent_session_id))
-       ON CONFLICT DO NOTHING`,
-      [userId],
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Reorient stale reverse links in place where no canonical edge exists, preserving their aggregate history.
+      await client.query(
+        `UPDATE agent_links l SET from_session_id = c.parent_session_id, to_session_id = c.id, kind = 'recruit'
+         FROM agent_sessions c
+         WHERE l.from_session_id = c.id AND l.to_session_id = c.parent_session_id
+           AND c.user_id = $1 AND c.parent_session_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM agent_links f WHERE f.from_session_id = c.parent_session_id AND f.to_session_id = c.id)`,
+        [userId],
+      );
+      await client.query(
+        `UPDATE agent_links f SET
+           message_count = f.message_count + r.message_count,
+           last_message_at = GREATEST(f.last_message_at, r.last_message_at)
+         FROM agent_links r JOIN agent_sessions c ON c.id = r.from_session_id
+         WHERE c.user_id = $1 AND c.parent_session_id = f.from_session_id AND c.id = f.to_session_id
+           AND r.to_session_id = c.parent_session_id`,
+        [userId],
+      );
+      await client.query(
+        `DELETE FROM agent_links l USING agent_sessions c
+         WHERE l.from_session_id = c.id AND l.to_session_id = c.parent_session_id
+           AND c.user_id = $1 AND c.parent_session_id IS NOT NULL`,
+        [userId],
+      );
+      await client.query(
+        `INSERT INTO agent_links (project_id, from_session_id, to_session_id, kind)
+         SELECT c.project_id, c.parent_session_id, c.id, 'recruit'
+         FROM agent_sessions c JOIN agent_sessions p ON p.id = c.parent_session_id AND p.user_id = c.user_id
+         WHERE c.user_id = $1
+         ON CONFLICT (from_session_id, to_session_id) DO UPDATE SET kind = 'recruit'`,
+        [userId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   /** Links of one project (a project UUID, or "none" for sessions outside a registered project). */
@@ -193,6 +222,45 @@ export class AgentLinks {
    * kind; `message` bumps count and last_message_at, `reply` only last_message_at.
    */
   async upsert(fromId: string, toId: string, kind: LinkKind, bump: Bump): Promise<AgentLink> {
+    if (kind === "recruit") {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        const session = await client.query("SELECT id, user_id, project_id FROM agent_sessions WHERE id = $1", [fromId]);
+        const project = (session.rows[0] as SessionRef | undefined)?.project_id ?? null;
+        await client.query(
+          `UPDATE agent_links SET from_session_id = $1, to_session_id = $2, kind = 'recruit'
+           WHERE from_session_id = $2 AND to_session_id = $1
+             AND NOT EXISTS (SELECT 1 FROM agent_links WHERE from_session_id = $1 AND to_session_id = $2)`,
+          [fromId, toId],
+        );
+        await client.query(
+          `UPDATE agent_links f SET
+             message_count = f.message_count + r.message_count,
+             last_message_at = GREATEST(f.last_message_at, r.last_message_at)
+           FROM agent_links r
+           WHERE f.from_session_id = $1 AND f.to_session_id = $2
+             AND r.from_session_id = $2 AND r.to_session_id = $1`,
+          [fromId, toId],
+        );
+        await client.query("DELETE FROM agent_links WHERE from_session_id = $1 AND to_session_id = $2", [toId, fromId]);
+        await client.query(
+          `INSERT INTO agent_links (project_id, from_session_id, to_session_id, kind, last_message_at, message_count)
+           VALUES ($1, $2, $3, 'recruit', CASE WHEN $4 = 'none' THEN NULL ELSE now() END, CASE WHEN $4 = 'message' THEN 1 ELSE 0 END)
+           ON CONFLICT (from_session_id, to_session_id) DO UPDATE SET
+             kind = 'recruit',
+             message_count = agent_links.message_count + CASE WHEN $4 = 'message' THEN 1 ELSE 0 END,
+             last_message_at = CASE WHEN $4 = 'none' THEN agent_links.last_message_at ELSE now() END`,
+          [project, fromId, toId, bump],
+        );
+        const result = await client.query("SELECT id, project_id, from_session_id, to_session_id, kind, created_at, last_message_at, message_count FROM agent_links WHERE from_session_id = $1 AND to_session_id = $2", [fromId, toId]);
+        await client.query("COMMIT");
+        return toLink(result.rows[0]);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+    }
     const reverse = await this.pool.query("SELECT 1 FROM agent_links WHERE from_session_id = $1 AND to_session_id = $2", [toId, fromId]);
     const [a, b] = reverse.rows[0] ? [toId, fromId] : [fromId, toId];
     const project = (await this.session(fromId))?.project_id ?? null;

@@ -50,7 +50,7 @@ import { sendToTargets, type Attachment } from "./canvas-send";
 import CanvasMenuContent, { type MenuApi, type MenuTarget, type SizePreset } from "./canvas-menu";
 import { CanvasCtx, type CanvasCtxValue, type LiveWire } from "./canvas-context";
 import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
-import { DEFAULT_NODE_SIZE, layoutFloors } from "./layout";
+import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
@@ -348,8 +348,7 @@ function AgentCanvas() {
   const floorFallback = UNASSIGNED_FLOOR;
 
   const auto = useMemo(() => {
-    const parents = new Map<string, string>();
-    for (const link of allLinks) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
+    const parents = resolveLayoutParents(projectSessions.map((session) => ({ id: session.id, parentId: session.parentSessionId })), allLinks.map((link) => ({ from: link.fromSessionId, to: link.toSessionId, kind: link.kind })));
     const linkedIds = new Set<string>();
     for (const link of allLinks) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
     return layoutFloors(projectSessions.map((session) => ({ id: session.id, floorId: floorOf.get(session.id) ?? floorFallback, parentId: parents.get(session.id) ?? null, linked: linkedIds.has(session.id) || !!session.parentSessionId })), floorOrder).positions;
@@ -369,13 +368,21 @@ function AgentCanvas() {
       const { width, height } = size(session.id);
       let position = saved?.[session.id];
       if (!position) {
-        // New agent: land inside its own floor, under that floor's existing agents, rather than at the global auto slot.
-        const floor = floorOf.get(session.id) ?? floorFallback;
-        const peers = rects.get(floor);
-        if (useSaved && peers?.length) {
-          position = { x: Math.min(...peers.map((peer) => peer.x)), y: Math.max(...peers.map((peer) => peer.bottom)) + 80 };
-          rects.set(floor, [...peers, { x: position.x, y: position.y, bottom: position.y + height }]);
-        } else position = auto[session.id] ?? { x: 0, y: 0 };
+        if (session.parentSessionId) {
+          const siblings = projectSessions
+            .filter((other) => other.id !== session.id && other.parentSessionId === session.parentSessionId && saved?.[other.id])
+            .map((other) => saved![other.id]);
+          position = nodePosition(session.id, saved, auto, session.parentSessionId, height, width, size(session.parentSessionId).height, siblings);
+        }
+        else {
+          // New unparented agent: land inside its own floor, under that floor's existing agents.
+          const floor = floorOf.get(session.id) ?? floorFallback;
+          const peers = rects.get(floor);
+          if (useSaved && peers?.length) {
+            position = { x: Math.min(...peers.map((peer) => peer.x)), y: Math.max(...peers.map((peer) => peer.bottom)) + 80 };
+            rects.set(floor, [...peers, { x: position.x, y: position.y, bottom: position.y + height }]);
+          } else position = auto[session.id] ?? { x: 0, y: 0 };
+        }
       }
       return { id: session.id, type: "agent", position, width, height, data: { session } } as AgentNode;
     });
@@ -621,8 +628,7 @@ function AgentCanvas() {
     const current = nodesRef.current;
     const widest = current.reduce((max, node) => Math.max(max, node.width ?? DEFAULT_NODE_SIZE.width), DEFAULT_NODE_SIZE.width);
     const tallest = current.reduce((max, node) => Math.max(max, node.height ?? DEFAULT_NODE_SIZE.height), DEFAULT_NODE_SIZE.height);
-    const parents = new Map<string, string>();
-    for (const link of linksRef.current) if (!parents.has(link.toSessionId)) parents.set(link.toSessionId, link.fromSessionId);
+    const parents = resolveLayoutParents(current.map((node) => ({ id: node.id, parentId: node.data.session.parentSessionId })), linksRef.current.map((link) => ({ from: link.fromSessionId, to: link.toSessionId, kind: link.kind })));
     const linkedIds = new Set<string>();
     for (const link of linksRef.current) { linkedIds.add(link.fromSessionId); linkedIds.add(link.toSessionId); }
     const layout = layoutFloors(current.map((node) => ({ id: node.id, floorId: floorOf.get(node.id) ?? floorFallback, parentId: parents.get(node.id) ?? null, linked: linkedIds.has(node.id) || !!node.data.session.parentSessionId })), floorOrder, { width: widest, height: tallest }).positions;

@@ -41,6 +41,7 @@ const settings = new SettingsStore(pool, config);
 const github = new GithubLinker(config, settings);
 const shards = new ShardService(pool, config, createShardDriver(config));
 await shards.reconcile();
+await shards.driver.init?.(); // FLOQ_NETNS startup probe (no-op unless the flag is set)
 const vault = new Vault(pool, config);
 const manager = new SessionManager(config, pool, shards, vault);
 const skills = new SkillsService(config, shards, pool, (userId, operation) => manager.withUserShardActivity(userId, operation));
@@ -63,7 +64,7 @@ manager.subagents = subagents;
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks });
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards });
 
 await server.listen();
 log.info("runtime.listening", {

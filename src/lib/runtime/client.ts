@@ -37,6 +37,8 @@ import type {
   ProvidersStatus,
   ProvidersUsage,
   SessionPort,
+  SessionDisplay,
+  SessionDebugLink,
   SessionSummary,
   SettingsPatch,
   SubagentPolicy,
@@ -447,8 +449,39 @@ export class RuntimeClient {
   readFile = (sessionId: string, path: string) =>
     this.call<FileContent>("GET", `/v1/sessions/${sessionId}/files/content?path=${encodeURIComponent(path)}`);
 
+  /**
+   * Short-lived, single-use download URL for a file, or for a folder as a zip. Navigations and the Tauri downloader cannot send
+   * the bearer header, so the runtime signs the link instead; the URL is only valid for about a minute.
+   */
+  async fileDownloadUrl(sessionId: string, path: string): Promise<string> {
+    const result = await this.call<{ url: string; expiresAt: number }>("POST", `/v1/sessions/${sessionId}/files/link`, { path });
+    return this.baseUrl + result.url;
+  }
+
+  /** Create a read-only WebDAV share of every folder of a project (valid 8h, or until ejected / signed out). */
+  createFileMount = (projectId: string) =>
+    this.call<{ token: string; path: string; expiresAt: number; folders: string[] }>("POST", `/v1/projects/${projectId}/files/mount`, {});
+
+  /** Eject: revoke one share (by token) or all shares of the project. */
+  async revokeFileMount(projectId: string, token?: string): Promise<void> {
+    await this.call("DELETE", `/v1/projects/${projectId}/files/mount${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+  }
+
+  /** The session's virtual display (Xpra, `floq display start`). Older runtimes answer 404. */
+  sessionDisplay = (sessionId: string) =>
+    this.call<SessionDisplay>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/display`);
+
+  stopSessionDisplay = (sessionId: string) =>
+    this.call<{ stopped: boolean }>("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/display/stop`);
+
   sessionPorts = async (sessionId: string) =>
     (await this.call<{ ports: SessionPort[] }>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/ports`)).ports;
+
+  /** Listening ports plus app preview / DevTools links detected in the session's output (older runtimes send no links). */
+  sessionPortsAndLinks = async (sessionId: string) => {
+    const result = await this.call<{ ports: SessionPort[]; links?: SessionDebugLink[] }>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/ports`);
+    return { ports: result.ports, links: result.links ?? [] };
+  };
 
   /** WebSocket URL for one TCP connection to a port the session listens on (one socket per connection). */
   /** `manual` asks the runtime to also allow a port it has not detected as listening (still loopback, unprivileged, non-internal). */
