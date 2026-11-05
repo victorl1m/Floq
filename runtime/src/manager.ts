@@ -33,6 +33,7 @@ import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, read
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { buildRecruitSkillsBlock, storedRecruitSkills } from "./recruitSkills.js";
+import { activeManagedMarketplaces, reconcileUserMarketplaces } from "./claudeManagedPlugins.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { composeSystemBlocks } from "./subagents.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
@@ -1262,6 +1263,13 @@ export class SessionManager {
       const cred = await this.freshCredential(row.user_id, "claude");
       if (cred) this.writeClaude(handle, cred);
       this.enforceClaudeSettings(handle, profile);
+      // Operator-trusted plugins are managed: drop this user's own conflicting registration of the same marketplace.
+      try {
+        const removed = reconcileUserMarketplaces(this.shards.driver.hostPath(handle, "."), activeManagedMarketplaces());
+        if (removed.length) log.info("claude.managed_marketplace_reconciled", { sessionId: row.id, removed });
+      } catch (error) {
+        log.warn("claude.managed_marketplace_reconcile_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
       if (profile.claudeAutoApprove) {
         const path = this.shards.driver.hostPath(handle, ".claude.json");
         const config = readClaudeProjectConfig(path);

@@ -77,9 +77,11 @@ COPY --from=build /app/dist/image/floq-vault.mjs /usr/local/bin/floq-vault
 COPY --from=build /app/dist/image/floq-block-native-subagent.mjs /usr/local/bin/floq-block-native-subagent.mjs
 # Managed (policy) settings outrank user, project and local settings and are read-only to agents: native subagents stay denied.
 COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
+# Base copy: at startup the runtime rewrites /etc/claude-code/managed-settings.json from it plus FLOQ_CLAUDE_PLUGINS.
+COPY image/claude-managed-settings.json /usr/local/share/floq/claude-managed-settings.base.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
 RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-vault \
-    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /etc/claude-code/managed-settings.json
+    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /etc/claude-code/managed-settings.json /usr/local/share/floq/claude-managed-settings.base.json
 # Copy of bwrap under a path no host AppArmor profile is attached to (see shard.ts).
 RUN cp /usr/bin/bwrap /usr/local/bin/floq-bwrap
 # System-wide commit hook: strips agent attribution, adds the Floq co-author trailer. /etc/gitconfig and /usr are read-only inside the sandbox.
