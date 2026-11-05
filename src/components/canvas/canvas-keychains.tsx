@@ -279,7 +279,7 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
     deleted.current.add(id);
     setNodes((current) => current.filter((node) => node.data.keychain.id !== id));
     setManaging((current) => (current === id ? null : current));
-    deleteKeychainRequest(client, id).then(() => toast.success("Keychain deleted")).catch((error) => {
+    deleteKeychainRequest(client, id).then(() => toast.success("Keychain deleted", { description: "Agents linked to it can no longer read its secrets." })).catch((error) => {
       deleted.current.delete(id);
       if (gone) setNodes((current) => [...current.filter((node) => node.data.keychain.id !== id), gone]);
       toast.error("Could not delete the keychain", { description: errorMessage(error) });

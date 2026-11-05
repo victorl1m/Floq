@@ -66,7 +66,7 @@ export default function DeleteProjectDialog({ project, onClose }: { project: Run
       toast.success(`Deleted “${name}”`, {
         description: result.leftovers.length
           ? `${plural(result.leftovers.length, "directory", "directories")} could not be removed from disk and ${result.leftovers.length === 1 ? "was" : "were"} left in place.`
-          : undefined,
+          : "The project was removed from Floq.",
       });
     } catch (cause) {
       const message = errorMessage(cause);

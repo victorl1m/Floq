@@ -37,7 +37,7 @@ function ChangePassword() {
     async function onSubmit(values: PasswordValues) {
         try {
             await client.changePassword(values.currentPassword, values.newPassword, false);
-            toast.success("Password changed");
+            toast.success("Password changed", { description: "Use the new password the next time you sign in." });
             form.reset();
         } catch (e) {
             form.setError("root", { message: errorMessage(e) });

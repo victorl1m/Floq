@@ -150,7 +150,8 @@ export default function CanonicalProjectList() {
     saveProjectFolders(scope, loadProjectFolders(scope).filter((item) => item.id !== folder.id));
     saveLayout(scope, removeFolderFromLayout(layout, folder.id));
     toast(`Folder “${folder.name}” removed`, {
-      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list.` : undefined,
+      icon: <IconTrash className="size-4" aria-hidden="true" />,
+      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list.` : "The folder was empty. Undo brings it back.",
       action: { label: "Undo", onClick: () => {
         const current = loadProjectFolders(scope);
         if (!current.some((item) => item.id === folder.id)) saveProjectFolders(scope, [...current, folder]);
@@ -266,13 +267,13 @@ export default function CanonicalProjectList() {
     try {
       upsertSession(await client.renameSession(renaming.id, title));
       setRenaming(null);
-      toast.success("Conversation renamed");
+      toast.success("Conversation renamed", { description: "The new title shows in the sidebar." });
     } catch (error) { setRenameError(errorMessage(error)); }
     finally { setRenameSaving(false); }
   }
 
   function copy(text: string, label: string) {
-    void copyText(text).then(() => toast.success(`${label} copied`)).catch(() => toast.error(`Could not copy ${label.toLowerCase()}`));
+    void copyText(text).then(() => toast.success(`${label} copied`, { description: "It is on your clipboard." })).catch(() => toast.error(`Could not copy ${label.toLowerCase()}`, { description: "The clipboard is not available. Select the text and copy it by hand." }));
   }
   function reveal(path: string) {
     revealItemInDir(path).catch((error) => toast.error("Could not open the folder", { description: errorMessage(error) }));

@@ -85,7 +85,7 @@ export function ManualForwardForm({ client, sessionId }: { client: RuntimeClient
             const others = (userPreferences.recentForwardPorts[target] ?? []).filter((port) => port !== result.port);
             updateUserPreferences({ recentForwardPorts: { ...userPreferences.recentForwardPorts, [target]: [result.port, ...others].slice(0, 5) } });
             setValue("");
-            toast.success(`Forwarding localhost:${result.port}`);
+            toast.success(`Forwarding localhost:${result.port}`, { description: "Open it in a browser on this computer." });
         } catch (failure) {
             setError(errorMessage(failure));
         } finally {

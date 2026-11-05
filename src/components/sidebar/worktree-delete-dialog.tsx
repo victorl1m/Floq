@@ -58,7 +58,7 @@ export default function WorktreeDeleteDialog({ target, onClose }: { target: Work
       }
       onClose();
       toast.success(result.alreadyGone ? "Worktree record removed" : "Worktree deleted", {
-        description: [result.branchDeleted ? `Deleted local branch ${result.branchDeleted}.` : null, result.branchNote].filter(Boolean).join(" ") || undefined,
+        description: [result.branchDeleted ? `Deleted local branch ${result.branchDeleted}.` : null, result.branchNote].filter(Boolean).join(" ") || (result.alreadyGone ? "The worktree was already gone from disk." : "Its directory was removed from disk."),
       });
       await refreshProjects(true).catch(() => {});
     } catch (cause) {

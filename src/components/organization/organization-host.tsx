@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { IconMail } from "@tabler/icons-react";
 import { useRuntime } from "@/lib/runtime/store";
 import { organizationUi, useOrganizationUi } from "@/lib/organizations";
 import { CreateOrganizationDialog } from "./create-organization-dialog";
@@ -32,11 +33,15 @@ export function OrganizationHost() {
                 if (fresh.length === 1) {
                     toast(`${fresh[0].invitedBy} invited you to ${fresh[0].organization.name}`, {
                         id: "organization-invitation",
+                        icon: <IconMail className="size-4" aria-hidden="true" />,
+                        description: "Review it to join or decline.",
                         action: { label: "Review", onClick: organizationUi.openInbox },
                     });
                 } else if (fresh.length > 1) {
                     toast(`You have ${fresh.length} new organization invitations`, {
                         id: "organization-invitation",
+                        icon: <IconMail className="size-4" aria-hidden="true" />,
+                        description: "Review them to join or decline.",
                         action: { label: "Review", onClick: organizationUi.openInbox },
                     });
                 }

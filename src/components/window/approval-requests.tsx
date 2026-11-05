@@ -83,6 +83,14 @@ function useAnnouncement(item: ApprovalItem, seconds: number): string {
   return last.current.text;
 }
 
+/**
+ * Focus Deny so a stray Enter or Space never grants anything, but without the keyboard focus ring: a ring on Deny
+ * at open read as "Deny is selected / hovered" next to the primary Allow. Tab or arrow keys still show the ring.
+ */
+function focusDenyQuietly(root: HTMLElement | null) {
+  root?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true, focusVisible: false } as FocusOptions);
+}
+
 export function ApprovalCard({ item, autoFocusDeny, onAnswer, error, busy }: {
   item: ApprovalItem;
   autoFocusDeny: boolean;
@@ -162,8 +170,8 @@ export function ApprovalCard({ item, autoFocusDeny, onAnswer, error, busy }: {
         <div className="flex items-center gap-2">
           {pending ? (
             <>
-              <Button type="button" variant="outline" data-autofocus={autoFocusDeny ? "" : undefined} disabled={!!busy} onClick={() => onAnswer("deny")}>{busy === "deny" ? "Denying..." : "Deny"}</Button>
-              <Button type="button" disabled={!!busy} onClick={() => onAnswer("allow")}>
+              <Button type="button" variant="outline" data-slot="approval-deny" data-autofocus={autoFocusDeny ? "" : undefined} disabled={!!busy} onClick={() => onAnswer("deny")} className="hover:border-foreground/30 hover:bg-foreground/[0.06] active:bg-foreground/10 dark:hover:border-foreground/25 dark:hover:bg-foreground/10 dark:active:bg-foreground/15">{busy === "deny" ? "Denying..." : "Deny"}</Button>
+              <Button type="button" data-slot="approval-allow" disabled={!!busy} onClick={() => onAnswer("allow")} className="hover:shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_28%,transparent)] active:bg-primary-hover active:shadow-none">
                 {busy === "allow" ? "Allowing..." : "Allow once"}
                 <Kbd aria-hidden="true" className="ml-1 border-white/45 bg-white/15 text-white shadow-none dark:bg-white/15">{isMac ? "⌘↵" : "Ctrl+↵"}</Kbd>
               </Button>
@@ -194,7 +202,7 @@ function WaitingPill({ count }: { count: number }) {
       data-slot="approval-pill"
       onClick={reopenApprovals}
       style={{ zIndex: Z.pill, pointerEvents: "auto" }}
-      className="fixed top-2 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-popover px-3.5 py-1.5 text-xs font-medium text-popover-foreground shadow-(--shadow-elev-2) outline-none focus-visible:ring-2 focus-visible:ring-ring/70 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-2"
+      className="fixed top-2 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-popover px-3.5 py-1.5 text-xs font-medium text-popover-foreground shadow-(--shadow-elev-2) outline-none transition-colors hover:border-foreground/25 hover:bg-muted active:translate-y-px focus-visible:ring-2 focus-visible:ring-ring/70 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-2"
     >
       <IconShieldLock size={14} aria-hidden="true" />
       <span className="tabular-nums">{count} {count === 1 ? "approval" : "approvals"} waiting</span>
@@ -239,7 +247,7 @@ export function ApprovalHost() {
     if (!dialogOpen || currentState !== "pending") return;
     const frame = requestAnimationFrame(() => {
       const active = document.activeElement;
-      if (!active || !active.closest("[data-slot=approval-request], [data-slot=approval-stack]")) body.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+      if (!active || !active.closest("[data-slot=approval-request], [data-slot=approval-stack]")) focusDenyQuietly(body.current);
     });
     return () => cancelAnimationFrame(frame);
   }, [currentId, currentState, dialogOpen]);
@@ -273,7 +281,7 @@ export function ApprovalHost() {
             onOpenAutoFocus={(event) => {
               // Deny is the default focus: a stray Enter or Space while typing in the terminal must never grant anything.
               event.preventDefault();
-              body.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+              focusDenyQuietly(body.current);
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void answer("allow"); }

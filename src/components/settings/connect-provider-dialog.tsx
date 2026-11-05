@@ -139,7 +139,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                 if (status[provider].connected && !doneRef.current) {
                     doneRef.current = true;
                     setConnected(true);
-                    toast.success(NAME[provider] + " connected");
+                    toast.success(NAME[provider] + " connected", { description: "Sessions can now use your account." });
                     onConnected?.();
                     setTimeout(() => onOpenChange(false), 1200);
                 }
@@ -195,9 +195,9 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
             await copyText(deviceCode);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-            if (silent) toast.success("Code copied");
+            if (silent) toast.success("Code copied", { description: "Paste it where the provider asks for it." });
         } catch {
-            toast.error("Could not copy the code");
+            toast.error("Could not copy the code", { description: "Select the code and copy it manually." });
         }
     }
 
@@ -208,7 +208,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         } catch {
-            toast.error("Could not copy the link");
+            toast.error("Could not copy the link", { description: "Use the button to open it in your browser instead." });
         }
     }
 
@@ -232,7 +232,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
         // Tauri reads the clipboard without a prompt; a browser relies on a normal paste event instead.
         if (!canReadClipboard()) {
             codeInput.current?.focus();
-            toast.info("Press " + pasteShortcut() + " to paste the code");
+            toast.info("Paste the code", { description: "Press " + pasteShortcut() + " to paste it into the field." });
             return;
         }
         try {
@@ -337,7 +337,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                                         if (!url) return;
                                         setOpened(true);
                                         if (deviceCode) void copyDeviceCode(true);
-                                        void openExternal(url).catch((e) => toast.error(errorMessage(e)));
+                                        void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
                                     }}
                                 >
                                     <IconExternalLink />
@@ -354,7 +354,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                     )}
                     {!isCodex && url ? (
                         <div className="flex flex-wrap items-center gap-2">
-                            <Button onClick={() => void openExternal(url).catch((e) => toast.error(errorMessage(e)))}>
+                            <Button onClick={() => void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }))}>
                                 <IconExternalLink />
                                 Open sign-in page
                             </Button>

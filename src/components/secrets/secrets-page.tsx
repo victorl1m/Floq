@@ -112,10 +112,10 @@ export default function SecretsPage() {
                 };
                 if (value !== "") input.value = value;
                 setSecrets(await client.patchSecret(editingOriginalName, input)); window.dispatchEvent(new Event("floq:vault-changed"));
-                toast.success("Secret changes saved");
+                toast.success("Secret changes saved", { description: "Agents that use this secret get the new value in new sessions." });
             } else {
                 setSecrets(await client.putSecret(name, { value, description: description.trim(), expose })); window.dispatchEvent(new Event("floq:vault-changed"));
-                toast.success("Secret added");
+                toast.success("Secret added", { description: "It is stored in your vault and never shown again in full." });
             }
             resetForm();
         } catch (e) {
@@ -131,7 +131,7 @@ export default function SecretsPage() {
         if (!target) return;
         try {
             setSecrets(await client.deleteSecret(target)); window.dispatchEvent(new Event("floq:vault-changed"));
-            toast.success("Secret deleted");
+            toast.success("Secret deleted", { description: "It was removed from your vault." });
         } catch (e) {
             toast.error("Could not delete secret", { description: errorMessage(e) });
         }

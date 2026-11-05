@@ -93,14 +93,14 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         } catch {
-            toast.error("Could not copy the link");
+            toast.error("Could not copy the link", { description: "Use the button to open it in your browser instead." });
         }
     }
 
     async function pasteFromClipboard() {
         if (!canReadClipboard()) {
             input.current?.focus();
-            toast.info("Press " + pasteShortcut() + " to paste the code");
+            toast.info("Paste the code", { description: "Press " + pasteShortcut() + " to paste it into the field." });
             return;
         }
         try {
@@ -122,7 +122,7 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
             if (!result.connected) throw new Error("Claude did not connect. Try again.");
             setPlan(result.plan);
             setConnected(true);
-            toast.success("Claude connected");
+            toast.success("Claude connected", { description: "Claude sessions can now use your account." });
             onConnected?.();
             setTimeout(() => close(false), 1000);
         } catch (e) {
@@ -191,7 +191,7 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
                             <Button
                                 onClick={() => {
                                     setOpened(true);
-                                    void openExternal(flow.authorizeUrl).catch((e) => toast.error(errorMessage(e)));
+                                    void openExternal(flow.authorizeUrl).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
                                     setTimeout(() => input.current?.focus(), 100);
                                 }}
                             >

@@ -100,7 +100,7 @@ export function PortRequestCard({ item, client, autoFocusDeny = false, onAnswere
         } catch (failure) {
           await client.resolvePortRequest(request.id, { decision: "error", message: errorMessage(failure) }).catch(() => undefined);
           removePortRequest(request.id);
-          toast.error(`Could not open port ${request.port}: ${errorMessage(failure)}`);
+          toast.error(`Could not open port ${request.port}`, { description: errorMessage(failure) });
           onAnswered?.();
           return;
         }
@@ -114,7 +114,7 @@ export function PortRequestCard({ item, client, autoFocusDeny = false, onAnswere
         return;
       }
       removePortRequest(request.id);
-      toast.success(`Forwarding localhost:${request.port}`);
+      toast.success(`Forwarding localhost:${request.port}`, { description: "Open it in a browser on this computer." });
       onAnswered?.();
     } catch (failure) {
       setError(errorMessage(failure));

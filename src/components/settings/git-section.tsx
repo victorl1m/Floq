@@ -84,7 +84,7 @@ function GithubRow({ settings, reload }: { settings: UserSettings; reload: () =>
     async function disconnect() {
         try {
             await client.githubDisconnect();
-            toast.success("GitHub disconnected");
+            toast.success("GitHub disconnected", { description: "Connect again to clone private repositories." });
             await reload();
         } catch (e) {
             toast.error("Could not disconnect", { description: errorMessage(e) });

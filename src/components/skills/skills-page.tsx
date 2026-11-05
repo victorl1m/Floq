@@ -165,11 +165,11 @@ export default function SkillsPage() {
     setDeleteBusy(true);
     try {
       await client.deleteSkill(deleting.provider, deleting.location);
-      toast.success(`${deleting.name} removed`);
+      toast.success(`${deleting.name} removed`, { description: "The skill was deleted from disk." });
       setSkills((current) => current.filter((item) => !(item.provider === deleting.provider && item.name === deleting.name)));
       setDeleting(null);
       setRefresh((value) => value + 1);
-    } catch (error) { toast.error(errorMessage(error)); }
+    } catch (error) { toast.error("Could not remove the skill", { description: errorMessage(error) }); }
     finally { setDeleteBusy(false); }
   }
 
@@ -178,11 +178,11 @@ export default function SkillsPage() {
     setRemoveMcpBusy(true);
     try {
       await client.removeMcpServer({ scope, projectId, provider: removingMcp.provider, name: removingMcp.name });
-      toast.success(`${removingMcp.name} removed. Running sessions keep it until they restart or resume.`);
+      toast.success(`${removingMcp.name} removed`, { description: "Running sessions keep it until they restart or resume." });
       setServers((current) => current.filter((item) => !(item.provider === removingMcp.provider && item.name === removingMcp.name)));
       setRemovingMcp(null);
       setRefresh((value) => value + 1);
-    } catch (error) { toast.error(errorMessage(error)); }
+    } catch (error) { toast.error("Could not remove the MCP server", { description: errorMessage(error) }); }
     finally { setRemoveMcpBusy(false); }
   }
 
@@ -236,7 +236,7 @@ export default function SkillsPage() {
       const source = preview.skill;
       if (!source.source || !source.skillId) throw new Error("This preview cannot be installed from the catalog. Use a supported source URL.");
       await client.importProjectSkill(addProject.id, { provider: newProvider, source: source.source, skillId: source.skillId });
-      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project");
+      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project", { description: "Agents in that project can use it in new sessions." });
     } catch (error) { setFormError(errorMessage(error)); }
     finally { setSaving(false); }
   }
@@ -246,7 +246,7 @@ export default function SkillsPage() {
     setSaving(true); setFormError("");
     try {
       await client.importProjectSkill(addProject.id, { provider: newProvider, url: importUrl.trim() });
-      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project");
+      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project", { description: "Agents in that project can use it in new sessions." });
     } catch (error) { setFormError(errorMessage(error)); }
     finally { setSaving(false); }
   }
@@ -261,7 +261,7 @@ export default function SkillsPage() {
     setSaving(true); setFormError("");
     try {
       await client.createProjectSkill(addProject.id, { provider: newProvider, name: cleanName, description: description.trim(), instructions: instructions.trim() });
-      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project");
+      setAddOpen(false); clearForm(); setTab("skills"); setRefresh((value) => value + 1); toast.success("Skill added to project", { description: "Agents in that project can use it in new sessions." });
     } catch (error) { setFormError(errorMessage(error)); }
     finally { setSaving(false); }
   }
