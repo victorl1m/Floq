@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "floq",
+  "productName": "Floq",
   "version": "0.6.0",
   "identifier": "com.flowless.floq",
   "build": {
