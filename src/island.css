@@ -1,7 +1,7 @@
 @import '@fontsource-variable/geist';
 @import '@fontsource-variable/geist-mono';
 :root {
-  font-family:'Geist Variable', sans-serif; font-size:13px; font-variant-numeric:tabular-nums; color-scheme:light dark; background:transparent;
+  font-family:'SF Pro Text','SF Pro Display',-apple-system,BlinkMacSystemFont,'Geist Variable',sans-serif; font-size:13px; font-variant-numeric:tabular-nums; color-scheme:light dark; background:transparent;
   --toast-spring:linear(0, .2 8%, .62 20%, .9 34%, 1.03 48%, 1.04 58%, 1.01 76%, 1);
   --content-spring:cubic-bezier(.16, 1.2, .3, 1);
   --toast-bg:rgb(251 252 254 / .72); --toast-fg:#202633; --toast-fg-muted:#4a5365; --toast-rim:rgb(28 38 54 / .14); --toast-rim-top:inset 0 1px 0 rgb(255 255 255 / .9);
@@ -29,7 +29,7 @@ button, textarea, input { font:inherit; }
 .island-label,.island-meta { color:var(--toast-fg-muted); font-size:11px; }
 .island-label { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; text-transform:uppercase; letter-spacing:.07em; font-weight:650; }
 .island-risk { color:#b54708; letter-spacing:0; text-transform:none; }
-.island-command { margin-top:9px; padding:10px 11px; border:1px solid var(--toast-rim); border-radius:10px; background:var(--toast-hover-fill); font:12px/1.45 'Geist Mono Variable', monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+.island-command { margin-top:9px; padding:10px 11px; border:1px solid var(--toast-rim); border-radius:10px; background:var(--toast-hover-fill); font:12px/1.45 'SF Mono',SFMono-Regular,ui-monospace,Menlo,'Geist Mono Variable',monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
 .island-cycle { display:flex; justify-content:center; align-items:center; gap:7px; margin:-2px 0 8px; }
 .island-cycle button { display:flex; padding:3px; border:0; border-radius:6px; }
 .island-queue { display:flex; align-items:center; gap:5px; }
