@@ -371,7 +371,7 @@ function AgentCanvas() {
         if (session.parentSessionId) {
           const siblings = projectSessions
             .filter((other) => other.id !== session.id && other.parentSessionId === session.parentSessionId && saved?.[other.id])
-            .map((other) => saved![other.id]);
+            .map((other) => ({ ...saved![other.id], ...size(other.id) }));
           position = nodePosition(session.id, saved, auto, session.parentSessionId, height, width, size(session.parentSessionId).height, siblings);
         }
         else {
