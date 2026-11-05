@@ -114,7 +114,7 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
   }
 
   const command = getCommand(lastName ?? keychain.secretNames[0] ?? "NAME");
-  const copy = () => void copyText(command).then(() => toast.success("Command copied", { description: "It is on your clipboard." }), (err) => toast.error("Could not copy", { description: errorMessage(err) }));
+  const copy = () => void copyText(command).then(() => toast.success("Command copied", { description: "It is on your clipboard." }), (err) => toast.error("Could not copy the command", { description: errorMessage(err) }));
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) { reset(); onClose(); } }}>

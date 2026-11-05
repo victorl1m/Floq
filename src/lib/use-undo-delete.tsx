@@ -70,7 +70,7 @@ export function useUndoDelete({ performDelete, sendOnUnload, signedIn, allSessio
     toast(title, {
       id: batch.key,
       icon: <IconTrash size={16} aria-hidden="true" />,
-      description: `${batch.items.length > 1 && shown ? `${shown}. ` : ""}It will be removed for good in a few seconds. Undo with Ctrl+Z.`,
+      description: `${batch.items.length > 1 && shown ? `${shown}. ` : ""}It will be removed for good in a few seconds. Undo with Ctrl+Z or Cmd+Z.`,
       duration: Math.max(1000, batch.deadline - Date.now()),
       action: { label: "Undo", onClick: () => undoBatch(batch.key) },
       onDismiss: () => { void registry.dismiss(batch.key); },

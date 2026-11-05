@@ -153,7 +153,7 @@ export async function uploadBatch(client: RuntimeClient, sessionId: string, item
         toast.error(items.length === 1 ? `Could not upload ${items[0].name}` : `${errors.length} of ${items.length} uploads failed`, { id: toastId, duration: 10_000, description: errors.slice(0, 3).join("\n"), action: undefined });
     } else {
         const label = items.length === 1 ? `Uploaded ${items[0].name} (${formatBytes(items[0].size)})` : `Uploaded ${items.length} files (${formatBytes(batchTotal)})`;
-        toast.success(label, { id: toastId, duration: 4000, description: "The saved paths were sent to the terminal.", action: undefined });
+        toast.success(label, { id: toastId, duration: 4000, description: "The saved paths are ready for the terminal.", action: undefined });
     }
     return { paths, failures: errors.length, cancelled };
 }

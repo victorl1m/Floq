@@ -140,7 +140,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             } else if (uploadedPaths.length) {
                 toast.error("Files uploaded, but the terminal disconnected", {
                     description: "Copy the saved paths and paste them after reconnecting.",
-                    action: { label: "Copy paths", onClick: () => void copyText(uploadedPaths.join(" ") + " ").catch(() => toast.error("Could not copy the paths", { description: "The clipboard is not available. Upload the files again after the terminal reconnects." })) },
+                    action: { label: "Copy paths", onClick: () => void copyText(uploadedPaths.join(" ") + " ").catch(() => toast.error("Could not copy the paths", { description: "The clipboard is blocked. The files are already uploaded, so do not upload them again." })) },
                 });
             }
         } finally {
