@@ -242,10 +242,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const body = method === "POST" ? await readJson<Record<string, unknown>>(req, url.pathname === "/internal/skills/create" ? 1.5 * 1024 * 1024 : config.maxBodyBytes) : {};
       const path = url.pathname.slice("/internal/".length);
       // Anything an agent receives from another agent (notes, replies, inbox, ...) is stripped of forged `[FLOQ APPROVAL` markers.
-      // A memory/system note an agent wrote reaches every other agent of the project: refresh their wired context and tell the live ones.
+      // A shared note an agent wrote reaches other agents (memory: its project; system: every agent): refresh their wired context and tell the live ones.
       const touchProjectNote = async (note: { kind: string; projectId: string | null }): Promise<void> => {
         if (note.kind === "note" || !wired) return;
-        for (const id of await notes.projectSessionIds(userId, note.projectId)) {
+        for (const id of await notes.sharedNoteSessionIds(userId, note)) {
           if (id === sessionId) continue;
           try {
             const r = await wired.sync(userId, id);
@@ -744,7 +744,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (notesMatch && method === "GET") return send(res, 200, { notes: await notes.list(userId, notesMatch[1]) });
     if (notesMatch && method === "POST") {
       const note = await notes.create(userId, notesMatch[1], await readJson(req));
-      if (note.kind !== "note") await wiredTouch(await notes.projectSessionIds(userId, note.projectId), true);
+      if (note.kind !== "note") await wiredTouch(await notes.sharedNoteSessionIds(userId, note), true);
       return send(res, 200, note);
     }
     const noteMatch = /^\/v1\/notes\/([\w-]+)$/.exec(url.pathname);
@@ -753,13 +753,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const note = await notes.patch(userId, noteMatch[1], await readJson(req));
       await wiredTouch(note.linkedSessionIds, false); // keep the persisted memory current; no live notice per edit
       // Project memory/system notes reach every agent of the project: refresh them all and tell the live ones.
-      if (before.kind !== "note" || note.kind !== "note") await wiredTouch(await notes.projectSessionIds(userId, note.projectId), true);
+      // A kind change can widen or narrow who reads it (system: every agent, memory: the project), so touch both sets.
+      if (before.kind !== "note" || note.kind !== "note") await wiredTouch([...new Set([...(await notes.sharedNoteSessionIds(userId, before)), ...(await notes.sharedNoteSessionIds(userId, note))])], true);
       return send(res, 200, note);
     }
     if (noteMatch && method === "DELETE") {
       const gone = await notes.get(userId, noteMatch[1]);
       const sessions = await notes.remove(userId, noteMatch[1]);
-      await wiredTouch(gone.kind === "note" ? sessions : [...sessions, ...(await notes.projectSessionIds(userId, gone.projectId))], true);
+      await wiredTouch(gone.kind === "note" ? sessions : [...sessions, ...(await notes.sharedNoteSessionIds(userId, gone))], true);
       return send(res, 200, { ok: true });
     }
 
