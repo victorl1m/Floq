@@ -5,6 +5,7 @@ import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
 import { useRuntime } from "@/lib/runtime/store";
 import { minimumContrastRatio, terminalTheme, useTerminalDark } from "@/lib/terminal-theme";
 import type { ServerFrame, SessionSummary } from "@/lib/runtime/types";
+import { cn } from "cn";
 
 /** Read-only mirror: same palettes as the interactive terminal, with the cursor hidden (painted as background). */
 const mirrorTheme = (dark: boolean) => {
@@ -25,14 +26,26 @@ function bufferText(term: Terminal, maxLines = 400): string {
   return lines.join("\n").replace(/\s+$/, "");
 }
 
+/** SGR (1006) mouse report: what Claude Code and Codex enable for their fullscreen TUIs. */
+function sgrMouse(button: number, col: number, row: number, release: boolean, event: { shiftKey: boolean; altKey: boolean; ctrlKey: boolean }): string {
+  const code = button + (event.shiftKey ? 4 : 0) + (event.altKey ? 8 : 0) + (event.ctrlKey ? 16 : 0);
+  return `\x1b[<${code};${col};${row}${release ? "m" : "M"}`;
+}
+
 /**
- * Read-only live mirror of a session's PTY output for the canvas.
+ * Live mirror of a session's PTY output for the canvas.
  *
  * Unlike SessionTerminal (whose `embedded` mode still fits itself and sends `resize` frames to the PTY),
- * this never sends anything to the stream: no input, no resize. The local xterm is pinned to the PTY's own
- * cols/rows (taken from the hello/state frames) so TUIs render correctly, then CSS-scaled to the node's width.
+ * this never resizes the PTY. The local xterm is pinned to the PTY's own cols/rows (taken from the
+ * hello/state frames) so TUIs render correctly, then CSS-scaled to the node's width.
+ *
+ * Read-only by default. With `interactive` (the node is selected) the wheel and mouse clicks reach the
+ * agent, so a question with options (Claude's "ask") can be answered from the canvas. Because the xterm
+ * is CSS-scaled, xterm's own mouse mapping would be off: cells are computed from the scaled screen rect
+ * and sent as SGR mouse reports while the TUI has mouse tracking on; otherwise the wheel scrolls the
+ * mirror's own scrollback. Typing still goes through the node's message bar.
  */
-export default memo(function SessionMirror({ session }: { session: SessionSummary }) {
+export default memo(function SessionMirror({ session, interactive = false }: { session: SessionSummary; interactive?: boolean }) {
   const { client } = useRuntime();
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -41,6 +54,8 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
   const darkRef = useRef(dark);
   darkRef.current = dark;
   const termRef = useRef<Terminal | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wheelRest = useRef(0);
   const initial = useRef({ cols: session.cols, rows: session.rows });
 
   useEffect(() => {
@@ -69,6 +84,7 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
       if (disposed || !term) return;
       const t = term;
       ws = new WebSocket(client.streamUrl(id, lastSeq));
+      wsRef.current = ws;
       ws.onopen = () => { attempt = 0; };
       ws.onmessage = (event) => {
         let frame: ServerFrame;
@@ -91,6 +107,7 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
       };
       ws.onclose = () => {
         ws = null;
+        wsRef.current = null;
         if (!disposed) timer = setTimeout(connect, Math.min(10_000, 500 * 2 ** attempt++));
       };
     };
@@ -140,8 +157,67 @@ export default memo(function SessionMirror({ session }: { session: SessionSummar
     term.refresh(0, term.rows - 1);
   }, [dark]);
 
+  const sendInput = (data: string) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data }));
+  };
+  const tracking = () => {
+    const term = termRef.current;
+    return !!term && term.modes.mouseTrackingMode !== "none";
+  };
+  /** 1-based cell under the pointer, from the scaled screen rect (xterm's own mapping ignores the CSS scale). */
+  const cellAt = (clientX: number, clientY: number): [number, number] | null => {
+    const term = termRef.current;
+    const screen = stageRef.current?.querySelector<HTMLElement>(".xterm-screen");
+    if (!term || !screen) return null;
+    const rect = screen.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const col = Math.min(term.cols, Math.max(1, Math.floor(((clientX - rect.left) / rect.width) * term.cols) + 1));
+    const row = Math.min(term.rows, Math.max(1, Math.floor(((clientY - rect.top) / rect.height) * term.rows) + 1));
+    return [col, row];
+  };
+
   return (
-    <div ref={hostRef} className="terminal-surface size-full overflow-hidden" aria-label={`Live output of ${session.title} (view only)`}>
+    <div
+      ref={hostRef}
+      className={cn("terminal-surface size-full overflow-hidden", interactive && "nodrag nopan nowheel cursor-default")}
+      aria-label={interactive ? `Live output of ${session.title}: scroll and click go to the agent` : `Live output of ${session.title} (view only)`}
+      onWheel={interactive ? (event) => {
+        event.stopPropagation();
+        const term = termRef.current;
+        if (!term) return;
+        // Pixel or line deltas -> whole steps; small trackpad deltas accumulate instead of being dropped.
+        const unit = event.deltaMode === 1 ? 1 : event.deltaMode === 2 ? term.rows : 1 / 40;
+        wheelRest.current += event.deltaY * unit;
+        const steps = Math.trunc(wheelRest.current);
+        if (!steps) return;
+        wheelRest.current -= steps;
+        if (tracking()) {
+          const cell = cellAt(event.clientX, event.clientY);
+          if (!cell) return;
+          const report = sgrMouse(steps < 0 ? 64 : 65, cell[0], cell[1], false, event);
+          sendInput(report.repeat(Math.min(Math.abs(steps), 10)));
+        } else {
+          term.scrollLines(steps * 3);
+        }
+      } : undefined}
+      onPointerDown={interactive ? (event) => {
+        if (event.button > 2 || !tracking()) return;
+        const cell = cellAt(event.clientX, event.clientY);
+        if (!cell) return;
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        sendInput(sgrMouse(event.button, cell[0], cell[1], false, event));
+      } : undefined}
+      onPointerUp={interactive ? (event) => {
+        if (event.button > 2 || !tracking()) return;
+        const cell = cellAt(event.clientX, event.clientY);
+        if (!cell) return;
+        event.stopPropagation();
+        sendInput(sgrMouse(event.button, cell[0], cell[1], true, event));
+      } : undefined}
+      onContextMenu={interactive ? (event) => { if (tracking()) event.preventDefault(); } : undefined}
+    >
       <div ref={stageRef} className="pointer-events-none w-max origin-top-left" />
     </div>
   );
