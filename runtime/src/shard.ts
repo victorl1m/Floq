@@ -283,6 +283,10 @@ export class LinuxShardDriver implements ShardDriver {
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {
     const { uid } = handle;
     const home = handle.mountPath;
+    // Never silently run offline or in the host network: a namespace whose pasta was given up on fails the launch.
+    if (handle.netns && this.netns && !this.netns.isHealthy(uid)) {
+      throw unavailable("Your sandbox network is unavailable (its network helper failed). Restart your workspace and try again.");
+    }
     mkdirOwned(handle.mountPath, this.hostPath(handle, spec.cwd), uid);
 
     const args = [
@@ -353,18 +357,22 @@ export class LinuxShardDriver implements ShardDriver {
   }
 
   async sleep(handle: ShardHandle): Promise<void> {
-    if (!isMounted(handle.mountPath)) return;
-    if (!isAlive(handle.mountPath)) await lazyUnmount(handle.mountPath);
-    else {
-      try {
-        await run("fusermount3", ["-u", handle.mountPath]);
-      } catch {
-        await run("fusermount", ["-u", handle.mountPath]);
+    try {
+      if (!isMounted(handle.mountPath)) return;
+      if (!isAlive(handle.mountPath)) await lazyUnmount(handle.mountPath);
+      else {
+        try {
+          await run("fusermount3", ["-u", handle.mountPath]);
+        } catch {
+          await run("fusermount", ["-u", handle.mountPath]);
+        }
       }
+      log.info("shard.sleep", { userId: handle.userId, uid: handle.uid });
+    } finally {
+      // The namespace lives exactly as long as the awake shard (callers guarantee no sandboxed process is left):
+      // removed on every path, including the early return and a failing unmount.
+      if (handle.netns && this.netns) await this.netns.remove(handle.uid).catch((error) => log.warn("shard.netns_remove_failed", { uid: handle.uid, error: String(error).slice(0, 160) }));
     }
-    log.info("shard.sleep", { userId: handle.userId, uid: handle.uid });
-    // The namespace lives exactly as long as the awake shard (callers guarantee no sandboxed process is left).
-    if (handle.netns && this.netns) await this.netns.remove(handle.uid).catch((error) => log.warn("shard.netns_remove_failed", { uid: handle.uid, error: String(error).slice(0, 160) }));
   }
 }
 

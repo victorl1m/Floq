@@ -1244,9 +1244,9 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         // Bounded helper processes per user (each tunnel in a namespace is an nsenter+socat pair).
         const release = netnsPath ? acquireTunnelSlot(uid!) : () => undefined;
         if (!release) return reject(429, "Too Many Requests");
+        socket.once("close", release); // fires even if the upgrade never completes, so a slot cannot leak
         wss.handleUpgrade(req, socket, head, (ws) => {
           if (!netnsPath) return void pipeTunnel(ws, target);
-          ws.once("close", release);
           pipeTunnel(ws, target, (t) => connectInNetns(netnsPath, uid!, t, release));
         });
         return;

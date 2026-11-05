@@ -41,7 +41,9 @@ const settings = new SettingsStore(pool, config);
 const github = new GithubLinker(config, settings);
 const shards = new ShardService(pool, config, createShardDriver(config));
 await shards.reconcile();
-await shards.driver.init?.(); // FLOQ_NETNS startup probe (no-op unless the flag is set)
+// FLOQ_NETNS startup probe (no-op unless the flag is set). Deliberately AFTER reconcile(): reconcile unmounts every shard
+// left over from a previous run, so no sandbox can still be inside a namespace when init() removes the stale ones.
+await shards.driver.init?.();
 const vault = new Vault(pool, config);
 const manager = new SessionManager(config, pool, shards, vault);
 const skills = new SkillsService(config, shards, pool, (userId, operation) => manager.withUserShardActivity(userId, operation));

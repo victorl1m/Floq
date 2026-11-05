@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import {
-  NETNS_DNS, NETNS_GATEWAY, duplexFromChild, netnsMode, netnsPath, nftRuleset, nsenterArgv, parseAllowList, pastaArgv,
-  procNetTcpPaths, resolvConf, tunnelHelperArgv, unshareArgv, wrapLaunch,
+  NETNS_DNS, NETNS_GATEWAY, acquireTunnelSlot, duplexFromChild, netnsMode, netnsPath, nextRestart, nftRuleset, nsenterArgv,
+  parseAllowList, parseHostAddresses, pastaArgv, procNetTcpPaths, tunnelLimit, resolvConf, tunnelHelperArgv, unshareArgv, wrapLaunch,
 } from "../dist/netns.js";
-import { listSessionPorts } from "../dist/ports.js";
+import { listAllListeners, listSessionPorts } from "../dist/ports.js";
 import { portIsFreeInNetns } from "../dist/display.js";
 
 test("flag off: the launch is exactly the unwrapped bwrap argv", () => {
@@ -76,12 +76,61 @@ test("resolv.conf names only the namespace-visible forwarder", () => {
   assert.ok(!resolvConf().includes("127."));
 });
 
-test("tunnel helper connects inside the namespace with socat; hosts are validated", () => {
-  assert.deepEqual(tunnelHelperArgv("/p", { host: "127.0.0.1", port: 3000 }), { file: "nsenter", args: ["--net=/p", "--", "socat", "STDIO", "TCP:127.0.0.1:3000"] });
-  assert.deepEqual(tunnelHelperArgv("/p", { host: "::1", port: 3000 }).args.slice(-1), ["TCP6:[::1]:3000"]);
-  assert.throws(() => tunnelHelperArgv("/p", { host: "127.0.0.1,fork", port: 1 }));
-  assert.throws(() => tunnelHelperArgv("/p", { host: "evil.com", port: 1 }));
-  assert.throws(() => tunnelHelperArgv("/p", { host: "127.0.0.1", port: 70000 }));
+test("tunnel helper: nsenter first, then setpriv drops to the user uid, then socat; hosts are validated", () => {
+  const drop = ["setpriv", "--reuid=70001", "--regid=70001", "--clear-groups", "--no-new-privs", "--inh-caps=-all", "--bounding-set=-all"];
+  assert.deepEqual(tunnelHelperArgv("/p", 70001, { host: "127.0.0.1", port: 3000 }), { file: "nsenter", args: ["--net=/p", "--", ...drop, "socat", "STDIO", "TCP:127.0.0.1:3000"] });
+  assert.deepEqual(tunnelHelperArgv("/p", 70001, { host: "::1", port: 3000 }).args.slice(-1), ["TCP6:[::1]:3000"]);
+  assert.throws(() => tunnelHelperArgv("/p", 0, { host: "127.0.0.1", port: 1 }), /uid/);
+  assert.throws(() => tunnelHelperArgv("/p", 70001, { host: "127.0.0.1,fork", port: 1 }));
+  assert.throws(() => tunnelHelperArgv("/p", 70001, { host: "evil.com", port: 1 }));
+  assert.throws(() => tunnelHelperArgv("/p", 70001, { host: "127.0.0.1", port: 70000 }));
+});
+
+test("pasta runs with an explicit --runas (default 0) and a pid file", () => {
+  const a = pastaArgv({ path: "/p", pidFile: "/p.pid" });
+  assert.equal(a[a.indexOf("--runas") + 1], "0");
+  assert.equal(pastaArgv({ path: "/p", pidFile: "/p.pid", runas: 65534 })[pastaArgv({ path: "/p", pidFile: "/p.pid", runas: 65534 }).indexOf("--runas") + 1], "65534");
+  assert.ok(a.includes("--pid"));
+});
+
+test("host addresses: parsed from `ip -o -4 addr`, loopback skipped, dropped by the ruleset after the gateway rules", () => {
+  const out = "1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet 203.0.114.7/24 brd 1.2.3.255 scope global eth0\n3: eth1    inet 172.17.0.2/16 scope global eth1\n";
+  assert.deepEqual(parseHostAddresses(out), ["203.0.114.7/32", "172.17.0.2/32"]);
+  assert.deepEqual(parseHostAddresses("garbage"), []);
+  const r = nftRuleset({ runtimePort: 8787, hostAddresses: parseHostAddresses(out) });
+  assert.ok(r.includes("ip daddr { 203.0.114.7/32, 172.17.0.2/32 } drop"));
+  assert.ok(r.indexOf("tcp dport 8787 accept") < r.indexOf("203.0.114.7/32"), "gateway:port allow stays first");
+  assert.ok(r.indexOf("203.0.114.7/32") < r.indexOf("meta nfproto ipv4 accept"));
+  assert.ok(r.indexOf(`ip daddr ${NETNS_DNS} udp dport 53 accept`) < r.indexOf("203.0.114.7/32"));
+  assert.throws(() => nftRuleset({ runtimePort: 80, hostAddresses: ["1.1.1.1; flush ruleset"] }));
+});
+
+test("documentation ranges are blocked", () => {
+  const r = nftRuleset({ runtimePort: 8787 });
+  for (const range of ["192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"]) assert.ok(r.includes(range), range);
+});
+
+test("pasta respawn: counter resets after a stable uptime, gives up after the budget", () => {
+  assert.deepEqual(nextRestart(0, 100), { restarts: 1, retry: true });
+  assert.deepEqual(nextRestart(4, 100), { restarts: 5, retry: true });
+  assert.deepEqual(nextRestart(5, 100), { restarts: 6, retry: false });
+  assert.deepEqual(nextRestart(5, 120_000), { restarts: 1, retry: true }, "stable run resets the budget");
+});
+
+test("tunnel slots: per-user cap, idempotent release, env override", () => {
+  const a = acquireTunnelSlot(900001, 2)!;
+  const b = acquireTunnelSlot(900001, 2)!;
+  assert.ok(a && b);
+  assert.equal(acquireTunnelSlot(900001, 2), null);
+  assert.ok(acquireTunnelSlot(900002, 2), "other users are independent");
+  a(); a();
+  const c = acquireTunnelSlot(900001, 2);
+  assert.ok(c, "one slot freed once, despite the double release");
+  assert.equal(acquireTunnelSlot(900001, 2), null);
+  b(); c!();
+  assert.equal(tunnelLimit({}), 32);
+  assert.equal(tunnelLimit({ FLOQ_NETNS_TUNNEL_LIMIT: "5" }), 5);
+  assert.equal(tunnelLimit({ FLOQ_NETNS_TUNNEL_LIMIT: "x" }), 32);
 });
 
 test("port detection reads the session process's net tables with a netns, the host's without", async () => {
@@ -90,6 +139,9 @@ test("port detection reads the session process's net tables with a netns, the ho
   // Real Linux check: this process has no listeners it owns, so both modes simply return an array without throwing.
   assert.ok(Array.isArray(await listSessionPorts(process.pid, true)));
   assert.ok(Array.isArray(await listSessionPorts(process.pid, false)));
+  // Namespace on but no pid to read it from: empty, never the host's listeners.
+  assert.deepEqual(await listAllListeners(null), []);
+  assert.deepEqual(await listSessionPorts(null, true), []);
 });
 
 test("display probe in a namespace uses that namespace's listeners", { skip: process.platform !== "linux" }, async () => {

@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { promisify } from "node:util";
@@ -243,7 +243,7 @@ export function acquireTunnelSlot(uid: number, limit = tunnelLimit()): (() => vo
 function pidIsOurs(pid: number): boolean {
   try {
     const comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-    return comm.startsWith("pasta") || comm.startsWith("passt");
+    return comm.includes("pasta") || comm.includes("passt");
   } catch {
     return false;
   }
@@ -262,6 +262,10 @@ interface Active {
   pasta: ChildProcess | null;
   removing: boolean;
   restarts: number;
+  startedAt: number;
+  /** pasta kept failing and was given up on: the namespace has no connectivity until it is re-created. */
+  unhealthy: boolean;
+  timer: NodeJS.Timeout | null;
 }
 
 export interface NetnsOptions {
@@ -271,6 +275,20 @@ export interface NetnsOptions {
   mode: Exclude<NetnsMode, "off">;
   /** Where per-user resolv.conf files live (any root-only directory that survives wake/sleep). */
   metaDir: string;
+  /** pasta binary (default floq-pasta). */
+  pastaBin?: string;
+  /** uid pasta runs as (default 0; see PastaOptions.runas). */
+  pastaUid?: number;
+}
+
+/** pasta restarts: at most this many in a row; the counter resets once a pasta has stayed up STABLE_MS. */
+export const PASTA_MAX_RESTARTS = 5;
+export const PASTA_STABLE_MS = 60_000;
+
+/** Pure respawn decision: restart count after an exit, and whether to try again. */
+export function nextRestart(restarts: number, uptimeMs: number, max = PASTA_MAX_RESTARTS, stableMs = PASTA_STABLE_MS): { restarts: number; retry: boolean } {
+  const base = uptimeMs >= stableMs ? 0 : restarts;
+  return { restarts: base + 1, retry: base < max };
 }
 
 /** Creates, supervises and removes the per-user namespaces. All methods are safe to call concurrently. */
@@ -289,21 +307,29 @@ export class NetnsManager {
 
   resolvConfPath(uid: number): string { return join(this.options.metaDir, uid + ".netns-resolv.conf"); }
 
-  /** Startup: remove leftovers, then create and tear down a test namespace. Disables netns (or throws when required) on failure. */
+  /** False when the user's namespace is missing or its pasta was given up on (launches must then fail, never run offline). */
+  isHealthy(uid: number): boolean {
+    const e = this.active.get(uid);
+    return Boolean(e && !e.removing && !e.unhealthy);
+  }
+
+  /**
+   * Startup: remove leftovers, then REALLY exercise the whole stack on a throwaway namespace (unshare, nft rules, pasta
+   * configuring the address) and tear it down. Disables netns (loud log) or, in mode required, throws on any failure.
+   * Must run after ShardService.reconcile(): nothing sandboxed is running yet, so stale namespaces are safe to remove.
+   */
   async init(): Promise<void> {
     try {
       mkdirSync(this.dir, { recursive: true, mode: 0o755 });
       await this.cleanStale();
+      for (const [tool, args] of [["socat", ["-V"]], ["nsenter", ["--version"]], ["setpriv", ["--version"]]] as const) await run(tool, [...args], { timeout: 5_000 });
       const probe = join(this.dir, "probe");
-      writeFileSync(probe, "");
+      const entry = this.newEntry(probe);
       try {
-        await run("unshare", unshareArgv(probe), { timeout: 10_000 });
+        await this.bringUp(probe, join(this.dir, "probe.pasta.pid"), entry);
       } finally {
-        await this.unmount(probe);
-        rmSync(probe, { force: true });
-      }
-      for (const tool of ["pasta", "nft", "socat"]) {
-        await run(tool, tool === "pasta" ? ["--version"] : [tool === "nft" ? "--version" : "-V"], { timeout: 5_000 });
+        entry.removing = true;
+        await this.teardown(probe, join(this.dir, "probe.pasta.pid"), entry);
       }
       log.info("netns.ready", { dir: this.dir });
     } catch (error) {
@@ -323,21 +349,22 @@ export class NetnsManager {
     return task;
   }
 
+  private newEntry(path: string): Active {
+    return { path, pasta: null, removing: false, restarts: 0, startedAt: 0, unhealthy: false, timer: null };
+  }
+
   private async create(uid: number): Promise<string> {
     const path = netnsPath(uid, this.dir);
     const existing = this.active.get(uid);
-    if (existing && !existing.removing && existing.pasta && existing.pasta.exitCode === null && isMountPoint(path)) return path;
+    // Reuse only a healthy namespace whose pasta is alive (or being respawned within its retry budget).
+    if (existing && !existing.removing && !existing.unhealthy && (existing.pasta?.exitCode === null || existing.timer) && isMountPoint(path)) return path;
     await this.remove(uid);
-    const entry: Active = { path, pasta: null, removing: false, restarts: 0 };
+    const entry = this.newEntry(path);
     this.active.set(uid, entry);
     try {
       mkdirSync(this.dir, { recursive: true, mode: 0o755 });
-      writeFileSync(path, "", { mode: 0o444 });
-      await run("unshare", unshareArgv(path), { timeout: 10_000 });
-      await this.applyRules(path);
+      await this.bringUp(path, this.pidFile(uid), entry);
       writeFileSync(this.resolvConfPath(uid), resolvConf(), { mode: 0o644 });
-      this.startPasta(uid, entry);
-      await this.waitForAddress(path);
       log.info("netns.created", { uid });
       return path;
     } catch (error) {
@@ -346,35 +373,73 @@ export class NetnsManager {
     }
   }
 
-  private applyRules(path: string): Promise<void> {
-    return new Promise((resolve, reject) => {
+  /** unshare + lo + egress rules + pasta, then wait for pasta's address. Used for user namespaces and the startup probe. */
+  private async bringUp(path: string, pidFile: string, entry: Active): Promise<void> {
+    writeFileSync(path, "", { mode: 0o444 });
+    await run("unshare", unshareArgv(path), { timeout: 10_000 });
+    await this.applyRules(path);
+    this.startPasta(path, pidFile, entry);
+    await this.waitForAddress(path, entry);
+  }
+
+  /** The container's own IPv4 addresses (re-read each time: they can change across restarts). */
+  private async hostAddresses(): Promise<string[]> {
+    try {
+      const { stdout } = await run("ip", ["-o", "-4", "addr", "show"], { timeout: 3_000 });
+      return parseHostAddresses(stdout);
+    } catch (error) {
+      // Failing open here would leave the container's public address reachable: fail the namespace instead.
+      throw new Error("cannot list the runtime's own addresses: " + String(error).slice(0, 120));
+    }
+  }
+
+  private async applyRules(path: string): Promise<void> {
+    const ruleset = nftRuleset({ runtimePort: this.options.runtimePort, allow: this.options.allow, hostAddresses: await this.hostAddresses() });
+    await new Promise<void>((resolve, reject) => {
       const child = spawn("nsenter", nsenterArgv(path, ["nft", "-f", "-"]), { stdio: ["pipe", "ignore", "pipe"] });
       let err = "";
       child.stderr?.on("data", (c: Buffer) => { err += c.toString(); });
       child.on("error", reject);
       child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error("nft failed: " + err.slice(0, 200)))));
-      child.stdin?.end(nftRuleset({ runtimePort: this.options.runtimePort, allow: this.options.allow }));
+      child.stdin?.end(ruleset);
     });
   }
 
   private pidFile(uid: number): string { return join(this.dir, uid + ".pasta.pid"); }
 
-  private startPasta(uid: number, entry: Active): void {
-    const child = spawn("pasta", pastaArgv({ path: entry.path, pidFile: this.pidFile(uid) }), { stdio: ["ignore", "ignore", "pipe"] });
+  private startPasta(path: string, pidFile: string, entry: Active): void {
+    entry.timer = null;
+    const bin = this.options.pastaBin ?? (process.env.FLOQ_PASTA_BIN?.trim() || PASTA_BIN);
+    const child = spawn(bin, pastaArgv({ path, pidFile, runas: this.options.pastaUid }), { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr?.on("data", (c: Buffer) => { if (err.length < 400) err += c.toString(); });
     entry.pasta = child;
-    child.on("error", (e) => log.error("netns.pasta_error", { uid, error: e.message }));
+    entry.startedAt = Date.now();
+    child.on("error", (e) => log.error("netns.pasta_error", { path, error: e.message }));
     child.on("exit", (code, signal) => {
-      if (entry.removing || this.active.get(uid) !== entry) return;
-      log.error("netns.pasta_exited", { uid, code, signal, stderr: err.slice(0, 300) });
-      if (entry.restarts++ < 5) setTimeout(() => { if (!entry.removing && this.active.get(uid) === entry) this.startPasta(uid, entry); }, 1000);
+      if (entry.removing || entry.pasta !== child) return;
+      log.error("netns.pasta_exited", { path, code, signal, stderr: err.slice(0, 300) });
+      const next = nextRestart(entry.restarts, Date.now() - entry.startedAt);
+      entry.restarts = next.restarts;
+      if (!next.retry) {
+        entry.unhealthy = true;
+        log.error("netns.pasta_gave_up", { path, message: "pasta keeps failing; the user's namespace is offline until it is re-created (sandbox launches fail until then)" });
+        return;
+      }
+      entry.timer = setTimeout(() => {
+        if (entry.removing) return;
+        // A dead pasta leaves its address behind only if the tap device outlived it: flush so --config-net can set it again.
+        void run("nsenter", nsenterArgv(path, ["ip", "-4", "addr", "flush", "scope", "global"]), { timeout: 3_000 })
+          .catch(() => undefined)
+          .then(() => { if (!entry.removing) this.startPasta(path, pidFile, entry); });
+      }, 1000);
     });
   }
 
   /** pasta configures the address after it starts: wait until the namespace has it (or fail, closed). */
-  private async waitForAddress(path: string): Promise<void> {
+  private async waitForAddress(path: string, entry: Active): Promise<void> {
     for (let i = 0; i < 40; i++) {
+      if (entry.pasta && entry.pasta.exitCode !== null && !entry.timer) break;
       try {
         const { stdout } = await run("nsenter", nsenterArgv(path, ["ip", "-4", "-o", "addr", "show"]), { timeout: 3_000 });
         if (stdout.includes(NETNS_ADDRESS)) return;
@@ -389,16 +454,20 @@ export class NetnsManager {
     try { await run("umount", [path], { timeout: 5_000 }); } catch { await run("umount", ["-l", path], { timeout: 5_000 }).catch(() => undefined); }
   }
 
-  /** Stop pasta, unmount and delete the user's namespace. Idempotent. */
-  async remove(uid: number): Promise<void> {
-    const path = netnsPath(uid, this.dir);
-    const entry = this.active.get(uid);
-    if (entry) { entry.removing = true; entry.pasta?.kill("SIGTERM"); this.active.delete(uid); }
-    this.killPidFile(this.pidFile(uid));
+  private async teardown(path: string, pidFile: string, entry: Active | undefined, resolv?: string): Promise<void> {
+    if (entry) { entry.removing = true; if (entry.timer) clearTimeout(entry.timer); entry.timer = null; entry.pasta?.kill("SIGTERM"); }
+    this.killPidFile(pidFile);
     await this.unmount(path);
     rmSync(path, { force: true });
-    rmSync(this.pidFile(uid), { force: true });
-    rmSync(this.resolvConfPath(uid), { force: true });
+    rmSync(pidFile, { force: true });
+    if (resolv) rmSync(resolv, { force: true });
+  }
+
+  /** Stop pasta, unmount and delete the user's namespace. Idempotent. */
+  async remove(uid: number): Promise<void> {
+    const entry = this.active.get(uid);
+    this.active.delete(uid);
+    await this.teardown(netnsPath(uid, this.dir), this.pidFile(uid), entry, this.resolvConfPath(uid));
   }
 
   private killPidFile(file: string): void {

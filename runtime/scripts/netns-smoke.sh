@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Smoke test for FLOQ_NETNS (per-user network namespaces). NOT run in CI: needs root, CAP_SYS_ADMIN, and the image tools
-# (unshare, nsenter, pasta, nft, socat, ip, python3). Run inside the runtime container or on a Linux host:
+# (unshare, nsenter, floq-pasta, setpriv, nft, socat, ip, python3). Run inside the runtime container or on a Linux host:
 #   cd runtime && npm run build && sudo scripts/netns-smoke.sh
 # Env: SMOKE_PUBLIC_HOST (default example.com), SMOKE_DB_PORT (default 5432: expected to be BLOCKED on the gateway).
 set -u
 cd "$(dirname "$0")/.."
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 2; }
 [ -f dist/netns.js ] || { echo "run npm run build first"; exit 2; }
-for t in unshare nsenter pasta nft socat ip python3 node; do command -v "$t" >/dev/null || { echo "missing tool: $t"; exit 2; }; done
+for t in unshare nsenter floq-pasta setpriv nft socat ip python3 node; do command -v "$t" >/dev/null || { echo "missing tool: $t"; exit 2; }; done
 
 RUNTIME_PORT=${SMOKE_RUNTIME_PORT:-18787}
 DB_PORT=${SMOKE_DB_PORT:-5432}
 PUBLIC_HOST=${SMOKE_PUBLIC_HOST:-example.com}
+# The host's own non-loopback IPv4 address (reachable through pasta as "the host" unless the ruleset drops it).
+HOST_IP=$(ip -o -4 addr show | awk '!/ 127\./ {split($4,a,"/"); print a[1]; exit}')
 A=70001; B=70002
 DIR=$(mktemp -d /run/floq-netns-smoke.XXXXXX)
 PASS=0; FAIL=0
@@ -30,9 +32,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Fake "runtime" on host loopback, and a fake "db" listener (must stay unreachable from the namespaces).
-python3 -m http.server "$RUNTIME_PORT" --bind 127.0.0.1 --directory "$DIR" >/dev/null 2>&1 & PIDS+=($!)
-python3 -m http.server "$DB_PORT" --bind 127.0.0.1 --directory "$DIR" >/dev/null 2>&1 & PIDS+=($!)
+# 1. Fake "runtime" (also on the host's public address, like the real one), and a fake "db" listener (must stay unreachable from the namespaces).
+python3 -m http.server "$RUNTIME_PORT" --bind 0.0.0.0 --directory "$DIR" >/dev/null 2>&1 & PIDS+=($!)
+python3 -m http.server "$DB_PORT" --bind 0.0.0.0 --directory "$DIR" >/dev/null 2>&1 & PIDS+=($!)
 sleep 1
 
 # 2. Create both namespaces through the real manager (unshare + nft + pasta).
@@ -71,6 +73,12 @@ GW=10.255.255.1
 check  "runtime port reachable via the gateway"    inA python3 -c "import urllib.request;urllib.request.urlopen('http://$GW:$RUNTIME_PORT/',timeout=3)"
 refuse "db port blocked on the gateway"            inA socat -T2 /dev/null TCP:$GW:"$DB_PORT"
 
+if [ -n "$HOST_IP" ]; then
+  refuse "host public address $HOST_IP:$DB_PORT blocked"      inA socat -T2 /dev/null TCP:"$HOST_IP":"$DB_PORT"
+  refuse "host public address $HOST_IP:$RUNTIME_PORT blocked" inA socat -T2 /dev/null TCP:"$HOST_IP":"$RUNTIME_PORT"
+else echo "SKIP  host address checks (no non-loopback IPv4 address)"; fi
+refuse "documentation range 203.0.113.1 blocked"   inA socat -T2 /dev/null TCP:203.0.113.1:80
+
 # 5. Egress policy.
 refuse "cloud metadata 169.254.169.254 blocked"    inA socat -T2 /dev/null TCP:169.254.169.254:80
 refuse "RFC1918 192.168.1.1 blocked"               inA socat -T2 /dev/null TCP:192.168.1.1:80
@@ -81,6 +89,26 @@ check  "outbound internet works"                   inA python3 -c "import urllib
 
 # 6. Tunnel helper (what server.ts uses): socat in the namespace reaches the user's own listener.
 echo ping | nsenter --net="$NB" -- socat -T2 STDIO TCP:127.0.0.1:9001 >/dev/null 2>&1 && ok "tunnel helper connects inside the namespace" || bad "tunnel helper"
+
+# 7. pasta is running (as floq-pasta, not dropped to nobody) and respawns after being killed.
+pasta_pid() { cat "$DIR/ns/$A.pasta.pid" 2>/dev/null; }
+P1=$(pasta_pid)
+[ -n "$P1" ] && grep -q pasta "/proc/$P1/comm" 2>/dev/null && ok "pasta started for A (pid file written under the ns dir)" || bad "pasta pid file / process"
+kill -9 "$P1" 2>/dev/null
+for _ in $(seq 20); do sleep 0.5; inA ip -4 -o addr show 2>/dev/null | grep -q 10.255.255.2 && P2=$(pasta_pid) && [ -n "$P2" ] && [ "$P2" != "$P1" ] && break; done
+check "pasta respawned after SIGKILL and A has outbound again" inA python3 -c "import socket;socket.setdefaulttimeout(3);socket.getaddrinfo('$PUBLIC_HOST',80)"
+
+# 8. Remove/sleep cleanup: manager.remove() unmounts the namespace and deletes its files, pasta exits.
+P3=$(pasta_pid)
+node --input-type=module -e "
+  import { NetnsManager } from './dist/netns.js';
+  const m = new NetnsManager({ mode: 'on', dir: '$DIR/ns', runtimePort: $RUNTIME_PORT, metaDir: '$DIR' });
+  await m.remove($B);" 2>/dev/null
+sleep 1
+refuse "B's namespace file removed"                 test -e "$NB"
+refuse "B is no longer a mount point"               grep -q " $NB " /proc/self/mounts
+refuse "B's pasta pid file removed"                 test -e "$DIR/ns/$B.pasta.pid"
+[ -n "$P3" ] && ok "A's pasta still running (only B was removed)" || bad "A's pasta"
 
 echo; echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" = 0 ]
