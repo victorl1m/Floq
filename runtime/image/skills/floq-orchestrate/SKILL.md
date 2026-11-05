@@ -93,6 +93,8 @@ floq dismiss "$BUILDER_UUID"
 
 ## Recruit by role
 
+If your own task depends on a skill (for example `artifact-design` when the user wants an Artifact, or a docs skill), pass it with `--skill NAME[,NAME]` on `floq recruit` / `floq subagent recruit` (max 8). A recruit starts with none of your context and otherwise will not load it, and will produce a plain file instead.
+
 Floq ships role presets (orchestrator, specifier, planner, implementer, reviewer, tester; no `--role` means a generalist). Before recruiting, compare and read them, then choose provider and model yourself:
 
 ```sh

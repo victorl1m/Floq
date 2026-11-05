@@ -4,12 +4,18 @@ import { log } from "./logger.js";
 
 export const NOTE_COLORS = ["yellow", "blue", "green", "pink", "purple", "gray"] as const;
 export type NoteColor = (typeof NOTE_COLORS)[number];
+/** note: wired to chosen agents. memory: project memory every agent of the project reads and edits. system: project rules every agent follows; only the user edits them. */
+export const NOTE_KINDS = ["note", "memory", "system"] as const;
+export type NoteKind = (typeof NOTE_KINDS)[number];
 
 export interface CanvasNote {
   id: string;
   projectId: string | null;
   text: string;
   color: NoteColor;
+  kind: NoteKind;
+  /** Name of the agent that created the note; null when the user did. */
+  author: string | null;
   x: number;
   y: number;
   w: number;
@@ -32,7 +38,7 @@ export const NOTE_MAX_SIZE = 2000;
 export const NOTE_MAX_COORD = 1e7;
 export const MAX_NOTES_PER_PROJECT = 500;
 
-export interface NoteFields { text?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
+export interface NoteFields { text?: string; color?: NoteColor; kind?: NoteKind; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
 export const NOTE_MAX_TITLE = 80;
 const AGENT_NOTE_NAME = /^[\w .-]{1,80}$/;
 
@@ -54,6 +60,10 @@ export function parseNoteFields(body: unknown, needPosition: boolean): NoteField
   if (b.color !== undefined) {
     if (typeof b.color !== "string" || !(NOTE_COLORS as readonly string[]).includes(b.color)) throw badRequest("color must be one of " + NOTE_COLORS.join(", "), "invalid_note");
     out.color = b.color as NoteColor;
+  }
+  if (b.kind !== undefined) {
+    if (typeof b.kind !== "string" || !(NOTE_KINDS as readonly string[]).includes(b.kind)) throw badRequest("kind must be one of " + NOTE_KINDS.join(", "), "invalid_note");
+    out.kind = b.kind as NoteKind;
   }
   for (const key of ["x", "y"] as const) {
     if (b[key] !== undefined) out[key] = finite(key, b[key], -NOTE_MAX_COORD, NOTE_MAX_COORD);
@@ -79,7 +89,7 @@ export function parseNoteFields(body: unknown, needPosition: boolean): NoteField
 }
 
 const UUID = /^[0-9a-f-]{36}$/i;
-const COLS = `n.id, n.project_id, n.text, n.color, n.x, n.y, n.w, n.h, n.agent_note_name, n.user_title, n.placed, n.created_at, n.updated_at,
+const COLS = `n.id, n.project_id, n.text, n.color, n.kind, n.author, n.x, n.y, n.w, n.h, n.agent_note_name, n.user_title, n.placed, n.created_at, n.updated_at,
     COALESCE((SELECT array_agg(l.session_id::text ORDER BY l.created_at) FROM canvas_note_links l WHERE l.note_id = n.id), '{}') AS linked`;
 
 function toNote(r: Record<string, unknown>): CanvasNote {
@@ -88,6 +98,8 @@ function toNote(r: Record<string, unknown>): CanvasNote {
     projectId: (r.project_id as string | null) ?? null,
     text: r.text as string,
     color: r.color as NoteColor,
+    kind: ((r.kind as NoteKind | undefined) ?? "note"),
+    author: (r.author as string | null | undefined) ?? null,
     x: Number(r.x),
     y: Number(r.y),
     w: Number(r.w),
@@ -169,14 +181,14 @@ export class CanvasNotes {
     return this.get(userId, row.id);
   }
 
-  async create(userId: string, projectId: string, body: unknown): Promise<CanvasNote> {
+  async create(userId: string, projectId: string, body: unknown, author: string | null = null): Promise<CanvasNote> {
     const f = parseNoteFields(body, true);
     const project = await this.scope(userId, projectId);
     const count = await this.pool.query("SELECT count(*)::int AS n FROM canvas_notes WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2::uuid", [userId, project]);
     if (count.rows[0].n >= MAX_NOTES_PER_PROJECT) throw badRequest("Note limit reached (" + MAX_NOTES_PER_PROJECT + ")", "too_many_notes");
     const r = await this.pool.query(
-      "INSERT INTO canvas_notes (user_id, project_id, text, color, x, y, w, h, agent_note_name, user_title) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
-      [userId, project, f.text ?? "", f.color ?? "yellow", f.x, f.y, f.w ?? 240, f.h ?? 160, f.agentNoteName ?? null, f.agentNoteName ? null : (f.title ?? null)],
+      "INSERT INTO canvas_notes (user_id, project_id, text, color, x, y, w, h, agent_note_name, user_title, kind, author) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
+      [userId, project, f.text ?? "", f.color ?? "yellow", f.x, f.y, f.w ?? 240, f.h ?? 160, f.agentNoteName ?? null, f.agentNoteName ? null : (f.title ?? null), f.kind ?? "note", author],
     ).catch((e) => { throw f.agentNoteName && (e as { code?: string }).code === "23505" ? badRequest("A note named " + f.agentNoteName + " is already on this canvas", "duplicate_note") : e; });
     if (f.agentNoteName) await this.pushToAgentNote(userId, f.agentNoteName, f.text ?? "");
     return this.get(userId, r.rows[0].id);
@@ -208,7 +220,7 @@ export class CanvasNotes {
         }
       }
     }
-    const cols = { text: "text", color: "color", x: "x", y: "y", w: "w", h: "h" } as const;
+    const cols = { text: "text", color: "color", kind: "kind", x: "x", y: "y", w: "w", h: "h" } as const;
     const sets: string[] = [];
     const values: unknown[] = [id, userId];
     for (const key of Object.keys(cols) as (keyof typeof cols)[]) {
@@ -276,12 +288,28 @@ export class CanvasNotes {
     return this.get(userId, id);
   }
 
-  // --- agent access (`floq sticky`): only notes wired to the calling session, plus creating new ones ---
+  // --- agent access (`floq sticky`): notes wired to the calling session, the project's memory/system notes, plus creating new ones ---
 
+  private async sessionInfo(userId: string, sessionId: string): Promise<{ project_id: string | null; title: string }> {
+    const s = UUID.test(sessionId) ? (await this.pool.query("SELECT project_id, title FROM agent_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId])).rows[0] as { project_id: string | null; title: string } | undefined : undefined;
+    if (!s) throw notFound("Calling session not found");
+    return s;
+  }
+
+  /** Sessions of the project (or of the scratch canvas) that read its memory/system notes; used to refresh their wired context. */
+  async projectSessionIds(userId: string, projectId: string | null): Promise<string[]> {
+    const r = await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2::uuid AND provider <> 'shell' ORDER BY created_at LIMIT 200", [userId, projectId]);
+    return r.rows.map((x: { id: string }) => x.id);
+  }
+
+  /** Linked notes plus the project's memory and system notes, which every agent of the project sees without a link. */
   async agentList(userId: string, sessionId: string): Promise<CanvasNote[]> {
     const r = await this.pool.query(
-      `SELECT ${COLS} FROM canvas_notes n JOIN canvas_note_links k ON k.note_id = n.id AND k.session_id = $2
-       WHERE n.user_id = $1 ORDER BY n.created_at`,
+      `SELECT ${COLS} FROM canvas_notes n
+       WHERE n.user_id = $1 AND (
+         EXISTS (SELECT 1 FROM canvas_note_links k WHERE k.note_id = n.id AND k.session_id = $2)
+         OR (n.kind <> 'note' AND n.project_id IS NOT DISTINCT FROM (SELECT s.project_id FROM agent_sessions s WHERE s.id = $2 AND s.user_id = $1)))
+       ORDER BY n.created_at`,
       [userId, sessionId],
     );
     return r.rows.map(toNote);
@@ -290,25 +318,29 @@ export class CanvasNotes {
   async agentRead(userId: string, sessionId: string, id: unknown): Promise<CanvasNote> {
     if (typeof id !== "string" || !UUID.test(id)) throw badRequest("note id required", "invalid_note");
     const note = await this.get(userId, id);
-    if (!note.linkedSessionIds.includes(sessionId)) throw new HttpError(403, "not_linked", "This note is not linked to you; the user must wire it to your agent on the canvas");
-    return note;
+    if (note.linkedSessionIds.includes(sessionId)) return note;
+    if (note.kind !== "note") {
+      const s = await this.sessionInfo(userId, sessionId);
+      if ((s.project_id ?? null) === note.projectId) return note;
+    }
+    throw new HttpError(403, "not_linked", "This note is not linked to you; the user must wire it to your agent on the canvas");
   }
 
-  /** Replaces or appends the text. A concurrent edit by the user is last-writer-wins; the UI polls and picks the change up. */
+  /** Replaces or appends the text. A concurrent edit by the user is last-writer-wins; the UI polls and picks the change up. System notes are the user's rules: agents cannot change them. */
   async agentWrite(userId: string, sessionId: string, id: unknown, text: unknown, append: boolean): Promise<CanvasNote> {
     const note = await this.agentRead(userId, sessionId, id);
+    if (note.kind === "system") throw new HttpError(403, "system_note_readonly", "This is a system note (project rules): only the user can edit or delete it. Ask the user, or put your own notes in a memory or regular note");
     if (typeof text !== "string") throw badRequest("text required", "invalid_note");
     const next = append && note.text ? note.text + (note.text.endsWith("\n") ? "" : "\n") + text : text;
     return this.patch(userId, note.id, { text: next });
   }
 
-  /** Creates a note in the agent's project, linked to the agent and placed beside its newest linked note. */
+  /** Creates a note in the agent's project. kind "note" (default) is linked to the agent and placed beside its newest linked note; memory/system apply to the whole project. */
   async agentCreate(userId: string, sessionId: string, body: unknown): Promise<CanvasNote> {
-    const s = (await this.pool.query("SELECT project_id FROM agent_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId])).rows[0] as { project_id: string | null } | undefined;
-    if (!s) throw notFound("Calling session not found");
+    const s = await this.sessionInfo(userId, sessionId);
     const input = (body && typeof body === "object" && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
     const anchor = (await this.agentList(userId, sessionId)).filter((n) => n.projectId === (s.project_id ?? null)).pop();
-    const note = await this.create(userId, s.project_id ?? "none", { w: 240, h: 160, ...input, x: input.x ?? (anchor ? anchor.x + anchor.w + 30 : 0), y: input.y ?? (anchor ? anchor.y : 0) });
-    return this.link(userId, note.id, sessionId);
+    const note = await this.create(userId, s.project_id ?? "none", { w: 240, h: 160, ...input, x: input.x ?? (anchor ? anchor.x + anchor.w + 30 : 0), y: input.y ?? (anchor ? anchor.y : 0) }, s.title || "agent");
+    return note.kind === "note" ? this.link(userId, note.id, sessionId) : note;
   }
 }

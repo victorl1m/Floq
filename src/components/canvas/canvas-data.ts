@@ -2,7 +2,7 @@
 // Contract-facing calls live here so a runtime-side rename is a one-line fix.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RuntimeClient } from "@/lib/runtime/client";
-import type { AgentLink, AgentMessageEvent, CanvasNote, CanvasNoteInput, NoteColor } from "@/lib/runtime/types";
+import type { AgentLink, AgentMessageEvent, CanvasNote, CanvasNoteInput, NoteColor, NoteKind } from "@/lib/runtime/types";
 
 export type { AgentMessageEvent };
 export type LinkKind = AgentLink["kind"];
@@ -96,7 +96,7 @@ export function useAgentEvents(client: RuntimeClient | null, projectId: string |
 }
 
 // ---- canvas notes and per-agent secrets (thin wrappers over the runtime client) ----
-export type { CanvasNote, NoteColor };
+export type { CanvasNote, NoteColor, NoteKind };
 export type NotePatch = CanvasNoteInput;
 
 // A runtime that predates note links omits linkedSessionIds, so default it.

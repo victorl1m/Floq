@@ -32,6 +32,7 @@ import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteRe
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
+import { buildRecruitSkillsBlock, storedRecruitSkills } from "./recruitSkills.js";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { composeSystemBlocks } from "./subagents.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
@@ -118,6 +119,7 @@ interface Row {
   model: string | null;
   role?: string | null;
   parent_session_id?: string | null;
+  recruit_skills?: string[] | null;
 }
 
 function summaryFromRow(row: Row): SessionSummary {
@@ -244,6 +246,8 @@ export interface CreateSessionOptions {
   isolated?: boolean;
   /** Session that recruited this one (floq CLI orchestration); drives the canvas edges. */
   parentSessionId?: string | null;
+  /** Skills the recruiter asked this agent to use (`--skill`); repeated in its system-level instructions on every start. */
+  skills?: string[];
 }
 
 export class SessionManager {
@@ -1202,7 +1206,8 @@ export class SessionManager {
     // Wired context rides in the provider's system-level instructions on EVERY start and resume, so it survives compaction and restarts.
     const wiredBlock0 = this.wired && row.provider !== "shell" ? await this.wired.blockFor(row.user_id, row.id) : "";
     // The fixed Floq subagent policy rides in the same system-level text (one flag: a second --append-system-prompt would not combine), first and always present for agents.
-    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", wiredBlock0);
+    const skillsBlock = row.provider === "shell" ? "" : buildRecruitSkillsBlock(storedRecruitSkills(row.recruit_skills), row.provider);
+    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", skillsBlock, wiredBlock0);
     if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);
@@ -1617,9 +1622,9 @@ export class SessionManager {
     const title = input.title?.trim().slice(0, 120) || definition.label;
 
     const inserted = await this.pool.query(
-      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch, role, parent_session_id)
-       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
-      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null, options.parentSessionId ?? null],
+      `INSERT INTO agent_sessions (id, user_id, provider, title, cwd, git_url, state, cols, rows, lead, model, project_cwd, project_id, workspace_id, branch, role, parent_session_id, recruit_skills)
+       VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null, options.parentSessionId ?? null, options.skills?.length ? options.skills : null],
     );
     try {
       const session = await this.launch(inserted.rows[0] as Row, profile, handle, false, prompt);
@@ -2097,10 +2102,10 @@ export class SessionManager {
   }
 
   /** Tell a running agent its wires changed (typed like `floq ask`). Returns false when it is not live. Never throws. */
-  async notifyWired(userId: string, sessionId: string, added: WireRef[], removed: WireRef[], block: string): Promise<boolean> {
+  async notifyWired(userId: string, sessionId: string, added: WireRef[], removed: WireRef[], block: string, updated: WireRef[] = []): Promise<boolean> {
     const live = this.findLive(sessionId, userId);
     if (!live || !live.isAlive || live.provider === "shell") return false;
-    const text = buildWiredNotice(added, removed, block);
+    const text = buildWiredNotice(added, removed, block, updated);
     if (!text) return false;
     try {
       await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: live.provider === "claude" || live.provider === "codex" }));

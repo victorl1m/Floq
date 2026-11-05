@@ -36,14 +36,14 @@ export function formatAgentListEntry(agent: AgentEntry) {
   return (agent.self ? "* " : "  ") + agent.name + "  " + agent.id + where + "  [" + agent.provider + ", configured model: " + (agent.model ?? "default") + ", " + agent.state + (agent.role ? ", role " + agent.role : "") + (agent.lead ? ", lead" : "") + "]";
 }
 
-export function formatRecruitment(agent: Pick<AgentEntry, "name" | "id" | "provider" | "model">) {
-  return "recruited " + agent.name + " " + agent.id + " (" + agent.provider + ", configured model: " + (agent.model ?? "default") + ")";
+export function formatRecruitment(agent: Pick<AgentEntry, "name" | "id" | "provider" | "model"> & { skills?: string[] }) {
+  return "recruited " + agent.name + " " + agent.id + " (" + agent.provider + ", configured model: " + (agent.model ?? "default") + (agent.skills?.length ? ", skills: " + agent.skills.join(", ") : "") + ")";
 }
 
 export interface SubagentEntry { id: string; name: string; role: string; provider: string; model: string; state: string; depth: number; parentId?: string | null }
 
-export function formatSubagentRecruit(r: { id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean }) {
-  return "recruited subagent " + r.name + " " + r.id + " (role " + r.role + ", " + r.provider + ", model " + r.model + ", depth " + r.depth + (r.wired === false ? ", not wired" : ", wired to you") + "). Read its report with: floq subagent result " + r.id;
+export function formatSubagentRecruit(r: { id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean; skills?: string[] }) {
+  return "recruited subagent " + r.name + " " + r.id + " (role " + r.role + ", " + r.provider + ", model " + r.model + ", depth " + r.depth + (r.skills?.length ? ", skills " + r.skills.join(", ") : "") + (r.wired === false ? ", not wired" : ", wired to you") + "). Read its report with: floq subagent result " + r.id;
 }
 
 export function formatSubagentLine(s: SubagentEntry) {
@@ -68,6 +68,7 @@ export function buildRecruitPayload(positional: string[], named: NamedArgs) {
     cwd: named.cwd,
     role: named.role,
     isolated: named.isolated === true,
+    skills: named.skill,
   };
 }
 

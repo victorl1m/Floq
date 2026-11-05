@@ -242,6 +242,18 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const body = method === "POST" ? await readJson<Record<string, unknown>>(req, url.pathname === "/internal/skills/create" ? 1.5 * 1024 * 1024 : config.maxBodyBytes) : {};
       const path = url.pathname.slice("/internal/".length);
       // Anything an agent receives from another agent (notes, replies, inbox, ...) is stripped of forged `[FLOQ APPROVAL` markers.
+      // A memory/system note an agent wrote reaches every other agent of the project: refresh their wired context and tell the live ones.
+      const touchProjectNote = async (note: { kind: string; projectId: string | null }): Promise<void> => {
+        if (note.kind === "note" || !wired) return;
+        for (const id of await notes.projectSessionIds(userId, note.projectId)) {
+          if (id === sessionId) continue;
+          try {
+            const r = await wired.sync(userId, id);
+            if (r.added.length || r.removed.length || r.updated.length) await manager.notifyWired(userId, id, r.added, r.removed, r.block, r.updated);
+          } catch (error) { log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+        }
+        try { await wired.sync(userId, sessionId); } catch { /* refreshed at next start */ }
+      };
       const send = (r: ServerResponse, status: number, payload: unknown): void => sendPlain(r, status, path.startsWith("vault/") || path.startsWith("secrets/") ? payload : neutralizeDeep(payload));
       switch (path) {
         case "vault/secrets":
@@ -419,10 +431,16 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { notes: await notes.agentList(userId, sessionId) });
         case "sticky/read":
           return send(res, 200, await notes.agentRead(userId, sessionId, body.id));
-        case "sticky/write":
-          return send(res, 200, await notes.agentWrite(userId, sessionId, body.id, body.text, body.append === true));
-        case "sticky/create":
-          return send(res, 200, await notes.agentCreate(userId, sessionId, body));
+        case "sticky/write": {
+          const note = await notes.agentWrite(userId, sessionId, body.id, body.text, body.append === true);
+          await touchProjectNote(note);
+          return send(res, 200, note);
+        }
+        case "sticky/create": {
+          const note = await notes.agentCreate(userId, sessionId, body);
+          await touchProjectNote(note);
+          return send(res, 200, note);
+        }
         case "notes/write": {
           const written = await orchestrator.noteWrite(userId, body.name, body.content, body.append === true);
           // Show the note on the writing agent's project canvas, wired to it. Never fail the write over the mirror.
@@ -715,7 +733,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       for (const id of new Set(sessionIds)) {
         try {
           const r = await wired.sync(userId, id);
-          if (notify && (r.added.length || r.removed.length)) await manager.notifyWired(userId, id, r.added, r.removed, r.block);
+          if (notify && (r.added.length || r.removed.length || r.updated.length)) await manager.notifyWired(userId, id, r.added, r.removed, r.block, r.updated);
         } catch (error) {
           log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
         }
@@ -724,16 +742,24 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     const notesMatch = /^\/v1\/projects\/([\w-]+)\/notes$/.exec(url.pathname);
     if (notesMatch && method === "GET") return send(res, 200, { notes: await notes.list(userId, notesMatch[1]) });
-    if (notesMatch && method === "POST") return send(res, 200, await notes.create(userId, notesMatch[1], await readJson(req)));
+    if (notesMatch && method === "POST") {
+      const note = await notes.create(userId, notesMatch[1], await readJson(req));
+      if (note.kind !== "note") await wiredTouch(await notes.projectSessionIds(userId, note.projectId), true);
+      return send(res, 200, note);
+    }
     const noteMatch = /^\/v1\/notes\/([\w-]+)$/.exec(url.pathname);
     if (noteMatch && method === "PATCH") {
+      const before = await notes.get(userId, noteMatch[1]);
       const note = await notes.patch(userId, noteMatch[1], await readJson(req));
       await wiredTouch(note.linkedSessionIds, false); // keep the persisted memory current; no live notice per edit
+      // Project memory/system notes reach every agent of the project: refresh them all and tell the live ones.
+      if (before.kind !== "note" || note.kind !== "note") await wiredTouch(await notes.projectSessionIds(userId, note.projectId), true);
       return send(res, 200, note);
     }
     if (noteMatch && method === "DELETE") {
+      const gone = await notes.get(userId, noteMatch[1]);
       const sessions = await notes.remove(userId, noteMatch[1]);
-      await wiredTouch(sessions, true);
+      await wiredTouch(gone.kind === "note" ? sessions : [...sessions, ...(await notes.projectSessionIds(userId, gone.projectId))], true);
       return send(res, 200, { ok: true });
     }
 

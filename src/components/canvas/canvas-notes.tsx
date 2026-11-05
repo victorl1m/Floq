@@ -1,14 +1,15 @@
 // Sticky notes on the canvas: a React Flow node type plus the hook that keeps them in sync with the runtime.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useConnection, BaseEdge, EdgeLabelRenderer, Handle, NodeResizer, Position, useNodesState, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { IconLink, IconNote, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
+import { IconBrain, IconLink, IconNote, IconPencil, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
+import type { Icon } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
-import { createNoteRequest, deleteNoteRequest, fetchNotes, linkNote, unlinkNote, updateNoteRequest, type CanvasNote, type NoteColor, type NotePatch } from "./canvas-data";
+import { createNoteRequest, deleteNoteRequest, fetchNotes, linkNote, unlinkNote, updateNoteRequest, type CanvasNote, type NoteColor, type NoteKind, type NotePatch } from "./canvas-data";
 import { findFreeSpot, type Rect } from "./note-placement";
 import { pathOf, RESIZER_ABOVE, route, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE, useRect } from "./wire-edge";
 
@@ -34,6 +35,14 @@ export const COLORS: Record<NoteColor, { tint: string; border: string; dot: stri
   gray: { tint: "bg-zinc-400/20", border: "border-zinc-500/40", dot: "bg-zinc-400", label: "Gray" },
 };
 export const COLOR_KEYS = Object.keys(COLORS) as NoteColor[];
+
+/** What each kind means for agents; the header icon, badge and menu all come from here. */
+export const KINDS: Record<NoteKind, { label: string; icon: Icon; hint: string; badge: string | null }> = {
+  note: { label: "Note", icon: IconNote, hint: "Only agents you wire to it can read and edit it.", badge: null },
+  memory: { label: "Memory", icon: IconBrain, hint: "Project memory: every agent in this project reads it and can edit it.", badge: "text-violet-700 bg-violet-500/15 dark:text-violet-300" },
+  system: { label: "System", icon: IconShieldLock, hint: "Project rules: every agent in this project follows them. Agents can read them but only you can edit or delete them.", badge: "text-amber-700 bg-amber-500/15 dark:text-amber-300" },
+};
+export const KIND_KEYS = Object.keys(KINDS) as NoteKind[];
 
 const toNode = (note: CanvasNote): NoteNode => ({
   id: NOTE_PREFIX + note.id,
@@ -72,6 +81,9 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
   // Controlled so we can close it on any outside click: React Flow's pane/node drag handling stops the
   // pointer events Radix relies on for its own outside-click dismissal.
   const [colorOpen, setColorOpen] = useState(false);
+  const [kindOpen, setKindOpen] = useState(false);
+  const kind = KINDS[note.kind ?? "note"] ?? KINDS.note;
+  const KindIcon = kind.icon;
   useEffect(() => {
     if (!colorOpen) return;
     const onDown = (event: PointerEvent) => {
@@ -192,7 +204,29 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
       <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow", palette.border, selected && "border-primary/60 shadow-md ring-2 ring-primary/30", (flash || ctx.highlight === note.id) && "ring-2 ring-teal-500 shadow-[0_0_18px_0_var(--color-teal-500)]", "peer-hover/h:border-teal-500 peer-hover/h:ring-2 peer-hover/h:ring-teal-500/50 peer-hover/h:shadow-[0_0_16px_0_var(--color-teal-500)]", connecting && "group-hover/note:border-emerald-500 group-hover/note:ring-2 group-hover/note:ring-emerald-500/50 group-hover/note:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
         <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
         <div className={cn("note-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1 border-b px-1.5 active:cursor-grabbing", palette.border)}>
-          <IconNote size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <Popover open={kindOpen} onOpenChange={setKindOpen}>
+            <PopoverTrigger asChild>
+              <button type="button" data-note-color-picker className="nodrag nopan flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10" aria-label={`Note kind: ${kind.label}. Change kind`} title={`${kind.label}: ${kind.hint}`}>
+                <KindIcon size={14} aria-hidden="true" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent data-note-color-picker className="flex w-64 flex-col gap-0.5 p-1" side="bottom" align="start">
+              {KIND_KEYS.map((key) => {
+                const Item = KINDS[key].icon;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => { setKindOpen(false); if (key !== (note.kind ?? "note")) ctx.patch(note.id, { kind: key }); }}
+                    className={cn("flex items-start gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-accent", key === (note.kind ?? "note") && "bg-accent/60")}
+                  >
+                    <Item size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <span><span className="block font-medium">{KINDS[key].label}</span><span className="block text-muted-foreground">{KINDS[key].hint}</span></span>
+                  </button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
           <Popover open={colorOpen} onOpenChange={setColorOpen}>
             <PopoverTrigger asChild>
               <button type="button" data-note-color-picker className="nodrag nopan flex size-6 items-center justify-center rounded hover:bg-foreground/10" aria-label="Note color" title="Color">
@@ -244,7 +278,12 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
               <IconPencil size={11} aria-hidden="true" className="shrink-0 opacity-0 transition-opacity group-hover/note:opacity-60" />
             </button>
           )}
-          {linked.length > 0 && (
+          {kind.badge && (
+            <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px]", kind.badge)} title={kind.hint + (note.author ? ` Created by agent ${note.author}.` : "")}>
+              {note.kind === "system" ? "System · agents read-only" : "Memory · all agents"}
+            </span>
+          )}
+          {linked.length > 0 && note.kind !== "system" && note.kind !== "memory" && (
             <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 tabular-nums dark:text-teal-300" title={`Agents that can read and edit this note: ${linked.map(ctx.titleOf).join(", ")}`}>
               <IconLink size={11} />{linked.length}
             </span>
@@ -453,7 +492,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
   revealRef.current = reveal;
   useEffect(() => () => clearTimeout(highlightTimer.current), []);
 
-  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; w?: number; h?: number; agentNoteName?: string; title?: string }) => {
+  const add = useCallback(async (input: { x: number; y: number; text?: string; color?: NoteColor; kind?: NoteKind; w?: number; h?: number; agentNoteName?: string; title?: string }) => {
     if (!client || !projectId) return;
     try {
       const note = await createNoteRequest(client, projectId, { w: NOTE_DEFAULT.width, h: NOTE_DEFAULT.height, ...input });
@@ -480,7 +519,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
           description: gone.agentNoteName ? "Agents can no longer read it with floq note." : "Undo puts it back on the canvas.",
           action: {
             label: "Undo",
-            onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, agentNoteName: gone.agentNoteName ?? undefined, title: gone.agentNoteName ? undefined : gone.title ?? undefined }).then((restored) => {
+            onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, kind: gone.kind, agentNoteName: gone.agentNoteName ?? undefined, title: gone.agentNoteName ? undefined : gone.title ?? undefined }).then((restored) => {
               if (restored && client) for (const sid of gone.linkedSessionIds) void linkNote(client, restored.id, sid).catch(() => {});
             }),
           },
