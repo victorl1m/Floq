@@ -58,12 +58,17 @@ async function harness(t) {
   const restartCalls = [];
   const manager = {
     activeCount: 0,
+    projectCreates: [],
+    async createProject(userId, profile, gitUrl, name) {
+      this.projectCreates.push({ userId, profile, gitUrl, name });
+      return { id: "project-created", name: name ?? "repo", displayName: null, imageUrl: null, gitUrl: gitUrl ?? null, cwd: ".floq/projects/project-created", createdAt: new Date(0).toISOString(), workspaces: [{ id: "workspace-created", cwd: ".floq/projects/project-created", name: "Main", branch: null, isWorktree: false, navExpanded: true, sessionIds: [] }] };
+    },
     async assertSelfRestartable(userId, sessionId) { restartCalls.push({ kind: "preflight", userId, sessionId }); },
     async restartSelf(userId, profile, sessionId) { restartCalls.push({ kind: "restart", userId, profile, sessionId }); },
   };
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "info" };
-  const server = createRuntimeServer({ config, manager, auth: { handler() {} }, settings: { async profile(userId) { return { userId }; } }, github: {}, vault, orchestrator, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
+  const server = createRuntimeServer({ config, manager, auth: { handler() {}, api: { async getSession() { return { user: { id: "owner" }, session: { id: "app-session" } }; } } }, settings: { async profile(userId) { return { userId }; } }, github: {}, vault, orchestrator, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
   await server.listen();
   t.after(async () => { await server.close(); rmSync(f.temp, { recursive: true, force: true }); });
   const tokens = Object.fromEntries(SESSIONS.map((s) => [s.id, vault.issueToken(s.user_id, s.id)]));
@@ -73,7 +78,12 @@ async function harness(t) {
     const text = await response.text();
     return { status: response.status, text, json: JSON.parse(text) };
   };
-  return { f, call, vaultRows, audits, statements, port, tokens, vault, restartCalls };
+  const callApp = async (path, body = {}) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const text = await response.text();
+    return { status: response.status, text, json: JSON.parse(text) };
+  };
+  return { f, call, callApp, vaultRows, audits, statements, port, tokens, vault, restartCalls, manager };
 }
 
 function captureLogs(t) {
@@ -296,6 +306,51 @@ test("floq session restart explains the delayed same-session restart", async (t)
   assert.equal(h.restartCalls.filter((call) => call.kind === "restart").length, 0, "the CLI exits before its own PTY restart begins");
   const invalid = await runFloq(h, ["session", "restart", "s-lead"]);
   assert.equal(invalid.code, 2, "CLI does not accept a target session ID");
+});
+
+test("app and agent project creation share validation and user-scoped manager creation", async (t) => {
+  const h = await harness(t);
+  const missing = await h.callApp("/v1/projects", {});
+  assert.equal(missing.status, 400);
+  assert.equal(h.manager.projectCreates.length, 0);
+
+  const appProject = await h.callApp("/v1/projects", { name: "  Personal  " });
+  assert.equal(appProject.status, 201, appProject.text);
+  assert.equal(appProject.json.project.id, "project-created");
+  assert.deepEqual(h.manager.projectCreates[0], { userId: "owner", profile: { userId: "owner" }, gitUrl: undefined, name: "Personal" });
+
+  const agentProject = await h.call("s-other", "projects/create", { name: "Imported", gitUrl: "https://example.test/team/repo.git" });
+  assert.equal(agentProject.status, 201, agentProject.text);
+  assert.deepEqual(h.manager.projectCreates[1], { userId: "other", profile: { userId: "other" }, gitUrl: "https://example.test/team/repo.git", name: "Imported" });
+
+  const invalid = await h.call("s-member", "projects/create", { name: "  " });
+  assert.equal(invalid.status, 400);
+  const unauthorized = await h.call("s-member", "projects/create", { name: "Nope" }, "not-a-token");
+  assert.equal(unauthorized.status, 401);
+  assert.equal(h.manager.projectCreates.length, 2);
+});
+
+test("floq project create requires a trimmed name and reports the created project path", async (t) => {
+  const h = await harness(t);
+  const created = await runFloq(h, ["project", "create", "--name", "  Research Hub  "]);
+  assert.equal(created.code, 0, created.stderr);
+  assert.match(created.stdout, /project-created/);
+  assert.match(created.stdout, /\.floq\/projects\/project-created/);
+  assert.deepEqual(h.manager.projectCreates[0], { userId: "owner", profile: { userId: "owner" }, gitUrl: undefined, name: "Research Hub" });
+
+  const imported = await runFloq(h, ["project", "create", "--git-url", "https://example.test/team/repo.git"]);
+  assert.equal(imported.code, 0, imported.stderr);
+  assert.deepEqual(h.manager.projectCreates[1], { userId: "owner", profile: { userId: "owner" }, gitUrl: "https://example.test/team/repo.git", name: undefined });
+
+  const help = await runFloq(h, ["--help"]);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /floq project create --name NAME \[--git-url URL\]/);
+
+  for (const args of [["project", "create"], ["project", "create", "--name", " "], ["project", "create", "--name", "x".repeat(121)], ["project", "create", "--git-url", " "], ["project", "create", "--name", "ok", "--unknown"]]) {
+    const rejected = await runFloq(h, args);
+    assert.equal(rejected.code, 2, args.join(" "));
+  }
+  assert.equal(h.manager.projectCreates.length, 2, "invalid CLI invocations do not reach the API");
 });
 
 test("floq secrets add reads the value from stdin, refuses it as an argument, and never echoes it", async (t) => {

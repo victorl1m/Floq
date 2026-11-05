@@ -354,7 +354,7 @@ export class RuntimeClient {
     return (await this.call<{ projects: RuntimeProject[] }>("GET", "/v1/projects")).projects;
   }
 
-  async createProject(input: { gitUrl: string; name?: string }): Promise<RuntimeProject> {
+  async createProject(input: { gitUrl?: string; name?: string }): Promise<RuntimeProject> {
     return (await this.call<{ project: RuntimeProject }>("POST", "/v1/projects", input, { timeoutMs: 5 * 60_000 })).project;
   }
 

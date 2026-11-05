@@ -91,6 +91,20 @@ test("isolated worktrees start at committed HEAD, keep source edits, disable hoo
   }
 });
 
+test("isolated worktrees reject a plain project with a clear Git requirement", async () => {
+  const home = mkdtempSync(join(tmpdir(), "floq-worktree-test-"));
+  try {
+    const source = join(home, "plain-project");
+    mkdirSync(source);
+    await assert.rejects(
+      createWorktree({ home, source, target: join(home, ".floq", "worktrees", "worker-id"), branch: "floq/00000000-0000-0000-0000-000000000002" }),
+      (error: any) => error.code === "isolation_not_repo" && /requires a Git repository/i.test(error.message),
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("project membership groups isolated workers with their parent and separates explicit workspace roots", async () => {
   const agents = [
     { id: "00000000-0000-4000-8000-000000000001", title: "Lead", provider: "claude", model: null, state: "running", lead: true, cwd: "workspace/repo-a", git_url: "https://example.test/repo-a.git", project_cwd: "workspace/repo-a" },
