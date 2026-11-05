@@ -51,11 +51,13 @@ Commands:
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
+  floq note delete NAME                  delete a shared note and its canvas card
   floq wired                             print what the user wired to you on the canvas (notes, keychain names, linked agents); re-read it after a context compaction
   floq sticky list                       canvas notes the user wired to this agent plus the project's memory/system notes (id, kind, color, first line)
   floq sticky read ID                    print a note's text
   floq sticky write ID TEXT|-            replace its text ("-" reads stdin); refused on system notes (only the user edits those)
   floq sticky append ID TEXT|-           add to the end of its text
+  floq sticky delete ID                  delete a note or memory card; refused on system notes (only the user deletes those)
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
@@ -498,6 +500,9 @@ switch (command) {
       console.log((await call<{ content: string }>("notes/read", { name })).content);
     } else if ((sub === "write" || sub === "append") && name) {
       await call("notes/write", { name, content: text.join(" "), append: sub === "append" });
+    } else if (sub === "delete" && name && text.length === 0) {
+      await call("notes/delete", { name });
+      console.log("ok");
     } else usage();
     break;
   }
@@ -519,6 +524,9 @@ switch (command) {
       process.stdout.write((await call<Sticky>("sticky/read", { id })).text + "\n");
     } else if ((sub === "write" || sub === "append") && id && words.length) {
       await call("sticky/write", { id, text: await textOf(words), append: sub === "append" });
+      console.log("ok");
+    } else if (sub === "delete" && id && words.length === 0) {
+      await call("sticky/delete", { id });
       console.log("ok");
     } else if (sub === "new") {
       const parts = id === undefined ? [] : [id, ...words];

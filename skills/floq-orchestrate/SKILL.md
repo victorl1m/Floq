@@ -58,6 +58,7 @@ Use shared notes for durable plans, decisions, and handoffs longer than a short 
 ```sh
 floq note write plan "Goal: ...; owners: ...; acceptance: ..."
 floq note append plan "Update: ..."
+floq note delete plan                # removes the note and its canvas card
 floq note read plan
 floq note list
 ```
@@ -73,6 +74,7 @@ floq sticky list                      # ids of the notes wired to you
 floq sticky read NOTE_ID
 floq sticky write NOTE_ID "new text"  # replaces; use - to read the text from stdin
 floq sticky append NOTE_ID "more"
+floq sticky delete NOTE_ID           # note or memory cards only; system notes are the user's
 floq sticky new "text" --color blue   # creates a note, wired to you, next to your other notes
 ```
 

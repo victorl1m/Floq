@@ -272,6 +272,16 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         }
         try { await wired.sync(userId, sessionId); } catch { /* refreshed at next start */ }
       };
+      // After an agent deletes a note: refresh the wired context of the sessions that had it and tell the live ones.
+      const touchSessions = async (sessionIds: string[]): Promise<void> => {
+        if (!wired) return;
+        for (const id of new Set(sessionIds)) {
+          try {
+            const r = await wired.sync(userId, id);
+            if (r.added.length || r.removed.length || r.updated.length) await manager.notifyWired(userId, id, r.added, r.removed, r.block, r.updated);
+          } catch (error) { log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+        }
+      };
       const send = (r: ServerResponse, status: number, payload: unknown): void => sendPlain(r, status, path.startsWith("vault/") || path.startsWith("secrets/") ? payload : neutralizeDeep(payload));
       switch (path) {
         case "vault/secrets":
@@ -482,6 +492,16 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const note = await notes.agentCreate(userId, sessionId, body);
           await touchProjectNote(note);
           return send(res, 200, note);
+        }
+        case "sticky/delete": {
+          const { note, sessionIds } = await notes.agentDelete(userId, sessionId, body.id);
+          await touchSessions([...sessionIds, ...(note.kind === "note" ? [] : await notes.sharedNoteSessionIds(userId, note))]);
+          return send(res, 200, { ok: true });
+        }
+        case "notes/delete": {
+          const { sessionIds } = await notes.agentNoteDelete(userId, body.name);
+          await touchSessions(sessionIds);
+          return send(res, 200, { ok: true });
         }
         case "notes/write": {
           const written = await orchestrator.noteWrite(userId, body.name, body.content, body.append === true);

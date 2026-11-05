@@ -345,6 +345,27 @@ export class CanvasNotes {
     return this.patch(userId, note.id, { text: next });
   }
 
+  /** `floq sticky delete`: removes a note or memory card the agent can see. System notes are the user's rules; a card the agent cannot see is reported as missing. */
+  async agentDelete(userId: string, sessionId: string, id: unknown): Promise<{ note: CanvasNote; sessionIds: string[] }> {
+    let note: CanvasNote;
+    try { note = await this.agentRead(userId, sessionId, id); }
+    catch (e) { if (e instanceof HttpError && e.status === 403) throw notFound("Note not found"); throw e; }
+    if (note.kind === "system") throw new HttpError(403, "system_note_readonly", "This is a system note (rules for all agents): only the user can edit or delete it. Ask the user, or delete one of your own memory or regular notes");
+    const sessionIds = await this.remove(userId, note.id);
+    return { note, sessionIds };
+  }
+
+  /** `floq note delete NAME`: removes the shared agent note and every canvas card mirroring it. Returns the sessions the cards were wired to. */
+  async agentNoteDelete(userId: string, name: unknown): Promise<{ sessionIds: string[] }> {
+    if (typeof name !== "string" || !AGENT_NOTE_NAME.test(name)) throw badRequest("note name must be 1-80 chars of letters, digits, space, . _ -", "invalid_note");
+    const links = await this.pool.query("SELECT DISTINCT k.session_id FROM canvas_note_links k JOIN canvas_notes n ON n.id = k.note_id WHERE n.user_id = $1 AND n.agent_note_name = $2", [userId, name]);
+    const cards = await this.pool.query("DELETE FROM canvas_notes WHERE user_id = $1 AND agent_note_name = $2", [userId, name]);
+    const row = await this.pool.query("DELETE FROM agent_notes WHERE user_id = $1 AND name = $2", [userId, name]);
+    if (!row.rowCount && !cards.rowCount) throw notFound("No shared note named " + name + " (see: floq note list)");
+    log.info("note.agent_delete", { userId, name });
+    return { sessionIds: links.rows.map((x: { session_id: string }) => x.session_id) };
+  }
+
   /** Creates a note in the agent's project. kind "note" (default) is linked to the agent and placed beside its newest linked note; memory/system apply to the whole project. */
   async agentCreate(userId: string, sessionId: string, body: unknown): Promise<CanvasNote> {
     const s = await this.sessionInfo(userId, sessionId);
