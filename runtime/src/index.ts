@@ -4,6 +4,7 @@ import { ClaudeOAuth } from "./claudeOauth.js";
 import { UsageService } from "./usage.js";
 import { CredentialBroker } from "./credentials.js";
 import { createPool, migrateApp } from "./db.js";
+import { syncClaudeManagedSettings } from "./claudeManagedPlugins.js";
 import { GithubLinker } from "./github.js";
 import { configureLogger, log } from "./logger.js";
 import { SessionManager } from "./manager.js";
@@ -30,6 +31,8 @@ process.on("unhandledRejection", (reason) => log.error("process.unhandled_reject
 
 const config = loadConfig();
 configureLogger(config);
+// Operator-trusted Claude plugins become managed plugins seated ahead of the built-in security default (see claudeManagedPlugins.ts).
+syncClaudeManagedSettings({ raw: process.env.FLOQ_CLAUDE_PLUGINS });
 
 const pool = createPool(config);
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.databaseUrl }) });
