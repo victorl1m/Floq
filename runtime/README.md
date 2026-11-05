@@ -39,8 +39,19 @@ Public signup stays off unless `FLOQ_ALLOW_SIGNUP=1`. A person without an accoun
 - Credentials: Anthropic/OpenAI keys and GitHub tokens are encrypted with AES-256-GCM (`FLOQ_ENCRYPTION_KEY`, bound to user and field) and only decrypted when a session starts. Settings responses never return secrets. Server-wide provider keys are not inherited by sessions.
 - Agents run as an unprivileged user in the container. Auto-approve (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`) defaults to on per provider and each user can turn it off in Settings. With it on, an agent can run arbitrary commands in the container.
 - Shards: every user gets a numeric uid and a gocryptfs-encrypted home (`/var/lib/floq/shards`). The per-user data key is random, stored in Postgres wrapped with `FLOQ_ENCRYPTION_KEY`, and only used to mount the home while the user has a terminal open. Agents run in a bubblewrap sandbox (own PID/IPC/UTS namespaces, only that user's home mounted, read-only system dirs, no capabilities, `no-new-privs`). Nothing is mounted or running for a user who has no terminal open.
-- Known limit: sandboxes share the container's network, so an agent can reach the runtime port and the `db` host (Postgres password required). Keep `POSTGRES_PASSWORD` strong and add egress rules on the VM if you need stricter isolation.
+- Known limit (default, `FLOQ_NETNS` unset): sandboxes share the container's network, so an agent can reach the runtime port, the `db` host (Postgres password required) and other users' loopback ports and abstract sockets. Enable `FLOQ_NETNS` (below) to close this, or keep `POSTGRES_PASSWORD` strong and add egress rules on the VM.
 - Put it behind TLS (Dokploy/Traefik does this) and keep Postgres unpublished.
+
+## Per-user network namespaces (`FLOQ_NETNS`, experimental, off by default)
+
+`FLOQ_NETNS=1` gives every user one persistent network namespace (`/run/floq/netns/<uid>`, created with `unshare --net=<file>`); all of that user's sessions share it, other users cannot see its loopback ports or abstract sockets (X11 `@/tmp/.X11-unix/Xn`). `FLOQ_NETNS=required` refuses to start when namespaces are unavailable; with `1` a failed startup probe logs `netns.disabled` and falls back to the shared network.
+
+- Launch: `nsenter --net=<path> -- floq-bwrap ...` (bwrap inherits the namespace; setpriv still drops to the user's uid).
+- Connectivity: one `pasta` (package `passt`) per user, attached by path, with no inbound forwards. `10.255.255.1` is the gateway and maps to the runtime's `127.0.0.1`, so `FLOQ_API_URL` becomes `http://10.255.255.1:<FLOQ_PORT>` (the runtime must listen on loopback/all interfaces). DNS goes through pasta's forwarder (`10.255.254.53`), the sandbox gets its own `resolv.conf`.
+- Egress policy (nftables, inside the namespace): default drop; allows DNS, `gateway:<FLOQ_PORT>` and public IPv4; drops RFC1918, CGNAT, link-local/cloud metadata, reserved ranges and every other gateway port (so the `db` is unreachable). `FLOQ_NETNS_ALLOW=cidr,cidr` accepts extra IPv4 destinations before the drops (e.g. an internal git host). IPv6 is off.
+- Ports and tunnels: detection reads `/proc/<session pid>/net/tcp`; the port tunnel connects with `nsenter --net=<path> -- socat` (needs `socat` in the image); the display port probe checks inside the namespace.
+- Lifecycle: created when the user's shard wakes, removed when it sleeps; leftovers are cleaned at runtime start. Needs `CAP_SYS_ADMIN` (already required for bwrap/FUSE) and the image packages `passt socat nftables iproute2`.
+- Verify on a real host: `cd runtime && npm run build && sudo scripts/netns-smoke.sh`.
 
 ## Sleep and resume
 

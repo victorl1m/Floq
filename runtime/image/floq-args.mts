@@ -224,3 +224,109 @@ export function formatAgentReply(command: "ask" | "check" | "wait", id: string, 
   if (reply.truncated) lines.push("[truncated: " + reply.truncated + " more chars, use --full]");
   return { text: lines.join("\n"), code };
 }
+
+/** Paths of `floq display` inside the sandbox's private /tmp (never the shared netns, never /run, which is root-owned). */
+export const DISPLAY_DIR = "/tmp/floq-display";
+export const DISPLAY_PATHS = {
+  sockets: DISPLAY_DIR + "/sockets",
+  logs: DISPLAY_DIR + "/log",
+  runtime: DISPLAY_DIR + "/xdg",
+  socket: DISPLAY_DIR + "/sockets/xpra.sock",
+  /** X cookie file; the runtime sets XAUTHORITY to this path in every session (display.ts DISPLAY_XAUTHORITY). */
+  xauthority: DISPLAY_DIR + "/Xauthority",
+} as const;
+
+/** FLOQ_DISPLAY / FLOQ_DISPLAY_PORT / FLOQ_DISPLAY_TOKEN injected by the runtime, or an error message. */
+export function displayFromEnv(env: Record<string, string | undefined>): { display: string; port: number; token: string } | { error: string } {
+  const display = env.FLOQ_DISPLAY?.trim() ?? "";
+  const port = Number(env.FLOQ_DISPLAY_PORT);
+  const token = env.FLOQ_DISPLAY_TOKEN ?? "";
+  if (!/^:\d{1,5}$/.test(display) || !Number.isInteger(port) || port < 1024 || port > 65535 || !token) {
+    return { error: "this session has no display slot (FLOQ_DISPLAY/FLOQ_DISPLAY_PORT/FLOQ_DISPLAY_TOKEN missing); restart the session with \"floq session restart\"" };
+  }
+  return { display, port, token };
+}
+
+/**
+ * Argv for `xpra start`. The password is NOT here: auth=env reads XPRA_PASSWORD from the server's environment, so it
+ * never shows up in a process listing.
+ * X11: Xvfb keeps its abstract socket (@/tmp/.X11-unix/XN) on purpose. Abstract names are global in the shared netns,
+ * and libxcb tries the abstract name first, so leaving it unbound would let another user bind it and receive this
+ * session's app windows. Holding it, plus the MIT cookie (-auth $XAUTHORITY, file in the private /tmp), keeps other
+ * users both out of it and off it. No TCP (-nolisten tcp).
+ * Xpra: the explicit --bind path replaces xpra's "auto" local sockets, which on Linux include an abstract socket with
+ * peercred-only auth (xpra/net/socket_util.py setup_local_sockets).
+ */
+export function xpraStartArgs(display: string, port: number): string[] {
+  return [
+    "start", display,
+    "--daemon=yes",
+    "--bind=" + DISPLAY_PATHS.socket,
+    "--socket-dir=" + DISPLAY_PATHS.sockets,
+    "--socket-dirs=" + DISPLAY_PATHS.sockets,
+    "--log-dir=" + DISPLAY_PATHS.logs,
+    "--bind-ws=127.0.0.1:" + port + ",auth=env",
+    "--html=on",
+    "--xvfb=Xvfb +extension GLX +extension Composite +extension RANDR +extension RENDER -extension DOUBLE-BUFFER -screen 0 1920x1080x24+32 -nolisten tcp -noreset -auth $XAUTHORITY -dpi 96x96",
+    "--resize-display=yes",
+    "--mdns=no",
+    "--pulseaudio=no",
+    "--speaker=off",
+    "--microphone=off",
+    "--webcam=no",
+    "--printing=no",
+    "--notifications=no",
+    "--file-transfer=no",
+    "--open-files=no",
+    "--open-url=no",
+    "--systemd-run=no",
+    "--dbus-launch=",
+    "--start-via-proxy=no",
+    "--exit-with-children=no",
+    // Low CPU: no video encoder pipeline (no GPU here), plain picture encodings.
+    "--video-encoders=none",
+    "--encoding=jpeg",
+    "--quality=70",
+    "--speed=80",
+  ];
+}
+
+export function xpraStopArgs(display: string): string[] {
+  return ["stop", display, "--socket-dirs=" + DISPLAY_PATHS.sockets];
+}
+
+/** Listening abstract unix sockets from /proc/net/unix ("@name" paths), with their inodes. */
+export function parseAbstractListeners(text: string): { path: string; inode: string }[] {
+  const out: { path: string; inode: string }[] = [];
+  for (const line of text.split("\n").slice(1)) {
+    // Num RefCount Protocol Flags Type St Inode Path; Flags 00010000 = listening (__SO_ACCEPTCON)
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 8 || !cols[7].startsWith("@") || (Number.parseInt(cols[3], 16) & 0x10000) === 0) continue;
+    out.push({ path: cols.slice(7).join(" "), inode: cols[6] });
+  }
+  return out;
+}
+
+/** Abstract socket name of X display ":N". */
+export function abstractXSocket(display: string): string {
+  return "@/tmp/.X11-unix/X" + display.replace(/^:/, "").split(".")[0];
+}
+
+/**
+ * Problems with this session's abstract sockets after (or before) starting the display: the X name held by another
+ * process (hijack), or an abstract socket of ours other than the X name (xpra created one it should not have).
+ */
+export function abstractSocketProblems(listeners: { path: string; inode: string }[], ownInodes: ReadonlySet<string>, display: string, expectXOwned: boolean): string[] {
+  const xName = abstractXSocket(display);
+  const problems: string[] = [];
+  const x = listeners.filter((l) => l.path === xName);
+  if (x.some((l) => !ownInodes.has(l.inode))) problems.push("another process on this server holds the abstract X socket " + xName + " (possible hijack attempt)");
+  else if (expectXOwned && !x.length) problems.push("the X server is not holding its abstract socket " + xName);
+  for (const l of listeners) if (l.path !== xName && ownInodes.has(l.inode) && /xpra/i.test(l.path)) problems.push("xpra created the abstract socket " + l.path);
+  return problems;
+}
+
+/** Shell lines for `eval "$(floq display env)"`; values are fixed formats (":N", a /tmp path), quoted anyway. */
+export function displayEnvExports(display: string): string {
+  return "export DISPLAY='" + display + "' XAUTHORITY='" + DISPLAY_PATHS.xauthority + "'";
+}

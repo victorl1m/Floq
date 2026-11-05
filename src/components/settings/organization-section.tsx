@@ -137,7 +137,7 @@ export default function OrganizationSection() {
                         description="Every member loses access and all task boards in this organization are deleted. This cannot be undone."
                         requireText={org.name}
                         actionLabel="Delete organization"
-                        onConfirm={async () => { await client.deleteOrganization(org.id, org.name); await refreshOrganizations(); toast(`Deleted ${org.name}`, { icon: <IconTrash className="size-4" aria-hidden="true" />, description: "Members lost access and its task boards were deleted." }); }}
+                        onConfirm={async () => { await client.deleteOrganization(org.id, org.name); await refreshOrganizations(); toast(`Deleted “${org.name}”`, { icon: <IconTrash className="size-4" aria-hidden="true" />, description: "Members lost access and its task boards were deleted." }); }}
                     />
                     <ConfirmDialog
                         open={transferOpen}

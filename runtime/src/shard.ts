@@ -7,6 +7,7 @@ import type { Config } from "./config.js";
 import { unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import { spawnPty, type PtyProcess } from "./pty.js";
+import { NetnsManager, netnsMode, parseAllowList, wrapLaunch } from "./netns.js";
 import { ownHomeAliasArgs } from "./sandboxPaths.js";
 
 const run = promisify(execFile);
@@ -25,6 +26,8 @@ export interface ShardIdentity {
 export interface ShardHandle extends ShardIdentity {
   /** Host path where the user's decrypted home is mounted. */
   mountPath: string;
+  /** Path of this user's network namespace (FLOQ_NETNS only); undefined = sandboxes share the host network. */
+  netns?: string;
 }
 
 export interface SpawnSpec {
@@ -39,6 +42,8 @@ export interface SpawnSpec {
 
 export interface ShardDriver {
   readonly name: "linux" | "local";
+  /** One-time startup work (netns probe). Throws only when the operator required something that is unavailable. */
+  init?(): Promise<void>;
   /** Provision (first use) and unlock the user's encrypted home. */
   wake(identity: ShardIdentity, dataKey: Buffer): Promise<ShardHandle>;
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess;
@@ -159,7 +164,7 @@ export class LinuxShardDriver implements ShardDriver {
   private readonly mountRoot: string;
   private readonly metaRoot: string;
 
-  constructor(config: Config) {
+  constructor(config: Config, private readonly netns: NetnsManager | null = null) {
     this.cipherRoot = join(config.shardRoot, "cipher");
     // Ciphertext and metadata live on the shards volume; only the plaintext mountpoints live under /mnt.
     // Ubuntu >= 25.04 hosts confine /usr/bin/fusermount3 with an AppArmor profile that only allows FUSE
@@ -169,6 +174,10 @@ export class LinuxShardDriver implements ShardDriver {
     for (const dir of [this.cipherRoot, this.metaRoot]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     mkdirSync(this.mountRoot, { recursive: true, mode: 0o711 });
     this.cleanDeadMounts();
+  }
+
+  async init(): Promise<void> {
+    if (this.netns) await this.netns.init();
   }
 
   /** Lazily unmount leftovers whose gocryptfs daemon is gone (e.g. after a crash). */
@@ -246,7 +255,17 @@ export class LinuxShardDriver implements ShardDriver {
       }
       log.info("shard.wake", { userId, uid });
     }
-    return { userId, uid, mountPath };
+    const handle: ShardHandle = { userId, uid, mountPath };
+    // Only with FLOQ_NETNS (and a successful startup probe): the user's persistent network namespace.
+    if (this.netns?.isEnabled) {
+      try {
+        handle.netns = await this.netns.ensure(uid);
+      } catch (error) {
+        log.error("shard.netns_failed", { userId, uid, error: error instanceof Error ? error.message.slice(0, 200) : String(error) });
+        throw unavailable("Your sandbox network could not be set up right now. Try again shortly.");
+      }
+    }
+    return handle;
   }
 
   hostPath(handle: ShardHandle, relative: string): string {
@@ -286,7 +305,8 @@ export class LinuxShardDriver implements ShardDriver {
     // (resolv.conf, ssl config): create them 0755 explicitly, before anything is bound into them.
     args.push("--perms", "0755", "--dir", "/etc", "--perms", "0755", "--dir", "/home");
     for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/ssl", "/etc/ca-certificates", "/etc/alternatives", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime"]) {
-      if (existsSync(path)) args.push("--ro-bind", path, path);
+      if (handle.netns && path === "/etc/resolv.conf") args.push("--ro-bind", this.netns!.resolvConfPath(uid), path);
+      else if (existsSync(path)) args.push("--ro-bind", path, path);
     }
     // Claude Code managed settings: this user's own copy (base policy + their plugins, see claudeManagedPlugins.ts) when
     // the launch wrote one, else the image's.
@@ -321,7 +341,9 @@ export class LinuxShardDriver implements ShardDriver {
     // Not /usr/bin/bwrap: Ubuntu >= 24.04 hosts attach the AppArmor profile "bwrap" to that path (even inside
     // containers) and run everything under it as "unpriv_bwrap", which denies CAP_SETUID/SETGID/CHOWN, so
     // setpriv could never drop to the per-user uid. The image ships an identical copy at /usr/local/bin/floq-bwrap.
-    return spawnPty(process.env.FLOQ_BWRAP_BIN?.trim() || "floq-bwrap", args, {
+    // With a per-user netns the launch is wrapped in `nsenter --net=<path> --`; without one this is the identity.
+    const launch = wrapLaunch(process.env.FLOQ_BWRAP_BIN?.trim() || "floq-bwrap", args, handle.netns);
+    return spawnPty(launch.file, launch.args, {
       name: "xterm-256color",
       cols: spec.cols,
       rows: spec.rows,
@@ -341,6 +363,8 @@ export class LinuxShardDriver implements ShardDriver {
       }
     }
     log.info("shard.sleep", { userId: handle.userId, uid: handle.uid });
+    // The namespace lives exactly as long as the awake shard (callers guarantee no sandboxed process is left).
+    if (handle.netns && this.netns) await this.netns.remove(handle.uid).catch((error) => log.warn("shard.netns_remove_failed", { uid: handle.uid, error: String(error).slice(0, 160) }));
   }
 }
 
@@ -387,7 +411,15 @@ export function createShardDriver(config: Config): ShardDriver {
   const mode = config.shardDriver === "auto" ? (process.platform === "linux" ? "linux" : "local") : config.shardDriver;
   if (mode === "linux") {
     if (process.platform !== "linux") throw new Error("FLOQ_SHARD_DRIVER=linux requires a Linux host");
-    return new LinuxShardDriver(config);
+    // Flag off (default): no NetnsManager is even constructed.
+    const mode = netnsMode();
+    const netns = mode === "off" ? null : new NetnsManager({
+      mode,
+      runtimePort: config.port,
+      allow: parseAllowList(process.env.FLOQ_NETNS_ALLOW),
+      metaDir: join(config.shardRoot, "meta"),
+    });
+    return new LinuxShardDriver(config, netns);
   }
   log.warn("shard.local_driver", { message: "Running without per-user isolation or encryption (development only)" });
   return new LocalShardDriver(config);

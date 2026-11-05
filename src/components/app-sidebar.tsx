@@ -16,7 +16,6 @@ import CommandPalette from "@/components/sidebar/command-palette";
 import ProjectList from "@/components/sidebar/project-list";
 import UserCard from "@/components/sidebar/user-card";
 import { useRuntime, type View } from "@/lib/runtime/store";
-import { GlisseSurface } from "@/components/ui/glass-surface";
 
 const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
     { view: "home", label: "Home", icon: IconHome },
@@ -40,7 +39,7 @@ export function AppSidebar() {
                 <SidebarHeader>
                     <SidebarMenu>
                         <SidebarMenuItem>
-                            <GlisseSurface className="sidebar-search-glass">
+                            <div className="floq-surface sidebar-search min-w-0 rounded-[10px]">
                                 <SidebarMenuButton
                                     tooltip="Search"
                                     className="h-9 rounded-[inherit] border-0 bg-transparent text-muted-foreground shadow-none hover:bg-transparent"
@@ -50,7 +49,7 @@ export function AppSidebar() {
                                     <span>Search</span>
                                     <Kbd className="ml-auto group-data-[collapsible=icon]:hidden">Ctrl K</Kbd>
                                 </SidebarMenuButton>
-                            </GlisseSurface>
+                            </div>
                         </SidebarMenuItem>
                     </SidebarMenu>
                 </SidebarHeader>

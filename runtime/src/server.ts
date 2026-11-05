@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { DEFAULT_MAX_UPLOAD_BYTES } from "./attachments.js";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
@@ -28,6 +29,10 @@ import type { SettingsPatch, SettingsStore } from "./settings.js";
 import type { Session } from "./session.js";
 import type { GitReview } from "./gitReview.js";
 import type { WorkspaceFiles } from "./workspaceFiles.js";
+import { DownloadLinks } from "./downloadLinks.js";
+import { DavMounts, mountLocations } from "./davMounts.js";
+import { WebDav } from "./webdav.js";
+import type { ShardService } from "./shards.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
 import { OrganizationsService, organizationLimitsFromEnv, routeOrganizations } from "./organizations.js";
@@ -39,7 +44,10 @@ import { Approvals } from "./approvals.js";
 import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
 import { serialPerTarget, typeMessage } from "./messageDelivery.js";
-import { databasePort, listSessionPorts, MANUAL_DENY_PORTS, pipeTunnel, tunnelTarget } from "./ports.js";
+import { visibleDebugLinks } from "./debugLinks.js";
+import { displayStatus, portIsFreeInNetns, stopDisplayServer } from "./display.js";
+import { acquireTunnelSlot, connectInNetns } from "./netns.js";
+import { databasePort, listAllListeners, listSessionPorts, MANUAL_DENY_PORTS, manualPortOwned, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 
 const startedAt = new Date().toISOString();
@@ -68,10 +76,12 @@ interface Deps {
   skills: SkillsService;
   gitReview: GitReview;
   workspaceFiles?: WorkspaceFiles;
+  /** Enables the read-only WebDAV mounts (Open in Explorer). */
+  shards?: ShardService;
   tasks: TasksService;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -111,11 +121,21 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (hit.count > 10) throw new HttpError(429, "rate_limited", "Too many requests");
   }
 
-  async function userFor(headers: IncomingMessage["headers"]): Promise<string> {
+  async function authFor(headers: IncomingMessage["headers"]): Promise<{ userId: string; authSessionId: string }> {
     const result = await auth.api.getSession({ headers: fromNodeHeaders(headers) });
     if (!result) throw unauthorized();
-    return result.user.id;
+    return { userId: result.user.id, authSessionId: result.session?.id ?? "" };
   }
+
+  async function userFor(headers: IncomingMessage["headers"]): Promise<string> {
+    return (await authFor(headers)).userId;
+  }
+
+  const davMounts = new DavMounts(pool);
+  const webdav = shards ? new WebDav({ mounts: davMounts, shards, manager }) : null;
+
+  /** Short-lived single-use links for native browser/WebView downloads, which cannot send an Authorization header. */
+  const downloadLinks = new DownloadLinks(config.authSecret || randomBytes(32).toString("hex"));
 
   const info = (): ServerInfo => ({
     name: "floq-runtime",
@@ -285,6 +305,30 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const pendingRequest = portRequests.request(userId, { sessionId, agentName: me.name, port: body.port, protocol: body.protocol, purpose: body.purpose });
           res.once("close", () => { if (!res.writableEnded) pendingRequest.abandon(); });
           return send(res, 200, await pendingRequest.promise);
+        }
+        case "display/status": {
+          const status = displayStatus(manager.displays.get(sessionId), await listSessionPorts(manager.getLive(sessionId, userId).pid, manager.inNetns(userId)));
+          return send(res, 200, { running: status.running, port: status.port });
+        }
+        case "display/prepare": {
+          // Before `floq display start`: probe the display port (other users share the netns and may squat it) and
+          // move this session's lease to a free spare port when needed. The CLI binds the port returned here.
+          const liveSession = manager.getLive(sessionId, userId);
+          const lease = manager.displays.get(sessionId);
+          if (!lease) throw new HttpError(409, "display_unavailable", "This session has no display slot");
+          // Per-user netns: probe INSIDE the user's namespace (the host's ports are irrelevant there).
+          const port = await manager.displays.ensureFreePort(sessionId, manager.inNetns(userId) ? portIsFreeInNetns(liveSession.pid) : undefined);
+          if (port === null) throw new HttpError(503, "display_port_unavailable", "No free display port on this server right now");
+          return send(res, 200, { display: ":" + lease.display, port });
+        }
+        case "display/started": {
+          // `floq display start` announces the running display; the user's app shows it in the App window panel.
+          const lease = manager.displays.get(sessionId);
+          if (!lease) throw new HttpError(409, "display_unavailable", "This session has no display slot");
+          const status = displayStatus(lease, await listSessionPorts(manager.getLive(sessionId, userId).pid, manager.inNetns(userId)));
+          if (!status.running) throw new HttpError(409, "display_not_running", "Nothing listens on the display port " + lease.port + " yet");
+          manager.displays.announce(userId, sessionId);
+          return send(res, 200, { announced: true, port: lease.port });
         }
         case "approvals/request": {
           const parties = await orchestrator.approvalParties(userId, sessionId, body.target);
@@ -457,7 +501,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (url.pathname.startsWith("/api/auth/")) {
       // Logging out puts the user's terminals and shard to sleep.
       let signingOut: string | null = null;
-      if (url.pathname === "/api/auth/sign-out") signingOut = await userFor(req.headers).catch(() => null);
+      if (url.pathname === "/api/auth/sign-out") {
+        const who = await authFor(req.headers).catch(() => null);
+        signingOut = who?.userId ?? null;
+        if (who) { downloadLinks.revokeSession(who.authSessionId); downloadLinks.revokeUser(who.userId); davMounts.revokeSession(who.authSessionId); davMounts.revokeUser(who.userId); }
+      }
       await authHandler(req, res);
       if (signingOut) {
         void manager.sleepUser(signingOut, "logout").catch((error) =>
@@ -504,7 +552,17 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 201, { ok: true, organizationId: registered.organizationId });
     }
 
-    const userId = await userFor(req.headers);
+    // Native downloads: authorised by a signed single-use link instead of a bearer header (see downloadLinks.ts).
+    const downloadMatch = /^\/v1\/sessions\/([\w-]+)\/files\/download$/.exec(url.pathname);
+    if (downloadMatch && method === "GET") {
+      if (!workspaceFiles) throw notFound();
+      const claims = downloadLinks.redeem(url.searchParams.get("t"));
+      if (!claims || claims.s !== downloadMatch[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
+      return workspaceFiles.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
+    }
+
+    const { userId, authSessionId } = await authFor(req.headers);
+    davMounts.touch(userId);
 
     if (url.pathname.startsWith("/v1/admin/") || url.pathname === "/v1/me/role") {
       if (url.pathname === "/v1/me/role" && method === "GET") return send(res, 200, { role: await getRole(pool, config.bootstrapAdminEmail, userId) });
@@ -944,6 +1002,31 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return send(res, 200, filesMatch[2] ? await workspaceFiles.read(userId, filesMatch[1], path) : await workspaceFiles.list(userId, filesMatch[1], path));
     }
 
+    const mountMatch = /^\/v1\/projects\/([\w-]+)\/files\/mount$/.exec(url.pathname);
+    if (mountMatch && (method === "POST" || method === "DELETE")) {
+      if (!webdav) throw notFound();
+      if (method === "DELETE") {
+        const token = url.searchParams.get("token") ?? undefined;
+        return send(res, 200, { revoked: davMounts.revoke(userId, mountMatch[1], token) });
+      }
+      const mount = await davMounts.create(userId, authSessionId, mountMatch[1]);
+      const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
+      const proto = forwardedProto === "https" || forwardedProto === "http" ? forwardedProto : (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http";
+      const host = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "").split(",")[0].trim();
+      let locations: { davUrl: string; uncPath: string } | null = null;
+      try { locations = mountLocations(`${proto}://${host}`, mount.token); } catch { /* the client derives these from its own base URL */ }
+      return send(res, 200, { token: mount.token, path: `/dav/${mount.token}/`, ...locations, expiresAt: mount.expiresAt, folders: mount.folders.map((folder) => folder.name) });
+    }
+
+    const fileLinkMatch = /^\/v1\/sessions\/([\w-]+)\/files\/link$/.exec(url.pathname);
+    if (fileLinkMatch && method === "POST") {
+      if (!workspaceFiles) throw notFound();
+      const body = await readJson<{ path?: unknown }>(req);
+      const path = await workspaceFiles.authorizeDownload(userId, fileLinkMatch[1], body.path);
+      const { token, expiresAt } = downloadLinks.issue({ userId, authSessionId, sessionId: fileLinkMatch[1], path });
+      return send(res, 200, { url: `/v1/sessions/${fileLinkMatch[1]}/files/download?t=${token}`, expiresAt });
+    }
+
     if (url.pathname === "/v1/port-requests" && method === "GET") return send(res, 200, { requests: portRequests.list(userId) });
     const portRequestAnswer = /^\/v1\/port-requests\/([\w-]+)\/resolve$/.exec(url.pathname);
     if (portRequestAnswer && method === "POST") {
@@ -963,7 +1046,23 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
     if (portsMatch && method === "GET") {
-      return send(res, 200, { ports: await listSessionPorts(manager.getLive(portsMatch[1], userId).pid) });
+      const live = manager.getLive(portsMatch[1], userId);
+      const ports = await listSessionPorts(live.pid, manager.inNetns(userId));
+      // links: only URLs whose ports this session listens on now (no stale links, no SSRF through printed URLs).
+      return send(res, 200, { ports, links: visibleDebugLinks(live.debugLinks, ports) });
+    }
+
+    const displayMatch = /^\/v1\/sessions\/([\w-]+)\/display$/.exec(url.pathname);
+    if (displayMatch && method === "GET") {
+      // Owner only (getLive checks the user). Port and token come from the runtime-wide slot; running = Xpra listens on it in this session's tree.
+      const live = manager.getLive(displayMatch[1], userId);
+      return send(res, 200, displayStatus(manager.displays.get(displayMatch[1]), await listSessionPorts(live.pid, manager.inNetns(userId))));
+    }
+    const displayStop = /^\/v1\/sessions\/([\w-]+)\/display\/stop$/.exec(url.pathname);
+    if (displayStop && method === "POST") {
+      const live = manager.getLive(displayStop[1], userId);
+      const lease = manager.displays.get(displayStop[1]);
+      return send(res, 200, { stopped: lease ? await stopDisplayServer(live.pid, lease.port, undefined, manager.inNetns(userId)) : false });
     }
 
     const attachmentMatch = /^\/v1\/sessions\/([\w-]+)\/attachments$/.exec(url.pathname);
@@ -1023,6 +1122,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
   const server = createServer((req, res) => {
     cors(req, res);
+    // WebDAV first: the OPTIONS short-circuit below would otherwise answer the Explorer probes with a bare 204.
+    if (webdav?.handles(req)) {
+      void webdav.handle(req, res);
+      return;
+    }
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
@@ -1097,7 +1201,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
           const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
-          const offAll = () => { off(); offPorts(); offApprovals(); };
+          const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offAll = () => { off(); offPorts(); offApprovals(); offDisplays(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });
@@ -1114,10 +1219,36 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         const session = manager.getLive(tunnel[1], userId);
         // Only ports this session's own processes listen on: no SSRF into the host or other sessions.
         // ?manual=1 additionally allows an undetected loopback port >= 1024 that is not the runtime's own or a database port.
-        const manual = url.searchParams.get("manual") === "1" ? { denyPorts: [...MANUAL_DENY_PORTS, config.port, databasePort(config.databaseUrl)] } : undefined;
-        const target = tunnelTarget(await listSessionPorts(session.pid), Number(tunnel[2]), manual);
+        // It also requires the port to be listened on by this user's uid and no other (sandboxes share the host network namespace).
+        const uid = manager.sessionUid(userId);
+        // Per-user netns (FLOQ_NETNS): the session's ports live in its namespace; read its tables and connect from inside it.
+        const netnsPath = manager.netnsPath(userId);
+        // Namespace on but no live process to read it from: refuse, never fall back to the host's tables or network.
+        if (netnsPath && (session.pid === null || uid === null)) return reject(503, "Service Unavailable");
+        const listenerPid = netnsPath ? session.pid : undefined;
+        const manual = url.searchParams.get("manual") === "1"
+          ? { denyPorts: [...MANUAL_DENY_PORTS, config.port, databasePort(config.databaseUrl)], uid, listeners: await listAllListeners(listenerPid) }
+          : undefined;
+        const port = Number(tunnel[2]);
+        const detected = await listSessionPorts(session.pid, netnsPath !== null);
+        const target = tunnelTarget(detected, port, manual);
         if (!target) return reject(404, "Not Found");
-        wss.handleUpgrade(req, socket, head, (ws) => { pipeTunnel(ws, target); });
+        const viaManual = !detected.some((p) => p.port === port);
+        if (viaManual) {
+          // Re-check ownership right before connecting: the port may have changed hands since the first check.
+          // Done BEFORE the upgrade so pipeTunnel attaches its message handler synchronously (a later async
+          // attach would drop the client's first bytes).
+          const now = await listAllListeners(listenerPid).catch(() => null);
+          if (!now || !manualPortOwned(now, port, uid)) return reject(403, "Forbidden");
+        }
+        // Bounded helper processes per user (each tunnel in a namespace is an nsenter+socat pair).
+        const release = netnsPath ? acquireTunnelSlot(uid!) : () => undefined;
+        if (!release) return reject(429, "Too Many Requests");
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          if (!netnsPath) return void pipeTunnel(ws, target);
+          ws.once("close", release);
+          pipeTunnel(ws, target, (t) => connectInNetns(netnsPath, uid!, t, release));
+        });
         return;
       }
       const match = SESSION_PATH.exec(url.pathname);

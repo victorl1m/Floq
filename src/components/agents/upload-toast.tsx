@@ -50,7 +50,7 @@ interface Snapshot {
 function UploadBody({ snapshot }: { snapshot: Snapshot }) {
     const percent = snapshot.batchTotal ? Math.min(100, Math.floor((snapshot.batchLoaded / snapshot.batchTotal) * 100)) : 0;
     return (
-        <div className="flex w-full min-w-0 flex-col gap-1.5">
+        <div data-upload-body className="flex w-full min-w-0 flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3">
                 <span className="min-w-0 truncate text-sm font-medium">{snapshot.name}</span>
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{snapshot.index} of {snapshot.count}</span>

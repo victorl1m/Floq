@@ -207,15 +207,6 @@
   --canvas-card-border: #c5ccd8;
   --xy-background-color: var(--canvas-bg);
   --xy-background-pattern-dots-color: var(--canvas-dot);
-  /* Glisse variables re-mapped for the light canvas (mirrors the dark remap below). */
-  --lg-glass: rgb(255 255 255 / 0.92);
-  --lg-glass-active: rgb(32 38 51 / 0.07);
-  --lg-edge: #c5ccd8;
-  --lg-drop: transparent;
-  --lg-foreground: #202633;
-  --lg-muted: #596476;
-  --lg-lens: rgb(255 255 255 / 0.5);
-  --lg-lens-drop: transparent;
   --xy-minimap-background-color: #fbfcfe;
   --xy-selection-background-color: rgb(194 65 12 / 0.07);
   --xy-selection-border: 1px dotted rgb(194 65 12 / 0.7);
@@ -227,12 +218,6 @@
   background-color: rgb(255 255 255 / 0.82);
   background-image: linear-gradient(145deg, rgb(255 255 255 / 0.9), transparent 55%);
   box-shadow: var(--shadow-elev-rim), var(--shadow-elev-1);
-}
-.canvas-chrome-light .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"] { border-color: var(--canvas-card-border); }
-/* Open popover trigger (Vault): keep the glass, signal state with an accent rim instead of a flat grey flood. */
-.canvas-chrome .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"][aria-expanded="true"] {
-  border-color: color-mix(in oklab, var(--primary) 70%, transparent);
-  background-color: var(--lg-glass);
 }
 .canvas-chrome-light .react-flow__controls-button,
 .canvas-chrome-light .react-flow__minimap { box-shadow: var(--shadow-elev-1); }
@@ -259,25 +244,7 @@
   --border: #38383a;
   --input: #636366;
   --ring: #fb923c;
-  /* Glisse's --lg-* are mapped on :root, where var() resolves once against the APP theme; re-map them here so
-     the always-dark chrome gets dark glass and light labels even when the app is in Light. */
-  --lg-glass: rgb(255 255 255 / 0.08);
-  --lg-glass-active: rgb(255 255 255 / 0.15);
-  --lg-edge: rgb(255 255 255 / 0.16);
-  --lg-drop: transparent;
-  --lg-foreground: #f5f5f7;
-  --lg-muted: #98989d;
-  --lg-fill: var(--primary);
-  --lg-ring: var(--ring);
-  --lg-lens: rgb(255 255 255 / 0.055);
-  --lg-lens-drop: transparent;
-  --lg-lens-shine: 1;
-  --lg-rim-shine: 0.13;
 }
-/* Topbar buttons: Floq's size tokens (32px / 10px radius) beat per-button h-* overrides, which lose to
-   the higher-specificity `.floq-button.lg-button[data-size]` rules. */
-.canvas-topbar .floq-button.lg-button { height: 2rem; border-radius: 10px; }
-.canvas-chrome-dark .canvas-topbar .floq-button.lg-button[data-floq-variant="outline"] { border-color: rgb(255 255 255 / 0.16); }
 .canvas-topbar {
   color: var(--foreground);
   border: 1px solid rgb(255 255 255 / 0.14);
@@ -323,19 +290,17 @@
 :root[data-material="solid"] .canvas-topbar {
   background-color: #1c1c1e;
   background-image: none;
-  backdrop-filter: none;
 }
 :root[data-material="solid"] .canvas-chrome-light .canvas-topbar { background-color: #ffffff; }
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-material="system"] .canvas-topbar {
+  :root:not([data-material="solid"]) .canvas-topbar {
     background-color: #1c1c1e;
     background-image: none;
-    backdrop-filter: none;
   }
-  :root[data-material="system"] .canvas-chrome-light .canvas-topbar { background-color: #ffffff; }
+  :root:not([data-material="solid"]) .canvas-chrome-light .canvas-topbar { background-color: #ffffff; }
 }
 @media (forced-colors: active) {
-  .canvas-topbar { color: CanvasText; border-color: CanvasText; background: Canvas; background-image: none; backdrop-filter: none; }
+  .canvas-topbar { color: CanvasText; border-color: CanvasText; background: Canvas; background-image: none; }
 }
 
 @utility material-content {
@@ -343,14 +308,11 @@
   background-color: color-mix(in oklab, var(--card) 88%, transparent);
   background-image: linear-gradient(140deg, color-mix(in oklab, white 9%, transparent), transparent 38%);
   box-shadow: inset 0 1px 0 var(--glass-highlight), 0 8px 22px -22px color-mix(in oklab, var(--foreground) 35%, transparent);
-  backdrop-filter: none;
 }
 
 @utility glass-surface {
   background-color: var(--glass-surface);
   background-image: linear-gradient(145deg, color-mix(in oklab, white 10%, transparent), transparent 38%);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 @utility glass-panel {
@@ -358,8 +320,6 @@
   background-color: var(--glass-surface);
   background-image: linear-gradient(145deg, color-mix(in oklab, white 12%, transparent), transparent 40%);
   box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 .workspace-surface {
@@ -394,18 +354,9 @@
   to { opacity: 1; }
 }
 
-@supports not (backdrop-filter: blur(1px)) {
-  .glass-surface,
-  .glass-panel {
-    background-color: var(--popover);
-  }
-}
-
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-material="system"] :is(.glass-surface, .glass-panel, .floq-glass.lg-glass) {
+  :root:not([data-material="solid"]) :is(.glass-surface, .glass-panel) {
     background-color: var(--popover);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
 }
 
@@ -415,7 +366,6 @@
     border-color: CanvasText;
     background-color: Canvas;
     box-shadow: none;
-    backdrop-filter: none;
     color: CanvasText;
   }
 
@@ -520,8 +470,8 @@
 .toaster [data-sonner-toast].cn-toast {
   --toast-tone: var(--toast-info);
   display: grid;
-  grid-template-columns: var(--toast-icon, 30px) minmax(0, 1fr) auto auto;
-  grid-template-areas: "icon content content close" "icon . cancel action";
+  grid-template-columns: var(--toast-icon, 30px) minmax(0, 1fr) auto;
+  grid-template-areas: "icon content close" "icon cancel action";
   align-items: center;
   gap: 0 10px;
   width: min(390px, calc(100vw - 32px));
@@ -543,8 +493,12 @@
 
 /* No action buttons: a single row, so icon, title and close share one exact centre line. */
 .toaster [data-sonner-toast].cn-toast:not(:has(.cn-toast-action, .cn-toast-cancel)) {
-  grid-template-areas: "icon content content close";
+  grid-template-areas: "icon content close";
 }
+/* With buttons: icon lines up with the title row, buttons sit on the second row. */
+.toaster [data-sonner-toast].cn-toast:has(.cn-toast-action, .cn-toast-cancel) .cn-toast-icon { grid-row: 1; align-self: start; }
+.toaster [data-sonner-toast].cn-toast:has(.cn-toast-action, .cn-toast-cancel) .cn-toast-content { align-self: start; }
+.cn-toast .cn-toast-cancel { justify-self: end; }
 
 /* Title + description (or actions): roomier two-line card. */
 .toaster [data-sonner-toast].cn-toast:has(.cn-toast-description) {
@@ -615,6 +569,7 @@
 /* Only the newest toast is the notch's face; older ones wait behind it. */
 .toaster [data-sonner-toast].cn-toast[data-front="true"] .cn-toast-title::after {
   margin-left: 8px;
+  white-space: nowrap;
   color: var(--toast-fg-faint);
   font-size: 0.6875rem;
   font-weight: 500;
@@ -622,6 +577,9 @@
   content: "+" counter(toast-pending) " more";
 }
 .toaster.toaster-solo [data-sonner-toast].cn-toast .cn-toast-title::after { content: none !important; }
+/* The upload progress body is custom JSX rendered inside the title node: no title typography or queue counter. */
+.cn-toast .cn-toast-title:has(> [data-upload-body]) { font: inherit; }
+.toaster [data-sonner-toast].cn-toast[data-front="true"] .cn-toast-title:has(> [data-upload-body])::after { content: none; }
 
 @keyframes cn-toast-morph {
   0% { clip-path: var(--toast-notch); opacity: 0; }
@@ -671,8 +629,6 @@
   min-width: 0;
   color: var(--toast-fg);
 }
-/* Toasts with an action: centre the copy so it doesn't leave a hole beside the button. */
-.toaster [data-sonner-toast].cn-toast:has(.cn-toast-action) .cn-toast-content { text-align: center; }
 /* Sonner can leave an empty description node behind; never let it take space. */
 .cn-toast .cn-toast-description:empty { display: none; }
 
@@ -693,6 +649,9 @@
   font-size: 0.8125rem;
   line-height: 1.125rem;
   overflow-wrap: anywhere;
+  white-space: pre-line;
+  max-height: 6.75rem;
+  overflow-y: auto;
 }
 
 .toaster [data-sonner-toast].cn-toast .cn-toast-close {
@@ -911,39 +870,6 @@
   isolation: isolate;
 }
 
-/* The shared button keeps Floq's compact geometry while Glisse owns native button material. */
-.floq-button.lg-button {
-  height: 2rem;
-  gap: 0.375rem;
-  border-radius: 10px;
-  padding-inline: 0.625rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-}
-.floq-button.lg-button > svg { width: 1rem; height: 1rem; }
-.floq-button.lg-button[data-floq-variant="default"] { color: var(--primary-foreground); }
-.floq-button.lg-button[data-floq-variant="destructive"] { --lg-destructive: var(--destructive); color: white; }
-.floq-button.lg-button[data-floq-variant="outline"] { border: 1px solid var(--border); }
-.floq-button.lg-button[data-floq-variant="secondary"] { color: var(--secondary-foreground); }
-.floq-button.lg-button[data-floq-variant="ghost"],
-.floq-button.lg-button[data-floq-variant="link"] { color: var(--foreground); }
-.floq-button.lg-button:disabled { opacity: 0.5; cursor: var(--cursor-not-allowed); }
-.floq-button.lg-button[data-size="xs"],
-.floq-button.lg-button[data-size="icon-xs"] { height: 1.5rem; border-radius: 8px; }
-.floq-button.lg-button[data-size="xs"] { gap: 0.25rem; padding-inline: 0.5rem; font-size: 0.75rem; line-height: 1rem; }
-.floq-button.lg-button[data-size="icon-xs"] { width: 1.5rem; padding: 0; }
-.floq-button.lg-button[data-size="icon-xs"] > svg { width: 0.75rem; height: 0.75rem; }
-.floq-button.lg-button[data-size="sm"],
-.floq-button.lg-button[data-size="icon-sm"] { height: 1.75rem; border-radius: 9px; }
-.floq-button.lg-button[data-size="sm"] { gap: 0.25rem; padding-inline: 0.625rem; font-size: 0.8125rem; }
-.floq-button.lg-button[data-size="icon-sm"] { width: 1.75rem; padding: 0; }
-.floq-button.lg-button[data-size="icon-sm"] > svg { width: 0.875rem; height: 0.875rem; }
-.floq-button.lg-button[data-size="lg"],
-.floq-button.lg-button[data-size="icon-lg"] { height: 2.25rem; border-radius: 11px; }
-.floq-button.lg-button[data-size="lg"] { padding-inline: 0.75rem; }
-.floq-button.lg-button[data-size="icon"] { width: 2rem; padding: 0; }
-.floq-button.lg-button[data-size="icon-lg"] { width: 2.25rem; padding: 0; }
-
 .button-shimmer > * { position: relative; z-index: 1; }
 
 .button-shimmer::after {
@@ -996,24 +922,8 @@
   }
 }
 
-/* Glisse's optical layer uses the same semantic material and theme owners. */
-:root {
-  --lg-glass: var(--glass-surface);
-  --lg-foreground: var(--foreground);
-  --lg-muted: var(--muted-foreground);
-  --lg-fill: var(--primary);
-  --lg-ring: var(--ring);
-  --lg-edge: var(--glass-border);
-  /* Hover/pressed tint follows the app theme (a translucent ink over the glass), never Glisse's OS-scheme grey. */
-  --lg-glass-active: color-mix(in srgb, var(--foreground) 7%, var(--glass-surface));
-  --lg-glass-pressed: color-mix(in srgb, var(--foreground) 13%, var(--glass-surface));
-}
-.floq-button.lg-button:is([data-floq-variant="outline"], [data-floq-variant="secondary"]):is(:active, [data-pressed]) { background-color: var(--lg-glass-pressed, var(--lg-glass-active)); }
-:root[data-material="solid"] :is(.glass-surface, .glass-panel, .material-content, .floq-glass.lg-glass) {
+:root[data-material="solid"] :is(.glass-surface, .glass-panel, .material-content) {
   background-color: var(--popover);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  --lg-blur: 0px;
 }
 
 /* Floq's product surfaces: pearl light planes and OLED-neutral graphite layers. */
@@ -1148,18 +1058,14 @@
   background-image: linear-gradient(145deg, rgb(255 255 255 / 0.075), transparent 44%);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.11), 0 18px 42px -34px rgb(0 0 0 / 0.9);
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .floq-right-sidebar { background-color: var(--card); }
-  .dark .floq-right-sidebar { background-color: #1c1c1e; }
-}
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-material="system"] .floq-right-sidebar { backdrop-filter: none; background-color: var(--card); }
-  :root[data-material="system"].dark .floq-right-sidebar { background-color: #1c1c1e; }
+  :root:not([data-material="solid"]) .floq-right-sidebar { background-color: var(--card); }
+  :root:not([data-material="solid"]).dark .floq-right-sidebar { background-color: #1c1c1e; }
 }
-:root[data-material="solid"] .floq-right-sidebar { backdrop-filter: none; background-color: var(--card); }
+:root[data-material="solid"] .floq-right-sidebar { background-color: var(--card); }
 :root[data-material="solid"].dark .floq-right-sidebar { background-color: #1c1c1e; }
 @media (forced-colors: active) {
-  .floq-right-sidebar { border-color: CanvasText; background: Canvas; box-shadow: none; backdrop-filter: none; }
+  .floq-right-sidebar { border-color: CanvasText; background: Canvas; box-shadow: none; }
 }
 
 [data-slot="sidebar-container"] {
@@ -1235,37 +1141,8 @@
   background-color: color-mix(in oklab, var(--card) 88%, transparent);
   background-image: linear-gradient(140deg, color-mix(in oklab, white 9%, transparent), transparent 38%);
   box-shadow: 0 5px 20px -20px color-mix(in oklab, var(--foreground) 38%, transparent), inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
-.floq-glass.lg-glass {
-  --lg-glass: var(--glass-surface);
-  /* Glisse bakes the edge into a 0.5px line in a 1x bitmap, which aliases to dim/gappy pixels on the rounded corners.
-     Keep the bitmap for the rim light only and draw the edge with an inset shadow, which follows border-radius exactly. */
-  --lg-edge: transparent;
-  --lg-drop: var(--glass-drop);
-  --lg-rim-shine: 0.38;
-  --lg-glass-bend: 0.52;
-  --lg-glass-dispersion: 0.28;
-  --lg-blur: 12px;
-  border: 0;
-  color: var(--popover-foreground);
-}
-.floq-glass.lg-glass,
-.floq-glass.lg-glass[data-rim] {
-  box-shadow: inset 0 0 0 1px var(--glass-border), 0 1px 3px var(--lg-drop);
-}
-.sidebar-search-glass.lg-glass {
-  --lg-blur: 5px;
-  --lg-glass-bend: 0.22;
-  --lg-glass-dispersion: 0.08;
-  min-width: 0;
-  border-radius: 10px;
-}
-/* Glisse's unlayered relative positioning otherwise wins over Tailwind's fixed utility. */
-.floq-glass.lg-glass[data-slot="dialog-content"],
-.floq-glass.lg-glass[data-slot="alert-dialog-content"] { position: fixed; }
 /* === Terminal theme (light/dark) ===
    Mirrors src/lib/terminal-theme.ts: the xterm canvas and every container around it share one surface. */
 :root { --terminal-bg: #f6f8fa; --terminal-scrim: rgb(246 248 250 / 0.82); }
@@ -1428,24 +1305,19 @@
 }
 
 @media (forced-colors: active) {
-  .workspace-frame, [data-sidebar="sidebar"], .material-content, .floq-glass.lg-glass { border: 1px solid CanvasText; background: Canvas; box-shadow: none; backdrop-filter: none; }
+  .workspace-frame, [data-sidebar="sidebar"], .material-content { border: 1px solid CanvasText; background: Canvas; box-shadow: none; }
   .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog { border-color: CanvasText; background: Canvas; background-image: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
   [data-slot="kbd"]:not([data-slot="kbd-group"]) { border-color: CanvasText; color: CanvasText; background: Canvas; box-shadow: none; }
 }
 
-@supports not (backdrop-filter: blur(1px)) {
-  .floq-glass.lg-glass { background-color: var(--popover); }
-}
-
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-material="system"] .floq-glass.lg-glass { background-color: var(--popover); --lg-blur: 0px; }
-  :root[data-material="system"] :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
+  :root:not([data-material="solid"]) :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
     background-color: var(--card);
     background-image: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  :root[data-material="system"] .home-task-composer.glass-key-surface { border-color: var(--border); box-shadow: var(--shadow-elev-1); }
+  :root:not([data-material="solid"]) .home-task-composer.glass-key-surface { border-color: var(--border); box-shadow: var(--shadow-elev-1); }
 }
 
 :root[data-material="solid"] :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
@@ -1460,7 +1332,7 @@
   :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-material="system"] :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
+  :root:not([data-material="solid"]) :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
 }
 :root[data-material="solid"] :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
 :root[data-material="solid"] :is(.glass-key-surface, .canvas-agent-card-material, .floq-surface, .floq-frosted-menu, .floq-frosted-dialog) { box-shadow: var(--shadow-elev-1); }
@@ -1598,3 +1470,103 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   border: 1px solid var(--floor-edge); font-variant-numeric: tabular-nums;
 }
 @media (prefers-reduced-motion: reduce) { .floor-band { transition: none; } }
+
+/* === Native window material (Mica / Acrylic on Windows, vibrancy on macOS) ===========================
+   src/lib/native-material.ts sets <html data-native-material="mica|acrylic|vibrancy"> only when the shell applied
+   the effect. Teams-style split:
+   - SHELL (window background, titlebar, footer, left sidebar, workspace frame / home background) becomes a thin
+     tint over the OS backdrop, via the --shell-* tokens below.
+   - CONTENT stays opaque: canvas (@xyflow), xterm terminals, dialogs, popovers/menus, sheets, cards, settings
+     groups, inputs and the right sidebar. Their backgrounds are forced opaque here because their usual 80-90% alpha
+     would show the desktop through them.
+   Without the attribute none of this applies and the app is solid exactly as before. Reduced transparency and
+   forced colors put the tokens back to opaque values (the OS normally turns the effect off then too). */
+:root[data-native-material] {
+  --shell-window: rgb(243 244 247 / 0.32);
+  --shell-chrome: rgb(255 255 255 / 0.16);
+  --shell-pane: rgb(255 255 255 / 0.4);
+  --shell-pane-image: none;
+  --shell-frame: rgb(255 255 255 / 0.6);
+  --shell-border: rgb(28 38 54 / 0.09);
+  --shell-dust: 0;
+}
+:root[data-native-material].dark {
+  --shell-window: rgb(14 14 16 / 0.36);
+  --shell-chrome: rgb(255 255 255 / 0.025);
+  --shell-pane: rgb(36 36 40 / 0.38);
+  --shell-frame: rgb(12 12 14 / 0.58);
+  --shell-border: rgb(255 255 255 / 0.07);
+}
+/* Acrylic already carries the shell's own tint (set_native_material passes a theme colour), so keep ours lighter. */
+:root[data-native-material="acrylic"] {
+  --shell-window: rgb(243 244 247 / 0.18);
+  --shell-pane: rgb(255 255 255 / 0.3);
+  --shell-frame: rgb(255 255 255 / 0.52);
+}
+:root[data-native-material="acrylic"].dark {
+  --shell-window: rgb(14 14 16 / 0.22);
+  --shell-pane: rgb(36 36 40 / 0.28);
+  --shell-frame: rgb(12 12 14 / 0.5);
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-native-material] {
+    --shell-window: var(--background);
+    --shell-chrome: var(--glass-surface);
+    --shell-pane: rgb(255 255 255 / 0.72);
+    --shell-pane-image: linear-gradient(145deg, rgb(255 255 255 / 0.18), transparent 40%);
+    --shell-frame: var(--background);
+    --shell-border: color-mix(in oklab, var(--border) 42%, transparent);
+    --shell-dust: 1;
+  }
+  :root[data-native-material].dark {
+    --shell-pane: rgb(23 23 25 / 0.72);
+    --shell-pane-image: linear-gradient(145deg, rgb(255 255 255 / 0.07), transparent 42%);
+    --shell-frame: #000;
+    --shell-border: #1c1c1e;
+  }
+}
+@media (forced-colors: active) {
+  /* Forced colors keep a colour's alpha, so transparent shells would stay see-through: go opaque. */
+  :root[data-native-material] { --shell-window: Canvas; --shell-chrome: Canvas; --shell-pane: Canvas; --shell-pane-image: none; --shell-frame: Canvas; --shell-border: CanvasText; --shell-dust: 0; }
+}
+
+/* Shell: window background */
+:root[data-native-material],
+:root[data-native-material] #root { background: transparent; }
+:root[data-native-material] body { background-color: var(--shell-window); }
+/* Shell: titlebar and footer */
+:root[data-native-material] :is(.floq-titlebar, .floq-footer) {
+  border-color: var(--shell-border);
+  background-color: var(--shell-chrome);
+  background-image: none;
+}
+/* Shell: left sidebar pane (the dust backdrop is an opaque plate behind it) */
+:root[data-native-material] .sidebar-dust-backdrop { opacity: var(--shell-dust); }
+:root[data-native-material] [data-slot="sidebar-inner"] {
+  border-color: var(--shell-border);
+  border-right-color: transparent;
+  background-color: var(--shell-pane);
+  background-image: var(--shell-pane-image);
+}
+/* Shell: workspace frame (home, tasks, skills, secrets sit on it; canvas and terminals paint their own opaque bg) */
+:root[data-native-material] .workspace-surface {
+  border-color: var(--shell-border);
+  background-color: var(--shell-frame);
+  background-image: none;
+}
+:root[data-native-material] .auth-screen { background-color: var(--shell-frame); background-image: none; }
+
+/* Content: always opaque over the native backdrop. */
+:root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-right-sidebar, .floq-surface:not([data-slot="sidebar-inner"]), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) {
+  background-color: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-native-material] .workspace-frame :is(input, textarea, [data-slot="select-trigger"]) { background-color: var(--card); }
+:root[data-native-material] .canvas-chrome { background-color: var(--canvas-bg, #000); }
+:root[data-native-material] .canvas-chrome-dark { --canvas-bg: #000; }
+:root[data-native-material] :is(.terminal-surface, .terminal-dialog-body) { background-color: var(--terminal-bg); }
+@media (forced-colors: active) {
+  :root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-right-sidebar, .floq-surface:not([data-slot="sidebar-inner"]), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) { background: Canvas; }
+}
+/* === end native window material === */

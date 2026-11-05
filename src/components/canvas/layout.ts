@@ -9,6 +9,51 @@ export interface LayoutItem {
   linked?: boolean;
 }
 
+/** Resolve each node's layout parent, preferring its recorded recruiter over incidental canvas links. */
+export function resolveLayoutParents(
+  items: readonly { id: string; parentId?: string | null }[],
+  links: readonly { from: string; to: string; kind?: string }[],
+): Map<string, string> {
+  const parents = new Map<string, string>();
+  for (const item of items) if (item.parentId) parents.set(item.id, item.parentId);
+  for (const link of links) {
+    if (link.kind !== "recruit" || parents.has(link.to)) continue;
+    let ancestor: string | undefined = link.from;
+    const seen = new Set<string>();
+    while (ancestor && !seen.has(ancestor)) {
+      if (ancestor === link.to) { ancestor = undefined; break; }
+      seen.add(ancestor);
+      ancestor = parents.get(ancestor);
+    }
+    if (ancestor !== undefined) parents.set(link.to, link.from);
+  }
+  return parents;
+}
+
+/** A saved canvas position wins; otherwise use the computed tree position. */
+export function nodePosition(
+  id: string,
+  saved: Record<string, { x: number; y: number }> | undefined,
+  automatic: Record<string, { x: number; y: number }>,
+  parentId?: string | null,
+  nodeHeight = DEFAULT_NODE_SIZE.height,
+  nodeWidth = DEFAULT_NODE_SIZE.width,
+  parentHeight = DEFAULT_NODE_SIZE.height,
+  siblingPositions: readonly { x: number; y: number }[] = [],
+) {
+  if (saved?.[id]) return saved[id];
+  const parent = parentId ? saved?.[parentId] : undefined;
+  if (parent) {
+    const autoParent = automatic[parentId!];
+    let x = (automatic[id]?.x ?? parent.x) + (autoParent ? parent.x - autoParent.x : 0);
+    const y = parent.y + parentHeight + GAP_Y;
+    const overlapsSibling = (left: number) => siblingPositions.some((point) => left < point.x + nodeWidth && left + nodeWidth > point.x && y < point.y + nodeHeight && y + nodeHeight > point.y);
+    while (overlapsSibling(x)) x += nodeWidth + GAP_X;
+    return { x, y };
+  }
+  return automatic[id] ?? { x: 0, y: 0 };
+}
+
 /** Layered tree layout: one row per depth, each parent centred over its children. Roots sit side by side. */
 export function layoutTree(
   items: LayoutItem[],

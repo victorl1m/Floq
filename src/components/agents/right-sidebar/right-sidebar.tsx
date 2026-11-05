@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { IconChevronRight, IconFiles, IconGitCompare, IconMessages, IconX } from "@tabler/icons-react";
+import { IconAppWindow, IconChevronRight, IconFiles, IconGitCompare, IconMessages, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
@@ -16,6 +16,7 @@ import {
 } from "@/lib/right-sidebar";
 import { isLive } from "../provider";
 import ChangesTab, { type WorkspaceTarget } from "./changes-tab";
+import AppWindowTab, { useDisplayAnnouncements } from "./app-window-tab";
 import ConversationsTab from "./conversations-tab";
 import FilesTab from "./files-tab";
 import { PanelEmpty } from "./panel-states";
@@ -24,6 +25,7 @@ const TABS: Array<{ id: RightSidebarTab; label: string; icon: typeof IconFiles }
   { id: "changes", label: "Changes", icon: IconGitCompare },
   { id: "files", label: "Files", icon: IconFiles },
   { id: "conversations", label: "Conversations", icon: IconMessages },
+  { id: "app", label: "App window", icon: IconAppWindow },
 ];
 
 function useNarrow(): boolean {
@@ -54,6 +56,7 @@ export default function RightSidebar() {
   const openFrame = useRef<number | undefined>(undefined);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const [changeCount, setChangeCount] = useState<number | null>(null);
+  useDisplayAnnouncements(client, sessions);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -251,10 +254,13 @@ export default function RightSidebar() {
           {session ? <ChangesTab client={client} targets={targets} onCount={setChangeCount} /> : <PanelEmpty icon={<IconGitCompare />} title={view === "canvas" && !canvasWorkspace ? "No active workspace" : view === "canvas" ? "No agent in this workspace" : "No agent in this project"} hint={view === "canvas" && !canvasWorkspace ? "Choose a workspace for this project to review its changes." : "Start an agent in this workspace to review its changes."} />}
         </div>
         <div className={cn("h-full", tab !== "files" && "hidden")}>
-          {session ? <FilesTab client={client} targets={targets} /> : <PanelEmpty icon={<IconFiles />} title={view === "canvas" && !canvasWorkspace ? "No active workspace" : view === "canvas" ? "No agent in this workspace" : "No agent in this project"} hint={view === "canvas" && !canvasWorkspace ? "Choose a workspace for this project to browse its files." : "Start an agent in this workspace to browse its files."} />}
+          {session ? <FilesTab client={client} targets={targets} projectId={projectId} /> : <PanelEmpty icon={<IconFiles />} title={view === "canvas" && !canvasWorkspace ? "No active workspace" : view === "canvas" ? "No agent in this workspace" : "No agent in this project"} hint={view === "canvas" && !canvasWorkspace ? "Choose a workspace for this project to browse its files." : "Start an agent in this workspace to browse its files."} />}
         </div>
         <div className={cn("h-full", tab !== "conversations" && "hidden")}>
           <ConversationsTab projectId={projectId} project={project} />
+        </div>
+        <div className={cn("h-full", tab !== "app" && "hidden")}>
+          <AppWindowTab client={client} session={activeSession ?? session} active={open && tab === "app"} />
         </div>
       </div>
     </aside>

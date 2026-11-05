@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { IconArrowLeft, IconCheck, IconChevronRight, IconCopy, IconFiles, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { toast } from "sonner";
+import { IconArrowLeft, IconCheck, IconChevronRight, IconCopy, IconDownload, IconFiles, IconFolderOpen, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
+import { copyText } from "@/lib/clipboard";
+import { canOpenInExplorer, downloadWorkspacePath, ejectProjectMount, hasOpenMount, openProjectInExplorer } from "@/lib/file-download";
 import { cn } from "cn";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import type { FileContent, FileEntry, FileListing } from "@/lib/runtime/workspace-files";
@@ -126,6 +130,7 @@ function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeCl
         {onBack && <Button type="button" variant="ghost" size="icon-xs" aria-label="Back to file tree" title="Back to file tree" onClick={onBack}><IconArrowLeft /></Button>}
         <Breadcrumb path={label ? `${label}/${path}` : path} />
         {file && !error && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
+        <Button type="button" variant="ghost" size="icon-xs" aria-label="Download file" title="Download file" onClick={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path)}><IconDownload /></Button>
         <Button type="button" variant="ghost" size="icon-xs" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy />}</Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto bg-muted/10">
@@ -145,7 +150,7 @@ function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeCl
 }
 
 /** Lazy file explorer of every folder / worktree in the active project (one top-level node each) with a read-only text preview. */
-export default function FilesTab({ client, targets }: { client: RuntimeClient; targets: WorkspaceTarget[] }) {
+export default function FilesTab({ client, targets, projectId }: { client: RuntimeClient; targets: WorkspaceTarget[]; projectId?: string | null }) {
   const [dirs, setDirs] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string | null>(null);
@@ -153,6 +158,9 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
   const [query, setQuery] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [treeFocused, setTreeFocused] = useState(false);
+  const [menuItem, setMenuItem] = useState<FileEntry | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTarget = useRef<FileEntry | null>(null);
   const [rootRef, width] = useElementWidth<HTMLDivElement>();
   const treeRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(expanded);
@@ -276,8 +284,45 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
     } else openFile(item.path);
   }
 
+  const itemTarget = (item: FileEntry) => {
+    const { id, rel } = splitTreePath(item.path);
+    return { target: targets.find((candidate) => candidate.id === id), rel };
+  };
+
+  function downloadItem(item: FileEntry) {
+    const { target, rel } = itemTarget(item);
+    if (!target) return;
+    void downloadWorkspacePath(client, target.sessionId, rel, item.type === "dir" ? "dir" : "file", rel ? rel.split("/").pop()! : target.label);
+  }
+
+  function copyItemPath(item: FileEntry, relative: boolean) {
+    const { target, rel } = itemTarget(item);
+    const text = relative || !multi ? rel || "." : [target?.label, rel].filter(Boolean).join("/");
+    void copyText(text).then(() => toast.success(relative ? "Relative path copied" : "Path copied")).catch(() => toast.error("Could not copy to the clipboard"));
+  }
+
+  /** Right-click, or the ContextMenu key / Shift+F10 on the focused row (the native event is re-dispatched at the row so Radix opens it). */
+  function onTreeContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-tree-path]");
+    const item = row ? nodes.find((node) => node.item.path === row.dataset.treePath)?.item : undefined;
+    // Radix opens its menu after this handler regardless; onOpenChange below refuses when no row was hit.
+    menuTarget.current = item ?? null;
+    if (!item) return;
+    setCursor(item.path);
+    setMenuItem(item);
+  }
+
   function onTreeKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (nodes.length === 0) return;
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      const row = document.getElementById(`files-row-${cursorIndex >= 0 ? cursorIndex : 0}`);
+      if (row) {
+        event.preventDefault();
+        const box = row.getBoundingClientRect();
+        row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: box.left + 24, clientY: box.bottom }));
+      }
+      return;
+    }
     const index = cursorIndex >= 0 ? cursorIndex : 0;
     const current = nodes[index];
     const move = (next: number) => { event.preventDefault(); setCursor(nodes[Math.max(0, Math.min(nodes.length - 1, next))].item.path); };
@@ -324,9 +369,16 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Collapse all folders" title="Collapse all" onClick={() => setExpanded({})}><IconFoldersOff /></Button>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh files" title="Refresh files" onClick={refresh}><IconRefresh /></Button>
       </div>
+      <ContextMenu open={menuOpen} onOpenChange={(open) => {
+        if (open && !menuTarget.current) return;
+        setMenuOpen(open);
+        if (!open) { menuTarget.current = null; window.setTimeout(() => treeRef.current?.focus({ preventScroll: true }), 0); }
+      }}>
+      <ContextMenuTrigger asChild>
       <div
         ref={treeRef}
         role="tree"
+        onContextMenu={onTreeContextMenu}
         aria-label="Workspace files"
         tabIndex={0}
         aria-activedescendant={treeActiveId}
@@ -344,7 +396,7 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
                 const { rel: itemRel } = splitTreePath(item.path);
                 const dir = itemRel.includes("/") ? itemRel.slice(0, itemRel.lastIndexOf("/")) : "";
                 return (
-                  <div key={item.path} id={`files-row-${index}`} role="treeitem" aria-selected={selected === item.path} title={splitTreePath(item.path).rel || item.name} onClick={() => activate(item)} className={cn("flex h-6 min-w-0 cursor-pointer items-center gap-1.5 px-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}>
+                  <div key={item.path} id={`files-row-${index}`} data-tree-path={item.path} role="treeitem" aria-selected={selected === item.path} title={splitTreePath(item.path).rel || item.name} onClick={() => activate(item)} className={cn("flex h-6 min-w-0 cursor-pointer items-center gap-1.5 px-2 text-xs hover:bg-muted/60", selected === item.path && "bg-accent text-accent-foreground", treeFocused && cursor === item.path && "ring-1 ring-ring ring-inset")}>
                     {item.type === "dir" ? <FolderIcon /> : <FileIcon name={item.name} />}
                     <span className={cn("min-w-0 truncate", nameTone(statusOf(item)))}>{item.name}</span>
                     {dir && <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{dir}</span>}
@@ -372,6 +424,7 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
                 <div
                   key={item.path}
                   id={`files-row-${nodeIndex}`}
+                  data-tree-path={item.path}
                   role="treeitem"
                   aria-level={depth + 1}
                   aria-expanded={isDir ? open : undefined}
@@ -391,6 +444,28 @@ export default function FilesTab({ client, targets }: { client: RuntimeClient; t
             });
           })()}
       </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="min-w-48">
+        {menuItem && (
+          <>
+            <ContextMenuItem onSelect={() => downloadItem(menuItem)}><IconDownload />{menuItem.type === "dir" ? "Download as zip" : "Download"}</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => copyItemPath(menuItem, false)}><IconCopy />Copy path</ContextMenuItem>
+            <ContextMenuItem onSelect={() => copyItemPath(menuItem, true)}><IconCopy />Copy relative path</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={refresh}><IconRefresh />Refresh</ContextMenuItem>
+            {projectId && canOpenInExplorer(client) && (
+              <>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId)}><IconFolderOpen />Open in Explorer</ContextMenuItem>
+                {navigator.userAgent.includes("Windows") && <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId, true)}><IconFolderOpen />Map as network drive</ContextMenuItem>}
+                {hasOpenMount(projectId) && <ContextMenuItem onSelect={() => void ejectProjectMount(client, projectId)}><IconX />Stop Explorer access</ContextMenuItem>}
+              </>
+            )}
+          </>
+        )}
+      </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 

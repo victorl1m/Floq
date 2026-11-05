@@ -37,7 +37,7 @@ const MAX_SKILL_PACKAGE_BYTES = 512 * 1024;
 const MAX_SKILL_PACKAGE_FILE_BYTES = 64 * 1024;
 const MAX_MCP_CONFIG_BYTES = 256 * 1024;
 /** Floq's own skills: always installed, never deletable, even when PREINSTALL_SKILLS is off. */
-export const PROTECTED_SKILLS: readonly string[] = ["floq-orchestrate", "floq-vault"];
+export const PROTECTED_SKILLS: readonly string[] = ["floq-orchestrate", "floq-vault", "floq-app-debug"];
 const SAFE_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_SKILL_FILE_PART = /^[A-Za-z0-9._ -]{1,100}$/;
 type WithUserShardActivity = <T>(userId: string, operation: (handle: ShardHandle) => Promise<T>) => Promise<T>;

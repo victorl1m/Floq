@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
-import { databasePort, listSessionPorts, parseProcNetTcp, pipeTunnel, selectSessionPorts, tunnelTarget } from "../dist/ports.js";
+import { databasePort, listSessionPorts, manualPortOwned, parseProcNetTcp, pipeTunnel, selectSessionPorts, tunnelTarget } from "../dist/ports.js";
 
 const HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
 const V4 = HEADER +
@@ -34,7 +34,9 @@ test("tunnel target is rejected for ports the session is not listening on", () =
 });
 
 test("manual tunnel allows undetected unprivileged loopback ports only", () => {
-  const manual = { denyPorts: [5432, 8787] };
+  // The session's uid (1000) listens on every port asked for here, so only the port rules decide.
+  const owned = (port: number) => ({ port, address: "127.0.0.1", inode: String(port), uid: 1000 });
+  const manual = { denyPorts: [5432, 8787], uid: 1000, listeners: [3000, 1023, 22, 5432, 8787].map(owned) };
   assert.deepEqual(tunnelTarget([], 3000, manual), { host: "127.0.0.1", port: 3000 });
   assert.equal(tunnelTarget([], 3000), null); // not manual
   assert.equal(tunnelTarget([], 1023, manual), null); // privileged
@@ -45,6 +47,43 @@ test("manual tunnel allows undetected unprivileged loopback ports only", () => {
   assert.equal(tunnelTarget([], 3000.5, manual), null);
   // A detected port keeps its detected host.
   assert.deepEqual(tunnelTarget([{ port: 3000, address: "::1" }], 3000, manual), { host: "::1", port: 3000 });
+});
+
+test("parses the listener uid from /proc/net/tcp", () => {
+  assert.deepEqual(parseProcNetTcp(V4, false).map((l) => [l.port, l.uid]), [[8080, 1000], [22, 0]]);
+});
+
+test("manual tunnel refuses a port another uid listens on (shared host network namespace)", () => {
+  const listeners = [...parseProcNetTcp(V4, false), ...parseProcNetTcp(V6, true)];
+  const other = { denyPorts: [], uid: 2000, listeners };
+  const own = { denyPorts: [], uid: 1000, listeners };
+  // 8080 is listened on by uid 1000 (v4 and v6): the owner may tunnel, another tenant may not.
+  assert.deepEqual(tunnelTarget([], 8080, own), { host: "127.0.0.1", port: 8080 });
+  assert.equal(tunnelTarget([], 8080, other), null);
+  // Fail closed: a port nobody listens on, and an unknown session uid, are refused.
+  assert.equal(tunnelTarget([], 3000, own), null);
+  assert.equal(tunnelTarget([], 8080, { denyPorts: [], uid: null, listeners }), null);
+  // A detected port (matched by socket inode) is unaffected.
+  assert.deepEqual(tunnelTarget([{ port: 8080, address: "127.0.0.1" }], 8080, other), { host: "127.0.0.1", port: 8080 });
+});
+
+test("manualPortOwned: owner only, no shared ports, fail closed", () => {
+  const l = (port: number, uid: number) => ({ port, address: "127.0.0.1", inode: `${port}-${uid}`, uid });
+  assert.equal(manualPortOwned([l(3000, 1000)], 3000, 1000), true);
+  assert.equal(manualPortOwned([l(3000, 1000)], 3000, null), false); // unknown uid
+  assert.equal(manualPortOwned([], 3000, 1000), false); // nobody listens
+  assert.equal(manualPortOwned([l(3000, 1000), l(3000, 2000)], 3000, 1000), false); // v4/v6 split with another tenant
+});
+
+test("race: the pre-connect re-check refuses a port that changed hands after the first check", () => {
+  const first = [{ port: 3000, address: "127.0.0.1", inode: "1", uid: 1000 }];
+  const manual = { denyPorts: [], uid: 1000, listeners: first };
+  assert.deepEqual(tunnelTarget([], 3000, manual), { host: "127.0.0.1", port: 3000 });
+  // Between the upgrade check and connect, the owner's server exits and another tenant binds the port.
+  const atConnect = [{ port: 3000, address: "127.0.0.1", inode: "2", uid: 2000 }];
+  assert.equal(manualPortOwned(atConnect, 3000, 1000), false);
+  // Or it is simply gone.
+  assert.equal(manualPortOwned([], 3000, 1000), false);
 });
 
 test("databasePort reads the port from a connection string", () => {

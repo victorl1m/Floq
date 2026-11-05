@@ -78,7 +78,7 @@ export default function Titlebar() {
             data-state={auth ? "auth" : "app"}
             className={cn(
                 "pointer-events-auto fixed inset-x-0 top-0 z-40 flex h-[40px] items-center border-b text-foreground select-none space-between transition-colors duration-200",
-                auth ? "border-border/30 glass-surface" : "border-border glass-surface"
+                auth ? "floq-titlebar border-border/30 glass-surface" : "floq-titlebar border-border glass-surface"
             )}
         >
 

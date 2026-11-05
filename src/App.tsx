@@ -26,6 +26,7 @@ import AgentCanvasPage from "./components/canvas/agent-canvas-page";
 import TasksPage from "./components/tasks/tasks-page";
 import { useEffect, useLayoutEffect } from "react";
 import { useMaterialPreference } from "@/lib/material-preference";
+import { useNativeMaterial } from "@/lib/native-material";
 import { usePerformancePrefs } from "@/lib/prefs";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -34,6 +35,7 @@ function App() {
   const [performancePrefs] = usePerformancePrefs();
   const [material] = useMaterialPreference();
   useLayoutEffect(() => { document.documentElement.dataset.material = material; }, [material]);
+  useNativeMaterial(material);
 
   const pendingApprovals = usePendingApprovals();
   useEffect(() => {

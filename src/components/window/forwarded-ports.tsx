@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconCopy, IconExternalLink, IconPlugConnected, IconX } from "@tabler/icons-react";
+import { IconAppWindow, IconBug, IconCopy, IconExternalLink, IconPlugConnected, IconX } from "@tabler/icons-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "cn";
 import { toast } from "sonner";
@@ -10,7 +10,9 @@ import { ManualForwardForm, useActiveForwardSession } from "@/components/window/
 import { errorMessage } from "@/lib/runtime/store";
 import { usePortRequests } from "@/lib/port-requests";
 import { PortRequestCard } from "@/components/window/port-requests";
-import { portForwardingSupported, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
+import { openDebugLink, portForwardingSupported, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
+import type { RuntimeClient } from "@/lib/runtime/client";
+import type { SessionDebugLink } from "@/lib/runtime/types";
 
 function copyUrl(port: number) {
     navigator.clipboard.writeText(`http://localhost:${port}`).then(
@@ -19,14 +21,55 @@ function copyUrl(port: number) {
     );
 }
 
+function openLink(client: RuntimeClient, sessionId: string, link: SessionDebugLink) {
+    void openDebugLink(client, sessionId, link).catch((error) => toast.error(`Could not open ${link.label}`, { description: errorMessage(error) }));
+}
+
+function forwardLinkPorts(client: RuntimeClient, sessionId: string, link: SessionDebugLink) {
+    void startForward(client, sessionId, link.port).then(
+        () => toast.success(`Forwarding localhost:${link.port}`, { description: `${link.label} is reachable from this computer.` }),
+        (error) => toast.error(`Could not forward port ${link.port}`, { description: errorMessage(error) }),
+    );
+}
+
+/** App previews and debuggers the agent started (Flutter web, Vite/Tauri dev server, DevTools), detected by the runtime. */
+function Previews({ links, client, sessionId }: { links: SessionDebugLink[]; client: RuntimeClient | null; sessionId: string | null }) {
+    if (links.length === 0) return null;
+    return (
+        <div className="flex flex-col gap-0.5" role="group" aria-label="App previews">
+            <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">Previews</p>
+            {links.map((link) => {
+                const Icon = link.kind === "preview" ? IconAppWindow : IconBug;
+                const action = link.kind === "preview" ? "Open preview" : link.kind === "devtools" ? "Open DevTools" : "Forward";
+                return (
+                    <div key={link.url} className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                        <Icon size={12} stroke={1.5} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate font-medium" title={link.url}>{link.label} <span className="font-normal text-muted-foreground tabular-nums">:{link.port}</span></span>
+                        {portForwardingSupported && client && sessionId && (
+                            <Button type="button" variant="outline" size="xs" aria-label={`${action}: ${link.label} on port ${link.port}`}
+                                onClick={() => (link.kind === "vm-service" ? forwardLinkPorts(client, sessionId, link) : openLink(client, sessionId, link))}
+                            >
+                                {action}
+                            </Button>
+                        )}
+                    </div>
+                );
+            })}
+            {!portForwardingSupported && <p className="px-1.5 text-[10px] text-muted-foreground">Open previews from the Floq desktop app: it forwards the port to this computer.</p>}
+            <Separator className="mt-2" />
+        </div>
+    );
+}
+
 /** Footer indicator with the count of forwarded ports; its popover lists them and offers manual forwarding. */
 export function ForwardedPorts() {
     const [open, setOpen] = useState(false);
-    const { forwarded, ports } = usePortForwarding();
+    const { forwarded, ports, links: allLinks } = usePortForwarding();
     const { client, sessionId } = useActiveForwardSession();
     const forwardedPorts = Object.keys(forwarded).map(Number).sort((a, b) => a - b);
     const count = forwardedPorts.length;
     const detected = (sessionId ? ports[sessionId] ?? [] : []).filter(({ port }) => !forwarded[port]);
+    const links = sessionId ? allLinks[sessionId] ?? [] : [];
     const requests = usePortRequests();
     const waiting = requests.filter((item) => item.state === "pending").length;
     const label = `Ports: ${count} forwarded${waiting ? `, ${waiting} request${waiting === 1 ? "" : "s"} waiting for your answer` : ""}`;
@@ -58,6 +101,7 @@ export function ForwardedPorts() {
                         <Separator />
                     </div>
                 )}
+                <Previews links={links} client={client} sessionId={sessionId} />
                 {!portForwardingSupported ? (
                     <p className="text-[10px] text-muted-foreground">Forwarding needs the Floq desktop app.</p>
                 ) : (

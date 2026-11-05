@@ -103,12 +103,12 @@ export default function ModelSelect({ options, value, onChange, variant = "field
                         <IconChevronDown className="size-3" />
                     </Button>
                 ) : (
-                    // A form field, not a toolbar button: flat (no Glisse glass, whose hover tint and
+                    // A form field, not a toolbar button: flat (no floq-button material, whose hover tint and
                     // centred layout are tuned for buttons) and styled like SelectTrigger so it matches
                     // the Role select and Title input.
                     <Button
                         variant="outline"
-                        glisse={false}
+                        material={false}
                         className="h-8 w-full justify-between rounded-lg border-input bg-transparent pr-2 pl-2.5 font-normal text-foreground transition-colors hover:bg-muted/70 active:bg-muted aria-expanded:border-ring dark:focus-visible:border-ring dark:aria-expanded:border-ring aria-expanded:bg-transparent dark:bg-input/30 dark:hover:bg-input/50 dark:active:bg-input/60 dark:aria-expanded:bg-input/30"
                         aria-label="Model"
                         disabled={disabled}

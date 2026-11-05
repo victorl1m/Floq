@@ -61,6 +61,17 @@ Before building the image, sync the bundled orchestration skill (PowerShell, fro
 
 Host requirements (`/dev/fuse`, AppArmor on Ubuntu 25.04+, the seccomp profile, `FLOQ_MOUNT_ROOT`), the HTTP API, sleep and resume, the vault and administration are documented in [`runtime/README.md`](runtime/README.md).
 
+## Downloading files and "Open in Explorer"
+
+In the right sidebar's **Files** tab, right-click a file or folder to **Download** it (a folder is streamed as a zip; `.git` and `node_modules` are left out). Downloads use a signed link that is valid for 60 seconds and works once.
+
+**Open in Explorer** (desktop app, HTTPS runtimes only) mounts the project's folders as a **read-only** WebDAV share that Windows Explorer, Finder and Linux file managers can browse like a network drive. Nothing needs installing on Windows.
+
+- **Use HTTPS.** The Windows WebDAV client cannot send our bearer header, so the share is addressed by an unguessable token in the URL path (`/dav/<token>/`). The action is hidden when the runtime URL is plain `http://`.
+- **Token lifetime.** A share lasts 8 hours, until you choose **Stop Explorer access**, until you sign out (or the sign-in session ends), or until the runtime restarts. It only works while your workspace is awake and you are using Floq; it never wakes a sleeping workspace.
+- **Reverse proxy.** Forward `OPTIONS`, `PROPFIND`, `GET`, `HEAD` and `Range` requests for `/dav/` untouched, do not buffer responses, and **redact `/dav/` paths from access logs** (the token is the credential). The token also shows up in Explorer's recent places and `net use` listings.
+- **Windows limits.** Needs the WebClient service (absent on Windows Server, and Microsoft lists the WebDAV client as deprecated, so treat this as best effort). WebClient refuses files larger than 50 MB by default; use **Download** for those. Folders over about 2,000 entries are truncated in listings.
+
 ## Architecture
 
 ```text

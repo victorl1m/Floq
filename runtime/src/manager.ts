@@ -17,6 +17,7 @@ import { buildWiredNotice, type WireRef, type WiredContext } from "./wiredContex
 import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
+import { DisplayAllocator, displayEnv } from "./display.js";
 import { buildSessionEnv, detectVersion, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
@@ -39,6 +40,7 @@ import { MANAGED_FILE, promoteUserPlugins } from "./claudeManagedPlugins.js";
 const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { composeSystemBlocks } from "./subagents.js";
+import { NETNS_GATEWAY } from "./netns.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
 import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
@@ -267,6 +269,8 @@ export class SessionManager {
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
   private readonly live = new Map<string, Session>();
+  /** Runtime-wide X display / Xpra port slots, one per live session (display.ts). */
+  readonly displays = new DisplayAllocator();
   private readonly stoppingSessions = new Map<string, Session>();
   private readonly intentionalSleep = new Set<string>();
   private readonly lockTimers = new Map<string, NodeJS.Timeout>();
@@ -498,6 +502,24 @@ export class SessionManager {
     const tail = readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES);
     if (!tail) return null;
     return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
+  }
+
+  /** uid the user's sandboxed processes run as, while their shard is awake; null when unknown. */
+  sessionUid(userId: string): number | null {
+    const handle = this.shards.awakeHandle(userId);
+    if (!handle) return null;
+    // The local (dev) driver spawns sessions as the runtime's own uid, not the shard's.
+    return this.shards.driver.name === "local" ? process.getuid?.() ?? null : handle.uid;
+  }
+
+  /** True when the user's sandboxes run in their own network namespace (FLOQ_NETNS), so ports live there, not on the host. */
+  inNetns(userId: string): boolean {
+    return Boolean(this.shards.awakeHandle(userId)?.netns);
+  }
+
+  /** Path of the user's network namespace while their shard is awake; null without FLOQ_NETNS. */
+  netnsPath(userId: string): string | null {
+    return this.shards.awakeHandle(userId)?.netns ?? null;
   }
 
   /** Live session for a user; throws 404 for anyone else's. */
@@ -1225,7 +1247,8 @@ export class SessionManager {
       mergeSecretEnv(env, own);
       try { this.syncSecretFiles(handle, row.id, own); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
     }
-    env.FLOQ_API_URL = "http://127.0.0.1:" + this.config.port;
+    // Per-user netns (FLOQ_NETNS): the runtime is reached through the namespace gateway, which pasta maps to the runtime's loopback.
+    env.FLOQ_API_URL = "http://" + (handle.netns ? NETNS_GATEWAY : "127.0.0.1") + ":" + this.config.port;
     env.FLOQ_AGENT_TOKEN = this.vault.issueToken(row.user_id, row.id);
     env.FLOQ_AGENT_NAME = row.title;
     if (row.provider === "codex") {
@@ -1298,14 +1321,28 @@ export class SessionManager {
       }
     }
     this.assertLifecycleOpen();
-    const pty = this.shards.driver.spawn(handle, {
-      file: definition.bin,
-      args,
-      env,
-      cwd: row.cwd,
-      cols: row.cols,
-      rows: row.rows,
-    });
+    // Virtual display for GUI apps (`floq display start`): set last so neither a vault secret nor a keychain can repoint it.
+    const displayLease = this.displays.acquire(row.id);
+    // No inherited X display either (host env, vault secret): GUI apps get one only via `floq display env`.
+    delete env.DISPLAY;
+    delete env.XAUTHORITY;
+    delete env.WAYLAND_DISPLAY;
+    if (displayLease) Object.assign(env, displayEnv(displayLease));
+    else log.warn("display.slots_exhausted", { sessionId: row.id });
+    let pty: ReturnType<typeof this.shards.driver.spawn>;
+    try {
+      pty = this.shards.driver.spawn(handle, {
+        file: definition.bin,
+        args,
+        env,
+        cwd: row.cwd,
+        cols: row.cols,
+        rows: row.rows,
+      });
+    } catch (error) {
+      if (displayLease) this.displays.release(row.id, displayLease.token);
+      throw error;
+    }
 
     const resumeCount = row.resume_count + (resuming ? 1 : 0);
     const session = new Session({
@@ -1330,6 +1367,10 @@ export class SessionManager {
       parentSessionId: row.parent_session_id ?? null,
     });
     this.live.set(row.id, session);
+    // Free the display slot only once the sandbox has really exited (its pid namespace, and with it xpra/Xvfb, is gone),
+    // on every path: exit, sleep, remove, project delete, shutdown. whenExited() resolves even after dispose() dropped
+    // the frame listeners. The token guard ignores this when a relaunch of the same session already holds a new lease.
+    if (displayLease) void session.whenExited().then(() => this.displays.release(row.id, displayLease.token));
     if (row.provider === "claude" || row.provider === "codex") {
       this.nativeTitleSessions.set(row.id, {
         userId: row.user_id,

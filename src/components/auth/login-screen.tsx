@@ -60,7 +60,7 @@ function RootError({ message }: { message?: string }) {
 
 function SubmitButton({ busy, disabled, children }: { busy: boolean; disabled?: boolean; children: ReactNode }) {
     return (
-        <Button type="submit" size="lg" className="auth-submit w-full" glisse shimmer disabled={busy || disabled}>
+        <Button type="submit" size="lg" className="auth-submit w-full" shimmer disabled={busy || disabled}>
             {busy && <Spinner />}
             {children}
             {!busy && <IconArrowRight aria-hidden="true" className="ml-auto size-4" />}

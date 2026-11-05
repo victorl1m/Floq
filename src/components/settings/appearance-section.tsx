@@ -6,20 +6,38 @@ import { useTerminalPrefs, type CursorStyle } from "@/lib/prefs";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 import { useCursorPreference } from "@/lib/cursor-preference";
 import { useMaterialPreference, type MaterialPreference } from "@/lib/material-preference";
+import { useNativeMaterialSupport } from "@/lib/native-material";
 
 export default function AppearanceSection() {
     const { theme = "system", setTheme } = useTheme();
     const [terminal, setTerminal] = useTerminalPrefs();
     const [material, setMaterial] = useMaterialPreference();
     const [cursors, setCursors] = useCursorPreference();
+    const support = useNativeMaterialSupport() ?? [];
+    // macOS has one translucent material (vibrancy), stored as "mica". Windows lists what the build supports.
+    const materialOptions: { value: MaterialPreference; label: string }[] = support.includes("vibrancy")
+        ? [{ value: "mica", label: "Vibrancy" }]
+        : [
+            ...(support.includes("mica") ? [{ value: "mica" as const, label: "Mica" }] : []),
+            ...(support.includes("acrylic") ? [{ value: "acrylic" as const, label: "Acrylic" }] : []),
+        ];
+    materialOptions.push({ value: "solid", label: "Solid" });
+    // An unsupported stored value (e.g. Mica after moving to Windows 10) renders as Solid, which is what applies.
+    const materialValue = support.includes("vibrancy") && material === "acrylic"
+        ? "mica"
+        : materialOptions.some((option) => option.value === material) ? material : "solid";
+    const acrylicOnly = support.includes("acrylic") && !support.includes("mica");
+    const materialDescription = support.length === 0
+        ? "Translucent window materials need Windows 10 or later, or macOS. This window is solid."
+        : `${support.includes("vibrancy") ? "Vibrancy lets" : acrylicOnly ? "Acrylic lets" : "Mica and Acrylic let"} the desktop show through the window shell. The window turns solid when transparency effects are off in your OS settings.${acrylicOnly ? " Acrylic may lag while moving or resizing the window." : ""}`;
 
     return (
         <SettingsPage title="Appearance" description="Theme and terminal look. Stored on this device only.">
             <SettingsGroup title="App">
-                <SettingRow label="Material" htmlFor="appearance-material" description="Glass uses translucent surfaces. Follow system respects your device’s transparency preference.">
-                    <Select value={material} onValueChange={(value) => setMaterial(value as MaterialPreference)}>
+                <SettingRow label="Material" htmlFor="appearance-material" description={materialDescription}>
+                    <Select value={materialValue} onValueChange={(value) => setMaterial(value as MaterialPreference)} disabled={support.length === 0}>
                         <SelectTrigger id="appearance-material" className="w-36"><SelectValue /></SelectTrigger>
-                        <SelectContent><SelectItem value="glass">Glass</SelectItem><SelectItem value="system">Follow system</SelectItem><SelectItem value="solid">Solid</SelectItem></SelectContent>
+                        <SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
                     </Select>
                 </SettingRow>
                 <SettingRow label="Theme" htmlFor="appearance-theme" description="Follow the system or force light or dark.">

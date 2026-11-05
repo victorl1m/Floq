@@ -1,5 +1,10 @@
-import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { constants as fsConstants, existsSync } from "node:fs";
+import { lstat, open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
+import type { ServerResponse } from "node:http";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
+import type { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { ZipFile } from "yazl";
 import type { SessionManager } from "./manager.js";
 import { badRequest, notFound } from "./errors.js";
 import { safeRelative } from "./shard.js";
@@ -7,7 +12,10 @@ import type { ShardService } from "./shards.js";
 
 const LIST_LIMIT = 2_000;
 const READ_LIMIT_BYTES = 512 * 1024;
-const HIDDEN_NAMES = new Set([".git", "node_modules"]);
+export const HIDDEN_NAMES = new Set([".git", "node_modules"]);
+export const ZIP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const ZIP_MAX_ENTRIES = 50_000;
+export const HAS_PROC_FD = existsSync("/proc/self/fd");
 
 export interface FileEntry {
   name: string;
@@ -59,6 +67,63 @@ export async function resolveInside(root: string, input: unknown): Promise<{ rel
   return { rel, real };
 }
 
+
+/**
+ * Open `path` and only then prove, on the descriptor itself, that it lives inside `realRoot` (and outside .git).
+ * Checking a path and opening it later is a race: an agent in the sandbox controls the tree and could swap a checked
+ * directory for a symlink into another user's mounted shard, which this process (root) would then read.
+ * O_NONBLOCK keeps an agent-planted FIFO from hanging the open; callers check the file type on the handle.
+ */
+export async function openWithin(realRoot: string, path: string, flags = fsConstants.O_RDONLY): Promise<FileHandle> {
+  const handle = await open(path, flags | fsConstants.O_NONBLOCK).catch(() => null);
+  if (!handle) throw notFound("That file is no longer available");
+  try {
+    let actual: string | null = null;
+    if (HAS_PROC_FD) actual = await realpath(`/proc/self/fd/${handle.fd}`).catch(() => null);
+    if (actual === null) {
+      // No /proc (macOS dev hosts): the path must still resolve to the very inode we opened.
+      const resolved = await realpath(path).catch(() => null);
+      const [opened, current] = await Promise.all([handle.stat(), resolved ? stat(resolved).catch(() => null) : null]);
+      if (!resolved || !current || opened.dev !== current.dev || opened.ino !== current.ino) throw badRequest("That path points outside this workspace", "invalid_file_path");
+      actual = resolved;
+    }
+    actual = actual.replace(/ \(deleted\)$/, "");
+    if (!isWithin(realRoot, actual) || relative(realRoot, actual).split(sep).includes(".git")) throw badRequest("That path points outside this workspace", "invalid_file_path");
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
+/** Content-Disposition for an attachment: sanitised ASCII fallback plus an RFC 5987 filename*. */
+export function contentDisposition(name: string): string {
+  const clean = name.replace(/[\u0000-\u001f\u007f"\\/]/g, "_").trim() || "download";
+  const ascii = clean.replace(/[^\x20-\x7e]/g, "_").replace(/%/g, "_");
+  const encoded = encodeURIComponent(clean).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/** Parse a single `bytes=` range. null = no/ignored range, "invalid" = unsatisfiable. */
+export function parseRange(header: string | undefined, size: number): { start: number; end: number } | "invalid" | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match || (match[1] === "" && match[2] === "")) return null;
+  let start: number;
+  let end: number;
+  if (match[1] === "") {
+    const suffix = Number(match[2]);
+    if (suffix === 0) return "invalid";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
+  }
+  if (!Number.isSafeInteger(start) || start >= size || end < start) return "invalid";
+  return { start, end };
+}
+
 /** Read-only file browsing scoped to the workspace root of one authenticated Floq session. */
 export class WorkspaceFiles {
   constructor(private readonly manager: SessionManager, private readonly shards: ShardService) {}
@@ -103,6 +168,127 @@ export class WorkspaceFiles {
       return { path: rel, size: info.size, binary, tooLarge: false, content: binary ? "" : data.toString("utf8") };
     } finally {
       await handle.close();
+    }
+  }
+
+
+  /** Owner-scoped check done when a download link is issued: the session must be the user's and the path well formed. */
+  async authorizeDownload(userId: string, sessionId: string, requested: unknown): Promise<string> {
+    await this.manager.get(sessionId, userId);
+    return cleanRelativePath(requested);
+  }
+
+  /**
+   * Stream a file (with Range) or a directory (as a zip) to `res`. The shard stays awake until the stream ends, and
+   * every opened descriptor is re-verified to be inside the workspace root. Throws HttpErrors before headers are sent.
+   */
+  download(userId: string, sessionId: string, requested: unknown, res: ServerResponse, rangeHeader?: string): Promise<void> {
+    return this.manager.withUserShardActivity(userId, () => this.serveDownload(userId, sessionId, requested, res, rangeHeader));
+  }
+
+  private async serveDownload(userId: string, sessionId: string, requested: unknown, res: ServerResponse, rangeHeader?: string): Promise<void> {
+    const root = await this.root(userId, sessionId);
+    const realRoot = await realpath(root);
+    const { rel, real } = await resolveInside(root, requested);
+    const common = { "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+    const handle = await openWithin(realRoot, real, fsConstants.O_RDONLY);
+    let closed = false;
+    const closeHandle = async () => { if (!closed) { closed = true; await handle.close().catch(() => {}); } };
+    try {
+      const info = await handle.stat();
+      if (info.isFile()) {
+        const range = parseRange(rangeHeader, info.size);
+        if (range === "invalid") {
+          res.writeHead(416, { ...common, "Content-Range": `bytes */${info.size}` }).end();
+          return;
+        }
+        const length = range ? range.end - range.start + 1 : info.size;
+        res.writeHead(range ? 206 : 200, {
+          ...common,
+          "Accept-Ranges": "bytes",
+          "Content-Length": length,
+          "Content-Disposition": contentDisposition(basename(rel) || "download"),
+          ...(range ? { "Content-Range": `bytes ${range.start}-${range.end}/${info.size}` } : {}),
+        });
+        if (length === 0) { res.end(); return; }
+        // The stream owns the handle from here (autoClose).
+        closed = true;
+        await pipeline(handle.createReadStream({ start: range?.start ?? 0, end: range?.end ?? info.size - 1 }), res).catch(() => {});
+        return;
+      }
+      if (!info.isDirectory()) throw notFound("That file is no longer available");
+      res.writeHead(200, { ...common, "Content-Disposition": contentDisposition(`${basename(rel) || "workspace"}.zip`) });
+      await this.zipDirectory(realRoot, real, basename(rel) || "workspace", res);
+    } finally {
+      await closeHandle();
+    }
+  }
+
+  private async zipDirectory(realRoot: string, dir: string, topName: string, res: ServerResponse): Promise<void> {
+    const zip = new ZipFile();
+    let aborted = false;
+    let current: Readable | null = null;
+    const abort = () => { aborted = true; current?.destroy(); (zip.outputStream as Readable).destroy(); };
+    res.once("close", abort);
+    const piping = pipeline(zip.outputStream as Readable, res).catch(() => {});
+    const budget = { bytes: 0, entries: 0 };
+    try {
+      await this.zipWalk(realRoot, dir, `${topName}/`, zip, budget, () => aborted, (stream) => { current = stream; });
+      if (!aborted) zip.end();
+    } catch (error) {
+      // Headers are already out: a failed or oversized archive must not look like a complete one.
+      aborted = true;
+      (zip.outputStream as Readable).destroy();
+      res.destroy(error instanceof Error ? error : undefined);
+    }
+    await piping;
+    res.off("close", abort);
+  }
+
+  private async zipWalk(realRoot: string, dir: string, prefix: string, zip: ZipFile, budget: { bytes: number; entries: number }, isAborted: () => boolean, track: (stream: Readable | null) => void): Promise<void> {
+    const dirHandle = await openWithin(realRoot, dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+    try {
+      // Reading and opening through the verified descriptor means a swapped directory cannot redirect the walk.
+      const base = HAS_PROC_FD ? `/proc/self/fd/${dirHandle.fd}` : dir;
+      const dirents = (await readdir(base, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      let wrote = false;
+      for (const dirent of dirents) {
+        if (isAborted()) return;
+        const name = dirent.name;
+        if (HIDDEN_NAMES.has(name) || name.includes("\0") || name.includes("\\")) continue;
+        const child = join(base, name);
+        if (dirent.isDirectory()) {
+          wrote = true;
+          await this.zipWalk(realRoot, child, `${prefix}${name}/`, zip, budget, isAborted, track);
+          continue;
+        }
+        if (!dirent.isFile() && !dirent.isSymbolicLink()) continue;
+        const handle = await openWithin(realRoot, child, fsConstants.O_RDONLY).catch(() => null);
+        if (!handle) continue; // vanished, or a link pointing outside the workspace
+        let queued = false;
+        try {
+          const info = await handle.stat();
+          if (!info.isFile()) continue; // symlinked directories and special files are skipped (no loops)
+          budget.entries += 1;
+          budget.bytes += info.size;
+          if (budget.entries > ZIP_MAX_ENTRIES || budget.bytes > ZIP_MAX_BYTES) throw badRequest("This folder is too large to download as a zip", "download_too_large");
+          // Snapshot the size so a file that grows mid-download cannot exceed the budget.
+          if (info.size === 0) { zip.addBuffer(Buffer.alloc(0), `${prefix}${name}`, { mtime: info.mtime }); wrote = true; continue; }
+          const stream = handle.createReadStream({ start: 0, end: info.size - 1 });
+          queued = true;
+          wrote = true;
+          track(stream);
+          const done = new Promise<void>((resolve, reject) => { stream.once("close", resolve); stream.once("error", reject); });
+          zip.addReadStream(stream, `${prefix}${name}`, { mtime: info.mtime, size: info.size });
+          await done;
+          track(null);
+        } finally {
+          if (!queued) await handle.close().catch(() => {});
+        }
+      }
+      if (!wrote) zip.addEmptyDirectory(prefix);
+    } finally {
+      await dirHandle.close().catch(() => {});
     }
   }
 
