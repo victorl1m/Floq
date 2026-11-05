@@ -8,6 +8,20 @@ import { log } from "./logger.js";
 import { loadRemovedSkills, PROTECTED_SKILLS } from "./skills.js";
 import { ownTree, type ShardDriver, type ShardHandle } from "./shard.js";
 
+/**
+ * Tool caches in the user's home that must belong to the user. A single root-owned entry in ~/.npm (left by
+ * something run as root against this home) makes every `npx` fail with EACCES, and with it the bundled context7
+ * MCP server (`npx -y @upstash/context7-mcp`), which then shows up as "Connection closed". Checked on every wake;
+ * lstat/lchown only, symlinks are never followed.
+ */
+export const USER_TOOL_CACHES = [".npm"] as const;
+export function repairToolCaches(home: string, uid: number): void {
+  for (const rel of USER_TOOL_CACHES) {
+    try { ownTree(join(home, rel), uid); }
+    catch (error) { log.warn("shard.cache_ownership_repair_failed", { path: rel, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }); }
+  }
+}
+
 /** Tracks each user's shard (encrypted home) in Postgres and drives wake/sleep through the OS driver. */
 export class ShardService {
   private readonly handles = new Map<string, ShardHandle>();
@@ -59,6 +73,7 @@ export class ShardService {
       try { removed = await loadRemovedSkills(this.pool, userId); }
       catch (error) { log.warn("shard.skill_removals_unavailable", { error: error instanceof Error ? error.message : String(error) }); }
       this.seed(handle.mountPath, ".", handle.uid, removed);
+      repairToolCaches(handle.mountPath, handle.uid);
       this.handles.set(userId, handle);
       await this.pool.query("UPDATE shards SET state = 'awake', last_active_at = now() WHERE user_id = $1", [userId]);
       return handle;
