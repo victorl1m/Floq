@@ -253,7 +253,7 @@ function AgentCanvas() {
 
   const createLink = useCallback(async (from: string, to: string) => {
     if (!client || !activeProjectId) return;
-    if (from === to) { toast.info("An agent cannot be linked to itself"); return; }
+    if (from === to) { toast.info("An agent cannot be linked to itself", { description: "Drag a wire to a different agent." }); return; }
     if (linksRef.current.some((link) => (link.fromSessionId === from && link.toSessionId === to) || (link.fromSessionId === to && link.toSessionId === from))) {
       toast.info("Already linked", { description: `${titleOf(from)} and ${titleOf(to)} are connected.` });
       return;
@@ -272,7 +272,7 @@ function AgentCanvas() {
 
   const deleteLink = useCallback(async (link: CanvasLink): Promise<boolean> => {
     if (!client) return false;
-    if (link.synthetic) { toast.info("This wire is inferred from the recruiting parent and cannot be deleted yet"); return false; }
+    if (link.synthetic) { toast.info("This wire cannot be deleted yet", { description: "It is inferred from the recruiting parent." }); return false; }
     setRemoved((set) => new Set(set).add(link.id));
     try {
       await deleteLinkRequest(client, link.id);
@@ -718,7 +718,7 @@ function AgentCanvas() {
     });
     const woken = new Set(toWake.map((session) => session.id));
     for (const session of [...toWake, ...slept.filter((item) => !groundIds.has(item.id) && !woken.has(item.id))]) await resumeOne(session);
-    toast.success(`Switched to ${target}`);
+    toast.success(`Switched to ${target}`, { description: "Agents that were running on this branch were resumed." });
     switchingRef.current = false;
     setSwitching(false);
     // e. The canvas is new (possibly empty): refit once its nodes are in.
@@ -863,11 +863,11 @@ function AgentCanvas() {
     startLink,
     rename: (session) => setRenaming({ session, title: session.title }),
     resume: (session) => void wake(session),
-    copyId: (id) => void copyText(id).then(() => toast.success("Session id copied"), (error) => toast.error("Could not copy", { description: errorMessage(error) })),
+    copyId: (id) => void copyText(id).then(() => toast.success("Session id copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy", { description: errorMessage(error) })),
     copyOutput: (id) => {
       const text = getMirrorText(id);
       if (!text) return;
-      void copyText(text).then(() => toast.success("Last output copied"), (error) => toast.error("Could not copy", { description: errorMessage(error) }));
+      void copyText(text).then(() => toast.success("Last output copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy", { description: errorMessage(error) }));
     },
     toggleCollapse,
     resize,
@@ -916,7 +916,7 @@ function AgentCanvas() {
     if (aKey || bKey || aNote || bNote) {
       const kind = aKey || bKey ? "Keychains" : "Notes";
       const agent = aKey || aNote ? b : a;
-      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error(`${kind} can only be linked to agents`); return; }
+      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error(`${kind} can only be linked to agents`, { description: "Drop the wire on an agent instead." }); return; }
       if (aKey || bKey) keychains.link((aKey ? a : b).slice(KC_PREFIX.length), agent);
       else notes.link((aNote ? a : b).slice(NOTE_PREFIX.length), agent);
       return;
@@ -1131,7 +1131,7 @@ function AgentCanvas() {
                       <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
                       <div role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">
                         <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet"); }, <IconNotes size={16} />)}</ShortcutTip>
+                        <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet", { description: "Add one from the canvas toolbar." }); }, <IconNotes size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200, ...fitOptsRef.current }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
                         <ShortcutTip label="Activity">{toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}</ShortcutTip>
                       </div>

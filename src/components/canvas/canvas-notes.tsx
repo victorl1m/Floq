@@ -365,7 +365,7 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
         if (known.current.has(note.id) || created.current.has(note.id)) continue;
         if (!note.agentNoteName) continue;
         const who = note.linkedSessionIds[0] ? titleOfRef.current(note.linkedSessionIds[0]) : "An agent";
-        toast(`${who} created note ${note.title}`, { action: { label: "Show on canvas", onClick: () => revealRef.current(note.id) } });
+        toast(`${who} created note ${note.title}`, { icon: <IconNote className="size-4" aria-hidden="true" />, description: "Show it on the canvas to read or edit it.", action: { label: "Show on canvas", onClick: () => revealRef.current(note.id) } });
       }
     }
     known.current = new Set([...(known.current ?? []), ...server.map((note) => note.id)]);
@@ -476,7 +476,8 @@ export function useCanvasNotes(client: RuntimeClient | null, projectId: string |
     deleteNoteRequest(client, id).then(() => {
       if (gone?.text.trim() || gone?.title) {
         toast(gone.title ? `Note ${gone.title} deleted` : "Note deleted", {
-          description: gone.agentNoteName ? "Agents can no longer read it with floq note." : undefined,
+          icon: <IconTrash className="size-4" aria-hidden="true" />,
+          description: gone.agentNoteName ? "Agents can no longer read it with floq note." : "Undo puts it back on the canvas.",
           action: {
             label: "Undo",
             onClick: () => void add({ x: gone.x, y: gone.y, w: gone.w, h: gone.h, text: gone.text, color: gone.color, agentNoteName: gone.agentNoteName ?? undefined, title: gone.agentNoteName ? undefined : gone.title ?? undefined }).then((restored) => {

@@ -149,7 +149,7 @@ export function AddMcpDialog({ open, onOpenChange, initialScopeKey, onInstalled 
         newSecrets: newSecretsOf(form), allowPlaintext: keepsSensitivePlaintext(form),
       });
       const created = newSecretsOf(form).length;
-      toast.success(`${form.name} installed${created ? ` and ${created} secret${created === 1 ? "" : "s"} saved to your vault` : ""}. Running sessions need a restart or resume to see it.`);
+      toast.success(`${form.name} installed`, { description: `${created ? `${created} secret${created === 1 ? "" : "s"} saved to your vault. ` : ""}Running sessions need a restart or resume to see it.` });
       // Typed values are not needed any more: clear them before the dialog closes.
       setEnv([]); setHeaders([]); setPaste("");
       onOpenChange(false);

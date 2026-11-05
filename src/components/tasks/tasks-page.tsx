@@ -279,10 +279,22 @@ export default function TasksPage() {
   }, [client, boardId]);
 
   const members = selectedOrganization?.members ?? [];
+  const SUCCESS_HINTS: Record<string, string> = {
+    "Organization created": "You are its first member and can invite others.",
+    "Board created": "It is open now. Add lists to start planning.",
+    "Invitation created": "Share the token shown in the dialog with the new member.",
+    "You joined the organization": "Its boards are now available to you.",
+    "List created": "Add cards to it to start tracking work.",
+    "Card created": "It was added to the end of the list.",
+    "Card updated": "Your changes are saved.",
+    "Card moved": "It now sits at the end of the new list.",
+    "Board renamed": "The new name shows for everyone in the organization.",
+    "Deleted": "It was removed from the board.",
+  };
   const doMutation = async (action: () => Promise<unknown>, success?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
-    try { await action(); if (success) toast.success(success); return true; }
+    try { await action(); if (success) toast.success(success, { description: SUCCESS_HINTS[success] ?? "The change is saved." }); return true; }
     catch (reason) { setError(errorMessage(reason)); return false; }
     finally { setBusy(false); }
   };
@@ -543,7 +555,7 @@ export default function TasksPage() {
         <form id="create-board-form" className="space-y-2" noValidate onSubmit={onCreateBoard}><Label htmlFor="new-board">Board name</Label><Input id="new-board" autoFocus maxLength={120} value={boardName} onChange={(event) => setBoardName(event.target.value)} placeholder="e.g. Product roadmap" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>
       </AppDialog>
       <AppDialog open={dialog === "invite"} onOpenChange={(open) => { if (!busy) setDialog(open ? "invite" : null); }} icon={<IconUsers />} title="Invite a member" description={inviteToken ? `Invitation for ${inviteEmail}` : "Create a one-time invitation for a member."} footer={inviteToken ? undefined : <><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="invite-form" disabled={busy || !inviteEmail.trim()}><IconUsers />Create invite</Button></>}>
-        {inviteToken ? <div className="space-y-3"><p className="text-sm text-muted-foreground">Share the token below. New members choose “Join with an invitation” at sign-in; existing users paste it under Tasks → Join with token.</p><div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-3"><code className="min-w-0 flex-1 break-all font-mono text-sm">{inviteToken}</code><Button size="icon-sm" variant="outline" aria-label="Copy invitation token" onClick={() => void copyText(inviteToken).then(() => toast.success("Invitation token copied")).catch(() => toast.error("Could not copy token"))}><IconCopy /></Button></div><Button variant="outline" onClick={() => { setInviteToken(""); setInviteEmail(""); setDialog(null); }}>Close</Button></div> : <form id="invite-form" className="space-y-2" noValidate onSubmit={onInvite}><Label htmlFor="invite-email">Member email</Label><Input id="invite-email" type="email" autoFocus maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="name@example.com" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>}
+        {inviteToken ? <div className="space-y-3"><p className="text-sm text-muted-foreground">Share the token below. New members choose “Join with an invitation” at sign-in; existing users paste it under Tasks → Join with token.</p><div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-3"><code className="min-w-0 flex-1 break-all font-mono text-sm">{inviteToken}</code><Button size="icon-sm" variant="outline" aria-label="Copy invitation token" onClick={() => void copyText(inviteToken).then(() => toast.success("Invitation token copied", { description: "Send it to the new member over a private channel." })).catch(() => toast.error("Could not copy token", { description: "Select the token and copy it by hand." }))}><IconCopy /></Button></div><Button variant="outline" onClick={() => { setInviteToken(""); setInviteEmail(""); setDialog(null); }}>Close</Button></div> : <form id="invite-form" className="space-y-2" noValidate onSubmit={onInvite}><Label htmlFor="invite-email">Member email</Label><Input id="invite-email" type="email" autoFocus maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="name@example.com" />{error && <ErrorBanner>{error}</ErrorBanner>}</form>}
       </AppDialog>
       <AppDialog open={dialog === "join"} onOpenChange={(open) => { if (!busy) setDialog(open ? "join" : null); }} icon={<IconArrowRight />} title="Join an organization" description="Paste the invitation token shared with you." footer={<><Button variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button><Button form="join-organization-form" disabled={busy || !acceptToken.trim()}>Join organization</Button></>}>
         <form id="join-organization-form" className="space-y-2" noValidate onSubmit={onAccept}><Label htmlFor="accept-invite">Invitation token</Label><Input id="accept-invite" autoFocus value={acceptToken} onChange={(event) => setAcceptToken(event.target.value)} placeholder="Paste invitation token" />{error && <ErrorBanner>{error}</ErrorBanner>}<p className="text-xs text-muted-foreground">Sign in with the email address the invitation was created for.</p></form>

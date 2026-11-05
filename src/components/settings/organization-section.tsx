@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { IconMailOpened, IconPlus } from "@tabler/icons-react";
+import { IconLogout, IconMailOpened, IconPlus, IconTrash } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -128,7 +128,7 @@ export default function OrganizationSection() {
                         title={`Leave ${org.name}?`}
                         description="You will lose access to this organization and its boards."
                         actionLabel="Leave organization"
-                        onConfirm={async () => { await client.leaveOrganization(org.id); await refreshOrganizations(); toast(`You left ${org.name}`); }}
+                        onConfirm={async () => { await client.leaveOrganization(org.id); await refreshOrganizations(); toast(`You left ${org.name}`, { icon: <IconLogout className="size-4" aria-hidden="true" />, description: "You no longer have access to its projects." }); }}
                     />
                     <ConfirmDialog
                         open={deleteOpen}
@@ -137,7 +137,7 @@ export default function OrganizationSection() {
                         description="Every member loses access and all task boards in this organization are deleted. This cannot be undone."
                         requireText={org.name}
                         actionLabel="Delete organization"
-                        onConfirm={async () => { await client.deleteOrganization(org.id, org.name); await refreshOrganizations(); toast(`Deleted ${org.name}`); }}
+                        onConfirm={async () => { await client.deleteOrganization(org.id, org.name); await refreshOrganizations(); toast(`Deleted ${org.name}`, { icon: <IconTrash className="size-4" aria-hidden="true" />, description: "Members lost access and its task boards were deleted." }); }}
                     />
                     <ConfirmDialog
                         open={transferOpen}
@@ -145,7 +145,7 @@ export default function OrganizationSection() {
                         title={`Make ${transferTarget?.name || transferTarget?.email || "this member"} the owner?`}
                         description="They will be able to delete the organization and change roles. You become an admin."
                         actionLabel="Transfer ownership"
-                        onConfirm={async () => { await client.transferOrganization(org.id, transferTo); await refreshOrganizations(org.id); setTransferTo(""); toast.success("Ownership transferred"); }}
+                        onConfirm={async () => { await client.transferOrganization(org.id, transferTo); await refreshOrganizations(org.id); setTransferTo(""); toast.success("Ownership transferred", { description: "The new owner now manages this organization." }); }}
                     />
                 </>
             )}

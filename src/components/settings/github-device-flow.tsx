@@ -27,10 +27,12 @@ export function useGithubDeviceFlow(onConnected: () => void | Promise<void>) {
                     if (result.status === "pending") return poll(result.interval);
                     setFlow(null);
                     if (result.status === "connected") {
-                        toast.success("GitHub connected as " + result.login);
+                        toast.success("GitHub connected", { description: "Signed in as " + result.login + "." });
                         await onConnected();
                     } else {
-                        toast.error(result.status === "denied" ? "GitHub authorization was denied" : "The code expired, try again");
+                        toast.error(result.status === "denied" ? "GitHub authorization was denied" : "The code expired", {
+                            description: result.status === "denied" ? "Start again and approve the request on GitHub." : "Start again to get a new code.",
+                        });
                     }
                 } catch (e) {
                     if (cancelled) return;
@@ -69,7 +71,7 @@ export function GithubFlowPanel({ flow, onCancel }: { flow: DeviceFlow; onCancel
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         } catch {
-            toast.error("Could not copy the code");
+            toast.error("Could not copy the code", { description: "Select the code and copy it manually." });
         }
     }
 
@@ -78,7 +80,7 @@ export function GithubFlowPanel({ flow, onCancel }: { flow: DeviceFlow; onCancel
             <Steps steps={["Open GitHub's device page", "Enter the code below", "Approve Floq"]} current={2} />
             <CodeBox code={flow.userCode} copied={copied} onCopy={() => void copy()} />
             <div className="flex flex-col items-center gap-3">
-                <Button onClick={() => void openExternal(flow.verificationUri).catch((e) => toast.error(errorMessage(e)))}>
+                <Button onClick={() => void openExternal(flow.verificationUri).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }))}>
                     <IconExternalLink />
                     Open {flow.verificationUri}
                 </Button>

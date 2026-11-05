@@ -69,7 +69,7 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
     try {
       await setKeychainSecret(client, keychain.id, name, value);
       setLastName(name);
-      toast.success(`Secret ${name} saved`);
+      toast.success(`Secret ${name} saved`, { description: "The value is stored in this keychain." });
       reset();
       await onChanged();
     } catch (err) {
@@ -93,7 +93,7 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
     }
     setSaving(false);
     setEnvText("");
-    if (ok) { setLastName(validParsed[0].name); toast.success(`${ok} secret${ok === 1 ? "" : "s"} saved`); }
+    if (ok) { setLastName(validParsed[0].name); toast.success(`${ok} secret${ok === 1 ? "" : "s"} saved`, { description: "The values are stored in this keychain." }); }
     if (failed.length) setError(failed.join("\n"));
     else setBulk(false);
     await onChanged();
@@ -114,7 +114,7 @@ export default function KeychainDialog({ keychain, client, onClose, onChanged }:
   }
 
   const command = getCommand(lastName ?? keychain.secretNames[0] ?? "NAME");
-  const copy = () => void copyText(command).then(() => toast.success("Command copied"), (err) => toast.error("Could not copy", { description: errorMessage(err) }));
+  const copy = () => void copyText(command).then(() => toast.success("Command copied", { description: "It is on your clipboard." }), (err) => toast.error("Could not copy", { description: errorMessage(err) }));
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) { reset(); onClose(); } }}>

@@ -14,8 +14,8 @@ import { portForwardingSupported, startForward, stopForward, usePortForwarding }
 
 function copyUrl(port: number) {
     navigator.clipboard.writeText(`http://localhost:${port}`).then(
-        () => toast.success("URL copied"),
-        () => toast.error("Could not copy the URL"),
+        () => toast.success("URL copied", { description: "It is on your clipboard." }),
+        () => toast.error("Could not copy the URL", { description: "The browser blocked clipboard access." }),
     );
 }
 
@@ -74,7 +74,7 @@ export function ForwardedPorts() {
                                         <Button type="button" variant="ghost" size="icon-xs" title="Copy URL" aria-label={`Copy URL for port ${port}`} onClick={() => copyUrl(port)}>
                                             <IconCopy />
                                         </Button>
-                                        <Button type="button" variant="ghost" size="icon-xs" title="Stop forwarding" aria-label={`Stop forwarding port ${port}`} onClick={() => void stopForward(port).then(() => toast.success(`Stopped forwarding localhost:${port}`))}>
+                                        <Button type="button" variant="ghost" size="icon-xs" title="Stop forwarding" aria-label={`Stop forwarding port ${port}`} onClick={() => void stopForward(port).then(() => toast.success(`Stopped forwarding localhost:${port}`, { description: "The port is no longer reachable from this computer." }))}>
                                             <IconX />
                                         </Button>
                                     </div>
@@ -91,7 +91,7 @@ export function ForwardedPorts() {
                                             type="button"
                                             variant="outline"
                                             size="xs"
-                                            onClick={() => void startForward(client, sessionId, port).then(() => toast.success(`Forwarding localhost:${port}`), (error) => toast.error(errorMessage(error)))}
+                                            onClick={() => void startForward(client, sessionId, port).then(() => toast.success(`Forwarding localhost:${port}`, { description: "Open it in a browser on this computer." }), (error) => toast.error(`Could not forward port ${port}`, { description: errorMessage(error) }))}
                                         >
                                             Forward
                                         </Button>

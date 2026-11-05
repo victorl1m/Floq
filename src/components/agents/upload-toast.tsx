@@ -153,7 +153,7 @@ export async function uploadBatch(client: RuntimeClient, sessionId: string, item
         toast.error(items.length === 1 ? `Could not upload ${items[0].name}` : `${errors.length} of ${items.length} uploads failed`, { id: toastId, duration: 10_000, description: errors.slice(0, 3).join("\n"), action: undefined });
     } else {
         const label = items.length === 1 ? `Uploaded ${items[0].name} (${formatBytes(items[0].size)})` : `Uploaded ${items.length} files (${formatBytes(batchTotal)})`;
-        toast.success(label, { id: toastId, duration: 4000, action: undefined });
+        toast.success(label, { id: toastId, duration: 4000, description: "The saved paths were sent to the terminal.", action: undefined });
     }
     return { paths, failures: errors.length, cancelled };
 }
@@ -165,7 +165,7 @@ export function shellQuote(value: string): string {
 
 /** Browser files are streamed from the Blob; nothing is read into memory here. */
 export function browserUploadItems(files: File[], onReady: (items: UploadItem[]) => void) {
-    if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+    if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`, { description: "Upload the rest in a separate batch." });
     const ready: UploadItem[] = [];
     for (const file of files.slice(0, MAX_UPLOAD_COUNT)) {
         if (file.size < 1 || file.size > MAX_UPLOAD_BYTES || invalidUploadName(file.name)) {
@@ -179,7 +179,7 @@ export function browserUploadItems(files: File[], onReady: (items: UploadItem[])
 
 /** Tauri drops give absolute paths; the Rust side reads name and size and later streams the file from disk. */
 export async function tauriDropItems(paths: string[]): Promise<UploadItem[]> {
-    if (paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+    if (paths.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`, { description: "Upload the rest in a separate batch." });
     const groups = await Promise.all(paths.slice(0, MAX_UPLOAD_COUNT).map(async (path) => {
         try {
             const info = await invoke<{ name: string; size: number }>("inspect_dropped_file", { path });

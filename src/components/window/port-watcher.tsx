@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { IconPlugConnected } from "@tabler/icons-react";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
 import { portForwardingSupported, setSessionPorts, startForward } from "@/lib/port-forwarding";
@@ -10,9 +11,9 @@ const POLL_MS = 3000;
 async function forward(client: RuntimeClient, sessionId: string, port: number) {
   try {
     await startForward(client, sessionId, port);
-    toast.success(`Forwarding localhost:${port}`);
+    toast.success(`Forwarding localhost:${port}`, { description: "Open it in a browser on this computer." });
   } catch (error) {
-    toast.error(errorMessage(error));
+    toast.error(`Could not forward port ${port}`, { description: errorMessage(error) });
   }
 }
 
@@ -35,6 +36,7 @@ export function PortWatcher({ client, sessionId }: { client: RuntimeClient | nul
           if (announced.current.has(key)) continue;
           announced.current.add(key);
           toast(`Port ${port} detected`, {
+            icon: <IconPlugConnected className="size-4" aria-hidden="true" />,
             description: "Forward it to reach it from this computer.",
             action: { label: "Forward", onClick: () => void forward(client!, id, port) },
           });

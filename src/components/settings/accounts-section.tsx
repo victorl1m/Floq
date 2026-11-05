@@ -26,7 +26,7 @@ export default function AccountsSection() {
         setBusy(id);
         try {
             await client.providerLogout(id);
-            toast.success("Disconnected");
+            toast.success("Disconnected", { description: "Sign in again to use this account." });
             await reload();
         } catch (e) {
             toast.error("Could not disconnect", { description: errorMessage(e) });

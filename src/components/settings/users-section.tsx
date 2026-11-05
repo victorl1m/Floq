@@ -33,7 +33,9 @@ export default function UsersSection() {
         setBusyId(user.id);
         try {
             await client.setUserRole(user.id, role);
-            toast.success(role === "admin" ? `${user.name} is now an administrator` : `${user.name} is no longer an administrator`);
+            toast.success(role === "admin" ? `${user.name} is now an administrator` : `${user.name} is no longer an administrator`, {
+                description: role === "admin" ? "They can manage users and settings." : "They can no longer manage users or settings.",
+            });
             await load();
         } catch (e) {
             toast.error("Could not change role", { description: errorMessage(e) });

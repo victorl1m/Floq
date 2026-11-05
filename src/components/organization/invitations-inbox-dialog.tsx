@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconMailOpened } from "@tabler/icons-react";
+import { IconMailOff, IconMailOpened } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -25,11 +25,11 @@ export function InvitationsInboxDialog({ open, onOpenChange }: { open: boolean; 
                 const { organizationId } = await client.acceptIncomingOrganizationInvitation(id);
                 organizationUi.removeIncoming(id);
                 await refreshOrganizations(organizationId);
-                toast.success(`You joined ${organizationName}`);
+                toast.success(`You joined ${organizationName}`, { description: "It is now your active organization." });
             } else {
                 await client.declineIncomingOrganizationInvitation(id);
                 organizationUi.removeIncoming(id);
-                toast(`Declined the invitation to ${organizationName}`);
+                toast(`Declined the invitation to ${organizationName}`, { icon: <IconMailOff className="size-4" aria-hidden="true" />, description: "Ask an admin to invite you again if you change your mind." });
             }
             if (organizationUi.snapshot().incoming.length === 0) onOpenChange(false);
         } catch (reason) {

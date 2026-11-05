@@ -124,7 +124,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         uploadingRef.current = true;
         setUploading(true);
         const picked = files.slice(0, MAX_UPLOAD_COUNT);
-        if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`);
+        if (files.length > MAX_UPLOAD_COUNT) toast.error(`Only the first ${MAX_UPLOAD_COUNT} files will be uploaded`, { description: "Upload the rest in a separate batch." });
         const originalTerm = termRef.current;
         const originalSocket = wsRef.current;
         const originalSessionId = sessionId;
@@ -140,7 +140,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             } else if (uploadedPaths.length) {
                 toast.error("Files uploaded, but the terminal disconnected", {
                     description: "Copy the saved paths and paste them after reconnecting.",
-                    action: { label: "Copy paths", onClick: () => void copyText(uploadedPaths.join(" ") + " ").catch(() => toast.error("Could not copy the paths to the clipboard")) },
+                    action: { label: "Copy paths", onClick: () => void copyText(uploadedPaths.join(" ") + " ").catch(() => toast.error("Could not copy the paths", { description: "The clipboard is not available. Upload the files again after the terminal reconnects." })) },
                 });
             }
         } finally {

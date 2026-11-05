@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
-import { IconCheck, IconCopy, IconMailPlus, IconRefresh, IconX } from "@tabler/icons-react";
+import { IconCheck, IconCopy, IconMailOff, IconMailPlus, IconRefresh, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,7 +45,7 @@ export function InvitationsPanel({ organization }: { organization: Organization 
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
         } catch {
-            toast.error("Could not copy. Select the code and copy it manually.");
+            toast.error("Could not copy the code", { description: "Select the code and copy it manually." });
         }
     }
 
@@ -75,7 +75,7 @@ export function InvitationsPanel({ organization }: { organization: Organization 
             } else {
                 await client.cancelOrganizationInvitation(organization.id, invitation.id);
                 setInvitations((current) => current?.filter((entry) => entry.id !== invitation.id) ?? current);
-                toast(`Cancelled the invitation for ${invitation.email}`);
+                toast(`Cancelled the invitation for ${invitation.email}`, { icon: <IconMailOff className="size-4" aria-hidden="true" />, description: "Its code no longer works." });
             }
             await load();
         } catch (reason) {

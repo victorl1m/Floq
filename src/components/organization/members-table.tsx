@@ -26,7 +26,7 @@ export function MembersTable({ organization }: { organization: Organization }) {
         try {
             await client.setOrganizationMemberRole(organization.id, member.id, role);
             await refreshOrganizations(organization.id);
-            toast.success(`${member.name || member.email} is now ${ROLE_LABEL[role].toLowerCase()}`);
+            toast.success(`${member.name || member.email} is now ${ROLE_LABEL[role].toLowerCase()}`, { description: "The new role applies immediately." });
         } catch (reason) {
             toast.error("Could not change the role", { description: errorMessage(reason) });
         } finally {
@@ -88,7 +88,7 @@ export function MembersTable({ organization }: { organization: Organization }) {
                     if (!removing) return;
                     await client.removeOrganizationMember(organization.id, removing.id);
                     await refreshOrganizations(organization.id);
-                    toast.success(`Removed ${removing.name || removing.email}`);
+                    toast.success(`Removed ${removing.name || removing.email}`, { description: "They no longer have access to this organization." });
                 }}
             />
         </>
