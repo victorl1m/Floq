@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow};
 
@@ -37,6 +37,8 @@ pub struct IslandRuntime(Mutex<IslandState>, Arc<AnimationState>);
 struct AnimationState {
     generation: AtomicU64,
     running: AtomicU64,
+    pending: AtomicBool,
+    rect: Mutex<Option<(i32, i32, i32, i32)>>,
 }
 
 impl Default for IslandRuntime {
@@ -189,7 +191,7 @@ fn apply_region(
     radius: f64,
 ) -> Result<(), String> {
     use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
     };
     use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
 
@@ -240,7 +242,11 @@ fn apply_frame(
     window
         .set_position(PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())?;
-    apply_region(window, width, height, radius)
+    apply_region(window, width, height, radius)?;
+    if let Ok(mut rect) = window.app_handle().state::<IslandRuntime>().1.rect.lock() {
+        *rect = Some((x, y, width as i32, height as i32));
+    }
+    Ok(())
 }
 
 fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(), String> {
@@ -257,7 +263,7 @@ fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(
 
 #[cfg(windows)]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow};
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
     unsafe {
         let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
@@ -289,36 +295,31 @@ fn animate_bounds(
 ) {
     let generation = animation.generation.fetch_add(1, Ordering::SeqCst) + 1;
     animation.running.store(generation, Ordering::SeqCst);
+    // Resolve native window information on the main thread before starting the worker.
+    let Some(target) = bounds(&window, expanded, height) else {
+        animation.running.store(0, Ordering::SeqCst);
+        return;
+    };
+    let start = animation
+        .rect
+        .lock()
+        .ok()
+        .and_then(|rect| *rect)
+        .or_else(|| physical_rect(&window));
+    let Some(start) = start else {
+        animation.running.store(0, Ordering::SeqCst);
+        return;
+    };
+    let scale = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let start_radius = corner_radius(start.3.max(1) as u32, scale, from_expanded);
+    let end_radius = corner_radius(target.3, scale, expanded);
+    let app = window.app_handle().clone();
     std::thread::spawn(move || {
-        if animation.generation.load(Ordering::SeqCst) != generation {
-            return;
-        }
-        let Some(target) = bounds(&window, expanded, height) else {
-            let _ = animation.running.compare_exchange(
-                generation,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-            return;
-        };
-        let Some(start) = physical_rect(&window) else {
-            let _ = animation.running.compare_exchange(
-                generation,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-            return;
-        };
-        let scale = window
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .map(|m| m.scale_factor())
-            .unwrap_or(1.0);
-        let start_radius = corner_radius(start.3.max(1) as u32, scale, from_expanded);
-        let end_radius = corner_radius(target.3, scale, expanded);
         let started = std::time::Instant::now();
         loop {
             if animation.generation.load(Ordering::SeqCst) != generation {
@@ -332,15 +333,43 @@ fn animate_bounds(
                 lerp(start.2 as f64, target.2 as f64).round().max(1.0) as u32,
                 lerp(start.3 as f64, target.3 as f64).round().max(1.0) as u32,
             );
-            if apply_frame(&window, frame, lerp(start_radius, end_radius)).is_err() || t >= 1.0 {
-                break;
+            if !animation.pending.swap(true, Ordering::SeqCst) {
+                let posted_animation = animation.clone();
+                let posted_window = window.clone();
+                let radius = lerp(start_radius, end_radius);
+                let final_frame = t >= 1.0;
+                if app
+                    .run_on_main_thread(move || {
+                        if posted_animation.generation.load(Ordering::SeqCst) == generation {
+                            let _ = apply_frame(&posted_window, frame, radius);
+                            if final_frame {
+                                let _ = posted_animation.running.compare_exchange(
+                                    generation,
+                                    0,
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                );
+                            }
+                        }
+                        posted_animation.pending.store(false, Ordering::SeqCst);
+                    })
+                    .is_err()
+                {
+                    animation.pending.store(false, Ordering::SeqCst);
+                    let _ = animation.running.compare_exchange(
+                        generation,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    break;
+                }
+                if final_frame {
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        let _ =
-            animation
-                .running
-                .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst);
     });
 }
 
@@ -491,103 +520,135 @@ pub fn start_hover_monitor(app: tauri::AppHandle) {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
         std::thread::spawn(move || {
+            let pending = Arc::new(AtomicBool::new(false));
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
-                let Some(window) = app.get_webview_window("island") else {
-                    continue;
-                };
-                // Never hold the state mutex across a window call: on Windows those calls
-                // marshal to the main thread, which may itself be waiting on this mutex
-                // inside a sync command (that deadlock froze the whole app on Send).
-                let (active, pinned, expanded, height, outside_since) = {
-                    let Ok(state) = app.state::<IslandRuntime>().0.lock() else {
-                        continue;
-                    };
-                    (
-                        state.active,
-                        state.pinned,
-                        state.expanded,
-                        state.height,
-                        state.outside_since,
-                    )
-                };
-                if !active || pinned || !window.is_visible().unwrap_or(false) {
+                if pending.swap(true, Ordering::SeqCst) {
                     continue;
                 }
-                let animating = app
-                    .state::<IslandRuntime>()
-                    .1
-                    .running
-                    .load(Ordering::SeqCst)
-                    != 0;
-                let desired = if animating {
-                    None
-                } else {
-                    bounds(&window, expanded, height)
-                };
-                if let (Some((x, y, width, h)), Ok(position), Ok(size)) =
-                    (desired, window.outer_position(), window.outer_size())
+                let tick_pending = pending.clone();
+                let tick_app = app.clone();
+                let animation = app.state::<IslandRuntime>().1.clone();
+                let generation = animation.generation.load(Ordering::SeqCst);
+                if app
+                    .run_on_main_thread(move || {
+                        if animation.generation.load(Ordering::SeqCst) == generation {
+                            hover_tick(&tick_app);
+                        }
+                        tick_pending.store(false, Ordering::SeqCst);
+                    })
+                    .is_err()
                 {
-                    if position.x != x || position.y != y || size.width != width || size.height != h
-                    {
-                        let _ = apply_bounds(&window, expanded, height);
-                    }
-                }
-                let Ok(cursor) = app.cursor_position() else {
-                    continue;
-                };
-                let inside =
-                    physical_rect(&window).is_some_and(|rect| contains(rect, cursor.x, cursor.y));
-                let next = if inside && !expanded {
-                    Some((true, None))
-                } else if expanded && !inside {
-                    let since = outside_since.unwrap_or_else(std::time::Instant::now);
-                    if since.elapsed() >= std::time::Duration::from_millis(300) {
-                        Some((false, None))
-                    } else {
-                        if outside_since.is_none() {
-                            if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-                                state.outside_since = Some(since);
-                            }
-                        }
-                        None
-                    }
-                } else {
-                    if inside && outside_since.is_some() {
-                        if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-                            state.outside_since = None;
-                        }
-                    }
-                    None
-                };
-                if let Some((now_expanded, since)) = next {
-                    if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-                        state.expanded = now_expanded;
-                        state.outside_since = since;
-                    }
-                    let _ = window.set_ignore_cursor_events(!now_expanded);
-                    animate_bounds(
-                        window.clone(),
-                        app.state::<IslandRuntime>().1.clone(),
-                        now_expanded,
-                        height,
-                        expanded,
-                    );
-                    let _ = window.emit(
-                        "island:hover",
-                        serde_json::json!({"expanded": now_expanded}),
-                    );
+                    pending.store(false, Ordering::SeqCst);
                 }
             }
         });
     });
 }
 
+fn hover_tick(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("island") else {
+        return;
+    };
+    // Never hold the state mutex across a window call: on Windows those calls
+    // marshal to the main thread, which may itself be waiting on this mutex
+    // inside a sync command (that deadlock froze the whole app on Send).
+    let (active, pinned, expanded, height, outside_since) = {
+        let Ok(state) = app.state::<IslandRuntime>().0.lock() else {
+            return;
+        };
+        (
+            state.active,
+            state.pinned,
+            state.expanded,
+            state.height,
+            state.outside_since,
+        )
+    };
+    if !active || pinned || !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let animating = app
+        .state::<IslandRuntime>()
+        .1
+        .running
+        .load(Ordering::SeqCst)
+        != 0;
+    let desired = if animating {
+        None
+    } else {
+        bounds(&window, expanded, height)
+    };
+    let cached = app
+        .state::<IslandRuntime>()
+        .1
+        .rect
+        .lock()
+        .ok()
+        .and_then(|rect| *rect);
+    if let Some((x, y, width, h)) = desired {
+        if cached != Some((x, y, width as i32, h as i32)) {
+            let _ = apply_bounds(&window, expanded, height);
+        }
+    }
+    let Ok(cursor) = app.cursor_position() else {
+        return;
+    };
+    let inside = app
+        .state::<IslandRuntime>()
+        .1
+        .rect
+        .lock()
+        .ok()
+        .and_then(|rect| *rect)
+        .is_some_and(|rect| contains(rect, cursor.x, cursor.y));
+    let next = if inside && !expanded {
+        Some((true, None))
+    } else if expanded && !inside {
+        let since = outside_since.unwrap_or_else(std::time::Instant::now);
+        if since.elapsed() >= std::time::Duration::from_millis(300) {
+            Some((false, None))
+        } else {
+            if outside_since.is_none() {
+                if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                    state.outside_since = Some(since);
+                }
+            }
+            None
+        }
+    } else {
+        if inside && outside_since.is_some() {
+            if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                state.outside_since = None;
+            }
+        }
+        None
+    };
+    if let Some((now_expanded, since)) = next {
+        if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+            state.expanded = now_expanded;
+            state.outside_since = since;
+        }
+        let _ = window.set_ignore_cursor_events(!now_expanded);
+        animate_bounds(
+            window.clone(),
+            app.state::<IslandRuntime>().1.clone(),
+            now_expanded,
+            height,
+            expanded,
+        );
+        let _ = window.emit(
+            "island:hover",
+            serde_json::json!({"expanded": now_expanded}),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        active_snapshot, clamped_height, contains, corner_radius, ease_out, set_island_enabled,
-        update_snapshot_state, IslandState,
+        IslandState, active_snapshot, clamped_height, contains, corner_radius, ease_out,
+        set_island_enabled, update_snapshot_state,
     };
     use serde_json::json;
 
