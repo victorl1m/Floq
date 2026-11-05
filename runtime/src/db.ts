@@ -58,6 +58,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS recruit_skills TEXT[];
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS resume_on_boot BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS interrupted_turn BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Removing an agent archives its conversation (kept, restorable from the Conversations tab) instead of deleting it.
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     UPDATE agent_sessions AS child SET project_cwd = child.cwd
       WHERE child.project_cwd IS NULL AND EXISTS (
         SELECT 1 FROM agent_sessions AS repo

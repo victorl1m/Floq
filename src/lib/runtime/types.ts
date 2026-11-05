@@ -36,6 +36,8 @@ export interface SessionSummary {
   /** Number of per-agent secrets attached (session list only). */
   secretCount?: number;
   /** Session that recruited this one via the floq CLI, or null. */
+  /** True once the agent was removed: its conversation is kept and listed under Conversations, not on the canvas. */
+  archived?: boolean;
   parentSessionId?: string | null;
   /** Turn status of a running agent; only present on polled session lists. */
   activity?: "working" | "idle" | "waiting-for-input";

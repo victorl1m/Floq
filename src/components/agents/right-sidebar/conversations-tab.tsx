@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useMemo, useState } from "react";
 import { IconMessages, IconRestore, IconSearch, IconX } from "@tabler/icons-react";
@@ -90,12 +91,12 @@ function Row({ session, project, showWorkspace, active, open, closed, onActivate
 
 /** Every agent conversation of the active project (all workspaces): open tabs, running in the background, and closed ones to restore. */
 export default function ConversationsTab({ projectId, project }: { projectId: string | null; project?: RuntimeProject }) {
-  const { sessions, agentTabIds, focusOnCanvas, selectedId, loaded } = useRuntime();
+  const { sessions, archivedSessions, restoreConversation, agentTabIds, focusOnCanvas, selectedId, loaded } = useRuntime();
   const [query, setQuery] = useState("");
   const multipleWorkspaces = (project?.workspaces.length ?? 0) > 1;
 
   const { all, groups } = useMemo(() => {
-    const all = sessions.filter((session) => session.provider !== "shell" && (session.projectId ?? null) === projectId);
+    const all = [...sessions, ...archivedSessions].filter((session) => session.provider !== "shell" && (session.projectId ?? null) === projectId);
     const needle = query.trim().toLowerCase();
     const matching = (needle ? all.filter((session) => session.title.toLowerCase().includes(needle) || (session.branch ?? "").toLowerCase().includes(needle)) : all)
       .sort((a, b) => activityTime(b) - activityTime(a));
@@ -107,7 +108,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
     const closed = matching.filter((session) => !opened.has(session.id) && !isLive(session.state));
     for (const bucket of BUCKETS) push(`closed-${bucket}`, `Closed · ${bucket}`, closed.filter((session) => bucketOf(activityTime(session)) === bucket), true);
     return { all, groups };
-  }, [sessions, agentTabIds, projectId, query]);
+  }, [sessions, archivedSessions, agentTabIds, projectId, query]);
 
   const opened = new Set(agentTabIds);
 
@@ -148,7 +149,10 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
                     active={session.id === selectedId}
                     open={opened.has(session.id)}
                     closed={group.closed}
-                    onActivate={() => focusOnCanvas(session)}
+                    onActivate={() => {
+                      if (!session.archived) { focusOnCanvas(session); return; }
+                      restoreConversation(session.id).then((restored) => focusOnCanvas(restored)).catch((error) => toast.error("Could not restore conversation", { description: error instanceof Error ? error.message : String(error) }));
+                    }}
                   />
                 ))}
               </ul>

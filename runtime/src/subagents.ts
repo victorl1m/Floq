@@ -236,7 +236,7 @@ export class SubagentService {
   ) {}
 
   private async rows(userId: string): Promise<SubagentRow[]> {
-    return (await this.pool.query("SELECT id, title, provider, model, state, role, cwd, parent_session_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell'", [userId])).rows as SubagentRow[];
+    return (await this.pool.query("SELECT id, title, provider, model, state, role, cwd, parent_session_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell' AND archived_at IS NULL", [userId])).rows as SubagentRow[];
   }
 
   async enabled(userId: string): Promise<boolean> {

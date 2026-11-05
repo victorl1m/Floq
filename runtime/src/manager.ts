@@ -126,6 +126,7 @@ interface Row {
   role?: string | null;
   parent_session_id?: string | null;
   recruit_skills?: string[] | null;
+  archived_at?: Date | null;
 }
 
 function summaryFromRow(row: Row): SessionSummary {
@@ -156,6 +157,7 @@ function summaryFromRow(row: Row): SessionSummary {
     model: row.model ?? null,
     role: row.role ?? null,
     parentSessionId: row.parent_session_id ?? null,
+    archived: row.archived_at != null,
   };
 }
 
@@ -1134,7 +1136,7 @@ export class SessionManager {
 
   async list(userId: string): Promise<SessionSummary[]> {
     const result = await this.pool.query(
-      "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY last_active_at DESC LIMIT 200",
+      "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY (archived_at IS NOT NULL), last_active_at DESC LIMIT 500",
       [userId],
     );
     // ONE grouped query for the node badges (no N+1).
@@ -1516,7 +1518,7 @@ export class SessionManager {
     });
 
     await this.pool.query(
-      "UPDATE agent_sessions SET state = 'running', resume_count = $2, sleep_reason = NULL, slept_at = NULL, last_active_at = now(), resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1",
+      "UPDATE agent_sessions SET state = 'running', resume_count = $2, sleep_reason = NULL, slept_at = NULL, last_active_at = now(), resume_on_boot = FALSE, interrupted_turn = FALSE, archived_at = NULL WHERE id = $1",
       [row.id, resumeCount],
     );
     void this.readyFlow(session);
@@ -2309,7 +2311,7 @@ export class SessionManager {
 
   async remove(id: string, userId: string): Promise<void> {
     if (this.logins.get(id)?.userId === userId) return this.endLogin(id);
-    await this.row(id, userId);
+    const row = await this.row(id, userId);
     const awake = this.shards.awakeHandle(userId);
     if (awake) { try { rmSync(this.secretDir(awake, id), { recursive: true, force: true }); } catch { /* best effort */ } }
     const session = this.live.get(id);
@@ -2319,7 +2321,11 @@ export class SessionManager {
       this.vault.revokeSession(id);
       session.dispose();
     }
-    await this.pool.query("DELETE FROM agent_sessions WHERE id = $1 AND user_id = $2", [id, userId]);
+    // An agent's conversation is never deleted by removing it: it is archived (hidden from the canvas, listed in
+    // Conversations, restorable). Only terminals, which have no conversation, are deleted for good.
+    const kept = row.provider !== "shell";
+    if (kept) await this.pool.query("UPDATE agent_sessions SET archived_at = COALESCE(archived_at, now()), state = 'sleeping', slept_at = COALESCE(slept_at, now()), resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1 AND user_id = $2", [id, userId]);
+    else await this.pool.query("DELETE FROM agent_sessions WHERE id = $1 AND user_id = $2", [id, userId]);
     this.scheduleLock(userId);
   }
 
