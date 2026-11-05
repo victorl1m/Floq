@@ -27,7 +27,7 @@ Floq is a Tauri desktop app that connects to a **runtime** you host. The runtime
 
 ## Install
 
-- **Prebuilt installers:** Windows installers (`.exe` / `.msi`) are attached to GitHub Releases once releases are published. They are unsigned. macOS binaries are not published yet.
+- **Prebuilt installers:** The Windows installer (`.exe`) is attached to GitHub Releases. It is unsigned. Installing it over an older version (including an old `.msi` install) replaces it; a running Floq is closed first. macOS binaries are not published yet.
 - **From source:** see below.
 
 ### Build from source
