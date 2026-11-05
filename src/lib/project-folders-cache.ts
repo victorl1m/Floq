@@ -91,13 +91,13 @@ export function readLocalDoc(scope: string, baseUrl: string | null, userId: stri
   }
   const storedExpanded = parseExpanded(readStorage(expandedKey(scope)));
   const expanded = storedExpanded ?? Object.fromEntries(Object.entries(loadUserPreferences(baseUrl, userId).folderNavExpanded ?? {}).filter(([id]) => known.has(id)));
-  return normalizeDoc({ folders, root, membership, expanded });
+  return normalizeDoc({ folders, root, membership, expanded, children: saved?.children });
 }
 
 export function writeLocalDoc(scope: string, doc: FoldersDoc): void {
   const normalized = normalizeDoc(doc);
   saveProjectFolders(scope, normalized.folders);
-  const layout: ProjectLayout = { root: normalized.root, folders: Object.fromEntries(normalized.folders.map((folder) => [folder.id, normalized.membership[folder.id] ?? []])) };
+  const layout: ProjectLayout = { root: normalized.root, folders: Object.fromEntries(normalized.folders.map((folder) => [folder.id, normalized.membership[folder.id] ?? []])), ...(normalized.children ? { children: normalized.children } : {}) };
   saveLayout(scope, layout);
   saveFolderExpanded(scope, normalized.expanded);
 }
