@@ -273,7 +273,7 @@ function AgentCanvas() {
 
   const deleteLink = useCallback(async (link: CanvasLink): Promise<boolean> => {
     if (!client) return false;
-    if (link.synthetic) { toast.info("This wire cannot be deleted yet", { description: "It is inferred from the recruiting parent." }); return false; }
+    if (link.synthetic) { toast.info("This wire cannot be deleted", { description: "The recruiting parent created it automatically." }); return false; }
     setRemoved((set) => new Set(set).add(link.id));
     try {
       await deleteLinkRequest(client, link.id);
@@ -864,11 +864,11 @@ function AgentCanvas() {
     startLink,
     rename: (session) => setRenaming({ session, title: session.title }),
     resume: (session) => void wake(session),
-    copyId: (id) => void copyText(id).then(() => toast.success("Session id copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy", { description: errorMessage(error) })),
+    copyId: (id) => void copyText(id).then(() => toast.success("Session id copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy the session id", { description: errorMessage(error) })),
     copyOutput: (id) => {
       const text = getMirrorText(id);
       if (!text) return;
-      void copyText(text).then(() => toast.success("Last output copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy", { description: errorMessage(error) }));
+      void copyText(text).then(() => toast.success("Last output copied", { description: "It is on your clipboard." }), (error) => toast.error("Could not copy the last output", { description: errorMessage(error) }));
     },
     toggleCollapse,
     resize,

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
+  IconCheck,
+  IconAlertTriangleFilled,
   IconChevronRight,
   IconCopy,
   IconChevronsDown,
@@ -31,6 +33,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
 import { ProviderIcon } from "@/components/agents/provider";
+import { advanceMemory, countByProject, projectStatus, type ProjectMemory, type ProjectStatus } from "@/lib/project-status";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
 import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
@@ -87,8 +90,19 @@ async function projectImageThumbnail(file: File): Promise<string> {
 
 type EditState = { kind: "project"; project: RuntimeProject } | null;
 
+function ProjectStatusSlot({ status }: { status: ProjectStatus | null }) {
+  // Fixed 16px slot, always rendered, so the label never shifts when a status appears or clears.
+  return <span className="flex size-4 shrink-0 items-center justify-center">
+    {status && <span role="status" title={status.label} aria-label={status.label} className="flex items-center justify-center">
+      {status.kind === "errored" && <IconAlertTriangleFilled className="size-3.5 text-destructive" />}
+      {status.kind === "running" && <span className="size-2 rounded-full bg-sky-500 animate-pulse motion-reduce:animate-none [.floq-reduced-motion_&]:animate-none" />}
+      {status.kind === "finished" && <IconCheck className="size-3.5 text-emerald-500" stroke={3} />}
+    </span>}
+  </span>;
+}
+
 export default function CanonicalProjectList() {
-  const { loaded, projects, projectsLoading, projectsError, retryProjects, canvasProjectId, openCanvas, client, upsertSession, deleteSession, setNewAgentOpen, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, setProjectNavExpanded } = useRuntime();
+  const { loaded, sessions, projects, projectsLoading, projectsError, retryProjects, canvasProjectId, openCanvas, client, upsertSession, deleteSession, setNewAgentOpen, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, setProjectNavExpanded } = useRuntime();
   const scope = projectScope(baseUrl, user?.id ?? null);
   const folders = useProjectFolders(scope);
   useProjectFoldersSync();
@@ -125,6 +139,20 @@ export default function CanonicalProjectList() {
     () => reconcileLayout(savedLayout, projects.map((project) => project.id), folders.map((folder) => folder.id), (id) => folderByProject.get(id)),
     [folderByProject, folders, projects, savedLayout],
   );
+  const projectCounts = useMemo(() => countByProject(sessions), [sessions]);
+  const [projectMemory, setProjectMemory] = useState<Map<string, ProjectMemory>>(() => new Map());
+  useEffect(() => {
+    setProjectMemory((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const id of new Set([...prev.keys(), ...projectCounts.keys()])) {
+        const before = prev.get(id);
+        const after = advanceMemory(before, projectCounts.get(id), id === canvasProjectId);
+        if (!before || before.wasWorking !== after.wasWorking || before.finished !== after.finished) { next.set(id, after); changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [projectCounts, canvasProjectId]);
   const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const foldersById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
   const projectLabel = (project: RuntimeProject) => project.displayName?.trim() || project.name;
@@ -254,7 +282,7 @@ export default function CanonicalProjectList() {
     setDeleting(null);
     if (!target) return;
     try { await deleteSession(target.id); }
-    catch (error) { toast.error("Could not delete", { description: errorMessage(error) }); }
+    catch (error) { toast.error(`Could not delete ${target.title}`, { description: errorMessage(error) }); }
   }
 
   async function saveRename(event: FormEvent) {
@@ -285,6 +313,7 @@ export default function CanonicalProjectList() {
         <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row", ROW_OPEN)}>
           <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-8! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
             <ProjectMark project={project} className="text-muted-foreground [&:is(img)]:bg-sidebar-accent/40 [&:is(img)]:ring-1 [&:is(img)]:ring-sidebar-border/70" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
+            <ProjectStatusSlot status={projectStatus(projectCounts.get(project.id), projectMemory.get(project.id))} />
           </DndButton></SidebarMenuButton>
           <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="chevron" reveal="md:group-hover/project-row:opacity-100 md:group-focus-within/project-row:opacity-100" aria-label={`Actions for ${project.displayName || project.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className={MENU}>

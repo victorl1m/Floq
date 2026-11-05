@@ -79,7 +79,7 @@ export function InvitationsPanel({ organization }: { organization: Organization 
             }
             await load();
         } catch (reason) {
-            toast.error(action === "resend" ? "Could not resend" : "Could not cancel", { description: errorMessage(reason) });
+            toast.error(action === "resend" ? "Could not resend the invitation" : "Could not cancel the invitation", { description: errorMessage(reason) });
             void load();
         } finally {
             setBusyId(null);

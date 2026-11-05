@@ -95,7 +95,7 @@ export default function TasksPage() {
   const [inviteToken, setInviteToken] = useState("");
   const [acceptToken, setAcceptToken] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<{ title: string; description: string; action: () => Promise<void> } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ title: string; description: string; success: string; action: () => Promise<void> } | null>(null);
   const [dialog, setDialog] = useState<"organization" | "board" | "invite" | "join" | "rename" | null>(null);
   const [activeCard, setActiveCard] = useState<TaskCard | null>(null);
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
@@ -289,7 +289,9 @@ export default function TasksPage() {
     "Card updated": "Your changes are saved.",
     "Card moved": "It now sits at the end of the new list.",
     "Board renamed": "The new name shows for everyone in the organization.",
-    "Deleted": "It was removed from the board.",
+    "Card deleted": "It was removed from the board.",
+    "List deleted": "Its cards were removed too.",
+    "Board deleted": "Its lists and cards were removed too.",
   };
   const doMutation = async (action: () => Promise<unknown>, success?: string): Promise<boolean> => {
     setBusy(true);
@@ -401,7 +403,7 @@ export default function TasksPage() {
     setDraggingCardId(null); setDropTargetListId(null);
   };
   const requestCardDelete = (card: TaskCard) => {
-    setPendingDelete({ title: `Delete “${card.title}”?`, description: "This permanently removes the card from the board.", action: async () => { await client?.deleteTaskCard(boardId, card.id); await refreshBoard(); setActiveCard((current) => current?.id === card.id ? null : current); } });
+    setPendingDelete({ title: `Delete “${card.title}”?`, description: "This permanently removes the card from the board.", success: "Card deleted", action: async () => { await client?.deleteTaskCard(boardId, card.id); await refreshBoard(); setActiveCard((current) => current?.id === card.id ? null : current); } });
     setDeleteOpen(true);
   };
   const updateBoard = async (event: FormEvent) => {
@@ -469,7 +471,7 @@ export default function TasksPage() {
               {selectedOrganization?.role === "owner" && <DropdownMenuItem onSelect={() => { setError(null); setInviteToken(""); setInviteEmail(""); setDialog("invite"); }}><IconUsers />Invite member</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => { setError(null); setDialog("join"); }}><IconArrowRight />Join with token</DropdownMenuItem>
               {visibleBoard && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => updateNavigationPreferences((current) => ({ ...current, favorites: current.favorites.includes(visibleBoard.id) ? current.favorites.filter((id) => id !== visibleBoard.id) : [...current.favorites, visibleBoard.id] }))}><IconStar />{favoriteIds.has(visibleBoard.id) ? "Remove from favorites" : "Add to favorites"}</DropdownMenuItem><DropdownMenuItem onSelect={() => { setBoardName(visibleBoard.title); setError(null); setDialog("rename"); }}>Rename board</DropdownMenuItem>
-                {selectedOrganization?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + visibleBoard.title + "?", description: "This permanently deletes the board, its lists, and every card.", action: async () => { await client?.deleteTaskBoard(visibleBoard.id); const remaining = await client?.organizationBoards(organizationId) ?? []; const available = new Set(remaining.map((item) => item.id)); const tabs = activeNavigationPreferences.openTabs.filter((id) => available.has(id)); const nextActive = tabs[0] ?? ""; setNavigationPreferences((current) => ({ ...current, value: { ...current.value, openTabs: tabs, activeBoardId: nextActive, tabsInitialized: true } })); setBoards(remaining); setBoardId(nextActive); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
+                {selectedOrganization?.role === "owner" && <DropdownMenuItem variant="destructive" onSelect={() => { setPendingDelete({ title: "Delete " + visibleBoard.title + "?", description: "This permanently deletes the board, its lists, and every card.", success: "Board deleted", action: async () => { await client?.deleteTaskBoard(visibleBoard.id); const remaining = await client?.organizationBoards(organizationId) ?? []; const available = new Set(remaining.map((item) => item.id)); const tabs = activeNavigationPreferences.openTabs.filter((id) => available.has(id)); const nextActive = tabs[0] ?? ""; setNavigationPreferences((current) => ({ ...current, value: { ...current.value, openTabs: tabs, activeBoardId: nextActive, tabsInitialized: true } })); setBoards(remaining); setBoardId(nextActive); setBoard(null); } }); setDeleteOpen(true); }}>Delete board</DropdownMenuItem>}</>}
             </DropdownMenuContent></DropdownMenu>
           </header>
 
@@ -489,7 +491,7 @@ export default function TasksPage() {
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
                 <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" role="region" aria-label={`${visibleBoard.title} board`}>
                   {visibleBoard.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
-                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
+                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, success: "List deleted", action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
                     <div className="min-h-10 space-y-2 overflow-y-auto p-2.5">
                       {list.cards.map((card) => <Card key={card.id} size="sm" className={`gap-0 rounded-lg p-2.5 py-2.5 shadow-sm transition-colors hover:bg-accent/40 ${draggingCardId === card.id ? "opacity-50" : ""}`}>
                         <Button type="button" variant="ghost" draggable aria-description="Drag to move this card, or open details and change its list with the keyboard." aria-label={"Open card: " + card.title} className="h-auto w-full cursor-grab flex-col items-stretch gap-2 whitespace-normal rounded-md p-0 text-left active:cursor-grabbing" onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); setDraggingCardId(card.id); }} onDragEnd={() => { setDraggingCardId(null); setDropTargetListId(null); }} onClick={() => setActiveCard(card)}>
@@ -518,7 +520,7 @@ export default function TasksPage() {
                   <AlertDialogContent>
                     <AlertDialogHeader><AlertDialogTitle>{pendingDelete?.title}</AlertDialogTitle><AlertDialogDescription>{pendingDelete?.description}</AlertDialogDescription></AlertDialogHeader>
                     {error && <ErrorBanner>{error}</ErrorBanner>}
-                    <AlertDialogFooter><AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy} onClick={async (event) => { event.preventDefault(); if (pendingDelete && await doMutation(pendingDelete.action, "Deleted")) { setDeleteOpen(false); setPendingDelete(null); } }}>Delete</AlertDialogAction></AlertDialogFooter>
+                    <AlertDialogFooter><AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy} onClick={async (event) => { event.preventDefault(); if (pendingDelete && await doMutation(pendingDelete.action, pendingDelete.success)) { setDeleteOpen(false); setPendingDelete(null); } }}>Delete</AlertDialogAction></AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
               </div>

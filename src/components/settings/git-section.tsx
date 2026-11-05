@@ -45,7 +45,7 @@ function GitField({
             onChange(await client.updateSettings({ [field]: next || null }));
             flash();
         } catch (e) {
-            toast.error("Could not save", { description: errorMessage(e) });
+            toast.error(`Could not save the ${label.toLowerCase()}`, { description: errorMessage(e) });
             setValue(stored ?? "");
         }
     }
