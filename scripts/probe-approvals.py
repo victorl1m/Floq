@@ -1,6 +1,6 @@
 """Probe the user-approval prompt against the synthetic runtime fixture (stubbed /v1/approvals + a fake events socket).
 
-Checks: contents, irreversible styling, focus on Deny, Enter never allows (Ctrl/Cmd+Enter does), Esc defers to the pill and
+Checks: contents, irreversible styling, focus on Deny, plain Enter/Space never decide (only a click or Ctrl/Cmd+Enter, which allows), Esc defers to the pill and
 footer chip, the prompt is on top of Home, Canvas, Settings and the command palette without closing them, stack navigation,
 countdown, outcome state, POST payloads, light/dark screenshots.
 Run with the dev server on :1421: python scripts/probe-approvals.py [light|dark]
@@ -157,7 +157,7 @@ def main():
             page.locator("[data-slot=approval-pill]").click(); page.wait_for_timeout(400)
             c["overCanvasVisible"] = page.get_by_role("dialog", name="Approval needed").count() == 1 and top_most(page, "[data-slot=approval-dialog]")
             page.screenshot(path=str(OUT / f"approval-over-canvas-{THEME}.png"), animations="disabled")
-        # Ctrl+Enter allows; plain Enter on the focused Deny only denies.
+        # Ctrl+Enter allows; plain Enter or Space on the focused Deny decides nothing (a click does).
         page.keyboard.press("Control+Enter"); page.wait_for_timeout(400)
         out = page.locator("[data-slot=approval-outcome]")
         c["outcomeApproved"] = out.count() == 1 and "Approved · agent notified" in out.inner_text()
@@ -167,8 +167,11 @@ def main():
         d = page.get_by_role("dialog", name="Approval needed")
         if d.count():
             c["denyFocusedAgain"] = page.evaluate("document.activeElement?.textContent?.trim()") == "Deny"
-            page.keyboard.press("Enter"); page.wait_for_timeout(400)
-            c["plainEnterDeniesNeverAllows"] = fixture.answers[-1][1] == "deny"
+            before = len(fixture.answers)
+            page.keyboard.press("Enter"); page.keyboard.press(" "); page.wait_for_timeout(400)
+            c["plainEnterSpaceDecideNothing"] = len(fixture.answers) == before and d.count() == 1
+            d.get_by_role("button", name="Deny").click(); page.wait_for_timeout(400)
+            c["clickDenies"] = len(fixture.answers) == before + 1 and fixture.answers[-1][1] == "deny"
         page.wait_for_timeout(1700)
         # An expired approval cannot be allowed.
         fixture.add("D" * 26, action="merge release into main", detail="", irreversible=True, ttl=1, requester=SARAH, target=SARAH)
