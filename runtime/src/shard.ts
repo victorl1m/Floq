@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
@@ -13,6 +13,50 @@ import { ownHomeAliasArgs } from "./sandboxPaths.js";
 const run = promisify(execFile);
 /** A broken FUSE mount must fail fast with a JSON error instead of hanging the request. */
 const MOUNT_TIMEOUT_MS = 20_000;
+
+/** Entries of a user's persistent /tmp older than this are deleted at wake. */
+export const TMP_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/** Home-relative location of the persistent /tmp. */
+const TMP_REL = ".floq/tmp";
+const PRUNE_MAX_DEPTH = 6;
+const PRUNE_MAX_ENTRIES = 10_000;
+
+/** Newest mtime anywhere under `path` (not following symlinks); null when the bounded walk (depth / entry count) was exceeded. */
+function newestMtime(path: string, budget: { left: number }, depth = 0): number | null {
+  const stat = lstatSync(path);
+  let newest = stat.mtimeMs;
+  if (!stat.isDirectory()) return newest;
+  if (depth >= PRUNE_MAX_DEPTH) return null;
+  for (const name of readdirSync(path)) {
+    if (--budget.left < 0) return null;
+    const child = newestMtime(join(path, name), budget, depth + 1);
+    if (child === null) return null;
+    if (child > newest) newest = child;
+  }
+  return newest;
+}
+
+/**
+ * Delete direct children of `dir` whose newest mtime anywhere inside is older than maxAgeMs. A bounded walk (depth 6, 10k
+ * entries) that hits its limit keeps the entry. Symlinks are unlinked, never followed.
+ */
+export function pruneOldEntries(dir: string, maxAgeMs: number, now = Date.now()): number {
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    try {
+      const newest = newestMtime(path, { left: PRUNE_MAX_ENTRIES });
+      if (newest !== null && now - newest > maxAgeMs) {
+        rmSync(path, { recursive: true, force: true });
+        removed++;
+      }
+    } catch {
+      /* raced with a running process; keep it */
+    }
+  }
+  return removed;
+}
 
 /** Path of a user's home as seen from inside the sandbox. */
 export const SANDBOX_HOME = "/home/agent";
@@ -256,6 +300,7 @@ export class LinuxShardDriver implements ShardDriver {
       log.info("shard.wake", { userId, uid });
     }
     const handle: ShardHandle = { userId, uid, mountPath };
+    this.prepareTmp(handle);
     // Only with FLOQ_NETNS (and a successful startup probe): the user's persistent network namespace.
     if (this.netns?.isEnabled) {
       try {
@@ -266,6 +311,29 @@ export class LinuxShardDriver implements ShardDriver {
       }
     }
     return handle;
+  }
+
+  /**
+   * Host directory bound at /tmp in this user's sandbox: <home>/.floq/tmp, inside the encrypted home, so scratch data is only
+   * readable while the home is unlocked. Only this user's directory is ever bound, so no one sees another user's /tmp.
+   */
+  tmpPath(handle: ShardHandle): string {
+    return join(handle.mountPath, TMP_REL);
+  }
+
+  /**
+   * Create the user's /tmp (sticky 1777, owned by their uid) and prune entries unused for TMP_MAX_AGE_MS. Called when the home
+   * is (re)mounted; a shard is only locked with no live session, so no session of this user is running during the prune.
+   */
+  private prepareTmp(handle: ShardHandle): void {
+    const dir = this.tmpPath(handle);
+    try {
+      mkdirOwned(handle.mountPath, dir, handle.uid);
+      chmodSync(dir, 0o1777);
+      pruneOldEntries(dir, TMP_MAX_AGE_MS);
+    } catch (error) {
+      log.warn("shard.tmp_prepare_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+    }
   }
 
   hostPath(handle: ShardHandle, relative: string): string {
@@ -322,8 +390,9 @@ export class LinuxShardDriver implements ShardDriver {
       "--ro-bind", join(this.metaRoot, uid + ".group"), "/etc/group",
       "--proc", "/proc",
       "--dev", "/dev",
-      // 1777 like a real /tmp: the agents create /tmp/claude-<uid> etc. as the unprivileged uid.
-      "--perms", "1777", "--tmpfs", "/tmp",
+      // Persistent, per-user /tmp inside the encrypted home (scratchpads, task output and venvs survive restarts; wake()
+      // prunes entries unused for 7 days). The directory is 1777 and owned by the user's uid, like a real /tmp.
+      "--bind", this.tmpPath(handle), "/tmp",
       "--tmpfs", "/run",
       "--bind", home, SANDBOX_HOME,
       // Git linked-worktree metadata stores absolute paths. Bind only this user's shard at that same path;

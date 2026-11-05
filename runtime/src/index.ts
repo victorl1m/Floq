@@ -77,6 +77,11 @@ log.info("runtime.listening", {
   github: Boolean(config.githubClientId),
 });
 
+// Continue the work the previous runtime interrupted at shutdown (sessions the user put to sleep are not flagged).
+void manager.resumeAfterBoot((userId) => settings.profile(userId))
+  .then((r) => log.info("runtime.boot_resume_done", r))
+  .catch((error) => log.error("runtime.boot_resume_failed", { error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+
 let stopping = false;
 async function stop(signal: string): Promise<void> {
   if (stopping) return;

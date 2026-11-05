@@ -130,6 +130,8 @@ export class ShardService {
   /** After a crash/restart the DB may say 'awake' for homes that are no longer mounted. */
   async reconcile(): Promise<void> {
     await this.pool.query("UPDATE shards SET state = 'sleeping' WHERE state = 'awake'");
-    await this.pool.query("UPDATE agent_sessions SET state = 'sleeping', sleep_reason = 'restart', slept_at = now() WHERE state = 'running'");
+    // Rows still 'running' belong to a process that died without finishing shutdown() (SIGKILL after the grace period, crash):
+    // treat them as interrupted mid-turn so the boot resume (SessionManager.resumeAfterBoot) continues them with the notice.
+    await this.pool.query("UPDATE agent_sessions SET state = 'sleeping', sleep_reason = 'restart', slept_at = now(), resume_on_boot = TRUE, interrupted_turn = TRUE WHERE state = 'running'");
   }
 }

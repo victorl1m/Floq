@@ -56,6 +56,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS role TEXT;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS parent_session_id UUID;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS recruit_skills TEXT[];
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS resume_on_boot BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS interrupted_turn BOOLEAN NOT NULL DEFAULT FALSE;
     UPDATE agent_sessions AS child SET project_cwd = child.cwd
       WHERE child.project_cwd IS NULL AND EXISTS (
         SELECT 1 FROM agent_sessions AS repo
@@ -175,6 +177,19 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS agent_inbox_to_idx ON agent_inbox (to_session_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_outbox (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      to_session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('message','approval')),
+      text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      delivered_at TIMESTAMPTZ,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      expired_at TIMESTAMPTZ
+    );
+    ALTER TABLE agent_outbox ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS agent_outbox_pending_idx ON agent_outbox (to_session_id, created_at) WHERE delivered_at IS NULL AND expired_at IS NULL;
     CREATE TABLE IF NOT EXISTS agent_approvals (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,

@@ -43,7 +43,6 @@ import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
 import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
-import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 import { visibleDebugLinks } from "./debugLinks.js";
 import { displayStatus, portIsFreeInNetns, stopDisplayServer } from "./display.js";
 import { acquireTunnelSlot, connectInNetns } from "./netns.js";
@@ -99,14 +98,13 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     scrub: (userId, ids, text) => (keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text)),
     isAlive: (userId, sessionId) => { try { manager.getLive(sessionId, userId); return true; } catch { return false; } },
     // The runtime itself types the user's decision into the agent's terminal (trusted marker; agent text can never carry it).
-    deliver: async (userId, sessionId, text) => {
-      const live = manager.findLive(sessionId, userId);
-      if (!live || !live.isAlive || live.provider === "shell") return false;
-      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: live.provider === "claude" || live.provider === "codex", trusted: true }));
-      return true;
-    },
+    // Persisted first (agent_outbox): a target that is asleep or restarting gets the decision on its next ready.
+    deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text),
   });
   void approvals.init();
+  // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
+  // Optional call: test harnesses build the server around partial fake managers.
+  manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
   const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
   function rateLimitSetup(req: IncomingMessage): void {
