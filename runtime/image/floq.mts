@@ -63,6 +63,8 @@ Commands:
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
+  floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--ttl SECONDS] [--wait]
+  floq decision status ID [--wait] | floq decision cancel ID
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. Default timeout 600s (max 3600)
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
@@ -242,6 +244,7 @@ const usage = (): never => {
 
 const allowedOptions: Record<string, string[]> = {
   list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
+  decision: ["question", "options-json", "detail", "ttl", "wait"],
   session: [], port: ["protocol", "reason"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
@@ -427,6 +430,37 @@ switch (command) {
     }
     await call("display/started");
     console.log("running: display " + slot.display + ". Now run: eval \"$(floq display env)\" in the shell that launches GUI apps (sets DISPLAY and XAUTHORITY); the user sees and uses them in Floq's App window panel. Stop with: floq display stop");
+    break;
+  }
+  case "decision": {
+    const [sub, id, ...more] = positional;
+    if (more.length) usage();
+    type DecisionStatus = { id: string; status: string; response?: unknown };
+    const waitFor = async (decisionId: string, initial: DecisionStatus) => {
+      let result = initial;
+      while (result.status === "pending") result = await call<DecisionStatus>("decisions/status", { id: decisionId, waitSec: 50 });
+      return result;
+    };
+    if (sub === "request" && !id) {
+      if (typeof named.question !== "string" || !named.question.trim() || (named.detail !== undefined && typeof named.detail !== "string") || (named.ttl !== undefined && !/^\d+$/.test(String(named.ttl))) || (named["options-json"] !== undefined && typeof named["options-json"] !== "string")) usage();
+      let options: unknown = [];
+      try { if (typeof named["options-json"] === "string") options = JSON.parse(named["options-json"]); } catch { usage(); }
+      const ttlMs = named.ttl ? Number(named.ttl) * 1000 : undefined;
+      const result = await call<{id:string; decision:DecisionStatus}>("decisions/request", { questions: [{ id: "q1", question: named.question, header: named.detail, options, multiSelect: false, allowText: true }], ttlMs, wait: named.wait === true });
+      if (named.wait !== true) { console.log(JSON.stringify(result)); break; }
+      let done = false;
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, () => {
+        if (done) return; done = true;
+        void fetch(url + "/internal/decisions/cancel", { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify({ id: result.id }), signal: AbortSignal.timeout(2000) }).catch(() => undefined).finally(() => process.exit(130));
+      });
+      const state = await waitFor(result.id, result.decision); done = true;
+      console.log(JSON.stringify(state)); process.exitCode = state.status === "answered" ? 0 : 1;
+    } else if (sub === "status" && id) {
+      let state = await call<DecisionStatus>("decisions/status", { id, waitSec: named.wait === true ? 50 : 0 });
+      if (named.wait === true) state = await waitFor(id, state);
+      console.log(JSON.stringify(state)); if (state.status === "cancelled" || state.status === "expired") process.exitCode = 1;
+    } else if (sub === "cancel" && id) console.log(JSON.stringify(await call("decisions/cancel", { id })));
+    else usage();
     break;
   }
   case "approval": {

@@ -56,7 +56,7 @@ export function AppSidebar() {
                 <SidebarContent>
                     <SidebarGroup>
                         <SidebarGroupContent>
-                            <SidebarMenu className="gap-1 group-data-[collapsible=icon]:gap-0">
+                            <SidebarMenu className="sidebar-nav gap-1 group-data-[collapsible=icon]:gap-0">
                                 {NAV.map((item) => (
                                     <SidebarMenuItem key={item.view}>
                                         <SidebarMenuButton

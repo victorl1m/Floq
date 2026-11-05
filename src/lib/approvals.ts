@@ -2,6 +2,8 @@ import { useEffect, useSyncExternalStore } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import type { RuntimeClient } from "@/lib/runtime/client";
+import { applyDecisionFrame, clearAttention as clearDecisionAttention, replaceDecisions, setAttentionConnected } from "@/lib/attention";
+import type { DecisionFrame } from "@/lib/runtime/types";
 import type { ApprovalFrame, ApprovalRequest } from "@/lib/runtime/types";
 import { newestFirst } from "@/lib/approval-format";
 
@@ -117,8 +119,9 @@ function applyFrame(frame: ApprovalFrame) {
 }
 
 /** Reconcile with the runtime's list: add what is new and drop what is gone (e.g. answered while disconnected). */
-async function refetch(client: RuntimeClient) {
+async function refetch(client: RuntimeClient, active: () => boolean) {
   const approvals = await client.approvals();
+  if (!active()) return;
   const live = new Set(approvals.map((a) => a.id));
   for (const item of state.items) if (item.state === "pending" && !live.has(item.approval.id)) removeApproval(item.approval.id);
   for (const approval of approvals) upsertApproval(approval);
@@ -132,29 +135,32 @@ export function useApprovalSync(client: RuntimeClient | null) {
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
-    const sync = () => { void refetch(client).catch(() => undefined); };
+    const sync = () => { void refetch(client, () => !stopped).catch(() => undefined); void client.decisions().then(items => { if (!stopped) replaceDecisions(items); }).catch(() => undefined); };
     const connect = () => {
       if (stopped) return;
       try { ws = new WebSocket(client.eventsUrl()); } catch { return; }
-      ws.onopen = () => { attempt = 0; sync(); };
+      ws.onopen = () => { attempt = 0; setAttentionConnected(true); sync(); };
       ws.onmessage = (message) => {
         try {
           const frame = JSON.parse(String(message.data)) as ApprovalFrame;
           if (frame && (frame.type === "approval-request" || frame.type === "approval-resolved")) applyFrame(frame);
+          else if (frame && ["decision-request", "decision-updated", "decision-resolved"].includes((frame as {type:string}).type)) applyDecisionFrame(frame as unknown as DecisionFrame);
         } catch { /* ignore malformed frames */ }
       };
       ws.onclose = () => {
         ws = null;
+        setAttentionConnected(false);
         if (!stopped) timer = setTimeout(connect, Math.min(15_000, 500 * 2 ** attempt++));
       };
     };
     sync();
     connect();
-    const poll = setInterval(() => { if (document.visibilityState !== "hidden") sync(); }, 10_000);
+    const poll = setInterval(() => { sync(); }, 10_000);
     const onFocus = () => clearAttention();
     window.addEventListener("focus", onFocus);
     return () => {
       stopped = true;
+      clearDecisionAttention();
       clearTimeout(timer);
       clearInterval(poll);
       window.removeEventListener("focus", onFocus);

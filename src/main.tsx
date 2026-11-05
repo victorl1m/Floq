@@ -2,10 +2,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "next-themes";
 import App from "@/App";
-import "@/index.css";
+import IslandRoot from "@/components/island/island-root";
 import { applyCursorPreference } from "@/lib/cursor-preference";
 
-applyCursorPreference();
+
 import Titlebar from "@/components/window/titlebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import Footer from "@/components/window/footer";
@@ -23,7 +23,13 @@ function PersistedSidebarProvider({ children }: { children: React.ReactNode }) {
     </SidebarProvider>;
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const island = new URLSearchParams(window.location.search).get("window") === "island";
+if (island) void import("@/island.css");
+else { void import("@/index.css"); applyCursorPreference(); }
+
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(island ? (
+  <React.StrictMode><ThemeProvider attribute={["class", "data-theme"]} defaultTheme="system" enableSystem><IslandRoot /></ThemeProvider></React.StrictMode>
+) : (
   <React.StrictMode>
     <RuntimeProvider>
     <PersistedSidebarProvider>
@@ -42,5 +48,5 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </PersistedSidebarProvider>
     <Footer />
     </RuntimeProvider>
-  </React.StrictMode>,
-);
+  </React.StrictMode>
+));

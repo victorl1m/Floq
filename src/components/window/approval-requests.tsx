@@ -235,7 +235,7 @@ export function ApprovalChip() {
 }
 
 /** Mounted once at the app root. */
-export function ApprovalHost() {
+export function ApprovalHost({ suppressed = false }: { suppressed?: boolean }) {
   const { client } = useRuntime();
   useApprovalSync(client);
   const { items, deferred, index } = useApprovalState();
@@ -248,7 +248,7 @@ export function ApprovalHost() {
   const currentId = current?.approval.id;
   useEffect(() => { setError(null); setBusy(null); }, [currentId]);
   const currentState = current?.state;
-  const dialogOpen = !deferred;
+  const dialogOpen = !deferred && !suppressed;
   useEffect(() => {
     // After an answer the next card replaces the old one: keep focus inside the prompt, on Deny (never on Allow).
     if (!dialogOpen || currentState !== "pending") return;
@@ -273,7 +273,7 @@ export function ApprovalHost() {
     }
   }
 
-  if (!current) return null;
+  if (!current || suppressed) return null;
   const open = !deferred;
   return (
     <>

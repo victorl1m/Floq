@@ -10,11 +10,13 @@
 import { existsSync } from "node:fs";
 import type { ProviderId } from "./types.js";
 
+export const QUESTION_HOOK_PATH = "/usr/local/bin/floq-native-question.mjs";
 export const BLOCK_HOOK_PATH = "/usr/local/bin/floq-block-native-subagent.mjs";
 export const CLAUDE_BLOCKED_TOOLS = ["Agent", "Task"] as const;
 export const CODEX_DISABLED_FEATURES = ["multi_agent", "multi_agent_v2"] as const;
 /** PreToolUse hooks arrived in Claude Code 1.0.38; older builds are only covered by the deny flag. */
 const MIN_HOOK_VERSION: [number, number, number] = [1, 0, 38];
+const VERIFIED_QUESTION_VERSION: [number, number, number] = [2, 1, 318];
 
 export function parseVersion(text: string | null | undefined): [number, number, number] | null {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text ?? "");
@@ -26,10 +28,10 @@ function atLeast(v: [number, number, number], min: [number, number, number]): bo
   return true;
 }
 
-export function claudeBlockSettings(hookPath = BLOCK_HOOK_PATH): Record<string, unknown> {
+export function claudeBlockSettings(hookPath = BLOCK_HOOK_PATH, questionHookPath: string | null = null): Record<string, unknown> {
   return {
     permissions: { deny: [...CLAUDE_BLOCKED_TOOLS] },
-    hooks: { PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }] },
+    hooks: { PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }, ...(questionHookPath ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${questionHookPath}`, timeout: 300 }] }] : [])] },
   };
 }
 
@@ -56,6 +58,9 @@ export function nativeSubagentBlockArgs(provider: ProviderId, options: NativeBlo
     options.warn?.(`native-subagent hook missing at ${hookPath}; native subagents blocked by deny flag only`);
     return args;
   }
-  args.push("--settings", JSON.stringify(claudeBlockSettings(hookPath)));
+  // Verified against a live interactive Claude Code 2.1.318 capture (test/fixtures/claude-askuserquestion-2.1.318.json):
+  // PreToolUse payload + updatedInput.answers resolved the native prompt. Any hook failure falls back to the terminal.
+  const questionHook = version && atLeast(version, VERIFIED_QUESTION_VERSION) && (options.hookExists ?? existsSync)(QUESTION_HOOK_PATH) ? QUESTION_HOOK_PATH : null;
+  args.push("--settings", JSON.stringify(claudeBlockSettings(hookPath, questionHook)));
   return args;
 }
