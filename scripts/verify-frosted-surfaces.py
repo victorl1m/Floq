@@ -22,7 +22,7 @@ def surface_snapshot(page, surface_selector: str, overlay_selector: str | None =
       const matched=[];function walk(rules){for(const r of rules){if(r.cssRules)walk(r.cssRules);if(r.selectorText&&el&&r.style&&el.matches(r.selectorText)){const bf=r.style.getPropertyValue('backdrop-filter')||r.style.getPropertyValue('-webkit-backdrop-filter');if(bf)matched.push({selector:r.selectorText,filter:bf,important:r.style.getPropertyPriority('backdrop-filter')||r.style.getPropertyPriority('-webkit-backdrop-filter')})}}}for(const ss of document.styleSheets){try{walk(ss.cssRules)}catch{}}
       const sheets=[...document.styleSheets].map(ss=>{try{return {href:ss.href,disabled:ss.disabled,ruleCount:ss.cssRules.length}}catch(e){return {href:ss.href,error:String(e)}}});
       const activeFilters=[...document.querySelectorAll('*')].map(e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return {tag:e.tagName,slot:e.getAttribute('data-slot'),className:typeof e.className==='string'?e.className:'',filter:s.backdropFilter,rect:{width:Math.round(r.width),height:Math.round(r.height),area:Math.round(r.width*r.height)}}}).filter(x=>x.rect.area>0&&x.filter!=='none');
-      return {surface:info(el),overlay:info(o),material:document.documentElement.dataset.material,reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,backdropFilterSupported:CSS.supports('backdrop-filter','blur(1px)'),webkitBackdropFilterSupported:CSS.supports('-webkit-backdrop-filter','blur(1px)'),matchedFilterRules:matched,styleSheets:sheets,activeFilters,glisseSurfaces:[...document.querySelectorAll('.lg-glass')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0}).length};
+      return {surface:info(el),overlay:info(o),material:document.documentElement.dataset.material,reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,backdropFilterSupported:CSS.supports('backdrop-filter','blur(1px)'),webkitBackdropFilterSupported:CSS.supports('-webkit-backdrop-filter','blur(1px)'),matchedFilterRules:matched,styleSheets:sheets,activeFilters};
     }""", {"surfaceSelector": surface_selector, "overlaySelector": overlay_selector})
 
 
@@ -41,7 +41,7 @@ def open_user_menu(page):
 
 def inspect_case(browser, theme: str, viewport: dict[str, int], case: str) -> dict:
     context = browser.new_context(viewport=viewport)
-    context.add_init_script("localStorage.setItem('theme'," + json.dumps(theme) + "); localStorage.setItem('floq.material','glass'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
+    context.add_init_script("localStorage.setItem('theme'," + json.dumps(theme) + "); localStorage.setItem('floq.material','mica'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
     page = context.new_page()
     fixture = FIXTURES.Fixture()
     page.route("**/*", fixture.handle)

@@ -7,7 +7,7 @@ from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location("vfc",ROOT/"scripts"/"verify-final-canvas.py"); V=importlib.util.module_from_spec(spec); spec.loader.exec_module(V)
 FIX=V.FIX
-tag=sys.argv[1] if len(sys.argv)>1 else "after"; theme=sys.argv[2] if len(sys.argv)>2 else "dark"; material=sys.argv[3] if len(sys.argv)>3 else "glass"
+tag=sys.argv[1] if len(sys.argv)>1 else "after"; theme=sys.argv[2] if len(sys.argv)>2 else "dark"; material=sys.argv[3] if len(sys.argv)>3 else "mica"
 OUT=ROOT/"docs"/"redesign"/"link-glow"; OUT.mkdir(parents=True,exist_ok=True)
 CARD="canvas-agent-card-material"
 def info(page,i):

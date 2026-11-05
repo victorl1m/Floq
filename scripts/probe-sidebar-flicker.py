@@ -11,7 +11,7 @@ def load(n,f):
 FIX=load("verify_ui","verify-ui.py"); CANVAS=load("vfc","verify-final-canvas.py")
 OUT=ROOT/"docs"/"redesign"/"sidebar-flicker"; OUT.mkdir(parents=True,exist_ok=True)
 LABEL=sys.argv[1] if len(sys.argv)>1 else "before"
-CONFIGS=[("dark","glass",1440,960,1),("light","glass",1440,960,1),("light","solid",1280,800,1.25),("dark","solid",1280,800,1.5),("light","glass",1024,700,1.25)]
+CONFIGS=[("dark","mica",1440,960,1),("light","mica",1440,960,1),("light","solid",1280,800,1.25),("dark","solid",1280,800,1.5),("light","mica",1024,700,1.25)]
 def run(p,theme,mat,w,h,dsf,rep):
  b=p.chromium.launch(headless=True); ctx=b.new_context(viewport={"width":w,"height":h},device_scale_factor=dsf)
  ctx.add_init_script("localStorage.setItem('theme','"+theme+"');localStorage.setItem('floq.material','"+mat+"');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")

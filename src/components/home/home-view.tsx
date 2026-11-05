@@ -25,7 +25,7 @@ import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE, isOrchestrator } from "@/lib/runt
 import type { CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
 import ProjectPicker from "@/components/projects/project-picker";
 import { ProjectMark } from "@/components/projects/project-identity";
-import { GlassSurface } from "@/components/ui/glass-surface";
+import { FloqSurface } from "@/components/ui/floq-surface";
 import { MatrixTrail } from "@/components/ui/matrix-trail";
 
 function greeting(): string {
@@ -189,7 +189,7 @@ export default function HomeView() {
                 </div>
 
                 <div data-matrix-bg className="flex flex-col gap-1">
-                    <GlassSurface data-ascii="skip" data-matrix-bg data-matrix-exclude className="home-task-composer glass-key-surface flex flex-col rounded-2xl p-4 sm:p-5">
+                    <FloqSurface data-ascii="skip" data-matrix-bg data-matrix-exclude className="home-task-composer glass-key-surface flex flex-col rounded-2xl p-4 sm:p-5">
                         <div data-matrix-bg className="mb-3 flex items-center gap-3 px-1">
                             <label data-matrix-quiet htmlFor="home-prompt" className="text-sm font-medium">Task</label>
                         </div>
@@ -286,7 +286,7 @@ export default function HomeView() {
                                 {disabledReason && <span id="home-start-reason" className="sr-only">{disabledReason}</span>}
                             </div>
                         </div>
-                    </GlassSurface>
+                    </FloqSurface>
                     <p id="home-help" role="status" aria-live="polite" className="sr-only">
                         {busy
                             ? selectedProject ? `Starting an agent in ${selectedProject.displayName || selectedProject.name}…` : "Starting your agent…"

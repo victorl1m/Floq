@@ -6,7 +6,7 @@ Repository-derived context: Floq is a desktop workspace for developers directing
 
 ## Platform and stack
 
-Web interface in a Tauri desktop wrapper. React 19, TypeScript, Vite, Tailwind CSS, Radix primitives, Tabler icons, and Glisse. Keep the web interface usable at narrow widths.
+Web interface in a Tauri desktop wrapper. React 19, TypeScript, Vite, Tailwind CSS, Radix primitives, Tabler icons. Keep the web interface usable at narrow widths.
 
 ## Workflows
 
@@ -14,7 +14,7 @@ Runtime sign-in, first-administrator setup, invitation registration, project imp
 
 ## Current request
 
-The user requested a full interface redesign including login, all screens, and all dialogs, and explicitly requested Glisse. This authorizes replacement of the current visual system while preserving functional behavior. Existing Floq and provider brand marks remain in use.
+The user requested a full interface redesign including login, all screens, and all dialogs, while preserving functional behavior and existing Floq and provider brand marks. The current material direction uses native Mica/Acrylic/vibrancy with Floq-owned CSS surfaces.
 
 ## Accessibility
 

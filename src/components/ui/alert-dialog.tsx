@@ -3,7 +3,7 @@ import { cn } from "cn"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
-import { GlassSurface } from "@/components/ui/glass-surface"
+import { FloqSurface } from "@/components/ui/floq-surface"
 
 function AlertDialog({
   ...props
@@ -63,7 +63,7 @@ function AlertDialogContent({
         )}
         {...props}
       >
-        <GlassSurface>{props.children}</GlassSurface>
+        <FloqSurface>{props.children}</FloqSurface>
       </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )

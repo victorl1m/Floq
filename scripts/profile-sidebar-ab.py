@@ -25,7 +25,7 @@ def sample(page, name: str) -> dict:
 
 
 def surface_profile(page) -> dict:
-    return page.evaluate("""() => {const e=document.querySelector('[data-slot="sidebar-inner"]'),s=e&&getComputedStyle(e),q=document.querySelector('.sidebar-search-glass'),qs=q&&getComputedStyle(q),all=[...document.querySelectorAll('.lg-glass')];return {material:document.documentElement.dataset.material,reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,base:{filter:s?.backdropFilter,webkit:s?.webkitBackdropFilter,background:s?.backgroundColor,radius:s?.borderRadius},search:{filter:qs?.backdropFilter,webkit:qs?.webkitBackdropFilter,background:qs?.backgroundColor,radius:qs?.borderRadius,hasRim:q?.hasAttribute('data-rim')},glisseSurfaces:all.map(x=>{const r=x.getBoundingClientRect();return{className:String(x.className).slice(0,90),w:Math.round(r.width),h:Math.round(r.height),area:Math.round(r.width*r.height),filter:getComputedStyle(x).backdropFilter}}),glisseButtons:document.querySelectorAll('.lg-button').length}}""")
+    return page.evaluate("""() => {const e=document.querySelector('[data-slot="sidebar-inner"]'),s=e&&getComputedStyle(e),q=document.querySelector('.sidebar-search-glass'),qs=q&&getComputedStyle(q);return {material:document.documentElement.dataset.material,reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,base:{filter:s?.backdropFilter,webkit:s?.webkitBackdropFilter,background:s?.backgroundColor,radius:s?.borderRadius},search:{filter:qs?.backdropFilter,webkit:qs?.webkitBackdropFilter,background:qs?.backgroundColor,radius:qs?.borderRadius}}}""")
 
 
 def main() -> None:
@@ -33,12 +33,11 @@ def main() -> None:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(viewport={"width": 1440, "height": 960})
         ctx.add_init_script("window.__floqLongTasks=[];try{new PerformanceObserver(l=>window.__floqLongTasks.push(...l.getEntries().map(e=>({startMs:e.startTime,durationMs:e.duration})))).observe({type:'longtask',buffered:true})}catch{}")
-        ctx.add_init_script("localStorage.setItem('theme','dark');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
+        ctx.add_init_script("localStorage.setItem('theme','dark');localStorage.setItem('floq.material','mica');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
         page = ctx.new_page()
         page.route("**/*", FIXTURES.Fixture().handle)
         page.goto(FIXTURES.BASE, wait_until="domcontentloaded", timeout=15000)
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000)
-        page.locator('.sidebar-search-glass[data-rim]').wait_for(timeout=5000)
         page.wait_for_timeout(5000)
         normal_css = surface_profile(page)
         page.screenshot(path=str(OUT / "sidebar-ab-normal.png"), full_page=True, animations="disabled")
@@ -59,7 +58,7 @@ def main() -> None:
         gpu = browser_cdp.send("SystemInfo.getInfo").get("gpu", {})
         aux = gpu.get("auxAttributes", {})
         result = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-          "harness": {"viewport": {"width": 1440, "height": 960}, "runtime": "synthetic HTTP responses", "material": "glass", "nativeReducedTransparency": page.evaluate("matchMedia('(prefers-reduced-transparency: reduce)').matches"), "note": "Three sequential 5s samples on the same page; diagnostic CSS toggles only, no source change. Headless WebView surface, no Tauri/GPU workload."},
+          "harness": {"viewport": {"width": 1440, "height": 960}, "runtime": "synthetic HTTP responses", "material": "mica", "nativeReducedTransparency": page.evaluate("matchMedia('(prefers-reduced-transparency: reduce)').matches"), "note": "Three sequential 5s samples on the same page; diagnostic CSS toggles only, no source change. Headless WebView surface, no Tauri/GPU workload."},
           "gpu": {"glVendor": aux.get("glVendor"), "glRenderer": aux.get("glRenderer"), "devices": [{k:d.get(k) for k in ("vendorString","deviceString","vendorId","deviceId")} for d in gpu.get("devices",[])]},
           "samples": [{"before": normal, "css": normal_css}, {"sidebarBaseBlurOff": base_off, "css": base_off_css}, {"searchGlassFilterOff": search_off, "css": search_off_css}],
           "longTasks": page.evaluate("window.__floqLongTasks")}

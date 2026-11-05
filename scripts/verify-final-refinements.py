@@ -13,11 +13,11 @@ def main():
  report={"url":os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),"syntheticRuntimeOnly":True}
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True); context=browser.new_context(viewport={"width":1440,"height":960})
-  context.add_init_script("localStorage.setItem('theme','dark');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")
+  context.add_init_script("localStorage.setItem('theme','dark');localStorage.setItem('floq.material','mica');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(FIX.USER)+"}));")
   page=context.new_page(); errors=[]; page.on("pageerror",lambda e:errors.append(str(e))); fixture=FIX.Fixture(); page.route("**/*",fixture.handle)
   page.goto(report["url"],wait_until="domcontentloaded",timeout=15000); page.get_by_role("heading",name="Start a new task").wait_for(timeout=10000); page.evaluate("document.fonts.ready")
   report["assets"]=page.evaluate("performance.getEntriesByType('resource').map(e=>e.name.split('/').pop()).filter(n=>/^index-.*\\.(js|css)$/.test(n))")
-  # Search surface: measure both the GlassSurface owner and actual child control.
+  # Search surface: measure both the FloqSurface owner and actual child control.
   search_shell=page.locator(".sidebar-search-glass"); search_shell.wait_for(state="visible",timeout=4000)
   search_geometry=page.evaluate("""()=>{const e=document.querySelector('.sidebar-search-glass'),b=e?.querySelector('button'),a=e&&getComputedStyle(e),s=b&&getComputedStyle(b),r=x=>{const z=x?.getBoundingClientRect();return z&&{x:z.x,y:z.y,width:z.width,height:z.height}};return {shell:{radius:a?.borderRadius,border:a?.border,background:a?.backgroundColor,image:a?.backgroundImage,filter:a?.backdropFilter,clip:a?.overflow,rect:r(e)},child:{radius:s?.borderRadius,border:s?.border,background:s?.backgroundColor,rect:r(b)},childWithinShell:!!e&&!!b&&(()=>{const x=e.getBoundingClientRect(),y=b.getBoundingClientRect();return y.left>=x.left&&y.top>=x.top&&y.right<=x.right+1&&y.bottom<=x.bottom+1})()}}""")
   page.screenshot(path=str(OUT/"sidebar-search-radius-dark-final.png"),full_page=True,animations="disabled")

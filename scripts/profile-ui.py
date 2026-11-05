@@ -48,10 +48,9 @@ def main() -> None:
     parser.add_argument("--label", default="current", help="evidence label, e.g. before or after")
     parser.add_argument("--url", default=FIXTURES.BASE)
     parser.add_argument("--settle-ms", type=int, default=5000, help="warm-up/idle window before samples")
-    parser.add_argument("--disable-glass", action="store_true", help="diagnostic CSS-only A/B; no product source changes")
-    parser.add_argument("--disable-button-filters", action="store_true", help="same-page diagnostic only; turns off Glisse button filters")
-    parser.add_argument("--sidebar-material-ab", action="store_true", help="same-page diagnostic: disable base sidebar blur, then compact Glisse search only")
-    parser.add_argument("--material", choices=("glass", "system", "solid"), default="glass")
+    parser.add_argument("--disable-translucency", action="store_true", help="diagnostic CSS-only A/B; no product source changes")
+    parser.add_argument("--sidebar-material-ab", action="store_true", help="same-page diagnostic: disable base sidebar blur, then compact search only")
+    parser.add_argument("--material", choices=("mica", "acrylic", "solid"), default="mica")
     parser.add_argument("--reduce-transparency", action="store_true", help="emulate OS reduced-transparency only for the explicit fallback check")
     args = parser.parse_args()
     fixture = FIXTURES.Fixture()
@@ -98,13 +97,13 @@ def main() -> None:
             }});
           } catch {}
         """)
-        if args.disable_glass:
+        if args.disable_translucency:
             context.add_init_script("""
               const installGlassDiagnostic = () => {
                 if (!document.head || document.getElementById('floq-glass-diagnostic')) return;
                 const style = document.createElement('style');
                 style.id = 'floq-glass-diagnostic';
-                style.textContent = '.lg-glass,.floq-glass,.glass-panel,[data-glisse-backdrop]{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;filter:none!important;background-image:none!important}';
+                style.textContent = '.floq-glass,.glass-panel{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;filter:none!important;background-image:none!important}';
                 document.head.append(style);
               };
               installGlassDiagnostic();
@@ -163,13 +162,6 @@ def main() -> None:
         page.route_web_socket("**/v1/sessions/*/stream*", mock_terminal_stream)
         page.goto(args.url, wait_until="domcontentloaded", timeout=15000)
         page.get_by_role("heading", name="Start a new task").wait_for(timeout=10000)
-        # Let Glisse's intentional idle-time registration finish when surfaces are enabled.
-        if not args.disable_glass:
-            try:
-                page.locator('[data-slot="sidebar-inner"][data-rim]').wait_for(state="attached", timeout=3000)
-            except Exception:
-                # The button-only stage deliberately leaves sidebar/workspace planes solid.
-                pass
         if args.settle_ms:
             page.wait_for_timeout(args.settle_ms)
         page.screenshot(path=str(output_dir / f"home-profile-{args.label}.png"), full_page=True, animations="disabled")
@@ -283,18 +275,7 @@ def main() -> None:
         samples.append(frame_sample(page, "expanded-terminal-after-2000-line-burst-5s", 5000))
         terminal_metrics_after_frames = metrics()
         terminal_geometry = page.evaluate("""() => {const d=document.querySelector('[role=dialog]'),h=d?.firstElementChild,t=d?.lastElementChild,x=document.querySelector('[role=dialog] .xterm'),v=x?.querySelector('.xterm-viewport'),xs=x?.querySelector('.xterm-screen'),s=d&&getComputedStyle(d),ts=t&&getComputedStyle(t),xcs=x&&getComputedStyle(x),vs=v&&getComputedStyle(v),xss=xs&&getComputedStyle(xs),all=[...document.querySelectorAll('.xterm')];const r=e=>{const b=e?.getBoundingClientRect();return b&&{x:b.x,y:b.y,width:b.width,height:b.height}};return {dialog:r(d),toolbar:r(h),terminal:r(t),dialogRadius:s?.borderRadius,dialogBackdrop:s?.backdropFilter,dialogBackground:s?.backgroundColor,terminalBackground:ts?.backgroundColor,terminalBackdrop:ts?.backdropFilter,xtermRootsInDialog:document.querySelectorAll('[role=dialog] .xterm').length,xtermRootsTotal:all.length,xtermRoots:all.map(e=>({visible:e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0,rect:r(e),background:getComputedStyle(e).backgroundColor})),xterm:{background:xcs?.backgroundColor,allowTransparency:x?.getAttribute('data-allow-transparency')||null,viewportBackground:vs?.backgroundColor,screenBackground:xss?.backgroundColor,canvasCount:x?.querySelectorAll('canvas').length},toolbarCenterY:h?Math.round((h.getBoundingClientRect().top+h.getBoundingClientRect().bottom)/2):null,terminalTitle:document.querySelector('[role=dialog] [title*=Orchestrator]')?.getAttribute('title')||null,material:document.documentElement.dataset.material}}""")
-        glass_probe = page.evaluate("""() => {const e=document.querySelector('[data-slot="sidebar-inner"]'),s=e&&getComputedStyle(e),dust=document.querySelector('.sidebar-dust-backdrop');const surfaces=[...document.querySelectorAll('.lg-glass')].map(x=>{const r=x.getBoundingClientRect(),cs=getComputedStyle(x);return {slot:x.getAttribute('data-slot'),className:typeof x.className==='string'?x.className.slice(0,100):'',width:Math.round(r.width),height:Math.round(r.height),areaPx:Math.round(r.width*r.height),visible:r.width>0&&r.height>0,hasRim:x.hasAttribute('data-rim'),backdropFilter:cs.backdropFilter}});return {reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,material:document.documentElement.dataset.material,hasRim:!!e?.hasAttribute('data-rim'),rimLength:s?.getPropertyValue('--lg-rim').trim().length||0,backgroundImagePresent:!!s&&s.backgroundImage!=='none',backdropFilter:s?.backdropFilter,dustFilter:dust?getComputedStyle(dust).filter:null,glisseSurfaceCount:surfaces.length,glisseSurfaceAreaPx:surfaces.reduce((n,x)=>n+x.areaPx,0),surfaces}}""")
         page.screenshot(path=str(output_dir / f"terminal-dialog-{args.label}.png"), full_page=True, animations="disabled")
-        button_filter_off_sample = None
-        metrics_after_button_filter_off = terminal_metrics_after_frames
-        button_filter_off_css = None
-        if args.disable_button_filters:
-            # Explicit diagnostic only. Never part of the product-stage baseline capture.
-            page.add_style_tag(content='[data-slot="dialog-overlay"],[data-slot="alert-dialog-overlay"],[data-slot="sheet-overlay"],.lg-button{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;filter:none!important;background-image:none!important}')
-            button_filter_off_sample = frame_sample(page, "same-page-overlay-and-button-filter-off-5s", 5000)
-            metrics_after_button_filter_off = metrics()
-            button_filter_off_css = page.evaluate("""() => {const e=document.querySelector('[role=dialog] .lg-button'),o=document.querySelector('[data-slot="dialog-overlay"]');return {buttonFilter:e&&getComputedStyle(e).backdropFilter,overlayFilter:o&&getComputedStyle(o).backdropFilter,buttonCount:document.querySelectorAll('.lg-button').length}}""")
-            page.screenshot(path=str(output_dir / f"terminal-dialog-{args.label}-filter-off.png"), full_page=True, animations="disabled")
         sidebar_ab = None
         if args.sidebar_material_ab:
             page.add_style_tag(content='html.profile-sidebar-blur-off [data-slot="sidebar-inner"]{backdrop-filter:none!important;-webkit-backdrop-filter:none!important} html.profile-search-glass-off .sidebar-search-glass{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;filter:none!important;background-image:none!important}')
@@ -347,15 +328,13 @@ def main() -> None:
         result = {
             "label": args.label,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "harness": {"browser": "Chromium headless via Playwright", "viewport": {"width": 1440, "height": 960}, "runtime": "synthetic HTTP + intercepted terminal WebSocket fixtures only", "nativeReducedTransparency": page.evaluate("matchMedia('(prefers-reduced-transparency: reduce)').matches"), "material": args.material, "settleMs": args.settle_ms, "cssDiagnosticGlassDisabled": args.disable_glass, "cssDiagnosticButtonFiltersDisabled": args.disable_button_filters, "note": "rAF and CDP numbers profile the browser WebView surface only; no native Tauri or GPU/hardware measurement."},
+            "harness": {"browser": "Chromium headless via Playwright", "viewport": {"width": 1440, "height": 960}, "runtime": "synthetic HTTP + intercepted terminal WebSocket fixtures only", "nativeReducedTransparency": page.evaluate("matchMedia('(prefers-reduced-transparency: reduce)').matches"), "material": args.material, "settleMs": args.settle_ms, "cssDiagnosticTranslucencyDisabled": args.disable_translucency, "note": "rAF and CDP numbers profile the browser WebView surface only; no native Tauri or GPU/hardware measurement."},
             "browserGpuInfo": browser_info,
             "navigationElapsedMs": {"tasks": round(tasks_elapsed, 1), "canvas": round(canvas_elapsed, 1), "terminalDialog": round(terminal_open_elapsed, 1), "canvasPan": round(pan_elapsed, 1)},
             "samples": samples,
-            "samePageButtonFilterOff": {"sample": button_filter_off_sample, "computed": button_filter_off_css, "metricDelta": {k: round(metrics_after_button_filter_off.get(k, 0) - terminal_metrics_after_frames.get(k, 0), 6) for k in terminal_metrics_after_frames}},
             "taskMetricDeltaBeforeTerminal": {k: round(tasks_metrics.get(k, 0) - before_tasks.get(k, 0), 6) for k in before_tasks},
             "terminalMetricDeltaDuringRafSample": {k: round(terminal_metrics_after_frames.get(k, 0) - terminal_metrics_before_frames.get(k, 0), 6) for k in terminal_metrics_before_frames},
             "terminalGeometry": terminal_geometry,
-            "glassProbe": glass_probe,
             "canvasProjectPanelMaterial": project_panel_material,
             "websocketFixture": {**websocket_stats, "routeLog": [{"sessionId": item["sessionId"], "since": item["since"], "clientMessages": item["messages"]} for item in websocket_routes]},
             "websocketNetworkEvents": active_websockets,

@@ -14,7 +14,7 @@ OUT=ROOT/"docs"/"redesign"; OUT.mkdir(parents=True,exist_ok=True)
 def main():
  import sys
  LABEL=sys.argv[1] if len(sys.argv)>1 else 'baseline'
- MAT=sys.argv[2] if len(sys.argv)>2 else 'glass'
+ MAT=sys.argv[2] if len(sys.argv)>2 else 'mica'
  THEME=sys.argv[3] if len(sys.argv)>3 else 'dark'
  report={"url":os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),"syntheticRuntimeOnly":True,"samples":[]}
  with sync_playwright() as p:

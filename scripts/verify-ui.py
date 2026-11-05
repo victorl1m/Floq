@@ -246,15 +246,6 @@ def main():
         page.on("response", lambda r: failed_responses.append({"url": r.url, "status": r.status}) if r.status >= 500 else None)
         load_app(page)
         wait_home_hero(page)
-        # Glisse registers its generated rim/refraction after requestIdleCallback. Wait for that
-        # real rendered state before capturing or sampling surfaces (without logging the PNG data URL).
-        glass_fit = page.locator('.sidebar-search-glass[data-rim]')
-        try:
-            glass_fit.wait_for(state="attached", timeout=2500)
-            results.append({"name": "Glisse sidebar rim/refraction registers after deferred fit", "passed": True,
-                            "details": page.evaluate("""() => {const e=document.querySelector('[data-slot="sidebar-inner"]'),s=e&&getComputedStyle(e),dust=document.querySelector('.sidebar-dust-backdrop');return {reducedTransparency:matchMedia('(prefers-reduced-transparency: reduce)').matches,material:document.documentElement.dataset.material,hasRim:!!e?.hasAttribute('data-rim'),rimLength:s?.getPropertyValue('--lg-rim').trim().length||0,backgroundImagePresent:!!s&&s.backgroundImage!=='none',backdropFilter:s?.backdropFilter,dustFilter:dust?getComputedStyle(dust).filter:null,glisseStyleTag:!!document.querySelector('#glisse-styles')}}""")})
-        except Exception as exc:
-            results.append({"name": "Glisse sidebar rim/refraction registers after deferred fit", "passed": False, "details": str(exc)})
         screenshot(page, "home-populated-dark.png")
         check_no_overflow(page, "Home desktop", results)
         # The primary action stays inert until a project and prompt are supplied.
@@ -332,7 +323,7 @@ def main():
         results.append({"name": "Selected project remains readable and has no persistent focus outline", "passed": row_styles["outlineStyle"] in ("none", "0px") or row_styles["outline"] in ("rgba(0, 0, 0, 0)", "transparent"), "details": row_styles})
         dark_palette = page.evaluate("() => { const s=getComputedStyle(document.documentElement); const b=getComputedStyle(document.body); const nav=document.querySelector('[aria-label=\"Workspace navigation\"]'); const n=nav&&getComputedStyle(nav); return {root:s.backgroundColor,body:b.backgroundColor,sidebar:n?.backgroundColor,backgroundToken:s.getPropertyValue('--background').trim(),material:document.documentElement.dataset.material} }")
         root_black = dark_palette["body"] in ("rgb(0, 0, 0)", "rgba(0, 0, 0, 1)") or "0 0% 0%" in dark_palette["backgroundToken"]
-        results.append({"name": "OLED dark root is true black with neutral elevated sidebar", "passed": root_black and dark_palette["material"] in ("glass", "solid"), "details": dark_palette})
+        results.append({"name": "OLED dark root is true black with neutral elevated sidebar", "passed": root_black and dark_palette["material"] in ("mica", "acrylic", "solid"), "details": dark_palette})
         material_profile = page.evaluate("""() => Object.fromEntries([
           ['theme_root',document.documentElement],
           ['sidebar',document.querySelector('[data-sidebar="sidebar"]')],
@@ -340,13 +331,9 @@ def main():
           ['sidebar_container',document.querySelector('[data-slot="sidebar-container"]')],
           ['home_composer',document.querySelector('.glass-key-surface')],
           ['workspace',document.querySelector('.workspace-frame')],
-          ['sidebar_dust',document.querySelector('.sidebar-dust-backdrop[data-glisse-backdrop]')],
+          ['sidebar_dust',document.querySelector('.sidebar-dust-backdrop')],
           ['sidebar_search_glass',document.querySelector('.sidebar-search-glass')],
-        ].map(([key,e])=>{if(!e)return[key,null];const s=getComputedStyle(e),p=getComputedStyle(e,'::before'),a=getComputedStyle(e,'::after'),rim=s.getPropertyValue('--lg-rim').trim(),image=s.backgroundImage;return[key,{classes:e.className,rootClasses:e===document.documentElement?e.className:null,dataTheme:e===document.documentElement?e.getAttribute('data-theme'):null,hasRim:e.hasAttribute('data-rim'),rimLength:rim.length,background:s.backgroundColor,backgroundImagePresent:image!=='none',backdropFilter:s.backdropFilter,webkitBackdropFilter:s.webkitBackdropFilter,filter:s.filter,opacity:s.opacity,blurToken:s.getPropertyValue('--lg-blur').trim(),filterToken:s.getPropertyValue('--lg-filter').trim(),shadow:s.boxShadow,border:s.borderColor,borderWidth:s.borderWidth,radius:s.borderRadius,before:{content:p.content,opacity:p.opacity,filter:p.filter}}]}))""")
-        sidebar_material = material_profile.get("sidebar") or {}
-        search_material = material_profile.get("sidebar_search_glass") or {}
-        glass_material_visible = search_material.get("backdropFilter") not in (None, "none") and search_material.get("hasRim") and sidebar_material.get("backgroundImagePresent")
-        results.append({"name": "Dark sidebar material has visible translucency/refraction treatment", "passed": glass_material_visible, "details": material_profile})
+        ].map(([key,e])=>{if(!e)return[key,null];const s=getComputedStyle(e),p=getComputedStyle(e,'::before'),a=getComputedStyle(e,'::after'),image=s.backgroundImage;return[key,{classes:e.className,rootClasses:e===document.documentElement?e.className:null,dataTheme:e===document.documentElement?e.getAttribute('data-theme'):null,background:s.backgroundColor,backgroundImagePresent:image!=='none',backdropFilter:s.backdropFilter,webkitBackdropFilter:s.webkitBackdropFilter,filter:s.filter,opacity:s.opacity,shadow:s.boxShadow,border:s.borderColor,borderWidth:s.borderWidth,radius:s.borderRadius,before:{content:p.content,opacity:p.opacity,filter:p.filter}}]}))""")
         # Capture pointer hover and keyboard focus separately; hover must not alter row geometry.
         before_rect = project_row.bounding_box()
         project_row.hover()

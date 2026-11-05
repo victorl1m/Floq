@@ -1,4 +1,6 @@
 {
+  "report_status": "historical",
+  "note": "Headless browser evidence captured before the native Mica material and canvas-pane changes; native desktop rendering was not tested.",
   "environment": "Headless Chromium browser WebView surface, intercepted synthetic runtime, 1440x960 desktop, 390x844 narrow and 390x640 short viewport",
   "synthetic_data": true,
   "native_desktop_runtime_tested": false,
@@ -36,20 +38,6 @@
     {
       "name": "Login password visibility toggle",
       "passed": true
-    },
-    {
-      "name": "Glisse sidebar rim/refraction registers after deferred fit",
-      "passed": true,
-      "details": {
-        "reducedTransparency": false,
-        "material": "glass",
-        "hasRim": false,
-        "rimLength": 0,
-        "backgroundImagePresent": true,
-        "backdropFilter": "none",
-        "dustFilter": "none",
-        "glisseStyleTag": true
-      }
     },
     {
       "name": "Home desktop: no horizontal document overflow",
@@ -291,158 +279,6 @@
         "sidebar": "rgba(0, 0, 0, 0)",
         "backgroundToken": "#000",
         "material": "glass"
-      }
-    },
-    {
-      "name": "Dark sidebar material has visible translucency/refraction treatment",
-      "passed": true,
-      "details": {
-        "theme_root": {
-          "classes": "dark",
-          "rootClasses": "dark",
-          "dataTheme": null,
-          "hasRim": false,
-          "rimLength": 0,
-          "background": "rgba(0, 0, 0, 0)",
-          "backgroundImagePresent": false,
-          "backdropFilter": "none",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "",
-          "filterToken": "",
-          "shadow": "none",
-          "border": "rgb(56, 56, 58)",
-          "borderWidth": "0px",
-          "radius": "0px",
-          "before": {
-            "content": "none",
-            "opacity": "1",
-            "filter": "none"
-          }
-        },
-        "sidebar": {
-          "classes": "floq-surface flex size-full flex-col rounded-[18px] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border",
-          "rootClasses": null,
-          "dataTheme": null,
-          "hasRim": false,
-          "rimLength": 0,
-          "background": "rgba(23, 23, 25, 0.72)",
-          "backgroundImagePresent": true,
-          "backdropFilter": "none",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "",
-          "filterToken": "",
-          "shadow": "rgba(255, 255, 255, 0.1) 0px 1px 0px 0px inset, rgba(255, 255, 255, 0.035) 1px 0px 0px 0px inset",
-          "border": "rgba(255, 255, 255, 0.09) rgba(0, 0, 0, 0) rgba(255, 255, 255, 0.09) rgba(255, 255, 255, 0.09)",
-          "borderWidth": "1px",
-          "radius": "18px",
-          "before": {
-            "content": "none",
-            "opacity": "1",
-            "filter": "none"
-          }
-        },
-        "sidebar_inner": {
-          "classes": "floq-surface flex size-full flex-col rounded-[18px] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border",
-          "rootClasses": null,
-          "dataTheme": null,
-          "hasRim": false,
-          "rimLength": 0,
-          "background": "rgba(23, 23, 25, 0.72)",
-          "backgroundImagePresent": true,
-          "backdropFilter": "none",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "",
-          "filterToken": "",
-          "shadow": "rgba(255, 255, 255, 0.1) 0px 1px 0px 0px inset, rgba(255, 255, 255, 0.035) 1px 0px 0px 0px inset",
-          "border": "rgba(255, 255, 255, 0.09) rgba(0, 0, 0, 0) rgba(255, 255, 255, 0.09) rgba(255, 255, 255, 0.09)",
-          "borderWidth": "1px",
-          "radius": "18px",
-          "before": {
-            "content": "none",
-            "opacity": "1",
-            "filter": "none"
-          }
-        },
-        "sidebar_container": {
-          "classes": "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex group-data-[collapsible=icon]:w-(--sidebar-width-icon) border-r-0",
-          "rootClasses": null,
-          "dataTheme": null,
-          "hasRim": false,
-          "rimLength": 0,
-          "background": "rgba(0, 0, 0, 0)",
-          "backgroundImagePresent": false,
-          "backdropFilter": "none",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "",
-          "filterToken": "",
-          "shadow": "none",
-          "border": "rgb(56, 56, 58)",
-          "borderWidth": "0px",
-          "radius": "0px",
-          "before": {
-            "content": "none",
-            "opacity": "1",
-            "filter": "none"
-          }
-        },
-        "home_composer": null,
-        "workspace": {
-          "classes": "workspace-frame workspace-surface workspace-view relative mt-[48px]! min-w-0 flex-1 overflow-hidden",
-          "rootClasses": null,
-          "dataTheme": null,
-          "hasRim": false,
-          "rimLength": 0,
-          "background": "rgb(0, 0, 0)",
-          "backgroundImagePresent": false,
-          "backdropFilter": "none",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "",
-          "filterToken": "",
-          "shadow": "none",
-          "border": "rgb(28, 28, 30)",
-          "borderWidth": "1px",
-          "radius": "22px",
-          "before": {
-            "content": "\"\"",
-            "opacity": "1",
-            "filter": "none"
-          }
-        },
-        "sidebar_dust": null,
-        "sidebar_search_glass": {
-          "classes": "lg-glass floq-glass rounded-xl sidebar-search-glass",
-          "rootClasses": null,
-          "dataTheme": null,
-          "hasRim": true,
-          "rimLength": 1281,
-          "background": "rgba(48, 48, 50, 0.62)",
-          "backgroundImagePresent": true,
-          "backdropFilter": "blur(5px) url(\"#glisse-backdrop-0\") saturate(1.5)",
-          "webkitBackdropFilter": null,
-          "filter": "none",
-          "opacity": "1",
-          "blurToken": "5px",
-          "filterToken": "url(\"#glisse-backdrop-0\") saturate(1.5)",
-          "shadow": "rgba(0, 0, 0, 0) 0px 1px 3px 0px",
-          "border": "rgb(245, 245, 247)",
-          "borderWidth": "0px",
-          "radius": "10px",
-          "before": {
-            "content": "none",
-            "opacity": "1",
-            "filter": "none"
-          }
-        }
       }
     },
     {

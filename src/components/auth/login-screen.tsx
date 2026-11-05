@@ -7,7 +7,7 @@ import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "@/lib/runtime/cli
 import { Button } from "@/components/ui/button";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
 import IconBrandFlowless from "@/components/ui/brand/IconBrandFlowless";
-import { GlassSurface } from "@/components/ui/glass-surface";
+import { FloqSurface } from "@/components/ui/floq-surface";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
 import {
@@ -391,14 +391,14 @@ export default function LoginScreen() {
                     <div className="auth-wordmark"><span className="auth-logo"><IconBrandFloq size={28} /></span><span>Floq</span></div>
                     <h2>Your agents.<br />One workspace.</h2>
                     <p className="auth-story-description">Bring your projects, Claude Code, and Codex together.</p>
-                    <GlassSurface className="auth-workflow rounded-[18px]" aria-label="How Floq works">
+                    <FloqSurface className="auth-workflow rounded-[18px]" aria-label="How Floq works">
                         <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconFolder size={19} /></span><div><strong>Bring your project</strong><span>Start with the code you call home.</span></div></div>
                         <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconCode size={19} /></span><div><strong>Give your agents a direction</strong><span>Build with Claude Code and Codex.</span></div></div>
                         <div className="auth-workflow-row"><span className="auth-workflow-icon"><IconTerminal2 size={19} /></span><div><strong>Keep the work in view</strong><span>Follow every task, terminal, and change.</span></div></div>
-                    </GlassSurface>
+                    </FloqSurface>
                     <div className="auth-providers"><span className="inline-flex items-center gap-2"><IconBrandClaude className="size-4" />Claude Code</span><span className="inline-flex items-center gap-2"><IconBrandCodex className="size-4" />Codex</span><span className="auth-provider-note">Your runtime. Your workspace.</span></div>
                 </div>
-                <GlassSurface className="auth-card rounded-[24px]">
+                <FloqSurface className="auth-card rounded-[24px]">
                     <div className="auth-form-heading">
                         <span className="auth-form-symbol"><IconLock size={21} aria-hidden="true" /></span>
                         <h1 className="text-[1.65rem] font-semibold tracking-tight leading-tight">{heading}</h1>
@@ -459,7 +459,7 @@ export default function LoginScreen() {
                     )}
 
                     <div className="auth-card-footer"><IconServer size={14} aria-hidden="true" /><span>Connected through your Floq Runtime</span></div>
-                </GlassSurface>
+                </FloqSurface>
                 <p className="auth-credit">Powered by <IconBrandFlowless size={14} /> Flowless</p>
             </div>
         </section>
