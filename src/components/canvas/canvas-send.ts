@@ -1,5 +1,6 @@
 // Shared delivery used by the bottom composer and every node's message bar.
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ui/ask-dialog";
 import { shellQuote, uploadTauriPath, type UploadItem } from "@/components/agents/upload-toast";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
@@ -76,7 +77,15 @@ export async function sendToTargets(options: SendOptions): Promise<SendResult> {
   const skipped: string[] = [];
   if (dormant.length) {
     const names = dormant.map((session) => session.title).join(", ");
-    if (!window.confirm(`${dormant.length === 1 ? `${names} is not running` : `${dormant.length} agents are not running (${names})`}. Wake ${dormant.length === 1 ? "it" : "them"} and send?`)) {
+    const one = dormant.length === 1;
+    const someRunning = targets.length > dormant.length;
+    const wakeThem = await askConfirm({
+      title: one ? `Wake ${names}?` : `Wake ${dormant.length} agents?`,
+      description: (one ? `${names} is not running.` : `These agents are not running: ${names}.`) + ` Floq wakes ${one ? "it" : "them"}, then sends your message.` + (someRunning ? " Skip sends only to the running agents." : ""),
+      actionLabel: one ? "Wake and send" : `Wake ${dormant.length} and send`,
+      cancelLabel: someRunning ? "Skip" : "Cancel",
+    });
+    if (!wakeThem) {
       skipped.push(...dormant.map((session) => session.id));
       targets = targets.filter((session) => !skipped.includes(session.id));
     }

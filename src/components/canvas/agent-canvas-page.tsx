@@ -57,6 +57,7 @@ import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
 import { setCanvasSidebarSession } from "@/lib/right-sidebar";
+import { askConfirm } from "@/components/ui/ask-dialog";
 
 const NO_PROJECT_MARK = { imageUrl: null, gitUrl: null } as const;
 
@@ -585,7 +586,7 @@ function AgentCanvas() {
   const wakeAll = useCallback(async () => {
     const queue = projectSessions.filter((session) => session.state === "sleeping");
     if (queue.length === 0) return;
-    if (queue.length > 5 && !window.confirm(`Wake ${queue.length} sleeping agents?`)) return;
+    if (queue.length > 5 && !(await askConfirm({ title: `Wake ${queue.length} sleeping agents?`, description: "Each one resumes its conversation and starts using your provider quota again.", actionLabel: `Wake ${queue.length}` }))) return;
     const worker = async () => { for (let next = queue.shift(); next; next = queue.shift()) await wake(next); };
     await Promise.all([worker(), worker()]);
   }, [projectSessions, wake]);

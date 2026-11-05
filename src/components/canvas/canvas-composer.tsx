@@ -18,6 +18,7 @@ import { sendToTargets } from "./canvas-send";
 import { orchestratorIds } from "@/lib/runtime/orchestrator";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import type { SessionSummary } from "@/lib/runtime/types";
+import { askText } from "@/components/ui/ask-dialog";
 
 const COLLAPSED_KEY = "floq.canvasComposer.collapsed";
 const draftKey = (projectId: string) => `floq.canvasComposer.draft.${projectId}`;
@@ -261,10 +262,17 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
             {tool(state.list, "Bullet list (- )", () => editor?.chain().focus().toggleBulletList().run(), <IconList size={13} />)}
             {tool(state.link, "Link", () => {
               if (!editor) return;
-              const href = state.link ? null : window.prompt("Link URL");
-              if (href === null && !state.link) return;
-              if (!href) editor.chain().focus().unsetLink().run();
-              else editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+              if (state.link) { editor.chain().focus().unsetLink().run(); return; }
+              void askText({
+                title: "Add a link",
+                label: "Link URL",
+                placeholder: "https://example.com",
+                actionLabel: "Add link",
+                validate: (value) => (/^(https?:\/\/|mailto:)\S+$/i.test(value) ? null : "Enter a full URL starting with https://, http:// or mailto:"),
+              }).then((href) => {
+                if (href) editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+                else editor.commands.focus();
+              });
             }, <IconLink size={13} />)}
             <span className="mx-1 h-4 w-px bg-border" />
             {tool(false, "Attach files", () => fileInput.current?.click(), <IconPaperclip size={13} />)}

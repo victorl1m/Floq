@@ -139,7 +139,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
       {!collapsed && (
         <div className="relative min-h-0 flex-1 overflow-hidden terminal-surface" onDoubleClick={() => barRef.current?.focus()}>
           {live ? (
-            <SessionMirror session={session} />
+            <SessionMirror session={session} interactive={!!selected && !linkPicking} />
           ) : (
             <div className="flex size-full flex-col gap-2 p-2 font-mono text-[11px] text-muted-foreground">
               <pre className="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap break-all">{tail || `${session.state}${session.branch ? ` · ${session.branch}` : ""}${session.model ? ` · ${session.model}` : ""}`}</pre>

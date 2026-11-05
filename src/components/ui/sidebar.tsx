@@ -163,7 +163,8 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, open, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile } = useSidebar()
+  const hideSidebar = React.useCallback(() => setOpen(false), [setOpen])
   const desktopSidebarRef = React.useRef<HTMLDivElement>(null)
 
   React.useLayoutEffect(() => {
@@ -259,7 +260,7 @@ function Sidebar({
         >
           {children}
         </GlassSurface>
-        {collapsible === "offcanvas" && <SidebarResizeHandle />}
+        {collapsible === "offcanvas" && <SidebarResizeHandle onHide={hideSidebar} />}
       </div>
     </div>
   )
