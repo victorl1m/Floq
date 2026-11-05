@@ -48,6 +48,8 @@ export interface ShardDriver {
   hostPath(handle: ShardHandle, relative: string): string;
   /** The user home path as the agent process sees it. */
   homePath(handle: ShardHandle): string;
+  /** Root-owned folder bound read-only at /etc/claude-code in this user's sandbox (per-user Claude managed settings); null without a sandbox. */
+  claudeManagedDir?(handle: ShardHandle): string | null;
 }
 
 export function safeRelative(input: string): string {
@@ -255,6 +257,10 @@ export class LinuxShardDriver implements ShardDriver {
     return SANDBOX_HOME;
   }
 
+  claudeManagedDir(handle: ShardHandle): string {
+    return join(this.metaRoot, handle.uid + ".claude-code");
+  }
+
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {
     const { uid } = handle;
     const home = handle.mountPath;
@@ -279,9 +285,14 @@ export class LinuxShardDriver implements ShardDriver {
     // bwrap creates the parent directories of binds as 0700 root, which the per-user uid cannot read
     // (resolv.conf, ssl config): create them 0755 explicitly, before anything is bound into them.
     args.push("--perms", "0755", "--dir", "/etc", "--perms", "0755", "--dir", "/home");
-    for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/ssl", "/etc/ca-certificates", "/etc/alternatives", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime", "/etc/claude-code"]) {
+    for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/ssl", "/etc/ca-certificates", "/etc/alternatives", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime"]) {
       if (existsSync(path)) args.push("--ro-bind", path, path);
     }
+    // Claude Code managed settings: this user's own copy (base policy + their plugins, see claudeManagedPlugins.ts) when
+    // the launch wrote one, else the image's.
+    const managed = this.claudeManagedDir(handle);
+    if (existsSync(join(managed, "managed-settings.json"))) args.push("--ro-bind", managed, "/etc/claude-code");
+    else if (existsSync("/etc/claude-code")) args.push("--ro-bind", "/etc/claude-code", "/etc/claude-code");
     args.push(
       "--ro-bind", join(this.metaRoot, uid + ".passwd"), "/etc/passwd",
       "--ro-bind", join(this.metaRoot, uid + ".group"), "/etc/group",
@@ -351,6 +362,10 @@ export class LocalShardDriver implements ShardDriver {
 
   homePath(handle: ShardHandle): string {
     return handle.mountPath;
+  }
+
+  claudeManagedDir(): null {
+    return null;
   }
 
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {

@@ -3,15 +3,14 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  SEC_DEFAULT_ID, buildClaudeManagedSettings, cloneMarketplace, parseTrustedPlugins, reconcileUserMarketplaces, syncClaudeManagedSettings, activeManagedMarketplaces, type LocalMarketplace,
-} from "../src/claudeManagedPlugins.ts";
+import { SEC_DEFAULT_ID, buildClaudeManagedSettings, promoteUserPlugins, remoteOf } from "../src/claudeManagedPlugins.ts";
 
 const BASE = { permissions: { deny: ["Agent", "Task"] }, hooks: { PreToolUse: [{ matcher: "Agent|Task", hooks: [{ type: "command", command: "node /usr/local/bin/floq-block-native-subagent.mjs" }] }] } };
-const FJ = "fast-jev-compaction@fast-jev-compaction=tamaratran/fast-jev-compaction";
+const ID = "fast-jev-compaction@fast-jev-compaction";
+const GH = { source: { source: "github", repo: "tamaratran/fast-jev-compaction" }, installLocation: "/home/agent/.claude/plugins/marketplaces/fast-jev-compaction" };
 
-/** A fake `git` that "clones" by writing a marketplace.json (name/plugin configurable). */
-function fakeGit(manifest: (path: string) => unknown) {
+/** Fake git: a "clone" writes a marketplace listing the plugin by a relative path. */
+function fakeGit(manifest = { name: "fast-jev-compaction", plugins: [{ name: "fast-jev-compaction", source: "./" }] }) {
   const calls: string[][] = [];
   const git = (args: string[]) => {
     calls.push(args);
@@ -19,97 +18,86 @@ function fakeGit(manifest: (path: string) => unknown) {
       const path = args.at(-1)!;
       mkdirSync(join(path, ".git"), { recursive: true });
       mkdirSync(join(path, ".claude-plugin"), { recursive: true });
-      writeFileSync(join(path, ".claude-plugin/marketplace.json"), JSON.stringify(manifest(path)));
+      writeFileSync(join(path, ".claude-plugin/marketplace.json"), JSON.stringify(manifest));
     }
   };
   return { git, calls };
 }
-const goodManifest = () => ({ name: "fast-jev-compaction", plugins: [{ name: "fast-jev-compaction", source: "./" }] });
 
-test("parses plugin@marketplace=source: GitHub shorthand -> https clone URL, https git URL, optional #ref; dedupes", () => {
-  assert.deepEqual(parseTrustedPlugins(undefined), []);
-  const list = parseTrustedPlugins(`${FJ}#v0.3.0, a@m=https://git.example.com/x/y.git ,${FJ}#v0.3.0`);
-  assert.deepEqual(list.map((p) => p.id), ["fast-jev-compaction@fast-jev-compaction", "a@m"]);
-  assert.deepEqual(list[0].remote, { url: "https://github.com/tamaratran/fast-jev-compaction.git", ref: "v0.3.0" });
-  assert.deepEqual(list[1].remote, { url: "https://git.example.com/x/y.git" });
+function home(t: { after: (fn: () => void) => void }, settings: unknown, known: unknown) {
+  const root = mkdtempSync(join(tmpdir(), "floq-userplugins-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const h = join(root, "home");
+  mkdirSync(join(h, ".claude/plugins"), { recursive: true });
+  writeFileSync(join(h, ".claude/settings.json"), JSON.stringify(settings));
+  writeFileSync(join(h, ".claude/plugins/known_marketplaces.json"), JSON.stringify(known));
+  return { home: h, managedDir: join(root, "meta/20000.claude-code") };
+}
+const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+
+test("remoteOf: GitHub and https git sources only", () => {
+  assert.deepEqual(remoteOf(GH), { url: "https://github.com/tamaratran/fast-jev-compaction.git" });
+  assert.deepEqual(remoteOf({ source: { source: "git", url: "https://h/x.git", ref: "v1" } }), { url: "https://h/x.git", ref: "v1" });
+  for (const bad of [undefined, {}, { source: { source: "git", url: "http://h/x.git" } }, { source: { source: "github", repo: "../x" } }, { source: { source: "url", url: "https://h/m.json" } }]) assert.equal(remoteOf(bad), null);
 });
 
-test("rejects malformed entries, missing or non-https sources, built-ins and bad refs", () => {
-  for (const bad of ["noat=o/r", "a@b@c=o/r", "a@m", "a@m=", "a@m=not a repo", "x@builtin=o/r", "a@m=http://insecure.example/x.git", "-a@m=o/r", "a@m=o/r#--upload-pack=x", "a@m=o/r#"]) {
-    assert.throws(() => parseTrustedPlugins(bad), /FLOQ_CLAUDE_PLUGINS/, bad);
-  }
-});
-
-test("no trusted plugins: base settings untouched (the security default keeps its own seat)", () => {
+test("no enabled plugins: the user's managed settings are just the base policy", () => {
   assert.equal(buildClaudeManagedSettings(BASE, []), BASE);
 });
 
-test("trusted plugins: enabled, local directory marketplace, seated ahead of sec-default; deny policy kept", () => {
-  const [plugin] = parseTrustedPlugins(FJ);
-  const out = buildClaudeManagedSettings(BASE, [{ plugin, path: "/usr/local/share/floq/claude-plugins/fast-jev-compaction" }]);
-  assert.deepEqual(out.permissions, BASE.permissions);
-  assert.deepEqual(out.hooks, BASE.hooks);
-  assert.deepEqual(out.enabledPlugins, { "fast-jev-compaction@fast-jev-compaction": true });
-  assert.deepEqual(out.extraKnownMarketplaces, { "fast-jev-compaction": { source: { source: "directory", path: "/usr/local/share/floq/claude-plugins/fast-jev-compaction" } } });
-  assert.deepEqual(out.prependPlugins, ["fast-jev-compaction@fast-jev-compaction", SEC_DEFAULT_ID]);
+test("an enabled plugin becomes managed, from a local snapshot, ahead of sec-default; base policy kept; user registration repointed", (t) => {
+  const paths = home(t, { theme: "dark", enabledPlugins: { [ID]: true, "off@x": false } }, { "fast-jev-compaction": GH });
+  const { git, calls } = fakeGit();
+  const promoted = promoteUserPlugins({ ...paths, base: BASE, git });
+  assert.deepEqual(promoted.map((p) => p.id), [ID]);
+  assert.equal(calls[0][0], "clone");
+  assert.equal(calls[0].at(-2), "https://github.com/tamaratran/fast-jev-compaction.git");
+
+  const managed = read(join(paths.managedDir, "managed-settings.json"));
+  assert.deepEqual(managed.permissions, BASE.permissions, "Floq's deny policy stays");
+  assert.deepEqual(managed.hooks, BASE.hooks);
+  assert.deepEqual(managed.enabledPlugins, { [ID]: true });
+  assert.deepEqual(managed.extraKnownMarketplaces, { "fast-jev-compaction": { source: { source: "directory", path: "/etc/claude-code/plugins/fast-jev-compaction" } } });
+  assert.deepEqual(managed.prependPlugins, [ID, SEC_DEFAULT_ID]);
+
+  const known = read(join(paths.home, ".claude/plugins/known_marketplaces.json"));
+  assert.deepEqual(known["fast-jev-compaction"].source, { source: "directory", path: "/etc/claude-code/plugins/fast-jev-compaction" });
+  assert.equal(read(join(paths.home, ".claude/settings.json")).theme, "dark", "other user settings untouched");
 });
 
-test("cloneMarketplace: clones once with hooks-free git, refreshes on later starts, and verifies the manifest", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "floq-plugins-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const [plugin] = parseTrustedPlugins(FJ + "#main");
-  const { git, calls } = fakeGit(goodManifest);
-  assert.equal(cloneMarketplace(plugin, dir, git), join(dir, "fast-jev-compaction"));
-  assert.deepEqual(calls[0], ["clone", "--depth", "1", "--branch", "main", "https://github.com/tamaratran/fast-jev-compaction.git", join(dir, "fast-jev-compaction")]);
-  cloneMarketplace(plugin, dir, git);
-  assert.deepEqual(calls.slice(1).map((c) => c.slice(2, 4)), [["fetch", "--depth"], ["reset", "--hard"], ["clean", "-fdx"]]);
-  for (const [label, manifest] of [
-    ["wrong name", { name: "other", plugins: [{ name: "fast-jev-compaction", source: "./" }] }],
-    ["plugin missing", { name: "fast-jev-compaction", plugins: [] }],
-    ["remote source", { name: "fast-jev-compaction", plugins: [{ name: "fast-jev-compaction", source: { source: "github", repo: "x/y" } }] }],
-  ] as const) {
-    rmSync(join(dir, "fast-jev-compaction"), { recursive: true, force: true });
-    assert.throws(() => cloneMarketplace(plugin, dir, fakeGit(() => manifest).git), Error, label);
-  }
+test("later starts: refreshed from the remembered origin at most hourly; a failed refresh keeps the snapshot", (t) => {
+  const paths = home(t, { enabledPlugins: { [ID]: true } }, { "fast-jev-compaction": GH });
+  let clock = 1_800_000_000_000;
+  const first = fakeGit();
+  promoteUserPlugins({ ...paths, base: BASE, git: first.git, now: () => clock });
+  const again = fakeGit();
+  assert.equal(promoteUserPlugins({ ...paths, base: BASE, git: again.git, now: () => clock + 60_000 }).length, 1);
+  assert.equal(again.calls.length, 0, "fresh snapshot: no git");
+  clock += 2 * 60 * 60_000;
+  const refresh = fakeGit();
+  promoteUserPlugins({ ...paths, base: BASE, git: refresh.git, now: () => clock });
+  assert.deepEqual(refresh.calls.map((c) => c[2]), ["fetch", "reset", "clean"], "refreshed from the origin recorded on first promotion");
+  assert.equal(refresh.calls[0].includes("origin"), true);
+  clock += 2 * 60 * 60_000;
+  const down = () => { throw new Error("offline"); };
+  assert.equal(promoteUserPlugins({ ...paths, base: BASE, git: down, now: () => clock }).length, 1, "offline: snapshot still used");
 });
 
-test("sync: clones, writes base + plugins, records the active set; a failing clone or bad value falls back to the base", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "floq-managed-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const basePath = join(dir, "base.json");
-  const targetPath = join(dir, "etc/claude-code/managed-settings.json");
-  const pluginsDir = join(dir, "plugins");
-  writeFileSync(basePath, JSON.stringify(BASE));
-  assert.deepEqual(syncClaudeManagedSettings({ raw: FJ, basePath, targetPath, pluginsDir, git: fakeGit(goodManifest).git }).map((p) => p.id), ["fast-jev-compaction@fast-jev-compaction"]);
-  const written = JSON.parse(readFileSync(targetPath, "utf8"));
-  assert.deepEqual(written.prependPlugins, ["fast-jev-compaction@fast-jev-compaction", SEC_DEFAULT_ID]);
-  assert.equal(written.extraKnownMarketplaces["fast-jev-compaction"].source.path, join(pluginsDir, "fast-jev-compaction"));
-  assert.equal(activeManagedMarketplaces().length, 1);
-
-  const failing = () => { throw new Error("network down"); };
-  assert.deepEqual(syncClaudeManagedSettings({ raw: "p@m=o/r", basePath, targetPath, pluginsDir: join(dir, "p2"), git: failing }), []);
-  assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), BASE, "clone failed: base policy, no plugins");
-  assert.equal(activeManagedMarketplaces().length, 0);
-  assert.deepEqual(syncClaudeManagedSettings({ raw: "garbage", basePath, targetPath, pluginsDir }), []);
-  assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), BASE);
-});
-
-test("reconcile drops a user's conflicting registration of a trusted marketplace, keeps everything else", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "floq-home-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  mkdirSync(join(home, ".claude/plugins"), { recursive: true });
-  const github = { source: { source: "github", repo: "tamaratran/fast-jev-compaction" } };
-  writeFileSync(join(home, ".claude/plugins/known_marketplaces.json"), JSON.stringify({ "fast-jev-compaction": github, other: github }));
-  writeFileSync(join(home, ".claude/settings.json"), JSON.stringify({ theme: "dark", extraKnownMarketplaces: { "fast-jev-compaction": github, other: github }, enabledPlugins: { "fast-jev-compaction@fast-jev-compaction": true } }));
-  const [plugin] = parseTrustedPlugins(FJ);
-  const locals: LocalMarketplace[] = [{ plugin, path: "/usr/local/share/floq/claude-plugins/fast-jev-compaction" }];
-  assert.deepEqual(reconcileUserMarketplaces(home, locals), ["fast-jev-compaction"]);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(home, ".claude/plugins/known_marketplaces.json"), "utf8"))), ["other"]);
-  const settings = JSON.parse(readFileSync(join(home, ".claude/settings.json"), "utf8"));
-  assert.deepEqual(Object.keys(settings.extraKnownMarketplaces), ["other"]);
-  assert.equal(settings.theme, "dark");
-  // The managed directory registration itself is not a conflict; nothing to do the second time or without trusted plugins.
-  writeFileSync(join(home, ".claude/plugins/known_marketplaces.json"), JSON.stringify({ "fast-jev-compaction": { source: { source: "directory", path: locals[0].path } } }));
-  assert.deepEqual(reconcileUserMarketplaces(home, locals), []);
-  assert.deepEqual(reconcileUserMarketplaces(home, []), []);
+test("disabled plugins, missing marketplaces, unlisted or non-relative plugins stay normal user plugins", (t) => {
+  const paths = home(t, { enabledPlugins: { [ID]: true, "ghost@nowhere": true, "remote@m2": true } }, {
+    "fast-jev-compaction": GH,
+    m2: { source: { source: "github", repo: "o/m2" } },
+  });
+  const git = (args: string[]) => {
+    const path = args.at(-1)!;
+    mkdirSync(join(path, ".git"), { recursive: true }); mkdirSync(join(path, ".claude-plugin"), { recursive: true });
+    const name = path.endsWith("m2") ? "m2" : "fast-jev-compaction";
+    writeFileSync(join(path, ".claude-plugin/marketplace.json"), JSON.stringify({ name, plugins: [{ name: name === "m2" ? "remote" : "fast-jev-compaction", source: name === "m2" ? { source: "github", repo: "x/y" } : "./" }] }));
+  };
+  assert.deepEqual(promoteUserPlugins({ ...paths, base: BASE, git }).map((p) => p.id), [ID]);
+  assert.deepEqual(read(join(paths.managedDir, "managed-settings.json")).prependPlugins, [ID, SEC_DEFAULT_ID]);
+  // Disabling it in the user's settings drops it from managed at the next start.
+  writeFileSync(join(paths.home, ".claude/settings.json"), JSON.stringify({ enabledPlugins: { [ID]: false } }));
+  assert.deepEqual(promoteUserPlugins({ ...paths, base: BASE, git }), []);
+  assert.deepEqual(read(join(paths.managedDir, "managed-settings.json")), BASE);
 });
