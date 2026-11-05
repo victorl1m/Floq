@@ -15,6 +15,7 @@ import { neutralizeApprovalMarker } from "./approvalText.js";
 import { AgentOutbox, MessageInbox, OUTBOX_APPROVAL_MAX_AGE_MS, OUTBOX_MESSAGE_MAX_AGE_MS, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 import { parseRecruitSkills } from "./recruitSkills.js";
+import { descendantsOf } from "./subagents.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const QUIET_MS = 5_000;
@@ -562,10 +563,19 @@ export class Orchestrator {
 
   async dismiss(userId: string, sessionId: string, name: unknown) {
     const me = await this.caller(userId, sessionId);
-    if (!me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can dismiss agents");
     const other = await this.resolve(userId, name);
-    if (other.id === me.id) throw badRequest("A lead cannot dismiss itself");
+    if (other.id === me.id) throw badRequest("An agent cannot dismiss itself");
     if (!this.sameProject(me, other)) throw new HttpError(403, "other_project", "That agent is in a different project");
+    // A lead may dismiss any agent of its project; any other agent (e.g. an orchestrator the lead recruited) only the
+    // agents it recruited itself, directly or through its own recruits.
+    if (!me.lead) {
+      const tree = (await this.pool.query("SELECT id, parent_session_id FROM agent_sessions WHERE user_id = $1", [userId])).rows as { id: string; parent_session_id: string | null }[];
+      if (!descendantsOf(tree, me.id).includes(other.id)) {
+        throw new HttpError(403, "not_recruiter", "You can only dismiss agents you recruited; ask your lead to dismiss others");
+      }
+      // Like `floq subagent dismiss`: its own recruits go too, deepest first, so none is left without a recruiter.
+      for (const id of descendantsOf(tree, other.id).reverse()) await this.manager.remove(id, userId);
+    }
     await this.manager.remove(other.id, userId);
     return { ok: true };
   }

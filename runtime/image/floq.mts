@@ -90,7 +90,7 @@ Use immutable Floq UUIDs printed by list/recruit for agent references. Names are
 for compatibility, but duplicate names are ambiguous. --isolated recruits into a managed
 Git worktree in a registered Git project; --cwd selects an allowed directory in this project.
 Check models with "floq models" before recruiting with --model. The name/role do not select a model: read "floq roles" / "floq role ID", then choose a provider and a --model matching the role's capability. --role ID applies a preset prompt; other --role text is a free-form first message.
-Only the orchestrator can recruit. Connect/dismiss require a lead session and user authorization. If you are not the orchestrator and need another agent, message the orchestrator ("floq ask <orchestrator> \"Please recruit a <role> agent to <task>\"") instead of recruiting.
+Only the orchestrator can recruit. Connect requires a lead session and user authorization; dismiss works for a lead, or for any agent on the agents it recruited itself. If you are not the orchestrator and need another agent, message the orchestrator ("floq ask <orchestrator> \"Please recruit a <role> agent to <task>\"") instead of recruiting.
 
 Skills, MCP servers and secrets: list/search/preview and "mcp add --dry-run" work in any agent session. Installing or removing
 skills and MCP servers, and creating secrets, require a lead session. ALWAYS show the user what you are about to install
