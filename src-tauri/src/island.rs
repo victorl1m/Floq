@@ -1,5 +1,6 @@
 use serde_json::Value;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow};
 
 const COLLAPSED_WIDTH: f64 = 220.0;
@@ -30,11 +31,20 @@ impl Default for IslandState {
     }
 }
 
-pub struct IslandRuntime(Mutex<IslandState>);
+pub struct IslandRuntime(Mutex<IslandState>, Arc<AnimationState>);
+
+#[derive(Default)]
+struct AnimationState {
+    generation: AtomicU64,
+    running: AtomicU64,
+}
 
 impl Default for IslandRuntime {
     fn default() -> Self {
-        Self(Mutex::new(IslandState::default()))
+        Self(
+            Mutex::new(IslandState::default()),
+            Arc::new(AnimationState::default()),
+        )
     }
 }
 
@@ -158,16 +168,180 @@ fn bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Option<(i32, i
     Some((x, y, width, height))
 }
 
-fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(), String> {
-    let Some((x, y, width, height)) = bounds(window, expanded, height) else {
-        return Err("No display is available for the island window".into());
+fn ease_out(progress: f64) -> f64 {
+    let t = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn corner_radius(height: u32, scale: f64, expanded: bool) -> f64 {
+    if expanded {
+        (26.0 * scale).min(height as f64 / 2.0)
+    } else {
+        height as f64 / 2.0
+    }
+}
+
+#[cfg(windows)]
+fn apply_region(
+    window: &WebviewWindow,
+    width: u32,
+    height: u32,
+    radius: f64,
+) -> Result<(), String> {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
     };
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
+
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let diameter = (radius * 2.0).round().max(1.0) as i32;
+    unsafe {
+        let preference = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &preference as *const _ as *const _,
+            std::mem::size_of_val(&preference) as u32,
+        );
+        // Regions use exclusive right/bottom coordinates. Windows owns the region on success.
+        let region = CreateRoundRectRgn(
+            0,
+            0,
+            width as i32 + 1,
+            height as i32 + 1,
+            diameter,
+            diameter,
+        );
+        if region.is_invalid() {
+            return Err("Could not create island window region".into());
+        }
+        if SetWindowRgn(hwnd, Some(region), true) == 0 {
+            let _ = DeleteObject(region.into());
+            return Err("Could not set island window region".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn apply_region(_: &WebviewWindow, _: u32, _: u32, _: f64) -> Result<(), String> {
+    Ok(())
+}
+
+fn apply_frame(
+    window: &WebviewWindow,
+    frame: (i32, i32, u32, u32),
+    radius: f64,
+) -> Result<(), String> {
+    let (x, y, width, height) = frame;
     window
         .set_size(PhysicalSize::new(width, height))
         .map_err(|error| error.to_string())?;
     window
         .set_position(PhysicalPosition::new(x, y))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    apply_region(window, width, height, radius)
+}
+
+fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(), String> {
+    let frame =
+        bounds(window, expanded, height).ok_or("No display is available for the island window")?;
+    let scale = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    apply_frame(window, frame, corner_radius(frame.3, scale, expanded))
+}
+
+#[cfg(windows)]
+fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    unsafe {
+        let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    if visible {
+        window.show()
+    } else {
+        window.hide()
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn cancel_animation(animation: &AnimationState) {
+    animation.generation.fetch_add(1, Ordering::SeqCst);
+    animation.running.store(0, Ordering::SeqCst);
+}
+
+fn animate_bounds(
+    window: WebviewWindow,
+    animation: Arc<AnimationState>,
+    expanded: bool,
+    height: f64,
+    from_expanded: bool,
+) {
+    let generation = animation.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    animation.running.store(generation, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        if animation.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let Some(target) = bounds(&window, expanded, height) else {
+            let _ = animation.running.compare_exchange(
+                generation,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            return;
+        };
+        let Some(start) = physical_rect(&window) else {
+            let _ = animation.running.compare_exchange(
+                generation,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            return;
+        };
+        let scale = window
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0);
+        let start_radius = corner_radius(start.3.max(1) as u32, scale, from_expanded);
+        let end_radius = corner_radius(target.3, scale, expanded);
+        let started = std::time::Instant::now();
+        loop {
+            if animation.generation.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            let t = ease_out(started.elapsed().as_secs_f64() / 0.240);
+            let lerp = |a: f64, b: f64| a + (b - a) * t;
+            let frame = (
+                lerp(start.0 as f64, target.0 as f64).round() as i32,
+                lerp(start.1 as f64, target.1 as f64).round() as i32,
+                lerp(start.2 as f64, target.2 as f64).round().max(1.0) as u32,
+                lerp(start.3 as f64, target.3 as f64).round().max(1.0) as u32,
+            );
+            if apply_frame(&window, frame, lerp(start_radius, end_radius)).is_err() || t >= 1.0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let _ =
+            animation
+                .running
+                .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst);
+    });
 }
 
 #[tauri::command]
@@ -184,10 +358,11 @@ pub fn island_publish(
         .lock()
         .map_err(|_| "Preferences unavailable")?
         .island_enabled;
-    let (active, expanded, height) = {
+    let (active, expanded, height, was_active) = {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
+        let was_active = state.active;
         let active = update_snapshot_state(&mut state, snapshot.clone(), enabled);
-        (active, state.expanded, state.height)
+        (active, state.expanded, state.height, was_active)
     };
     let island = app
         .get_webview_window("island")
@@ -199,10 +374,13 @@ pub fn island_publish(
         island
             .set_ignore_cursor_events(!expanded)
             .map_err(|error| error.to_string())?;
-        apply_bounds(&island, expanded, height)?;
-        island.show().map_err(|error| error.to_string())?;
+        if !was_active {
+            apply_bounds(&island, expanded, height)?;
+        }
+        set_visible_without_activation(&island, true)?;
     } else {
-        island.hide().map_err(|error| error.to_string())?;
+        cancel_animation(&runtime.1);
+        set_visible_without_activation(&island, false)?;
     }
     Ok(())
 }
@@ -221,7 +399,8 @@ pub fn set_enabled(
         return Ok(());
     };
     let Some(snapshot) = snapshot else {
-        window.hide().map_err(|error| error.to_string())?;
+        cancel_animation(&runtime.1);
+        set_visible_without_activation(&window, false)?;
         return Ok(());
     };
     window
@@ -231,7 +410,7 @@ pub fn set_enabled(
         .set_ignore_cursor_events(!expanded)
         .map_err(|error| error.to_string())?;
     apply_bounds(&window, expanded, height)?;
-    window.show().map_err(|error| error.to_string())
+    set_visible_without_activation(&window, true)
 }
 
 #[tauri::command]
@@ -257,17 +436,20 @@ pub fn island_set_layout(
 ) -> Result<(), String> {
     allowed_caller(&window, "island")?;
     let height = clamped_height(height);
-    {
+    let from_expanded = {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
+        let previous = state.expanded;
         state.expanded = expanded;
         state.pinned = pinned;
         state.height = height;
         state.outside_since = None;
-    }
+        previous
+    };
     window
         .set_ignore_cursor_events(!expanded)
         .map_err(|error| error.to_string())?;
-    apply_bounds(&window, expanded, height)
+    animate_bounds(window, runtime.1.clone(), expanded, height, from_expanded);
+    Ok(())
 }
 
 pub fn create_window(
@@ -314,23 +496,41 @@ pub fn start_hover_monitor(app: tauri::AppHandle) {
                 let Some(window) = app.get_webview_window("island") else {
                     continue;
                 };
-                let state = app.state::<IslandRuntime>();
-                let Ok(mut state) = state.0.lock() else {
-                    continue;
+                // Never hold the state mutex across a window call: on Windows those calls
+                // marshal to the main thread, which may itself be waiting on this mutex
+                // inside a sync command (that deadlock froze the whole app on Send).
+                let (active, pinned, expanded, height, outside_since) = {
+                    let Ok(state) = app.state::<IslandRuntime>().0.lock() else {
+                        continue;
+                    };
+                    (
+                        state.active,
+                        state.pinned,
+                        state.expanded,
+                        state.height,
+                        state.outside_since,
+                    )
                 };
-                if !state.active || state.pinned || !window.is_visible().unwrap_or(false) {
+                if !active || pinned || !window.is_visible().unwrap_or(false) {
                     continue;
                 }
-                let desired = bounds(&window, state.expanded, state.height);
-                if let (Some((x, y, width, height)), Ok(position), Ok(size)) =
+                let animating = app
+                    .state::<IslandRuntime>()
+                    .1
+                    .running
+                    .load(Ordering::SeqCst)
+                    != 0;
+                let desired = if animating {
+                    None
+                } else {
+                    bounds(&window, expanded, height)
+                };
+                if let (Some((x, y, width, h)), Ok(position), Ok(size)) =
                     (desired, window.outer_position(), window.outer_size())
                 {
-                    if position.x != x
-                        || position.y != y
-                        || size.width != width
-                        || size.height != height
+                    if position.x != x || position.y != y || size.width != width || size.height != h
                     {
-                        let _ = apply_bounds(&window, state.expanded, state.height);
+                        let _ = apply_bounds(&window, expanded, height);
                     }
                 }
                 let Ok(cursor) = app.cursor_position() else {
@@ -338,29 +538,45 @@ pub fn start_hover_monitor(app: tauri::AppHandle) {
                 };
                 let inside =
                     physical_rect(&window).is_some_and(|rect| contains(rect, cursor.x, cursor.y));
-                if inside && !state.expanded {
-                    state.expanded = true;
-                    state.outside_since = None;
-                    let height = state.height;
-                    drop(state);
-                    let _ = window.set_ignore_cursor_events(false);
-                    let _ = apply_bounds(&window, true, height);
-                    let _ = window.emit("island:hover", serde_json::json!({"expanded": true}));
-                } else if state.expanded && !inside {
-                    let since = state
-                        .outside_since
-                        .get_or_insert_with(std::time::Instant::now);
+                let next = if inside && !expanded {
+                    Some((true, None))
+                } else if expanded && !inside {
+                    let since = outside_since.unwrap_or_else(std::time::Instant::now);
                     if since.elapsed() >= std::time::Duration::from_millis(300) {
-                        state.expanded = false;
-                        state.outside_since = None;
-                        let height = state.height;
-                        drop(state);
-                        let _ = window.set_ignore_cursor_events(true);
-                        let _ = apply_bounds(&window, false, height);
-                        let _ = window.emit("island:hover", serde_json::json!({"expanded": false}));
+                        Some((false, None))
+                    } else {
+                        if outside_since.is_none() {
+                            if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                                state.outside_since = Some(since);
+                            }
+                        }
+                        None
                     }
-                } else if inside {
-                    state.outside_since = None;
+                } else {
+                    if inside && outside_since.is_some() {
+                        if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                            state.outside_since = None;
+                        }
+                    }
+                    None
+                };
+                if let Some((now_expanded, since)) = next {
+                    if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                        state.expanded = now_expanded;
+                        state.outside_since = since;
+                    }
+                    let _ = window.set_ignore_cursor_events(!now_expanded);
+                    animate_bounds(
+                        window.clone(),
+                        app.state::<IslandRuntime>().1.clone(),
+                        now_expanded,
+                        height,
+                        expanded,
+                    );
+                    let _ = window.emit(
+                        "island:hover",
+                        serde_json::json!({"expanded": now_expanded}),
+                    );
                 }
             }
         });
@@ -370,10 +586,26 @@ pub fn start_hover_monitor(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        IslandState, active_snapshot, clamped_height, contains, set_island_enabled,
-        update_snapshot_state,
+        active_snapshot, clamped_height, contains, corner_radius, ease_out, set_island_enabled,
+        update_snapshot_state, IslandState,
     };
     use serde_json::json;
+
+    #[test]
+    fn easing_clamps_and_reaches_target_smoothly() {
+        assert_eq!(ease_out(-1.0), 0.0);
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(0.5), 0.875);
+        assert_eq!(ease_out(1.0), 1.0);
+        assert_eq!(ease_out(2.0), 1.0);
+    }
+
+    #[test]
+    fn radius_tracks_physical_height_and_scale() {
+        assert_eq!(corner_radius(60, 1.5, false), 30.0);
+        assert_eq!(corner_radius(300, 1.5, true), 39.0);
+        assert_eq!(corner_radius(40, 2.0, true), 20.0);
+    }
 
     #[test]
     fn clamps_island_height_to_supported_logical_range() {

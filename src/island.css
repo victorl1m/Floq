@@ -1,8 +1,40 @@
-:root { font-family: system-ui, sans-serif; color-scheme: light dark; color: #202128; background: transparent; }
-* { box-sizing: border-box; } body { margin: 0; background: transparent; } button, textarea, input { font: inherit; }
-.island { width: 100%; max-height: 560px; overflow: auto; border: 1px solid #a8aab566; border-radius: 20px; background: #eff0f4; box-shadow: 0 8px 30px #0003; transition: border-radius .2s ease; }
-.island.collapsed { height: 40px; overflow: hidden; } .island.expanded { border-radius: 22px; }
-.island-header { height: 38px; display:flex; align-items:center; gap:9px; padding:0 15px; font-size:12px; white-space:nowrap; } .island-dot { width:8px; height:8px; border-radius:50%; background:#6d73e8; } .island-session { overflow:hidden; text-overflow:ellipsis; opacity:.65; }
-.island-content { padding: 3px 18px 18px; font-size:13px; } .island-content h2 { font-size:15px; white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0; } .island-content p { white-space:pre-wrap; overflow-wrap:anywhere; } .island-label,.island-meta { color:#696b78; font-size:11px; } .island-label { text-transform:uppercase; letter-spacing:.08em; } .island-cycle { display:flex; justify-content:flex-end; align-items:center; gap:8px; } button { cursor:pointer; border:1px solid #9996; background:#fff9; color:inherit; border-radius:9px; padding:7px 13px; } button:disabled { opacity:.45; cursor:default; } button.primary { background:#555cce; border-color:#555cce; color:white; } .island-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; } .island-options label { display:flex; gap:8px; padding:7px 0; } .island-options small { display:block; opacity:.7; } .island-direction { display:block; margin-top:10px; } textarea { display:block; width:100%; min-height:65px; resize:vertical; margin-top:5px; border:1px solid #9998; border-radius:8px; padding:8px; color:inherit; background:#fff9; } .island-error { color:#c33; }
-@media (prefers-color-scheme: dark) { :root { color:#eee; } .island { background:#242429; border-color:#ffffff25; } button,textarea { background:#ffffff12; } .island-label,.island-meta { color:#aaa; } }
-@media (prefers-reduced-motion: reduce) { .island { transition:none; } }
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+:root { font-family:'Geist Variable', sans-serif; font-size:13px; font-variant-numeric:tabular-nums; color-scheme:light dark; color:#202127; background:transparent; }
+* { box-sizing:border-box; }
+html, body, #root { margin:0; width:100%; background:transparent; }
+button, textarea, input { font:inherit; }
+.island { width:100%; max-height:560px; overflow:auto; border:1px solid rgba(255,255,255,.4); border-radius:26px; background:rgba(238,239,244,.48); box-shadow:inset 0 1px 0 rgba(255,255,255,.25); transition:width 320ms cubic-bezier(.2,.9,.25,1.15), height 320ms cubic-bezier(.2,.9,.25,1.15), border-radius 320ms cubic-bezier(.2,.9,.25,1.15); }
+.island.collapsed { height:40px; overflow:hidden; border-radius:20px; }
+.island-header { height:38px; display:flex; align-items:center; gap:9px; padding:0 15px; font-size:12px; white-space:nowrap; }
+.island-header strong { font-weight:650; }
+.island-count { display:inline-flex; min-width:19px; height:19px; align-items:center; justify-content:center; border-radius:10px; background:#777df233; margin-right:2px; }
+.island-dot { flex:none; width:8px; height:8px; border-radius:50%; background:#777df2; box-shadow:0 0 9px #858bfa99; animation:dot-pop .5s cubic-bezier(.2,.9,.25,1.15); }
+.island-session { overflow:hidden; text-overflow:ellipsis; opacity:.65; }
+.island-content { padding:3px 18px 18px; animation:content-in 260ms 40ms both; }
+.island-content h2 { font-size:14px; line-height:1.4; font-weight:650; white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0; }
+.island-content p { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
+.island-label,.island-meta { color:#656775; font-size:11px; }
+.island-label { text-transform:uppercase; letter-spacing:.09em; font-weight:650; }
+.island-cycle { display:flex; justify-content:flex-end; align-items:center; gap:8px; font-size:11px; }
+button { cursor:pointer; border:1px solid #7774; background:#fff5; color:inherit; border-radius:11px; padding:8px 14px; font-weight:600; }
+button:hover:not(:disabled) { background:#fff9; }
+button:focus-visible, textarea:focus-visible, input:focus-visible { outline:2px solid #777df2; outline-offset:2px; }
+button:disabled { opacity:.5; cursor:default; }
+button.primary { background:#555bd1; border-color:#555bd1; color:white; }
+button.primary:hover:not(:disabled) { background:#656be0; }
+.island-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; font-family:'Geist Mono Variable', monospace; font-size:12px; }
+.island-options { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+.island-options label { position:relative; cursor:pointer; border:1px solid #8886; background:#fff4; border-radius:12px; padding:7px 10px; }
+.island-options label:has(input:checked) { border-color:#777df2; background:#777df22b; }
+.island-options input { position:absolute; opacity:0; }
+.island-options small { display:block; opacity:.7; margin-top:3px; }
+.island-direction { display:block; margin-top:14px; font-size:12px; font-weight:600; }
+textarea { display:block; width:100%; min-height:65px; resize:vertical; margin-top:6px; border:1px solid #8886; border-radius:11px; padding:9px; color:inherit; background:#fff5; }
+.island-error { color:#b82e43; }
+.island-spinner { display:inline-block; width:12px; height:12px; border:2px solid #fff7; border-top-color:#fff; border-radius:50%; vertical-align:-2px; animation:spin .7s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+@keyframes dot-pop { 50% { transform:scale(1.5); } }
+@keyframes content-in { from { opacity:0; filter:blur(4px); transform:translateY(-5px); } to { opacity:1; filter:blur(0); transform:translateY(0); } }
+@media (prefers-color-scheme:dark) { :root { color:#f3f3f6; } .island { background:rgba(20,20,25,.52); border-color:#ffffff30; box-shadow:inset 0 1px 0 #ffffff18; } button,textarea,.island-options label { background:#ffffff12; } button:hover:not(:disabled) { background:#ffffff25; } .island-label,.island-meta { color:#b2b2be; } .island-error { color:#ff8795; } }
+@media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important; } }
