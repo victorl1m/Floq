@@ -23,14 +23,14 @@ with sync_playwright() as p:
                 try: pg.get_by_role("button", name="Settings").first.click(timeout=3000); pg.wait_for_timeout(800)
                 except Exception as e: errs.append("settings-open: " + str(e)[:80])
             pg.screenshot(path=str(OUT / f"{scene}-{theme}.png"), animations="disabled")
-            info = pg.evaluate("""() => [...document.querySelectorAll('[data-slot=button]')].slice(0,60).map(b=>{const c=getComputedStyle(b);return {v:b.dataset.variant||b.dataset.floqVariant,glisse:b.classList.contains('lg-button'),h:b.offsetHeight,r:c.borderTopLeftRadius,bf:c.backdropFilter,dis:b.disabled}})""")
-            # hover + keyboard focus on first glisse button
-            btn = pg.locator("button.lg-button:not(:disabled)").first
+            info = pg.evaluate("""() => [...document.querySelectorAll('[data-slot=button]')].slice(0,60).map(b=>{const c=getComputedStyle(b);return {v:b.dataset.variant||b.dataset.floqVariant,h:b.offsetHeight,r:c.borderTopLeftRadius,bf:c.backdropFilter,dis:b.disabled}})""")
+            # hover + keyboard focus on first enabled button
+            btn = pg.locator("button:not(:disabled)").first
             if btn.count():
                 btn.hover(); pg.wait_for_timeout(300); pg.screenshot(path=str(OUT / f"{scene}-{theme}-hover.png"), clip=btn.bounding_box() and {"x":max(btn.bounding_box()["x"]-20,0),"y":max(btn.bounding_box()["y"]-20,0),"width":btn.bounding_box()["width"]+40,"height":btn.bounding_box()["height"]+40})
                 pg.mouse.move(0,0); pg.keyboard.press("Tab")
                 pg.screenshot(path=str(OUT / f"{scene}-{theme}-focus.png"))
-            report[f"{scene}-{theme}"] = {"count": len(info), "glisse": sum(i["glisse"] for i in info), "withBackdrop": sum(1 for i in info if i["bf"] not in ("none","")), "errors": errs, "sample": info[:6]}
+            report[f"{scene}-{theme}"] = {"count": len(info), "withBackdrop": sum(1 for i in info if i["bf"] not in ("none","")), "errors": errs, "sample": info[:6]}
             ctx.close()
     b.close()
 (OUT / "report.json").write_text(json.dumps(report, indent=2))

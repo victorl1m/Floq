@@ -18,7 +18,7 @@ class ToastFixture(CANVAS.CanvasFixture):
 
 def run_case(browser,theme,label):
  context=browser.new_context(viewport={"width":1440,"height":960})
- context.add_init_script("localStorage.setItem('theme',"+json.dumps(theme)+");localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(CANVAS.FIX.USER)+"}));")
+ context.add_init_script("localStorage.setItem('theme',"+json.dumps(theme)+");localStorage.setItem('floq.material','mica');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:"+json.dumps(CANVAS.FIX.USER)+"}));")
  page=context.new_page(); errors=[]; page.on("pageerror",lambda e:errors.append(str(e))); fixture=ToastFixture(); page.route("**/*",fixture.handle)
  page.goto(URL,wait_until="domcontentloaded",timeout=15000); page.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
  page.get_by_role("button",name="Select project").click(); page.get_by_role("menuitem",name=re.compile("AGI Paulo - SARAH")).first.click()

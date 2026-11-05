@@ -5,7 +5,7 @@ import { cn } from "cn"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
-import { GlassSurface } from "@/components/ui/glass-surface"
+import { FloqSurface } from "@/components/ui/floq-surface"
 import { IconX } from "@tabler/icons-react"
 
 function Dialog({
@@ -74,7 +74,7 @@ function DialogContent({
         )}
         {...props}
       >
-        <GlassSurface>
+        <FloqSurface>
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
@@ -89,7 +89,7 @@ function DialogContent({
             </Button>
           </DialogPrimitive.Close>
         )}
-        </GlassSurface>
+        </FloqSurface>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

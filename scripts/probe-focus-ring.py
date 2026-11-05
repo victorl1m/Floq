@@ -15,7 +15,7 @@ with sync_playwright() as p:
     b = p.chromium.launch()
     for mode in ("light", "dark", "solid"):
         ctx = b.new_context(viewport={"width": 1440, "height": 900}, color_scheme="dark")
-        ctx.add_init_script(f"localStorage.setItem('theme','{'dark' if mode == 'dark' else 'light'}');localStorage.setItem('floq.material','{'solid' if mode == 'solid' else 'glass'}');" + CONN)
+        ctx.add_init_script(f"localStorage.setItem('theme','{'dark' if mode == 'dark' else 'light'}');localStorage.setItem('floq.material','{'solid' if mode == 'solid' else 'mica'}');" + CONN)
         pg = ctx.new_page(); fx = F.Fixture()
         def h(route):
             from urllib.parse import urlparse

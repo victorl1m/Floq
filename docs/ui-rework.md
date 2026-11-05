@@ -12,7 +12,7 @@
 
 ## Decisions
 
-- Retained the graphite/soft-white themes and Geist stack, with restrained glass layers driven by semantic tokens and opaque fallbacks.
+- Retained the graphite/soft-white themes and Geist stack, with restrained translucent CSS surfaces and opaque fallbacks.
 - Kept the Home composer as the single session creation path. Prompt cards only populate and focus the editable field, and remain inert while a draft exists.
 - Reworked loading and empty states in Skills and Secrets through the shared `AsciiSkeleton`, `AsciiReveal`, and Empty owners.
 - Updated shared controls for consistent elevation, collision bounds, selected states, focus, disabled behavior, and keyboard-safe popovers without changing their APIs.
@@ -21,7 +21,7 @@
 
 | Existing rule or behavior | Evidence | Action |
 | --- | --- | --- |
-| Semantic CSS variables own ordinary UI colors | `src/index.css` was grayscale and lacked the selected Flowless accent and glass mapping | Added orange and glass tokens with light/dark high-contrast text and fallback states |
+| Semantic CSS variables own ordinary UI colors | `src/index.css` was grayscale and lacked the selected Flowless accent and glass mapping | Added orange and translucent-surface tokens with light/dark high-contrast text and fallback states |
 | Reduced motion is respected | Skeletons used generic pulse and loading markup did not share a character-grid owner | Replaced the CSS imitation with the real AsciiSkeleton adapter; dense placeholders are static, OS preference is library-owned, Floq preference is adapter-owned |
 | Home composer is the primary action | The textarea had only a placeholder as its name and no quick starting paths | Added an explicit screen-reader label and prompt starters that fill/focus the existing textarea |
 | Bootstrap should communicate loading while preserving shape | App bootstrap displayed a lone spinner | Added a compact geometry-preserving skeleton layout |
@@ -29,8 +29,8 @@
 ## Corrective visual pass
 
 - Rebuilt Home as a left-aligned workspace with a labeled task composer, explicit Start agent action, real project rows, and prompt starters.
-- Added the actual Glisse Glass primitive behind a shared GlassSurface owner. Warm peach/silver light materials and smoked dark materials use the Flowless orange accent.
-- Added an explicit device Material setting: Glass (default), Follow system, and Solid. Windows reduced-transparency settings had been hiding the requested glass; Follow system preserves that OS behavior while Glass enables the requested appearance.
+- Added a shared FloqSurface owner for local CSS surfaces. Warm peach/silver light materials and smoked dark materials use the Flowless orange accent.
+- Earlier builds used Glass and Follow system preferences. The current device Material setting uses native Mica, Acrylic, or vibrancy where supported, with Solid and OS reduced-transparency fallbacks.
 - Replaced Sonner defaults with custom frosted toast layout, semantic icon wells, readable messages, and accessible actions.
 - Replaced Tasks loading slabs with fixed task-card geometry and actual ascii-reveal placeholders. Bootstrap now reserves the revised Home layout.
 - Added feature-detected native workspace view transitions for Vite/Tauri, respecting reduced motion and keeping live terminal/canvas navigation direct.

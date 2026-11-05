@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { IconLayoutSidebar } from "@tabler/icons-react"
-import { GlassSurface } from "@/components/ui/glass-surface"
+import { FloqSurface } from "@/components/ui/floq-surface"
 import { SidebarResizeHandle } from "@/components/ui/sidebar-resize-handle"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
@@ -253,13 +253,13 @@ function Sidebar({
         {...props}
       >
         <div className="sidebar-dust-backdrop" aria-hidden="true" />
-        <GlassSurface
+        <FloqSurface
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className="flex size-full flex-col overflow-hidden rounded-(--shell-radius) group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-lg group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"
         >
           {children}
-        </GlassSurface>
+        </FloqSurface>
         {collapsible === "offcanvas" && <SidebarResizeHandle onHide={hideSidebar} />}
       </div>
     </div>

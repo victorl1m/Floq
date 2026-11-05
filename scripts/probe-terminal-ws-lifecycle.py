@@ -162,7 +162,7 @@ def main():
                 return Reflect.construct(target, [url.toString(), ...args.slice(1)], target);
               }});
             """.replace("__PORT__", str(server.port)))
-            context.add_init_script("localStorage.setItem('theme','dark'); localStorage.setItem('floq.material','glass'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
+            context.add_init_script("localStorage.setItem('theme','dark'); localStorage.setItem('floq.material','mica'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
             page = context.new_page()
             page.route("**/*", fixture.handle)
             page.goto(args.url, wait_until="domcontentloaded", timeout=15000)

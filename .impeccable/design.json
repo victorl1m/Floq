@@ -109,16 +109,16 @@
       "kind": "button",
       "refersTo": "button-primary",
       "description": "The orange action that submits a primary task, such as signing in or starting an agent.",
-      "html": "<button class=\"floq-button lg-button\">Start agent</button>",
+      "html": "<button class=\"floq-button \">Start agent</button>",
       "css": ".floq-button { border-radius: 12px; min-height: 36px; padding: 0 12px; background: #f97316; color: #211007; } .floq-button:focus-visible { outline: 2px solid #fb923c; outline-offset: 2px; }"
     },
     {
       "name": "Sidebar search surface",
       "kind": "nav",
       "refersTo": "sidebar-search",
-      "description": "A compact Glisse surface around the workspace search action.",
-      "html": "<div class=\"sidebar-search-glass floq-glass\"><button>Search</button></div>",
-      "css": ".sidebar-search-glass { border-radius: 10px; --lg-blur: 5px; --lg-glass-bend: .22; --lg-glass-dispersion: .08; }"
+      "description": "A compact translucent CSS surface around the workspace search action.",
+      "html": "<div class=\"sidebar-search-glass \"><button>Search</button></div>",
+      "css": ".sidebar-search-glass { border-radius: 10px; backdrop-filter: blur(5px); }"
     },
     {
       "name": "Dialog surface",
@@ -139,26 +139,26 @@
   ],
   "narrative": {
     "northStar": "A focused workspace for running and directing coding agents.",
-    "overview": "Floq keeps agent sessions, projects, tasks, and terminal work in one focused desktop workspace. Its visual system favors clear hierarchy, stable compact navigation, and rounded functional surfaces. Dark mode is OLED black with neutral Apple charcoal; the light mode uses cool pearl and ink. Flowless orange marks primary actions and keyboard focus.\n\nReal Glisse refraction stays on a few small controls. Broad areas use lightweight static translucency and highlights to keep motion responsive. Dense data, terminal output, and code remain crisp and opaque.",
+    "overview": "Floq keeps agent sessions, projects, tasks, and terminal work in one focused desktop workspace. Its visual system favors clear hierarchy, stable compact navigation, and rounded functional surfaces. Dark mode is OLED black with neutral Apple charcoal; the light mode uses cool pearl and ink. Flowless orange marks primary actions and keyboard focus.\n\nNative Mica, Acrylic, or vibrancy supplies the desktop backdrop. Floq-owned CSS surfaces add restrained translucency and bounded blur where needed; dense data, terminal output, and code remain crisp and opaque.",
     "keyCharacteristics": [
       "OLED black and neutral charcoal in dark mode; cool pearl and ink in light mode.",
       "Orange is reserved for primary actions and useful focus emphasis.",
       "Rounded workspaces, dialogs, fields, and compact navigation rows.",
-      "Glisse optics on bounded controls; static translucent fills on broad planes."
+      "Native desktop material behind bounded, translucent Floq surfaces."
     ],
     "rules": [
       { "name": "One Selection Signal", "body": "Active navigation uses one neutral capsule; no orange rail or stacked outline.", "section": "colors" },
-      { "name": "Compact Glisse", "body": "Keep pixel-map refraction on compact controls; broad shells use static translucent surfaces.", "section": "elevation" },
+      { "name": "Native Material", "body": "Use native desktop material behind bounded translucent controls; broad shells use static translucent surfaces.", "section": "elevation" },
       { "name": "Content Stays Readable", "body": "Keep terminal output and code opaque; avoid blur behind dense content.", "section": "elevation" }
     ],
     "dos": [
       "Do use Geist Variable and Geist Mono for interface and terminal/data text.",
       "Do preserve the compact project tree geometry and reserved utility-action slots.",
-      "Do keep a visible keyboard focus ring and respect Solid/System reduced-transparency modes."
+      "Do keep a visible keyboard focus ring and respect Solid and OS reduced-transparency fallbacks."
     ],
     "donts": [
       "Don't add colored rails to selected navigation rows.",
-      "Don't put full-window Glisse refraction maps or blur on terminal content.",
+      "Don't put broad blur layers behind terminal content.",
       "Don't add ambient animation behind working surfaces."
     ]
   }

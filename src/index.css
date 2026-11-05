@@ -1489,8 +1489,10 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   --shell-frame: rgb(255 255 255 / 0.6);
   --shell-border: rgb(28 38 54 / 0.09);
   --shell-dust: 0;
-  --native-canvas-pane: rgb(244 245 248 / 0.58);
-  --native-right-pane: rgb(245 246 249 / 0.56);
+  --native-canvas-pane: rgb(244 245 248 / 0.38);
+  --native-right-pane: rgb(245 246 249 / 0.42);
+  --native-canvas-control: rgb(255 255 255 / 0.48);
+  --native-canvas-control-hover: rgb(255 255 255 / 0.60);
 }
 :root[data-native-material].dark {
   --shell-window: rgb(14 14 16 / 0.36);
@@ -1498,8 +1500,10 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   --shell-pane: rgb(36 36 40 / 0.38);
   --shell-frame: rgb(12 12 14 / 0.58);
   --shell-border: rgb(255 255 255 / 0.07);
-  --native-canvas-pane: rgb(10 10 12 / 0.68);
-  --native-right-pane: rgb(22 22 24 / 0.68);
+  --native-canvas-pane: rgb(10 10 12 / 0.44);
+  --native-right-pane: rgb(22 22 24 / 0.48);
+  --native-canvas-control: rgb(38 38 40 / 0.58);
+  --native-canvas-control-hover: rgb(48 48 50 / 0.70);
 }
 /* Acrylic already carries the shell's own tint (set_native_material passes a theme colour), so keep ours lighter. */
 :root[data-native-material="acrylic"] {
@@ -1531,10 +1535,14 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   :root[data-native-material] {
     --native-canvas-pane: #f4f5f8;
     --native-right-pane: #f5f6f9;
+    --native-canvas-control: #fff;
+    --native-canvas-control-hover: #f4f5f8;
   }
   :root[data-native-material].dark {
     --native-canvas-pane: #000;
     --native-right-pane: #1c1c1e;
+    --native-canvas-control: #1c1c1e;
+    --native-canvas-control-hover: #2c2c2e;
   }
 }
 @media (forced-colors: active) {
@@ -1560,19 +1568,36 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   background-color: var(--shell-pane);
   background-image: var(--shell-pane-image);
 }
-/* Shell: workspace frame (home, tasks, skills, secrets sit on it; canvas and terminals paint their own opaque bg) */
+/* Shell: workspace frame. The canvas owns its own tinted pane and must not stack another opaque frame over Mica. */
 :root[data-native-material] .workspace-surface {
   border-color: var(--shell-border);
   background-color: var(--shell-frame);
   background-image: none;
 }
+:root[data-native-material] .workspace-surface[data-workspace-view="canvas"] { background-color: transparent; }
 :root[data-native-material] .auth-screen { background-color: var(--shell-frame); background-image: none; }
 
 /* Content: always opaque over the native backdrop. */
-:root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface:not([data-slot="sidebar-inner"]), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) {
+:root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface:not([data-slot="sidebar-inner"]):not(.sidebar-search), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) {
   background-color: var(--card);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+/* Sidebar search is a navigation control: let its quiet tint pick up the native backdrop. */
+:root[data-native-material] .sidebar-search {
+  border-color: var(--shell-border);
+  background-color: rgb(255 255 255 / 0.24);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+:root[data-native-material].dark .sidebar-search {
+  background-color: rgb(255 255 255 / 0.055);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.045);
+}
+:root[data-native-material] .sidebar-search:has(button:hover) {
+  background-color: rgb(255 255 255 / 0.34);
+}
+:root[data-native-material].dark .sidebar-search:has(button:hover) {
+  background-color: rgb(255 255 255 / 0.09);
 }
 :root[data-native-material] .workspace-frame :is(input, textarea, [data-slot="select-trigger"]) { background-color: var(--card); }
 :root[data-native-material] .canvas-chrome {
@@ -1580,14 +1605,26 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   --xy-background-color: var(--native-canvas-pane);
   background-color: var(--native-canvas-pane);
 }
+:root[data-native-material] .canvas-chrome :is(.canvas-topbar, input, textarea, select, [data-slot="select-trigger"]) {
+  background-color: var(--native-canvas-control);
+  background-image: none;
+}
+:root[data-native-material] .canvas-chrome .canvas-topbar:hover { background-color: var(--native-canvas-control-hover); }
 :root[data-native-material] .floq-right-sidebar { background-color: var(--native-right-pane); }
 :root[data-native-material] :is(.terminal-surface, .terminal-dialog-body) { background-color: var(--terminal-bg); }
 @media (forced-colors: active) {
-  :root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-right-sidebar, .floq-surface:not([data-slot="sidebar-inner"]), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) { background: Canvas; }
+  :root[data-native-material] :is(.material-content, .glass-panel, .glass-key-surface, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-right-sidebar, .floq-surface:not([data-slot="sidebar-inner"]):not(.sidebar-search), .floq-frosted-menu, .floq-frosted-dialog, .canvas-agent-card-material, .workspace-frame .glass-surface) { background: Canvas; }
+  :root[data-native-material] .sidebar-search { border-color: CanvasText; background: Canvas; box-shadow: none; }
+  :root[data-native-material] .workspace-surface[data-workspace-view="canvas"] { background: Canvas; }
   :root[data-native-material] .canvas-chrome {
     --canvas-bg: Canvas;
     --xy-background-color: Canvas;
+    --native-canvas-control: Canvas;
+    --native-canvas-control-hover: Canvas;
     background: Canvas;
   }
+}
+@media (prefers-reduced-transparency: reduce) and (forced-colors: none) {
+  :root[data-native-material] .sidebar-search { background: var(--card); box-shadow: var(--shadow-elev-2), inset 0 1px 0 var(--glass-highlight); }
 }
 /* === end native window material === */

@@ -89,7 +89,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1440, "height": 900}, reduced_motion="reduce")
-        context.add_init_script(INIT + "localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
+        context.add_init_script(INIT + "localStorage.setItem('theme','" + THEME + "');localStorage.setItem('floq.material','mica');localStorage.setItem('floq.connection',JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIX.USER) + "}));")
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fixture = Fixture(); page.route("**/*", fixture.handle)
         page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)

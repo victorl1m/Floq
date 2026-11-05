@@ -22,7 +22,7 @@ class F(CANVAS.CanvasFixture):
 
 def run(theme,fx,shot,p):
  b=p.chromium.launch(headless=True); c=b.new_context(viewport={"width":1440,"height":960})
- c.add_init_script(f"localStorage.setItem('theme','{theme}');localStorage.setItem('floq.material','glass');localStorage.setItem('floq.connection',JSON.stringify({{baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:{json.dumps(FIX.USER)}}}));")
+ c.add_init_script(f"localStorage.setItem('theme','{theme}');localStorage.setItem('floq.material','mica');localStorage.setItem('floq.connection',JSON.stringify({{baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:{json.dumps(FIX.USER)}}}));")
  pg=c.new_page(); errs=[]; pg.on("pageerror",lambda e:errs.append(str(e))); pg.route("**/*",fx.handle)
  pg.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"),wait_until="domcontentloaded"); pg.get_by_role("heading",name="Start a new task").wait_for(timeout=10000)
  pg.get_by_role("button",name="AGI Paulo - SARAH",exact=True).click(); pg.locator('.react-flow__node[data-id="agi-agent-2"]').wait_for(timeout=10000)

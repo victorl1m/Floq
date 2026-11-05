@@ -13,7 +13,7 @@ SPEC.loader.exec_module(FIXTURES)
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(viewport={"width": 1440, "height": 960})
-    context.add_init_script("localStorage.setItem('theme','dark'); localStorage.setItem('floq.material','glass'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
+    context.add_init_script("localStorage.setItem('theme','dark'); localStorage.setItem('floq.material','mica'); localStorage.setItem('floq.connection', JSON.stringify({baseUrl:'http://synthetic-runtime.invalid',token:'synthetic-token',user:" + json.dumps(FIXTURES.USER) + "}));")
     page = context.new_page()
     page.route("**/*", FIXTURES.Fixture().handle)
     page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000)

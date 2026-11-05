@@ -7,7 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/agents/provider";
 import SessionTerminal, { STATE_DOT } from "@/components/agents/session-terminal";
-import { GlassSurface } from "@/components/ui/glass-surface";
+import { FloqSurface } from "@/components/ui/floq-surface";
 import { cn } from "cn";
 import type { SessionSummary } from "@/lib/runtime/types";
 
@@ -45,7 +45,7 @@ export default function TerminalDialog({ session, waking, onClose, onFullView, o
       >
         {session && (
           <>
-            <GlassSurface className="terminal-dialog-toolbar flex h-12 shrink-0 items-center gap-2 rounded-t-[inherit] rounded-b-none border-b border-border/70 px-3">
+            <FloqSurface className="terminal-dialog-toolbar flex h-12 shrink-0 items-center gap-2 rounded-t-[inherit] rounded-b-none border-b border-border/70 px-3">
               <ProviderIcon provider={session.provider} className="size-4" />
               <DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium leading-none" title={session.title}>{session.title}</DialogTitle>
               <DialogDescription className="sr-only">{PROVIDER_LABEL[session.provider]} terminal</DialogDescription>
@@ -63,7 +63,7 @@ export default function TerminalDialog({ session, waking, onClose, onFullView, o
                 <Button type="button" variant="ghost" size="icon-sm" aria-label="Open in full view" title="Open in full view" onClick={() => onFullView(session)}><IconArrowsMaximize size={16} /></Button>
                 <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" title="Close (Esc)" onClick={onClose}><IconX size={16} /></Button>
               </div>
-            </GlassSurface>
+            </FloqSurface>
             <div className="terminal-dialog-body relative min-h-0 flex-1 overflow-hidden">
               <SessionTerminal key={session.id} sessionId={session.id} active titlebarActions={false} titlebarTitle={false} />
             </div>

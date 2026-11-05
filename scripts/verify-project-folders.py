@@ -16,7 +16,7 @@ FIX = load("verify_ui", "verify-ui.py")
 CANVAS = load("verify_canvas", "verify-final-canvas.py")
 OUT = ROOT / "docs" / "redesign"; OUT.mkdir(parents=True, exist_ok=True)
 THEME = sys.argv[1] if len(sys.argv) > 1 else "dark"
-MAT = sys.argv[2] if len(sys.argv) > 2 else "glass"
+MAT = sys.argv[2] if len(sys.argv) > 2 else "mica"
 
 STATE_JS = """()=>[...document.querySelectorAll('#app-navigation-sidebar [data-dnd-kind]')].map(e=>{
   const label=e.querySelector('[data-slot=sidebar-menu-button] span:last-of-type, input')?.textContent||e.querySelector('input')?.value||'';

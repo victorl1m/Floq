@@ -1,5 +1,5 @@
 """Button state matrix: idle/hover/pressed per visible button across scenes x (light, dark, solid) with the OS scheme forced
-dark (the Glisse prefers-color-scheme leak case). Needs vite/preview on :1421.
+dark. Needs vite/preview on :1421.
 Usage: python scripts/probe-button-states.py [tag]  -> docs/redesign/button-states/{tag}-report.json + screenshots."""
 import os
 import importlib.util, json, sys
@@ -30,7 +30,7 @@ JS = r"""(sel)=>{
  return {bg:bg.map(Math.round),lum:+L2.toFixed(3),contrast:+contrast.toFixed(2),cursor:s.cursor,bf:s.backdropFilter,w:Math.round(r.width),h:Math.round(r.height),ring:(s.boxShadow!=='none'?s.boxShadow.slice(0,90):'')+(s.outlineStyle!=='none'&&parseFloat(s.outlineWidth)>0?' outline '+s.outlineWidth:''),radius:s.borderRadius,dis:!!(e.disabled||e.getAttribute('aria-disabled')==='true')}}"""
 MARK = r"""()=>{let i=0;const out=[];for(const e of document.querySelectorAll('button,[role=button],[role=tab],[role=menuitem],[role=radio],[role=switch],[role=checkbox],[role=option],[role=combobox],[cmdk-item],[role=menuitemradio],[role=menuitemcheckbox]')){const r=e.getBoundingClientRect();const s=getComputedStyle(e);
  if(r.width<8||r.height<8||s.visibility==='hidden'||s.display==='none'||e.closest('[aria-hidden=true],[inert]'))continue;if(r.bottom<0||r.top>innerHeight||r.right<0||r.left>innerWidth)continue;
- e.setAttribute('data-probe-id',String(i));out.push({id:i,name:(e.getAttribute('aria-label')||e.textContent||'').trim().slice(0,28),cls:(e.dataset.slot||'')+'/'+(e.dataset.variant||e.dataset.floqVariant||'')+'/'+(e.dataset.size||'')+(e.classList.contains('lg-button')?'/glisse':'')});i++}return out}"""
+ e.setAttribute('data-probe-id',String(i));out.push({id:i,name:(e.getAttribute('aria-label')||e.textContent||'').trim().slice(0,28),cls:(e.dataset.slot||'')+'/'+(e.dataset.variant||e.dataset.floqVariant||'')+'/'+(e.dataset.size||'')});i++}return out}"""
 
 
 def scene_open(pg, scene):
@@ -60,9 +60,7 @@ with sync_playwright() as p:
         for scene in SCENES:
             ctx = b.new_context(viewport={"width": 1440, "height": 900}, color_scheme="dark")
             th = "dark" if mode == "dark" else "light"
-            ctx.add_init_script(f"localStorage.setItem('theme','{th}');localStorage.setItem('floq.material','{'solid' if mode == 'solid' else 'glass'}');" + CONN)
-            if tag == "before":  # emulate the old provider: no data-theme, so Glisse falls back to prefers-color-scheme
-                ctx.add_init_script("new MutationObserver(()=>document.documentElement.removeAttribute('data-theme')).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']})")
+            ctx.add_init_script(f"localStorage.setItem('theme','{th}');localStorage.setItem('floq.material','{'solid' if mode == 'solid' else 'mica'}');" + CONN)
             pg = ctx.new_page(); fx = F.Fixture()
 
             def h(route):

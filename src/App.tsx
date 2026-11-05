@@ -53,7 +53,8 @@ function App() {
   return (
     <TooltipProvider>
       {user && <AppSidebar />}
-      <main className="workspace-frame workspace-surface workspace-view relative min-w-0 flex-1 overflow-hidden">
+      <main data-workspace-view={view}
+        className="workspace-frame workspace-surface workspace-view relative min-w-0 flex-1 overflow-hidden">
         {!ready ? (
           <div className="absolute inset-0 overflow-y-auto px-5 py-8 sm:px-10 lg:px-14 lg:py-12" role="status" aria-label="Loading Floq workspace" aria-busy="true">
             <div className="mx-auto flex w-full max-w-5xl flex-col gap-8">
