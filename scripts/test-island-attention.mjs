@@ -16,3 +16,10 @@ test('answers need a valid selection or direction and obey single select', () =>
   assert.equal(validAnswers(questions, [{questionId:'q', optionIds:['a','b'], text:''}]), false);
   assert.equal(validAnswers(questions, [{questionId:'q', optionIds:[], text:'direction'}]), true);
 });
+
+test('snapshot content comparison ignores revision but detects changes', async () => {
+  const { sameSnapshotContent } = await import('../src/lib/island-contract.ts');
+  const snapshot = { epoch:'a', revision:1, connected:true, items:[], busy:[] };
+  assert.equal(sameSnapshotContent(snapshot, {...snapshot, revision:2}), true);
+  assert.equal(sameSnapshotContent(snapshot, {...snapshot, busy:['a']}), false);
+});

@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useRuntime } from '@/lib/runtime/store';
 import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/approvals';
 import { useAttentionState } from '@/lib/attention';
-import { orderAttention, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
@@ -25,7 +25,8 @@ export function useIslandBridge() {
     ...approvals.filter(a => a.state === 'pending').map(a => ({kind:'approval' as const, id:a.approval.id, createdAt:a.approval.createdAt, approval:a.approval})),
     ...decisions.map(d => ({kind:'decision' as const, id:d.id, createdAt:d.createdAt, decision:d})),
   ]);
-  latest.current = { epoch: epoch.current, revision: ++revision.current, connected: !!client && connected && !clientChanged, items: client && !clientChanged ? queue : [], busy, error };
+  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected && !clientChanged, items: client && !clientChanged ? queue : [], busy, error };
+  const contentKey = JSON.stringify(candidate, (key, value) => key === 'revision' ? undefined : value);
   const publish = () => invoke('island_publish', { snapshot: latest.current });
   const publishRef = useRef(publish); publishRef.current = publish;
   const intentRef = useRef<(intent: IslandIntent) => void>(() => {});
@@ -57,6 +58,11 @@ export function useIslandBridge() {
     void listen<IslandIntent>('island:intent', event => intentRef.current(event.payload)).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(() => setReady(false));
     return () => { disposed = true; unlisten?.(); setReady(false); };
   }, []);
-  useEffect(() => { if (ready) void publishRef.current().catch(() => setReady(false)); }, [ready, approvals, decisions, connected, client, busy, error]);
+  useEffect(() => {
+    if (!latest.current || !sameSnapshotContent(latest.current, candidate)) {
+      latest.current = { ...candidate, revision: ++revision.current };
+      if (ready) void publishRef.current().catch(() => setReady(false));
+    }
+  }, [contentKey, ready]);
   return ready && enabled;
 }

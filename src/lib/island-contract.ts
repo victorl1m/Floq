@@ -16,3 +16,7 @@ export function validAnswers(questions: {id:string; options:{id:string}[]; multi
     return !!q && (q.multiSelect || a.optionIds.length <= 1) && new Set(a.optionIds).size === a.optionIds.length && a.optionIds.every(id => q.options.some(o => o.id === id)) && (q.allowText || !a.text.trim());
   }) && new Set(answers.map(a => a.questionId)).size === answers.length && answers.reduce((n,a) => n+a.text.length,0) <= 8000;
 }
+
+export function sameSnapshotContent(a: IslandSnapshot, b: IslandSnapshot): boolean {
+  return JSON.stringify({ ...a, revision: 0 }) === JSON.stringify({ ...b, revision: 0 });
+}
