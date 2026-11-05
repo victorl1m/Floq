@@ -50,6 +50,8 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
     const session = (state.nodeLookup.get(target)?.data as { session?: { state: string; activity?: string | null } } | undefined)?.session;
     return session?.state === "running" && session.activity === "working";
   });
+  // Read here, not from `link` below: useMemo runs during render, before `link` is declared (TDZ crash).
+  const recruit = data?.link.kind === "recruit";
   const geometry = useMemo(() => {
     if (!from || !to) return null;
     const others = sig.split("|").filter(Boolean).map((entry) => {
@@ -60,7 +62,7 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
     const obstacles = others.filter((item) => item.id !== source && item.id !== target).map((item) => item.rect);
     const [index, count] = fanKey.split("/").map(Number);
     const fan = (index - (count - 1) / 2) * 16;
-    const curve = route(from, to, obstacles, fan, link.kind === "recruit");
+    const curve = route(from, to, obstacles, fan, recruit);
     // Label: first sample along the wire that is not painted over any node; null = hide it.
     let label: Pt | null = null;
     for (const t of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]) {
@@ -68,7 +70,7 @@ export default memo(function WireEdgeView({ id, source, target, data, selected, 
       if (!others.some((item) => inside(point, item.rect, 12))) { label = point; break; }
     }
     return { curve, label, mid: at(curve, 0.5) };
-  }, [from, to, sig, fanKey, source, target]);
+  }, [from, to, sig, fanKey, source, target, recruit]);
   if (!data || !geometry) return null;
   const link = data.link;
   const path = pathOf(geometry.curve);
