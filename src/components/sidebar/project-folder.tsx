@@ -77,11 +77,10 @@ export interface ProjectDndProps {
   children: ReactNode;
 }
 
-function edgeFor(active: DragKey, over: ReturnType<typeof parseId>, fraction: number, expanded: boolean): Hint["edge"] | null {
+function edgeFor(_active: DragKey, over: ReturnType<typeof parseId>, fraction: number, expanded: boolean): Hint["edge"] | null {
   if (over.type === "root-end") return "end";
-  if (over.type === "empty-folder") return active.kind === "project" ? "empty" : null;
+  if (over.type === "empty-folder") return "empty";
   if (over.type === "project") return fraction < 0.5 ? "before" : "after";
-  if (active.kind === "folder") return fraction < 0.5 ? "before" : "after";
   if (fraction < 0.28) return "before";
   if (fraction > 0.72 && !expanded) return "after";
   return "into";
@@ -145,7 +144,6 @@ export function ProjectDnd({ layout, onLayout, isFolderExpanded, onExpandFolder,
     const y = typeof pointer.clientY === "number" ? pointer.clientY + delta.y : rect.top + rect.height / 2;
     const fraction = (y - over.rect.top) / Math.max(over.rect.height, 1);
     const activeKey = keyOf(active.id);
-    if (parsed.type === "project" && activeKey.kind === "folder" && !layout.root.some((entry) => entry.kind === "project" && entry.id === parsed.id)) return null;
     const edge = edgeFor(activeKey, parsed, Math.min(Math.max(fraction, 0), 1), parsed.type === "folder" ? isFolderExpanded(parsed.id) : false);
     if (!edge) return null;
     const hint = { overId: String(over.id), edge };

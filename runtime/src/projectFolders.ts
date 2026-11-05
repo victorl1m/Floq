@@ -24,6 +24,8 @@ export interface FolderDoc {
   membership: Record<string, string[]>;
   /** folder id -> expanded (default true when absent). */
   expanded: Record<string, boolean>;
+  /** Ordered children for nested layouts; omitted by legacy clients. */
+  children?: Record<string, Array<{ kind: "project" | "folder"; id: string }>>;
 }
 
 export interface FolderState { version: number; doc: FolderDoc | null; updatedAt: string | null }
@@ -77,7 +79,39 @@ export function validateFolderDoc(value: unknown): FolderDoc {
       expanded[folderId] = open;
     }
   }
-  return { folders, root, membership, expanded };
+  if (value.children === undefined) return { folders, root, membership, expanded };
+  if (!isRecord(value.children)) throw badRequest("children must be an object", "invalid_project_folders");
+  const children: NonNullable<FolderDoc["children"]> = {};
+  for (const [parent, raw] of Object.entries(value.children)) {
+    if (!folderIds.has(parent) || !Array.isArray(raw) || raw.length > MAX_FOLDER_MEMBERS) throw badRequest("Invalid folder children", "invalid_project_folders");
+    children[parent] = raw.map((entry) => {
+      if (!isRecord(entry) || (entry.kind !== "folder" && entry.kind !== "project")) throw badRequest("Invalid folder child", "invalid_project_folders");
+      const childId = id(entry.id, "Entry id");
+      if (entry.kind === "folder" && !folderIds.has(childId)) throw badRequest("Unknown child folder", "invalid_project_folders");
+      return { kind: entry.kind, id: childId };
+    });
+  }
+  const visitedFolders = new Set<string>();
+  const visitedProjects = new Set<string>();
+  const visit = (entries: FolderDoc["root"], depth: number): void => {
+    for (const entry of entries) {
+      if (entry.kind === "project") {
+        if (visitedProjects.has(entry.id)) throw badRequest("Duplicate project", "invalid_project_folders");
+        visitedProjects.add(entry.id);
+      } else {
+        if (depth > 8 || visitedFolders.has(entry.id)) throw badRequest("Invalid folder hierarchy", "invalid_project_folders");
+        visitedFolders.add(entry.id);
+        visit(children[entry.id] ?? [], depth + 1);
+      }
+    }
+  };
+  visit(root, 1);
+  if (visitedFolders.size !== folders.length) throw badRequest("Unreachable folder", "invalid_project_folders");
+  for (const folder of folders) {
+    const projects = (children[folder.id] ?? []).filter((entry) => entry.kind === "project").map((entry) => entry.id);
+    if (JSON.stringify(projects) !== JSON.stringify(membership[folder.id] ?? [])) throw badRequest("Inconsistent folder membership", "invalid_project_folders");
+  }
+  return { folders, root, membership, expanded, children };
 }
 
 function rowToState(row: { version: number; doc: unknown; updated_at: Date | string } | undefined): FolderState {
@@ -92,9 +126,10 @@ export async function pruneProjectFromFolders(db: Pick<pg.Pool, "query">, userId
   const doc = current.doc;
   const root = doc.root.filter((entry) => !(entry.kind === "project" && entry.id === projectId));
   const membership = Object.fromEntries(Object.entries(doc.membership ?? {}).map(([folderId, list]) => [folderId, list.filter((item) => item !== projectId)]));
-  const changed = root.length !== doc.root.length || Object.entries(doc.membership ?? {}).some(([folderId, list]) => list.length !== membership[folderId].length);
+  const children = doc.children && Object.fromEntries(Object.entries(doc.children).map(([folderId, list]) => [folderId, list.filter((entry) => entry.kind !== "project" || entry.id !== projectId)]));
+  const changed = root.length !== doc.root.length || Object.entries(doc.membership ?? {}).some(([folderId, list]) => list.length !== membership[folderId].length) || Object.entries(doc.children ?? {}).some(([folderId, list]) => list.length !== children![folderId].length);
   if (!changed) return;
-  await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1", [userId, JSON.stringify({ ...doc, root, membership })]);
+  await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1", [userId, JSON.stringify({ ...doc, root, membership, ...(children ? { children } : {}) })]);
 }
 
 export class ProjectFolders {

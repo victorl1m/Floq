@@ -16,6 +16,7 @@ export interface FoldersDoc {
   membership: Record<string, string[]>;
   /** folder id -> expanded (absent = expanded) */
   expanded: Record<string, boolean>;
+  children?: Record<string, Array<{ kind: "project" | "folder"; id: string }>>;
 }
 export interface FoldersState { version: number; doc: FoldersDoc | null }
 
@@ -36,6 +37,33 @@ export function normalizeDoc(doc: FoldersDoc): FoldersDoc {
     if (!folder || typeof folder.id !== "string" || !ID.test(folder.id) || !name || seenFolders.has(folder.id) || folders.length >= MAX_FOLDERS) continue;
     seenFolders.add(folder.id);
     folders.push({ id: folder.id, name });
+  }
+  if (doc.children && typeof doc.children === "object") {
+    const seenFolders = new Set<string>();
+    const seenProjects = new Set<string>();
+    const children: NonNullable<FoldersDoc["children"]> = {};
+    const membership: Record<string, string[]> = {};
+    const walk = (entries: FoldersDoc["root"], depth: number): FoldersDoc["root"] => {
+      const result: FoldersDoc["root"] = [];
+      for (const entry of entries) {
+        if (!entry || typeof entry.id !== "string") continue;
+        if (entry.kind === "project" && ID.test(entry.id) && !seenProjects.has(entry.id)) {
+          seenProjects.add(entry.id); result.push({ kind: "project", id: entry.id });
+        } else if (entry.kind === "folder" && depth <= 8 && folders.some((folder) => folder.id === entry.id) && !seenFolders.has(entry.id)) {
+          seenFolders.add(entry.id); result.push({ kind: "folder", id: entry.id });
+          const raw = doc.children?.[entry.id];
+          children[entry.id] = walk(Array.isArray(raw) ? raw : (doc.membership?.[entry.id] ?? []).map((id) => ({ kind: "project" as const, id })), depth + 1);
+          const projects = children[entry.id].filter((child) => child.kind === "project").map((child) => child.id);
+          if (projects.length) membership[entry.id] = projects;
+        }
+      }
+      return result;
+    };
+    const root = walk(Array.isArray(doc.root) ? doc.root : [], 1);
+    for (const folder of folders) if (!seenFolders.has(folder.id)) root.push(...walk([{ kind: "folder", id: folder.id }], 1));
+    const expanded: Record<string, boolean> = {};
+    for (const folder of folders) if (typeof doc.expanded?.[folder.id] === "boolean") expanded[folder.id] = doc.expanded[folder.id];
+    return { folders, root, membership, expanded, children };
   }
   const seenProjects = new Set<string>();
   const seenRootFolders = new Set<string>();
@@ -68,12 +96,12 @@ function sortedRecord<T>(record: Record<string, T>): Record<string, T> {
 /** Stable JSON of the normalised document. Two docs with the same meaning have the same canon. */
 export function canon(doc: FoldersDoc | null): string {
   const n = normalizeDoc(doc ?? EMPTY_DOC);
-  return JSON.stringify({ folders: n.folders, root: n.root, membership: sortedRecord(n.membership), expanded: sortedRecord(n.expanded) });
+  return JSON.stringify({ folders: n.folders, root: n.root, membership: sortedRecord(n.membership), expanded: sortedRecord(n.expanded), ...(n.children ? { children: sortedRecord(n.children) } : {}) });
 }
 export const docsEqual = (a: FoldersDoc | null, b: FoldersDoc | null) => canon(a) === canon(b);
 export const isEmptyDoc = (doc: FoldersDoc | null) => !doc || (normalizeDoc(doc).folders.length === 0 && normalizeDoc(doc).root.length === 0);
 
-const layoutCanon = (doc: FoldersDoc) => { const n = normalizeDoc(doc); return JSON.stringify({ r: n.root, m: sortedRecord(n.membership) }); };
+const layoutCanon = (doc: FoldersDoc) => { const n = normalizeDoc(doc); return JSON.stringify({ r: n.root, m: sortedRecord(n.membership), c: n.children ? sortedRecord(n.children) : undefined }); };
 
 /**
  * Three-way merge of the last synced document (`base`), this device's current one (`local`) and the server's (`remote`).
@@ -100,9 +128,27 @@ export function mergeDocs(base: FoldersDoc | null, local: FoldersDoc, remote: Fo
 
   const localTouchedLayout = layoutCanon(l) !== layoutCanon(b);
   const layoutSource = localTouchedLayout ? l : r;
+  let root = layoutSource.root;
+  let children = layoutSource.children;
+  if (localTouchedLayout && r.children) {
+    children = Object.fromEntries(folders.map((folder) => [folder.id, (l.children?.[folder.id] ?? (l.membership[folder.id] ?? []).map((id) => ({ kind: "project" as const, id }))).slice()]));
+    root = [...l.root];
+    const baseEntries = new Set([...b.root, ...Object.values(b.children ?? {}).flat(), ...Object.values(b.membership).flat().map((id) => ({ kind: "project" as const, id }))].map((entry) => `${entry.kind}:${entry.id}`));
+    const localEntries = new Set([...root, ...Object.values(children).flat()].map((entry) => `${entry.kind}:${entry.id}`));
+    const addNew = (entries: FoldersDoc["root"], target: FoldersDoc["root"]) => {
+      for (const entry of entries) {
+        const key = `${entry.kind}:${entry.id}`;
+        if (!baseEntries.has(key) && !localEntries.has(key) && (entry.kind !== "folder" || present.has(entry.id))) {
+          target.push(entry); localEntries.add(key);
+        }
+        if (entry.kind === "folder" && present.has(entry.id)) addNew(r.children?.[entry.id] ?? [], children![entry.id]);
+      }
+    };
+    addNew(r.root, root);
+  }
   const expanded: Record<string, boolean> = { ...r.expanded };
   for (const [id, open] of Object.entries(l.expanded)) if (b.expanded[id] !== open) expanded[id] = open;
-  return normalizeDoc({ folders, root: layoutSource.root, membership: layoutSource.membership, expanded });
+  return normalizeDoc({ folders, root, membership: layoutSource.membership, expanded, children });
 }
 
 /* ---------- engine ---------- */

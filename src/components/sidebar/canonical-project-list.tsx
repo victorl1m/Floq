@@ -43,7 +43,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { RuntimeProject, SessionSummary } from "@/lib/runtime/types";
 import { cn } from "cn";
-import { addFolder, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
+import { addFolder, applyDrop, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
 import { DndButton, DndRow, EmptyFolderDrop, InlineRename, ProjectDnd, RootEndDrop, RowAction, useSavedLayout } from "@/components/sidebar/project-folder";
 import { Skeleton } from "@/components/ui/skeleton";
 import DeleteProjectDialog from "@/components/sidebar/delete-project-dialog";
@@ -157,10 +157,16 @@ export default function CanonicalProjectList() {
   const foldersById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
   const projectLabel = (project: RuntimeProject) => project.displayName?.trim() || project.name;
 
-  function createFolder(withProjectId?: string) {
+  function createFolder(withProjectId?: string, parentId?: string) {
     const id = crypto.randomUUID();
-    saveProjectFolders(scope, [...loadProjectFolders(scope), { id, name: "New folder" }]);
     let next = addFolder(layout, id);
+    if (parentId) {
+      const nested = applyDrop(next, { kind: "folder", id }, { type: "folder", id: parentId, edge: "into" });
+      if (nested === next) { toast.error("A folder can be nested at most 8 levels deep."); return; }
+      next = nested;
+      setFolderExpanded(parentId, true);
+    }
+    saveProjectFolders(scope, [...loadProjectFolders(scope), { id, name: "New folder" }]);
     if (withProjectId) next = moveProjectInto(next, withProjectId, id);
     saveLayout(scope, next);
     cacheFolderExpanded(scope, id, true);
@@ -179,7 +185,7 @@ export default function CanonicalProjectList() {
     saveLayout(scope, removeFolderFromLayout(layout, folder.id));
     toast(`Folder “${folder.name}” removed`, {
       icon: <IconTrash className="size-4" aria-hidden="true" />,
-      description: count ? `${count} ${count === 1 ? "project" : "projects"} moved to the root of the list. Undo restores the folder.` : "The folder was empty. Undo brings it back.",
+      description: count ? "Its contents moved to the folder's previous location. Undo restores the folder." : "Undo restores the folder and its contents.",
       action: { label: "Undo", onClick: () => {
         const current = loadProjectFolders(scope);
         if (!current.some((item) => item.id === folder.id)) saveProjectFolders(scope, [...current, folder]);
@@ -354,6 +360,7 @@ export default function CanonicalProjectList() {
   function renderFolder(folder: ProjectFolder) {
     const expanded = folderExpanded[folder.id] ?? true;
     const members = (layout.folders[folder.id] ?? []).flatMap((id) => projectsById.get(id) ?? []);
+    const entries = layout.children?.[folder.id] ?? members.map((project) => ({ kind: "project" as const, id: project.id }));
     const menu = {
       rename: () => setRenamingFolder(folder.id),
       toggle: () => setFolderExpanded(folder.id, !expanded),
@@ -370,7 +377,7 @@ export default function CanonicalProjectList() {
               </DndButton></SidebarMenuButton></CollapsibleTrigger>
               <span aria-hidden className="pointer-events-none absolute top-1/2 right-7 flex size-6 -translate-y-1/2 items-center justify-center text-[11px] tabular-nums text-muted-foreground transition-opacity md:group-hover/folder-row:opacity-0 md:group-focus-within/folder-row:opacity-0 md:group-has-aria-expanded/folder-row:opacity-0">{members.length}</span>
               <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
-                <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
+                <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</DropdownMenuItem><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
               </DropdownMenu>
               <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90" /></RowAction></CollapsibleTrigger>
             </>}
@@ -378,13 +385,13 @@ export default function CanonicalProjectList() {
           <ContextMenuContent className={CTX}>
             <ContextMenuItem onSelect={menu.rename}><IconPencil />Rename folder</ContextMenuItem>
             <ContextMenuItem onClick={menu.toggle}>{expanded ? <IconChevronsUp /> : <IconChevronsDown />}{expanded ? "Collapse" : "Expand"}</ContextMenuItem>
-            <ContextMenuItem onClick={() => createFolder()}><IconFolderPlus />New folder</ContextMenuItem>
+            <ContextMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder (keep projects)</ContextMenuItem>
           </ContextMenuContent></ContextMenu>
         <CollapsibleContent>
           <ul className="ml-3 flex min-w-0 flex-col border-l border-sidebar-border/60">
-            {members.length ? members.map(renderProject) : <li><EmptyFolderDrop folderId={folder.id}><span className="flex h-8 items-center px-2 text-xs text-muted-foreground">Drop projects here</span></EmptyFolderDrop></li>}
+            {entries.length ? entries.map((entry) => entry.kind === "project" ? (projectsById.get(entry.id) ? renderProject(projectsById.get(entry.id)!) : null) : (foldersById.get(entry.id) ? renderFolder(foldersById.get(entry.id)!) : null)) : <li><EmptyFolderDrop folderId={folder.id}><span className="flex h-8 items-center px-2 text-xs text-muted-foreground">Drop items here</span></EmptyFolderDrop></li>}
           </ul>
         </CollapsibleContent>
       </Collapsible>

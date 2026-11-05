@@ -224,3 +224,23 @@ test('different users never share state: each device engine only talks to its ow
   assert.equal(a.local.folders[0].name, 'Work');
   assert.equal(b.local.folders[0].name, 'Other user');
 });
+
+test('nested hierarchy survives normalization and a sync round trip', async () => {
+  const nested = doc({ folders: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], root: [{ kind: 'folder', id: 'a' }], membership: { b: [P(1)] }, children: { a: [{ kind: 'folder', id: 'b' }], b: [{ kind: 'project', id: P(1) }] } });
+  const srv = server();
+  const a = device(srv, { local: nested });
+  await a.sync.pull();
+  const b = device(srv);
+  await b.sync.pull();
+  assert.deepEqual(b.local.children, nested.children);
+  assert.deepEqual(b.local.root, nested.root);
+});
+
+test('concurrent layout edit preserves a remotely added nested subtree', () => {
+  const base = { folders: [{ id: 'a', name: 'A' }], root: [{ kind: 'folder', id: 'a' }], membership: {}, expanded: {}, children: { a: [] } };
+  const local = { ...base, root: [{ kind: 'project', id: P(1) }, ...base.root] };
+  const remote = { ...base, folders: [...base.folders, { id: 'b', name: 'B' }], membership: { b: [P(2)] }, children: { a: [{ kind: 'folder', id: 'b' }], b: [{ kind: 'project', id: P(2) }] } };
+  const merged = m.mergeDocs(base, local, remote);
+  assert.deepEqual(merged.children.a, [{ kind: 'folder', id: 'b' }]);
+  assert.deepEqual(merged.children.b, [{ kind: 'project', id: P(2) }]);
+});

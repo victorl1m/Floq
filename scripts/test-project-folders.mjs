@@ -51,15 +51,17 @@ test('project before/after root project and folder', () => {
   assert.equal(l.root.at(-2).id, 'f2');
 });
 
-test('folders reorder only at the root; self and invalid drops are no-ops', () => {
+test('folders can reorder inside folders while self, cycles, and invalid drops are no-ops', () => {
   const l = base();
   const r = m.applyDrop(l, { kind: 'folder', id: 'f2' }, { type: 'project', id: 'a', edge: 'before' });
   assert.equal(r.root[0].id, 'f2');
   assert.equal(m.applyDrop(l, { kind: 'folder', id: 'f1' }, { type: 'folder', id: 'f1', edge: 'before' }), l);
   assert.equal(m.applyDrop(l, { kind: 'project', id: 'a' }, { type: 'project', id: 'a', edge: 'after' }), l);
   const inner = m.moveProjectInto(l, 'a', 'f1');
-  assert.equal(m.applyDrop(inner, { kind: 'folder', id: 'f2' }, { type: 'project', id: 'a', edge: 'before' }), inner);
-  assert.equal(m.applyDrop(l, { kind: 'folder', id: 'f1' }, { type: 'folder', id: 'f2', edge: 'into' }), l);
+  const nested = m.applyDrop(inner, { kind: 'folder', id: 'f2' }, { type: 'project', id: 'a', edge: 'before' });
+  assert.deepEqual(nested.children.f1, [{ kind: 'folder', id: 'f2' }, { kind: 'project', id: 'a' }]);
+  const nestedFolder = m.applyDrop(l, { kind: 'folder', id: 'f1' }, { type: 'folder', id: 'f2', edge: 'into' });
+  assert.deepEqual(nestedFolder.children.f2, [{ kind: 'folder', id: 'f1' }]);
   assert.equal(m.moveProjectInto(l, 'a', 'missing'), l);
 });
 
@@ -83,4 +85,16 @@ test('persistence round trip, migration and corrupt data', () => {
   const messy = m.parseLayout('{"version":1,"root":[{"kind":"x","id":"a"},{"kind":"project","id":"b"},5],"folders":{"f":["z",3],"g":"no"}}');
   assert.equal(flat(messy), flat({ root: [{ kind: 'project', id: 'b' }], folders: { f: ['z'] } }));
   assert.equal(m.readLayoutRaw('other'), null);
+});
+
+test('nested folder moves preserve descendants, reject cycles, and promote children', () => {
+  let l = m.reconcileLayout(null, ['p'], ['a', 'b']);
+  l = m.applyDrop(l, { kind: 'folder', id: 'b' }, { type: 'folder', id: 'a', edge: 'into' });
+  l = m.moveProjectInto(l, 'p', 'b');
+  assert.deepEqual(l.children.a, [{ kind: 'folder', id: 'b' }]);
+  assert.deepEqual(l.children.b, [{ kind: 'project', id: 'p' }]);
+  assert.equal(m.applyDrop(l, { kind: 'folder', id: 'a' }, { type: 'folder', id: 'b', edge: 'into' }), l);
+  l = m.removeFolderFromLayout(l, 'a');
+  assert.deepEqual(l.root, [{ kind: 'folder', id: 'b' }]);
+  assert.deepEqual(l.children.b, [{ kind: 'project', id: 'p' }]);
 });
