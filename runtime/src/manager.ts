@@ -33,7 +33,10 @@ import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, read
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { buildRecruitSkillsBlock, storedRecruitSkills } from "./recruitSkills.js";
-import { activeManagedMarketplaces, reconcileUserMarketplaces } from "./claudeManagedPlugins.js";
+import { MANAGED_FILE, promoteUserPlugins } from "./claudeManagedPlugins.js";
+
+/** The image's Claude Code managed settings (native-subagent deny): the base of every user's own copy. */
+const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { composeSystemBlocks } from "./subagents.js";
 import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
@@ -1263,12 +1266,18 @@ export class SessionManager {
       const cred = await this.freshCredential(row.user_id, "claude");
       if (cred) this.writeClaude(handle, cred);
       this.enforceClaudeSettings(handle, profile);
-      // Operator-trusted plugins are managed: drop this user's own conflicting registration of the same marketplace.
-      try {
-        const removed = reconcileUserMarketplaces(this.shards.driver.hostPath(handle, "."), activeManagedMarketplaces());
-        if (removed.length) log.info("claude.managed_marketplace_reconciled", { sessionId: row.id, removed });
-      } catch (error) {
-        log.warn("claude.managed_marketplace_reconcile_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      // The user's enabled plugins become managed plugins in their own sandbox, so protected hooks (session.compact) reach them.
+      const managedDir = this.shards.driver.claudeManagedDir?.(handle) ?? null;
+      if (managedDir) {
+        try {
+          const base = JSON.parse(readFileSync(IMAGE_MANAGED_SETTINGS, "utf8")) as Record<string, unknown>;
+          const promoted = promoteUserPlugins({ home: this.shards.driver.hostPath(handle, "."), managedDir, base });
+          if (promoted.length) log.info("claude.user_plugins_managed", { sessionId: row.id, plugins: promoted.map((p) => p.id) });
+        } catch (error) {
+          // Without the image's base file there is nothing to extend: the sandbox falls back to the image's settings.
+          rmSync(join(managedDir, MANAGED_FILE), { force: true });
+          log.warn("claude.user_plugins_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+        }
       }
       if (profile.claudeAutoApprove) {
         const path = this.shards.driver.hostPath(handle, ".claude.json");

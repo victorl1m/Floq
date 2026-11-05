@@ -1,133 +1,72 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { cpSync, existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { log } from "./logger.js";
+import { SANDBOX_HOME } from "./shard.js";
 
 /**
- * Operator-trusted Claude Code plugins (FLOQ_CLAUDE_PLUGINS), installed for every user as MANAGED plugins.
+ * Claude Code plugins a user installs (`/plugin`, `claude plugin install`) get the same hooks as on a plain machine.
  *
  * Why: Floq ships Claude Code managed settings (/etc/claude-code/managed-settings.json, the native-subagent deny).
  * On a machine with managed settings, and for Team and Enterprise organizations, Claude Code seats its built-in
- * `cc-plugin-sec-default` module outermost. It keeps the organization's hooks, prompt content and policy out of reach
- * of plugins a person installs, so a user-installed plugin's `session.compact` hook (for example fast-jev-compaction)
- * is skipped: "cc-plugin-sec-default runs first and sent the event on past it".
+ * `cc-plugin-sec-default` module outermost and passes protected events (`session.compact`, prompt content, ...) on
+ * past every plugin a person installed: "fast-jev-compaction: its session.compact hook was skipped". Only a plugin
+ * that counts as the organization's own (a MANAGED plugin) runs hooks on those events.
  *
- * The documented control is managed `prependPlugins`: managed plugins listed there run first, in order, and the
- * security default sits only where the list puts it. Floq lists the operator's trusted plugins first and then
- * `sec-default@builtin`, so the security default still guards Floq's policy against every other plugin. The plugins
- * are also enabled (managed `enabledPlugins`) for every user of the runtime, not only the one who installed them.
+ * So at every Claude session start the runtime gives the user's sandbox its OWN managed settings (a root-owned folder
+ * bound read-only at /etc/claude-code): Floq's base policy, plus every plugin the user enabled, as managed plugins
+ * listed in `prependPlugins` ahead of `sec-default@builtin` (which keeps its seat right after them, for everything
+ * else). Claude Code only seats a managed plugin when it is read in place from a LOCAL directory marketplace, so the
+ * runtime keeps a root-owned snapshot of each such marketplace next to those settings (cloned from the source the user
+ * added it from, refreshed at most hourly) and points the user's own registration of that marketplace at it (a
+ * registration from another source would make Claude Code ignore the marketplace).
  *
- * Claude Code only seats a managed plugin's hooks module in the managed tier when the plugin is read in place from a
- * LOCAL directory marketplace (a cached copy of a remote one runs in the user tier, behind the security default). So
- * the runtime clones each trusted marketplace into a root-owned folder (CLAUDE_PLUGINS_DIR, read-only to agents),
- * refreshes it on every start, and declares it under managed `extraKnownMarketplaces` as `{source: "directory"}`.
- * Verified against Claude Code 2.1.318: the plugin loads "tier prepend" ahead of cc-plugin-sec-default and its
- * session.compact hook runs on /compact.
- *
- * Only the operator can set this (an environment variable of the runtime); agents cannot change managed settings.
+ * Nothing to configure: install, enable or disable a plugin the normal way; it applies from the next session start.
+ * Trade-off: any plugin the user (or one of their agents) enables now runs ahead of Floq's managed hooks, like on an
+ * unmanaged machine. Verified with Claude Code 2.1.318.
  */
 
 export const SEC_DEFAULT_ID = "sec-default@builtin";
-export const DEFAULT_MANAGED_SETTINGS_PATH = "/etc/claude-code/managed-settings.json";
-export const DEFAULT_MANAGED_SETTINGS_BASE = "/usr/local/share/floq/claude-managed-settings.base.json";
-export const CLAUDE_PLUGINS_DIR = "/usr/local/share/floq/claude-plugins";
+/** Where the user's managed folder appears inside the sandbox. */
+export const SANDBOX_MANAGED_DIR = "/etc/claude-code";
+export const MANAGED_FILE = "managed-settings.json";
+const REFRESH_MS = 60 * 60_000;
 
-export interface TrustedPlugin {
-  /** plugin@marketplace */
-  id: string;
-  marketplace: string;
-  /** Where the marketplace repository is cloned from. */
-  remote: { url: string; ref?: string };
-}
-
-/** What the managed settings declare for one trusted marketplace once it is cloned locally. */
-export interface LocalMarketplace { plugin: TrustedPlugin; path: string }
+export interface MarketplaceRemote { url: string; ref?: string }
+export interface PromotedPlugin { id: string; marketplace: string; /** marketplace folder as the agent sees it */ path: string }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const GITHUB = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
-const REF = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/;
+const REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/;
 
-/** Parses `plugin@marketplace=owner/repo[#ref]` (or `=https://host/repo.git[#ref]`), comma-separated. Throws on a malformed entry. */
-export function parseTrustedPlugins(raw: string | undefined): TrustedPlugin[] {
-  if (!raw || !raw.trim()) return [];
-  const out: TrustedPlugin[] = [];
-  const seen = new Set<string>();
-  for (const entry of raw.split(",").map((part) => part.trim()).filter(Boolean)) {
-    const eq = entry.indexOf("=");
-    const id = (eq < 0 ? entry : entry.slice(0, eq)).trim();
-    const where = eq < 0 ? "" : entry.slice(eq + 1).trim();
-    const [plugin, marketplace, extra] = id.split("@");
-    if (!plugin || !marketplace || extra !== undefined || !NAME.test(plugin) || !NAME.test(marketplace)) {
-      throw new Error(`FLOQ_CLAUDE_PLUGINS: "${entry}" must be plugin@marketplace=owner/repo`);
-    }
-    if (marketplace === "builtin") throw new Error(`FLOQ_CLAUDE_PLUGINS: "${id}" names a built-in plugin`);
-    const hash = where.indexOf("#");
-    const repo = hash < 0 ? where : where.slice(0, hash);
-    const ref = hash < 0 ? undefined : where.slice(hash + 1);
-    if (ref !== undefined && !REF.test(ref)) throw new Error(`FLOQ_CLAUDE_PLUGINS: "${entry}" has an invalid ref after "#"`);
-    let url: string;
-    if (GITHUB.test(repo)) url = "https://github.com/" + repo + ".git";
-    else if (/^https:\/\/[^\s#]+$/i.test(repo)) url = repo;
-    else throw new Error(`FLOQ_CLAUDE_PLUGINS: "${entry}" needs a git marketplace source after "=": a GitHub owner/repo or an https clone URL`);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, marketplace, remote: ref ? { url, ref } : { url } });
-  }
-  return out;
-}
-
-/** Floq's base managed settings plus the locally cloned trusted plugins. With none, the base is returned unchanged. */
-export function buildClaudeManagedSettings(base: Record<string, unknown>, locals: readonly LocalMarketplace[]): Record<string, unknown> {
-  if (!locals.length) return base;
+/** Floq's base managed settings plus the promoted plugins. With none, the base is returned unchanged. */
+export function buildClaudeManagedSettings(base: Record<string, unknown>, plugins: readonly PromotedPlugin[]): Record<string, unknown> {
+  if (!plugins.length) return base;
   const enabled = { ...((base.enabledPlugins as Record<string, unknown> | undefined) ?? {}) };
   const markets = { ...((base.extraKnownMarketplaces as Record<string, unknown> | undefined) ?? {}) };
-  for (const { plugin, path } of locals) {
+  for (const plugin of plugins) {
     enabled[plugin.id] = true;
-    const source = { source: "directory", path };
-    const known = markets[plugin.marketplace] as { source?: unknown } | undefined;
-    if (known && JSON.stringify(known.source) !== JSON.stringify(source)) {
-      throw new Error(`FLOQ_CLAUDE_PLUGINS: marketplace "${plugin.marketplace}" is given two different sources`);
-    }
-    markets[plugin.marketplace] = { source };
+    markets[plugin.marketplace] = { source: { source: "directory", path: plugin.path } };
   }
   return {
     ...base,
     enabledPlugins: enabled,
     extraKnownMarketplaces: markets,
-    // Trusted plugins first (they see every event, session.compact included), then the security default for everything else.
-    prependPlugins: [...new Set(locals.map(({ plugin }) => plugin.id)), SEC_DEFAULT_ID],
+    // The user's plugins first (they see every event, session.compact included), then the security default for everything else.
+    prependPlugins: [...new Set(plugins.map((plugin) => plugin.id)), SEC_DEFAULT_ID],
   };
 }
 
-/** Plugins and marketplaces seated by the last sync; read when a Claude session starts (see reconcileUserMarketplaces). */
-let active: LocalMarketplace[] = [];
-export const activeManagedMarketplaces = (): readonly LocalMarketplace[] => active;
-
-/**
- * Clones (or refreshes) one trusted marketplace into `dir/<marketplace>` as the runtime (root): agents can read it but
- * not change it. Git hooks are disabled for the clone. Checks that its marketplace.json has the expected name and lists
- * the plugin by a relative path (what Claude Code needs to treat it as the organization's). Throws on any problem.
- */
-export function cloneMarketplace(plugin: TrustedPlugin, dir: string, git: (args: string[]) => void = runGit): string {
-  const path = join(dir, plugin.marketplace);
-  mkdirSync(dir, { recursive: true, mode: 0o755 });
-  if (existsSync(join(path, ".git"))) {
-    git(["-C", path, "fetch", "--depth", "1", "origin", plugin.remote.ref ?? "HEAD"]);
-    git(["-C", path, "reset", "--hard", "FETCH_HEAD"]);
-    git(["-C", path, "clean", "-fdx"]);
-  } else {
-    rmSync(path, { recursive: true, force: true });
-    git(["clone", "--depth", "1", ...(plugin.remote.ref ? ["--branch", plugin.remote.ref] : []), plugin.remote.url, path]);
-  }
-  const manifestPath = join(path, ".claude-plugin", "marketplace.json");
-  if (lstatSync(manifestPath).isSymbolicLink()) throw new Error("marketplace.json must not be a symlink");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown; plugins?: Array<{ name?: unknown; source?: unknown }> };
-  if (manifest.name !== plugin.marketplace) throw new Error(`the marketplace is named "${String(manifest.name)}", not "${plugin.marketplace}"`);
-  const [pluginName] = plugin.id.split("@");
-  const entry = manifest.plugins?.find((item) => item.name === pluginName);
-  if (!entry) throw new Error(`the marketplace does not list a plugin named "${pluginName}"`);
-  if (typeof entry.source !== "string" || !entry.source.startsWith("./")) throw new Error(`"${pluginName}" must be listed by a relative path ("./…") to run in the managed tier`);
-  return path;
+/** Where a registered marketplace can be cloned from: GitHub and https git sources only. */
+export function remoteOf(entry: unknown): MarketplaceRemote | null {
+  const source = (entry as { source?: Record<string, unknown> } | undefined)?.source;
+  if (!source || typeof source !== "object") return null;
+  const ref = typeof source.ref === "string" && REF.test(source.ref) ? source.ref : undefined;
+  let url: string | null = null;
+  if (source.source === "github" && typeof source.repo === "string" && GITHUB.test(source.repo)) url = "https://github.com/" + source.repo + ".git";
+  else if (source.source === "git" && typeof source.url === "string" && /^https:\/\/[^\s#]+$/i.test(source.url)) url = source.url;
+  if (!url) return null;
+  return ref ? { url, ref } : { url };
 }
 
 function runGit(args: string[]): void {
@@ -138,92 +77,153 @@ function runGit(args: string[]): void {
   });
 }
 
-/**
- * A user who registered the same marketplace from another source (e.g. `claude plugin marketplace add owner/repo`
- * before the operator trusted it) makes Claude Code ignore the marketplace everywhere ("its source doesn't match its
- * extraKnownMarketplaces entry"), so the managed plugin would not load for them. At each Claude session start the
- * runtime drops that user's conflicting registration; the managed one takes over. Returns the names it removed.
- */
-export function reconcileUserMarketplaces(home: string, locals: readonly LocalMarketplace[]): string[] {
-  if (!locals.length) return [];
-  const removed = new Set<string>();
-  const want = new Map(locals.map(({ plugin, path }) => [plugin.marketplace, path]));
-  const conflicts = (entry: unknown, name: string): boolean => {
-    const source = (entry as { source?: { source?: unknown; path?: unknown } } | undefined)?.source;
-    return !!source && !(source.source === "directory" && source.path === want.get(name));
-  };
-  const edit = (path: string, change: (data: Record<string, unknown>) => boolean) => {
-    let data: Record<string, unknown>;
-    try {
-      if (lstatSync(path).isSymbolicLink()) return;
-      data = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    } catch { return; }
-    if (!data || typeof data !== "object" || Array.isArray(data) || !change(data)) return;
-    const temporary = path + ".floq-" + process.pid;
-    writeFileSync(temporary, JSON.stringify(data, null, 2));
-    const owner = lstatSync(path);
-    try { lchownSync(temporary, owner.uid, owner.gid); } catch { /* best effort */ }
-    renameSync(temporary, path);
-  };
-  edit(join(home, ".claude/plugins/known_marketplaces.json"), (data) => {
-    let changed = false;
-    for (const name of want.keys()) if (name in data && conflicts(data[name], name)) { delete data[name]; removed.add(name); changed = true; }
-    return changed;
-  });
-  edit(join(home, ".claude/settings.json"), (data) => {
-    const markets = data.extraKnownMarketplaces as Record<string, unknown> | undefined;
-    if (!markets || typeof markets !== "object") return false;
-    let changed = false;
-    for (const name of want.keys()) if (name in markets && conflicts(markets[name], name)) { delete markets[name]; removed.add(name); changed = true; }
-    return changed;
-  });
-  return [...removed];
+/** Clones or refreshes a marketplace into `path` (as the runtime: read-only to agents). Git hooks are disabled. */
+export function cloneMarketplace(remote: MarketplaceRemote, path: string, git: (args: string[]) => void = runGit): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+  if (existsSync(join(path, ".git"))) {
+    git(["-C", path, "fetch", "--depth", "1", "origin", remote.ref ?? "HEAD"]);
+    git(["-C", path, "reset", "--hard", "FETCH_HEAD"]);
+    git(["-C", path, "clean", "-fdx"]);
+  } else {
+    rmSync(path, { recursive: true, force: true });
+    git(["clone", "--depth", "1", ...(remote.ref ? ["--branch", remote.ref] : []), remote.url, path]);
+  }
+}
+
+/** Plugins the marketplace at `path` lists by a relative path (what Claude Code requires to seat it as managed). */
+export function relativePlugins(path: string, marketplace: string): Set<string> {
+  const manifestPath = join(path, ".claude-plugin", "marketplace.json");
+  if (lstatSync(manifestPath).isSymbolicLink()) throw new Error("marketplace.json must not be a symlink");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown; plugins?: Array<{ name?: unknown; source?: unknown }> };
+  if (manifest.name !== marketplace) throw new Error(`the marketplace is named "${String(manifest.name)}", not "${marketplace}"`);
+  return new Set((manifest.plugins ?? []).filter((p) => typeof p.name === "string" && typeof p.source === "string" && p.source.startsWith("./")).map((p) => p.name as string));
+}
+
+function readJson(path: string): Record<string, unknown> | null {
+  try {
+    if (lstatSync(path).isSymbolicLink()) return null;
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch { return null; }
+}
+
+/** Atomic rewrite that keeps the file's owner (the user's files stay the user's). */
+function writeJsonKeepOwner(path: string, data: unknown): void {
+  const owner = lstatSync(path);
+  const temporary = path + ".floq-" + process.pid;
+  writeFileSync(temporary, JSON.stringify(data, null, 2), { mode: owner.mode & 0o777 });
+  try { lchownSync(temporary, owner.uid, owner.gid); } catch { /* not root (tests) */ }
+  renameSync(temporary, path);
+}
+
+export interface PromoteOptions {
+  /** The user's home on the host. */
+  home: string;
+  /** Root-owned folder bound at /etc/claude-code in this user's sandbox. */
+  managedDir: string;
+  /** Floq's base managed settings (the image's /etc/claude-code/managed-settings.json). */
+  base: Record<string, unknown>;
+  /** The managed folder as the agent sees it (default /etc/claude-code). */
+  sandboxDir?: string;
+  git?: (args: string[]) => void;
+  now?: () => number;
 }
 
 /**
- * At startup: rewrite the managed settings file from the image's base copy and FLOQ_CLAUDE_PLUGINS. Never throws:
- * a bad value is logged and the base settings are written, so the native-subagent policy is always in force.
+ * Writes the user's managed settings (base + their enabled plugins as managed, ahead of sec-default) and keeps the
+ * marketplace snapshots current. Never throws for one plugin: a plugin that cannot be promoted stays a normal
+ * user plugin. Returns the promoted plugins.
  */
-export function syncClaudeManagedSettings(options: { raw: string | undefined; basePath?: string; targetPath?: string; pluginsDir?: string; git?: (args: string[]) => void }): TrustedPlugin[] {
-  const basePath = options.basePath ?? DEFAULT_MANAGED_SETTINGS_BASE;
-  const targetPath = options.targetPath ?? DEFAULT_MANAGED_SETTINGS_PATH;
-  const pluginsDir = options.pluginsDir ?? CLAUDE_PLUGINS_DIR;
-  active = [];
-  let base: Record<string, unknown>;
-  try {
-    base = JSON.parse(readFileSync(basePath, "utf8")) as Record<string, unknown>;
-  } catch {
-    // Older images (or local development) have no base copy: leave the managed settings as they are.
-    if (options.raw?.trim()) log.warn("claude.managed_plugins_no_base", { basePath });
-    return [];
+export function promoteUserPlugins(options: PromoteOptions): PromotedPlugin[] {
+  const { home, managedDir, base } = options;
+  const sandboxDir = options.sandboxDir ?? SANDBOX_MANAGED_DIR;
+  const now = options.now ?? Date.now;
+  const pluginsDir = join(managedDir, "plugins");
+  const originsDir = join(managedDir, "origins");
+  for (const dir of [managedDir, pluginsDir, originsDir]) mkdirSync(dir, { recursive: true, mode: 0o755 });
+
+  const settingsPath = join(home, ".claude", "settings.json");
+  const knownPath = join(home, ".claude", "plugins", "known_marketplaces.json");
+  const settings = readJson(settingsPath) ?? {};
+  const known = readJson(knownPath) ?? {};
+  const enabled = Object.entries((settings.enabledPlugins as Record<string, unknown> | undefined) ?? {})
+    .filter(([id, on]) => on === true && /^[^@]+@[^@]+$/.test(id))
+    .map(([id]) => id);
+
+  const promoted: PromotedPlugin[] = [];
+  const done = new Map<string, Set<string> | null>();
+  let knownChanged = false;
+  let settingsChanged = false;
+  for (const id of enabled) {
+    const marketplace = id.split("@")[1];
+    if (!NAME.test(marketplace) || marketplace === "builtin") continue;
+    if (!done.has(marketplace)) done.set(marketplace, prepareMarketplace(marketplace));
+    const listed = done.get(marketplace);
+    if (listed?.has(id.split("@")[0])) promoted.push({ id, marketplace, path: sandboxDir + "/plugins/" + marketplace });
   }
-  let plugins: TrustedPlugin[] = [];
-  let locals: LocalMarketplace[] = [];
-  let settings = base;
-  try {
-    plugins = parseTrustedPlugins(options.raw);
-    for (const plugin of plugins) {
-      try { locals.push({ plugin, path: cloneMarketplace(plugin, pluginsDir, options.git) }); }
-      catch (error) { log.error("claude.managed_plugin_unavailable", { plugin: plugin.id, error: error instanceof Error ? error.message.slice(0, 300) : String(error) }); }
+
+  function prepareMarketplace(marketplace: string): Set<string> | null {
+    const snapshot = join(pluginsDir, marketplace);
+    const originFile = join(originsDir, marketplace + ".json");
+    const sandboxPath = sandboxDir + "/plugins/" + marketplace;
+    try {
+      const entry = known[marketplace] as { source?: { source?: unknown; path?: unknown } } | undefined;
+      const ours = entry?.source?.source === "directory" && entry.source.path === sandboxPath;
+      const remote = ours ? remoteOf(readJson(originFile)) : remoteOf(entry);
+      if (!entry || (!ours && !remote)) {
+        // A local folder in the user's home: snapshot it as is (no remote to refresh from).
+        const localPath = typeof entry?.source?.path === "string" && entry.source.source === "directory" ? hostPathInHome(home, entry.source.path) : null;
+        if (!localPath) return null;
+        rmSync(snapshot, { recursive: true, force: true });
+        cpSync(localPath, snapshot, { recursive: true, dereference: false, filter: (src) => !src.split(sep).includes(".git") });
+      } else if (remote) {
+        const refreshedAt = statSync(originFile, { throwIfNoEntry: false })?.mtimeMs;
+        const stale = !existsSync(join(snapshot, ".git")) || refreshedAt === undefined || now() - refreshedAt > REFRESH_MS;
+        if (stale) {
+          try {
+            cloneMarketplace(remote, snapshot, options.git);
+            writeFileSync(originFile, JSON.stringify({ source: remote.ref ? { source: "git", url: remote.url, ref: remote.ref } : { source: "git", url: remote.url } }), { mode: 0o644 });
+            const t = new Date(now()); utimesSync(originFile, t, t);
+          } catch (error) {
+            if (!existsSync(join(snapshot, ".git"))) throw error;
+            log.warn("claude.plugin_snapshot_refresh_failed", { marketplace, error: error instanceof Error ? error.message.slice(0, 200) : String(error) });
+          }
+        }
+      }
+      const listed = relativePlugins(snapshot, marketplace);
+      // Point the user's registration at the snapshot (Claude Code ignores a marketplace whose registered source differs from managed).
+      if (!ours && entry) {
+        known[marketplace] = { ...entry, source: { source: "directory", path: sandboxPath }, installLocation: sandboxPath };
+        knownChanged = true;
+      }
+      const markets = settings.extraKnownMarketplaces as Record<string, unknown> | undefined;
+      if (markets && marketplace in markets) {
+        markets[marketplace] = { source: { source: "directory", path: sandboxPath } };
+        settingsChanged = true;
+      }
+      return listed;
+    } catch (error) {
+      log.warn("claude.plugin_not_promoted", { marketplace, error: error instanceof Error ? error.message.slice(0, 200) : String(error) });
+      return null;
     }
-    settings = buildClaudeManagedSettings(base, locals);
-  } catch (error) {
-    log.error("claude.managed_plugins_invalid", { error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
-    locals = [];
-    settings = base;
   }
-  plugins = locals.map(({ plugin }) => plugin);
-  const temporary = targetPath + ".tmp-" + process.pid;
-  try {
-    mkdirSync(dirname(targetPath), { recursive: true });
-    writeFileSync(temporary, JSON.stringify(settings, null, 2) + "\n", { mode: 0o644 });
-    renameSync(temporary, targetPath);
-    active = locals;
-    if (plugins.length) log.info("claude.managed_plugins", { plugins: plugins.map((plugin) => plugin.id) });
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    log.warn("claude.managed_settings_write_failed", { targetPath, error: error instanceof Error ? error.message.slice(0, 200) : String(error) });
-    return [];
-  }
-  return plugins;
+
+  if (knownChanged && existsSync(knownPath)) writeJsonKeepOwner(knownPath, known);
+  if (settingsChanged && existsSync(settingsPath)) writeJsonKeepOwner(settingsPath, settings);
+
+  const managed = buildClaudeManagedSettings(base, promoted);
+  const target = join(managedDir, MANAGED_FILE);
+  const temporary = target + ".tmp-" + process.pid;
+  writeFileSync(temporary, JSON.stringify(managed, null, 2) + "\n", { mode: 0o644 });
+  renameSync(temporary, target);
+  return promoted;
+}
+
+/** A `directory` marketplace path as Claude Code recorded it (sandbox view) -> the host path, only inside the home. */
+function hostPathInHome(home: string, recorded: string): string | null {
+  const sandboxHome = SANDBOX_HOME;
+  const rel = recorded.startsWith(sandboxHome + "/") ? recorded.slice(sandboxHome.length + 1) : null;
+  if (!rel) return null;
+  const host = join(home, rel);
+  return relative(home, host).startsWith("..") ? null : host;
 }
