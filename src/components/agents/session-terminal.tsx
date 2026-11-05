@@ -17,6 +17,7 @@ import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { canReadClipboard, copyText, readClipboardImagePng, readClipboardText } from "@/lib/clipboard";
 import { parseOsc52 } from "@/lib/osc52";
+import { HeldInput } from "@/lib/held-input";
 import { MAX_UPLOAD_COUNT, browserUploadItems, shellQuote, tauriDropItems, uploadBatch, type UploadItem } from "./upload-toast";
 
 const MAX_INPUT_CHARS = 20_000;
@@ -81,6 +82,35 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
     const searchInputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const wsRef = useRef<WebSocket | null>(null);
+    // Keystrokes typed while the stream reconnects; sent, in order, as soon as it is open again.
+    const heldInputRef = useRef(new HeldInput());
+    const holdInput = (data: string) => {
+        const held = heldInputRef.current;
+        const first = held.size === 0;
+        if (held.hold(data) && first) {
+            toast.warning("Reconnecting to the terminal", {
+                id: "terminal-held-input",
+                description: "What you type is kept and sent when the connection is back, for up to 2 minutes. Clicks are not kept.",
+            });
+        } else if (held.dropped > 0) {
+            toast.error("Some typing was not kept", {
+                id: "terminal-held-input",
+                description: "The terminal has been disconnected too long or too much was typed. Retype it once the terminal is back.",
+            });
+        }
+    };
+    const flushHeldInput = (ws: WebSocket) => {
+        const held = heldInputRef.current;
+        const dropped = held.dropped;
+        const data = held.take();
+        held.clear();
+        if (!data) return;
+        for (let i = 0; i < data.length; i += MAX_INPUT_CHARS) ws.send(JSON.stringify({ type: "input", data: data.slice(i, i + MAX_INPUT_CHARS) } satisfies ClientFrame));
+        toast.success("Reconnected", {
+            id: "terminal-held-input",
+            description: dropped > 0 ? `Sent what you typed. ${dropped} older characters were not kept.` : "Sent what you typed while the terminal was reconnecting.",
+        });
+    };
     const lastSeqRef = useRef(0);
     // True while replayed (buffered) output is being parsed; OSC 52 clipboard writes are ignored then.
     const replayingRef = useRef(false);
@@ -268,7 +298,11 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
 
         const send = (frame: ClientFrame) => {
             const ws = wsRef.current;
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                // Reconnecting (runtime restart, network blip): hold keystrokes instead of dropping them.
+                if (frame.type === "input") holdInput(frame.data);
+                return;
+            }
             // Keep each frame well under the server's 256 KB cap (UTF-8 can be 3 bytes per char).
             if (frame.type === "input" && frame.data.length > MAX_INPUT_CHARS) {
                 for (let i = 0; i < frame.data.length; i += MAX_INPUT_CHARS) {
@@ -486,6 +520,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             ws.onopen = () => {
                 attempt = 0;
                 ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows } satisfies ClientFrame));
+                flushHeldInput(ws);
             };
             ws.onmessage = (event) => {
                 let frame: ServerFrame;

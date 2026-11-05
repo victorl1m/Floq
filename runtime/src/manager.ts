@@ -256,6 +256,13 @@ export interface CreateSessionOptions {
   skills?: string[];
 }
 
+/** The TUI counts as ready once it was quiet this long after its first output, or after READY_TIMEOUT_MS regardless. */
+const READY_QUIET_MS = 1_500;
+const READY_TIMEOUT_MS = 30_000;
+const BOOT_RESUME_CONCURRENCY = 3;
+/** Typed (trusted) into agents that were mid-turn when the runtime stopped. */
+export const BOOT_RESUME_NOTICE = "[Floq] The runtime restarted while you were working. Your last tool call may not have finished and background tasks/native subagents were stopped. Check what actually happened (files, git status, processes), then continue your task.";
+
 export class SessionManager {
   /** Owner of the Claude / Codex subscription credentials (set at startup). */
   credentials!: CredentialBroker;
@@ -297,6 +304,10 @@ export class SessionManager {
   private readonly shardActivityCounts = new Map<string, number>();
   private readonly shardActivities = new Set<Promise<unknown>>();
   private shuttingDown = false;
+  private readyListeners?: Array<(userId: string, sessionId: string) => void>;
+  private bootNotices?: Map<string, string>;
+  /** Test hook: overrides the TUI-ready detection timing. */
+  readyTiming?: { quietMs: number; timeoutMs: number };
   private readonly reaper: NodeJS.Timeout;
 
   constructor(
@@ -1395,9 +1406,10 @@ export class SessionManager {
     });
 
     await this.pool.query(
-      "UPDATE agent_sessions SET state = 'running', resume_count = $2, sleep_reason = NULL, slept_at = NULL, last_active_at = now() WHERE id = $1",
+      "UPDATE agent_sessions SET state = 'running', resume_count = $2, sleep_reason = NULL, slept_at = NULL, last_active_at = now(), resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1",
       [row.id, resumeCount],
     );
+    void this.readyFlow(session);
     void this.updateNativeTitle(row.id);
     if (row.provider === "claude" || row.provider === "codex") this.pollNativeTitleSoon(row.id);
     if (row.provider === "codex" && !providerId) this.pollCodexId(row.id, handle);
@@ -2065,7 +2077,7 @@ export class SessionManager {
   }
 
   /** Save state to the DB and stop the PTY. The conversation stays in the user's encrypted home. */
-  async sleepSession(id: string, reason: string, options: { waitForExit?: boolean } = {}): Promise<void> {
+  async sleepSession(id: string, reason: string, options: { waitForExit?: boolean; resumeOnBoot?: boolean; interruptedTurn?: boolean } = {}): Promise<void> {
     if (this.logins.has(id)) return this.endLogin(id);
     const session = this.live.get(id);
     if (!session) return;
@@ -2081,8 +2093,8 @@ export class SessionManager {
     this.live.delete(id);
     this.nativeTitleSessions.delete(id);
     await this.pool.query(
-      "UPDATE agent_sessions SET state = 'sleeping', sleep_reason = $2, last_seq = $3, last_active_at = now(), slept_at = now() WHERE id = $1",
-      [id, reason, summary.seq],
+      "UPDATE agent_sessions SET state = 'sleeping', sleep_reason = $2, last_seq = $3, last_active_at = now(), slept_at = now(), resume_on_boot = $4, interrupted_turn = $5 WHERE id = $1",
+      [id, reason, summary.seq, options.resumeOnBoot === true, options.resumeOnBoot === true && options.interruptedTurn === true],
     );
     session.broadcast({ type: "state", session: { ...summary, state: "sleeping", sleepReason: reason, pid: null } });
     if (options.waitForExit) {
@@ -2258,6 +2270,102 @@ export class SessionManager {
     }
   }
 
+  /** Register a callback fired once a created / resumed / restarted session's TUI is ready to receive typed input. */
+  onSessionReady(cb: (userId: string, sessionId: string) => void): void {
+    (this.readyListeners ??= []).push(cb);
+  }
+
+  /**
+   * Ready = first output followed by a quiet period (the TUI finished painting), or the timeout, or the process exiting.
+   * Never rejects.
+   */
+  private waitReady(session: Session): Promise<void> {
+    const quietMs = this.readyTiming?.quietMs ?? READY_QUIET_MS;
+    const timeoutMs = this.readyTiming?.timeoutMs ?? READY_TIMEOUT_MS;
+    return new Promise<void>((resolve) => {
+      let quiet: NodeJS.Timeout | undefined;
+      let unsubscribe: (() => void) | undefined;
+      const done = () => {
+        clearTimeout(quiet);
+        clearTimeout(limit);
+        unsubscribe?.();
+        resolve();
+      };
+      const limit = setTimeout(done, timeoutMs);
+      unsubscribe = session.subscribe((frame) => {
+        if (frame.type === "exit") return done();
+        if (frame.type !== "output") return;
+        clearTimeout(quiet);
+        quiet = setTimeout(done, quietMs);
+      });
+    });
+  }
+
+  /** After a launch: wait for the TUI, type the boot-resume notice (if one is queued), then tell the ready listeners. */
+  private async readyFlow(session: Session): Promise<void> {
+    try {
+      await this.waitReady(session);
+      const notice = this.bootNotices?.get(session.id);
+      if (notice !== undefined) {
+        this.bootNotices?.delete(session.id);
+        if (session.isAlive && session.provider !== "shell") {
+          await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), notice, { bracketed: session.provider === "claude" || session.provider === "codex", trusted: true }));
+        }
+      }
+    } catch (error) {
+      log.warn("session.ready_flow_failed", { sessionId: session.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+    }
+    if (!session.isAlive) return;
+    for (const cb of [...(this.readyListeners ?? [])]) {
+      try { cb(session.userId, session.id); } catch (error) { log.warn("session.ready_listener_failed", { sessionId: session.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }); }
+    }
+  }
+
+  /**
+   * After the runtime is listening: resume every session the previous runtime put to sleep at shutdown (resume_on_boot),
+   * a few at a time. Sessions the user slept (or that exited) never carry the flag. Mid-turn agents also get a trusted notice.
+   */
+  async resumeAfterBoot(profileFor: (userId: string) => Promise<RuntimeProfile>, concurrency = BOOT_RESUME_CONCURRENCY): Promise<{ resumed: number; skipped: number }> {
+    const result = { resumed: 0, skipped: 0 };
+    const found = await this.pool.query(
+      `SELECT s.id, s.user_id, s.provider, s.project_id, s.interrupted_turn, (s.project_id IS NOT NULL AND p.id IS NULL) AS project_gone
+         FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id
+        WHERE s.resume_on_boot = TRUE AND s.state = 'sleeping'
+        ORDER BY s.last_active_at DESC`,
+    );
+    const rows = found.rows as Array<{ id: string; user_id: string; provider: ProviderId; interrupted_turn: boolean; project_gone: boolean }>;
+    // Flags on rows that are not sleeping any more (a user resumed them first, or they exited) are stale.
+    await this.pool.query("UPDATE agent_sessions SET resume_on_boot = FALSE, interrupted_turn = FALSE WHERE resume_on_boot = TRUE AND state <> 'sleeping'").catch(() => undefined);
+    const queue = [...rows];
+    const worker = async () => {
+      for (let row = queue.shift(); row; row = queue.shift()) {
+        if (this.shuttingDown) return;
+        const skip = async (reason: string, error?: unknown) => {
+          result.skipped++;
+          log.warn("session.boot_resume_skipped", { sessionId: row!.id, userId: row!.user_id, reason, error: error instanceof Error ? error.message.slice(0, 160) : undefined });
+          await this.pool.query("UPDATE agent_sessions SET resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1", [row!.id]).catch(() => undefined);
+        };
+        if (row.project_gone) { await skip("project_deleted"); continue; }
+        if (this.live.has(row.id)) { await skip("already_running"); continue; }
+        const notice = row.interrupted_turn && row.provider !== "shell";
+        const bootNotices = (this.bootNotices ??= new Map());
+        if (notice) bootNotices.set(row.id, BOOT_RESUME_NOTICE);
+        try {
+          const profile = await profileFor(row.user_id);
+          await this.resume(row.user_id, profile, row.id);
+          result.resumed++;
+          log.info("session.boot_resumed", { sessionId: row.id, userId: row.user_id, interrupted: row.interrupted_turn });
+        } catch (error) {
+          bootNotices.delete(row.id);
+          const code = (error as { code?: string } | null)?.code;
+          await skip(code === "worktree_deleted" ? "worktree_deleted" : "resume_failed", error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, queue.length || 1)) }, worker));
+    return result;
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     this.lifecycle.close();
@@ -2265,8 +2373,16 @@ export class SessionManager {
     for (const timer of this.lockTimers.values()) clearTimeout(timer);
     await Promise.allSettled([...this.shardActivities]);
     await Promise.allSettled([...this.restartTasks.values()]);
+    // Fast first: flag every live session in one UPDATE, so even a shutdown cut short by SIGKILL leaves the flags
+    // (reconcile() on the next boot additionally treats rows left 'running' as mid-turn). The per-session sleeps below refine it.
+    const liveIds = [...this.live.values()].filter((s) => s.isAlive).map((s) => s.id);
+    if (liveIds.length) await this.pool.query("UPDATE agent_sessions SET resume_on_boot = TRUE WHERE id = ANY($1::uuid[])", [liveIds]).catch((error) => log.error("runtime.shutdown_flag_failed", { error: String(error).slice(0, 160) }));
     for (const session of [...this.live.values()]) {
-      if (session.isAlive) await this.sleepSession(session.id, "shutdown").catch(() => undefined);
+      if (!session.isAlive) continue;
+      // Record that the runtime (not the user) stopped this session, and whether it was mid-turn, so the next boot resumes it.
+      let interruptedTurn = false;
+      try { interruptedTurn = this.readAgentTurn(session.id, session.userId)?.status === "working"; } catch { /* unreadable transcript: treat as idle */ }
+      await this.sleepSession(session.id, "shutdown", { resumeOnBoot: true, interruptedTurn }).catch(() => undefined);
     }
     if (this.countActiveProcesses() > 0) {
       log.error("runtime.shutdown_shard_sleep_skipped", { reason: "session_process_still_stopping", count: this.countActiveProcesses() });

@@ -151,3 +151,51 @@ export class MessageInbox {
     return { id: row.id as string, from: row.from_session_id as string, fromTitle: row.from_title as string, chars: Number(row.chars), sha256: row.sha256 as string, body: neutralizeApprovalMarker(row.body as string) };
   }
 }
+
+
+/** Queued messages older than this are not typed any more; approval decisions expire sooner (approvals live 10 min). */
+export const OUTBOX_MESSAGE_MAX_AGE_MS = 24 * 60 * 60_000;
+export const OUTBOX_APPROVAL_MAX_AGE_MS = 15 * 60_000;
+
+export interface OutboxRow { id: string; userId: string; toSessionId: string; kind: "message" | "approval"; text: string; attempts: number; ageMs: number }
+
+/**
+ * Durable queue of everything typed into an agent terminal by the runtime: agent messages and user approval decisions.
+ * A row is written BEFORE any delivery attempt and `delivered_at` is set only after the text was typed into a live
+ * session, so an asleep, still-starting or restarted target gets it on its next ready instead of losing it.
+ */
+export class AgentOutbox {
+  constructor(private readonly pool: Pick<pg.Pool, "query">) {}
+
+  async enqueue(userId: string, toSessionId: string, kind: "message" | "approval", text: string): Promise<string> {
+    const id = randomBytes(12).toString("hex");
+    await this.pool.query("INSERT INTO agent_outbox (id, user_id, to_session_id, kind, text) VALUES ($1,$2,$3,$4,$5)", [id, userId, toSessionId, kind, text]);
+    return id;
+  }
+
+  /** Undelivered rows for one session in creation order. */
+  async pending(userId: string, sessionId: string): Promise<OutboxRow[]> {
+    const r = await this.pool.query("SELECT id, user_id, to_session_id, kind, text, attempts, (extract(epoch from now() - created_at) * 1000)::float8 AS age_ms FROM agent_outbox WHERE user_id = $1 AND to_session_id = $2 AND delivered_at IS NULL AND expired_at IS NULL ORDER BY created_at, id", [userId, sessionId]);
+    return r.rows.map((x) => ({ id: x.id as string, userId: x.user_id as string, toSessionId: x.to_session_id as string, kind: x.kind as "message" | "approval", text: x.text as string, attempts: Number(x.attempts), ageMs: Number(x.age_ms) }));
+  }
+
+  /** Rows too old to type are marked expired (never typed). */
+  async expire(ids: string[]): Promise<void> {
+    for (const id of ids) await this.pool.query("UPDATE agent_outbox SET expired_at = now() WHERE id = $1 AND delivered_at IS NULL AND expired_at IS NULL", [id]);
+  }
+
+  async attempt(id: string): Promise<void> {
+    await this.pool.query("UPDATE agent_outbox SET attempts = attempts + 1 WHERE id = $1 AND delivered_at IS NULL", [id]);
+  }
+
+  /** True only for the call that actually flipped the row. */
+  async markDelivered(id: string): Promise<boolean> {
+    const r = await this.pool.query("UPDATE agent_outbox SET delivered_at = now() WHERE id = $1 AND delivered_at IS NULL", [id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async isDelivered(id: string): Promise<boolean> {
+    const r = await this.pool.query("SELECT delivered_at FROM agent_outbox WHERE id = $1", [id]);
+    return r.rows[0]?.delivered_at != null;
+  }
+}

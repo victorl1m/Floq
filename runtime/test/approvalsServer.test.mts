@@ -21,9 +21,18 @@ async function harness(t) {
   const typed = [];
   const pool = { query: async (sql, params) => (/FROM agent_sessions/.test(sql) ? { rows: SESSIONS.filter((r) => r.user_id === params[0]) } : { rows: [] }), connect: async () => { throw new Error("unused"); } };
   const vault = new Vault(pool, { encryptionKey: key });
-  const orchestrator = new Orchestrator(pool, {}, {});
   const live = (id) => ({ isAlive: true, provider: "claude", id, write: (d) => { typed.push([id, d]); }, replaySince: () => ({ chunks: [] }) });
   const manager = { activeCount: 0, getLive: (id, user) => { if (!SESSIONS.some((s) => s.id === id && s.user_id === user)) throw new Error("gone"); return live(id); }, findLive: (id) => live(id) };
+  // In-memory agent_outbox: approval decisions now go through the orchestrator's durable outbox.
+  const rows = new Map();
+  const outbox = {
+    async enqueue(userId, toSessionId, kind, text) { const id = String(rows.size + 1); rows.set(id, { userId, toSessionId, kind, text, delivered: false }); return id; },
+    async pending(userId, sessionId) { return [...rows].filter(([, r]) => r.userId === userId && r.toSessionId === sessionId && !r.delivered).map(([id, r]) => ({ id, userId, toSessionId: sessionId, kind: r.kind, text: r.text, attempts: 0, ageMs: 0 })); },
+    async expire() {}, async attempt() {},
+    async markDelivered(id) { const r = rows.get(id); if (!r || r.delivered) return false; r.delivered = true; return true; },
+    async isDelivered(id) { return rows.get(id)?.delivered ?? false; },
+  };
+  const orchestrator = new Orchestrator(pool, manager, {}, undefined, undefined, undefined, undefined, undefined, outbox);
   const auth = { handler() {}, api: { getSession: async ({ headers }) => (headers.get("authorization") === "Bearer " + USER_TOKEN ? { user: { id: "owner" } } : null) } };
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "error", databaseUrl: "postgres://x/y" };

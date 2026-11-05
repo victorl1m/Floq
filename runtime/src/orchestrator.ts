@@ -12,12 +12,14 @@ import type { AgentLinks } from "./links.js";
 import { CrossProjectGuard, buildProvenance, buildReplyHint } from "./crossProject.js";
 import { log } from "./logger.js";
 import { neutralizeApprovalMarker } from "./approvalText.js";
-import { MessageInbox, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
+import { AgentOutbox, MessageInbox, OUTBOX_APPROVAL_MAX_AGE_MS, OUTBOX_MESSAGE_MAX_AGE_MS, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 import { parseRecruitSkills } from "./recruitSkills.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const QUIET_MS = 5_000;
+const READY_QUIET_MS = 1_500;
+const READY_TIMEOUT_MS = 45_000;
 const POLL_MS = 1_000;
 const TRANSCRIPT_REGISTER_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -113,7 +115,66 @@ export class Orchestrator {
     private readonly secrets?: Keychains,
     private readonly cross: CrossProjectGuard = new CrossProjectGuard(),
     private readonly inbox: MessageInbox = new MessageInbox(pool),
+    private readonly readiness: { quietMs: number; timeoutMs: number; pollMs: number } = { quietMs: READY_QUIET_MS, timeoutMs: READY_TIMEOUT_MS, pollMs: 250 },
+    readonly outbox: AgentOutbox = new AgentOutbox(pool),
   ) {}
+
+  /**
+   * Waits until a freshly woken session's TUI is ready to take input: it printed something and then went quiet for
+   * `quietMs`. False when it died or never got there within `timeoutMs` (the message then stays pending).
+   */
+  private async awaitReady(live: Session): Promise<boolean> {
+    const { quietMs, timeoutMs, pollMs } = this.readiness;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (!live.isAlive) return false;
+      let produced = false;
+      try { produced = live.replaySince(0).chunks.length > 0; } catch { /* treat as not yet */ }
+      if (produced && Date.now() - live.lastActivity >= quietMs) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
+  /**
+   * Types every undelivered outbox row of the session in creation order, one job per target (serialPerTarget), and
+   * marks each delivered only after it was typed. The pending list is read INSIDE the serialised job and each row is
+   * flipped with a delivered_at IS NULL guard, so concurrent or repeated calls never type a row twice. A session that
+   * is not live keeps its rows pending; the next ready (manager hook) or ask retries them.
+   */
+  async deliverPending(userId: string, sessionId: string): Promise<{ delivered: string[]; pending: number }> {
+    return serialPerTarget(sessionId, async () => {
+      const all = await this.outbox.pending(userId, sessionId);
+      const stale = all.filter((r) => r.ageMs > (r.kind === "approval" ? OUTBOX_APPROVAL_MAX_AGE_MS : OUTBOX_MESSAGE_MAX_AGE_MS));
+      if (stale.length) {
+        await this.outbox.expire(stale.map((r) => r.id));
+        log.info("agent.outbox_expired", { userId, toSessionId: sessionId, ids: stale.map((r) => r.id) });
+      }
+      const rows = all.filter((r) => !stale.includes(r));
+      const delivered: string[] = [];
+      const live = this.manager.findLive(sessionId, userId);
+      if (!rows.length || !live || !live.isAlive || live.provider === "shell") return { delivered, pending: rows.length };
+      for (const row of rows) {
+        try {
+          await this.outbox.attempt(row.id);
+          await typeMessage((d) => live.write(d), row.text, { bracketed: this.bracketed(live), trusted: row.kind === "approval" });
+          await this.outbox.markDelivered(row.id);
+          delivered.push(row.id);
+        } catch (error) {
+          log.warn("agent.outbox_deliver_failed", { userId, toSessionId: sessionId, outboxId: row.id, error: String(error).slice(0, 120) });
+          break; // keep order: later rows wait behind the failed one
+        }
+      }
+      return { delivered, pending: rows.length - delivered.length };
+    });
+  }
+
+  /** Approval decisions (trusted text): queue durably, deliver now when the target is live, else on its next ready. */
+  async deliverApproval(userId: string, sessionId: string, text: string): Promise<boolean> {
+    const id = await this.outbox.enqueue(userId, sessionId, "approval", text);
+    await this.deliverPending(userId, sessionId);
+    return this.outbox.isDelivered(id);
+  }
 
   /** Whether the target TUI takes bracketed paste: what it announced in its output, else yes for the agent TUIs (both enable it). */
   private bracketed(live: Session): boolean {
@@ -353,12 +414,35 @@ export class Orchestrator {
     const hop = cross ? this.cross.admit(me.id, other.id, prompt).hop : 0;
     const timeoutMs = Math.min(Math.max((timeoutSec ?? DEFAULT_TIMEOUT_MS / 1000) * 1000, 10_000), MAX_TIMEOUT_MS);
 
+    // Build and persist FIRST: from here on the message survives a sleeping target, a slow start or a runtime restart.
+    const original = prompt;
+    const body = prompt.replace(/\r?\n/g, " ").trim();
+    const from = { id: me.id, title: me.title, projectName: this.projectName(me) };
+    let typedBody = body;
+    let delivery: { mode: "full" | "inbox"; chars: number; sha256: string; inboxId?: string } = { mode: "full", chars: body.length, sha256: sha256Prefix(body) };
+    // Long bodies are never typed into a terminal (the tail survives, the head is lost): the full text goes to the receiver's inbox.
+    if (needsInbox(body)) {
+      const stored = await this.inbox.store(userId, from, other.id, await this.scrub(userId, [other.id, me.id], original));
+      typedBody = inboxPointer(body, stored.id, stored.chars);
+      delivery = { mode: "inbox", chars: stored.chars, sha256: stored.sha256, inboxId: stored.id };
+    }
+    const typed = await this.scrub(userId, [other.id, me.id], cross
+      ? buildProvenance(from, hop) + " " + typedBody + buildReplyHint(from, wait)
+      : "[Message from agent " + me.title + "] " + typedBody);
+    const outboxId = await this.outbox.enqueue(userId, other.id, "message", typed);
+    const queued = () => ({ id: other.id, name: other.title, status: "queued", source: "none", output: "", truncated: 0, delivery });
+
     let live = this.manager.findLive(other.id, userId);
     if (!live || !live.isAlive) {
-      await this.manager.resume(userId, await this.settings.profile(userId), other.id);
+      try {
+        await this.manager.resume(userId, await this.settings.profile(userId), other.id);
+      } catch (error) {
+        log.warn("agent.message_queued_wake_failed", { userId, toSessionId: other.id, error: String(error).slice(0, 120) });
+        return queued();
+      }
       live = this.manager.findLive(other.id, userId);
-      if (!live) throw conflict("Could not wake the agent");
-      await new Promise((r) => setTimeout(r, 6_000)); // let the TUI start before typing
+      if (!live) return queued();
+      if (!(await this.awaitReady(live))) return queued(); // stays in the outbox; delivered on its next ready
     }
     const target = live;
 
@@ -366,21 +450,8 @@ export class Orchestrator {
     const collected: string[] = [];
     const unsubscribe = target.subscribe((frame) => { if (frame.type === "output") collected.push(frame.data); });
     try {
-      const original = prompt;
-      const body = prompt.replace(/\r?\n/g, " ").trim();
-      const from = { id: me.id, title: me.title, projectName: this.projectName(me) };
-      // Long bodies are never typed into a terminal (the tail survives, the head is lost): the full text goes to the receiver's inbox.
-      let typedBody = body;
-      let delivery: { mode: "full" | "inbox"; chars: number; sha256: string; inboxId?: string } = { mode: "full", chars: body.length, sha256: sha256Prefix(body) };
-      if (needsInbox(body)) {
-        const stored = await this.inbox.store(userId, from, other.id, await this.scrub(userId, [other.id, me.id], original));
-        typedBody = inboxPointer(body, stored.id, stored.chars);
-        delivery = { mode: "inbox", chars: stored.chars, sha256: stored.sha256, inboxId: stored.id };
-      }
-      const typed = await this.scrub(userId, [other.id, me.id], cross
-        ? buildProvenance(from, hop) + " " + typedBody + buildReplyHint(from, wait)
-        : "[Message from agent " + me.title + "] " + typedBody);
-      await serialPerTarget(other.id, () => typeMessage((d) => target.write(d), typed, { bracketed: this.bracketed(target) }));
+      await this.deliverPending(userId, other.id);
+      if (!(await this.outbox.isDelivered(outboxId))) return queued();
       if (cross) log.info("agent.cross_project_message", { userId, fromSessionId: me.id, toSessionId: other.id, fromProjectId: me.project_id, toProjectId: other.project_id, chars: body.length, hop, wait });
       log.info("agent.message_delivered", { userId, fromSessionId: me.id, toSessionId: other.id, mode: delivery.mode, chars: delivery.chars, typedChars: typed.length, sha256: delivery.sha256, inboxId: delivery.inboxId, cross });
       await this.links?.record(userId, me.id, other.id, "message", "message", "ask", await this.scrub(userId, [other.id, me.id], body), cross ? { fromTitle: me.title, toTitle: other.title, fromProject: this.projectName(me), toProject: this.projectName(other), toProjectId: other.project_id } : undefined);

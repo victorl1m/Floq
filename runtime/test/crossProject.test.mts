@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Orchestrator } from "../src/orchestrator.ts";
+import { AgentOutbox } from "../src/messageDelivery.ts";
 import { CrossProjectGuard, buildProvenance } from "../src/crossProject.ts";
 import { buildSubagentInstruction } from "../src/subagents.ts";
 import { formatAgentListEntry } from "../image/floq-args.mts";
@@ -19,6 +20,25 @@ const ROWS = [
   row(C, "Stranger", "u2", "p3", "Globex Console", "globex"),
 ];
 
+/** In-memory agent_outbox: the fake pool above only answers session lookups. */
+class MemoryOutbox extends AgentOutbox {
+  rows = new Map<string, { userId: string; toSessionId: string; kind: "message" | "approval"; text: string; delivered: boolean; at: number }>();
+  constructor() { super({ query: async () => ({ rows: [] }) } as never); }
+  async enqueue(userId: string, toSessionId: string, kind: "message" | "approval", text: string) {
+    const id = String(this.rows.size + 1).padStart(6, "0");
+    this.rows.set(id, { userId, toSessionId, kind, text, delivered: false, at: Date.now() });
+    return id;
+  }
+  async pending(userId: string, sessionId: string) {
+    return [...this.rows].filter(([, r]) => r.userId === userId && r.toSessionId === sessionId && !r.delivered)
+      .map(([id, r]) => ({ id, userId, toSessionId: sessionId, kind: r.kind, text: r.text, attempts: 0, ageMs: Date.now() - r.at }));
+  }
+  async expire() {}
+  async attempt() {}
+  async markDelivered(id: string) { const r = this.rows.get(id); if (!r || r.delivered) return false; r.delivered = true; return true; }
+  async isDelivered(id: string) { return this.rows.get(id)?.delivered ?? false; }
+}
+
 function harness(allow = true, guard = new CrossProjectGuard()) {
   const typed: string[] = [];
   const records: unknown[][] = [];
@@ -34,7 +54,7 @@ function harness(allow = true, guard = new CrossProjectGuard()) {
     record: async (...a: unknown[]) => { records.push(a); },
     upsert: async (...a: unknown[]) => { upserts.push(a); return { id: "link1" }; },
   };
-  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, guard);
+  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, guard, undefined, undefined, new MemoryOutbox());
   return { orchestrator, typed, records, upserts };
 }
 
