@@ -49,7 +49,6 @@ async fn relay(mut local: TcpStream, url: String) {
     tokio::select! { _ = up => {}, _ = down => {} }
 }
 
-#[tauri::command]
 pub async fn port_forward_start(state: tauri::State<'_, Forwards>, port: u16, url: String) -> Result<(), String> {
     if port < 1024 && cfg!(unix) {
         return Err(format!("Port {port} is privileged and cannot be forwarded"));
@@ -78,7 +77,6 @@ pub async fn port_forward_start(state: tauri::State<'_, Forwards>, port: u16, ur
     Ok(())
 }
 
-#[tauri::command]
 pub fn port_forward_stop(state: tauri::State<'_, Forwards>, port: u16) {
     if let Some(task) = state.0.lock().unwrap().remove(&port) {
         task.abort();
