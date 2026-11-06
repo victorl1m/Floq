@@ -121,6 +121,12 @@ export default function CanonicalProjectList() {
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
+  // Where a project created from the sidebar goes: a folder id, or null for the root.
+  const [createTarget, setCreateTarget] = useState<string | null>(null);
+  const [newProject, setNewProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [newProjectError, setNewProjectError] = useState<string | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [deletingWorktree, setDeletingWorktree] = useState<WorktreeDeleteTarget | null>(null);
@@ -194,6 +200,24 @@ export default function CanonicalProjectList() {
     });
   }
   function moveProject(projectId: string, folderId: string | null) { saveLayout(scope, moveProjectInto(layout, projectId, folderId)); }
+  /** Opens the New project dialog; a folder id puts the new project inside that folder. */
+  function startNewProject(folderId: string | null) { setCreateTarget(folderId); setNewProjectName(""); setNewProjectError(null); setNewProject(true); if (folderId) setFolderExpanded(folderId, true); }
+  function startImportRepo(folderId: string | null) { setCreateTarget(folderId); setRepoOpen(true); if (folderId) setFolderExpanded(folderId, true); }
+  function placeNewProject(project: RuntimeProject) { if (createTarget) saveLayout(scope, moveProjectInto(layout, project.id, createTarget)); }
+  async function submitNewProject() {
+    const name = newProjectName.trim();
+    if (!name || newProjectBusy) return;
+    setNewProjectBusy(true);
+    setNewProjectError(null);
+    try {
+      const project = await createProject({ name });
+      placeNewProject(project);
+      await refreshProjects();
+      setNewProject(false);
+      toast.success(`Project “${name}” created`, { description: createTarget ? "It is in the folder you picked." : "It is at the top of your projects." });
+    } catch (error) { setNewProjectError(errorMessage(error)); }
+    finally { setNewProjectBusy(false); }
+  }
   function setFolderExpanded(folderId: string, open: boolean) { cacheFolderExpanded(scope, folderId, open); }
 
   useEffect(() => {
@@ -371,26 +395,39 @@ export default function CanonicalProjectList() {
           {renamingFolder === folder.id
             ? <div className="flex h-8 items-center gap-2 px-2"><IconFolder className="size-4 shrink-0 text-muted-foreground" /><InlineRename initial={folder.name} label="Folder name" onCommit={(value) => renameFolder(folder, value)} onCancel={() => setRenamingFolder(null)} /></div>
             : <>
-              <CollapsibleTrigger asChild><SidebarMenuButton asChild className="h-8 pr-14! text-[13px] font-medium"><DndButton title={`${folder.name} · ${members.length} ${members.length === 1 ? "project" : "projects"}`}>
+              <CollapsibleTrigger asChild><SidebarMenuButton asChild className="h-8 pr-20! text-[13px] font-medium"><DndButton title={`${folder.name} · ${members.length} ${members.length === 1 ? "project" : "projects"}`}>
                 {expanded ? <IconFolderOpen className="text-muted-foreground" /> : <IconFolder className="text-muted-foreground" />}<span className="min-w-0 flex-1 truncate">{folder.name}</span>
               </DndButton></SidebarMenuButton></CollapsibleTrigger>
               <span aria-hidden className="pointer-events-none absolute top-1/2 right-7 flex size-6 -translate-y-1/2 items-center justify-center text-[11px] tabular-nums text-muted-foreground transition-opacity md:group-hover/folder-row:opacity-0 md:group-focus-within/folder-row:opacity-0 md:group-has-aria-expanded/folder-row:opacity-0">{members.length}</span>
               <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
-                <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</DropdownMenuItem><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
+                <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => startNewProject(folder.id)}><IconPlus />New project here…</DropdownMenuItem><DropdownMenuItem onClick={() => startImportRepo(folder.id)}><IconGitBranch />Import repository here…</DropdownMenuItem><DropdownMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</DropdownMenuItem><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
               </DropdownMenu>
+              <RowAction slot="third" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`New project in ${folder.name}`} title="New project in this folder" onClick={(event) => { event.stopPropagation(); startNewProject(folder.id); }}><IconPlus /></RowAction>
               <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90" /></RowAction></CollapsibleTrigger>
             </>}
         </DndRow></ContextMenuTrigger>
           <ContextMenuContent className={CTX}>
             <ContextMenuItem onSelect={menu.rename}><IconPencil />Rename folder</ContextMenuItem>
             <ContextMenuItem onClick={menu.toggle}>{expanded ? <IconChevronsUp /> : <IconChevronsDown />}{expanded ? "Collapse" : "Expand"}</ContextMenuItem>
+            <ContextMenuItem onClick={() => startNewProject(folder.id)}><IconPlus />New project here…</ContextMenuItem>
+            <ContextMenuItem onClick={() => startImportRepo(folder.id)}><IconGitBranch />Import repository here…</ContextMenuItem>
             <ContextMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder (keep projects)</ContextMenuItem>
           </ContextMenuContent></ContextMenu>
         <CollapsibleContent>
           <ul className="ml-3 flex min-w-0 flex-col border-l border-sidebar-border/60">
-            {entries.length ? entries.map((entry) => entry.kind === "project" ? (projectsById.get(entry.id) ? renderProject(projectsById.get(entry.id)!) : null) : (foldersById.get(entry.id) ? renderFolder(foldersById.get(entry.id)!) : null)) : <li><EmptyFolderDrop folderId={folder.id}><span className="flex h-8 items-center px-2 text-xs text-muted-foreground">Drop items here</span></EmptyFolderDrop></li>}
+            {entries.length ? entries.map((entry) => entry.kind === "project" ? (projectsById.get(entry.id) ? renderProject(projectsById.get(entry.id)!) : null) : (foldersById.get(entry.id) ? renderFolder(foldersById.get(entry.id)!) : null)) : <li><ContextMenu><ContextMenuTrigger asChild><div><EmptyFolderDrop folderId={folder.id}><span className="flex h-8 items-center px-2 text-xs text-muted-foreground">Drop items here</span></EmptyFolderDrop></div></ContextMenuTrigger>
+              <ContextMenuContent className={CTX}>
+                <ContextMenuItem onClick={() => startNewProject(folder.id)}><IconPlus />New project here…</ContextMenuItem>
+                <ContextMenuItem onClick={() => startImportRepo(folder.id)}><IconGitBranch />Import repository here…</ContextMenuItem>
+                <ContextMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={menu.rename}><IconPencil />Rename folder</ContextMenuItem>
+                <ContextMenuItem onClick={menu.toggle}><IconChevronsUp />Collapse</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder (keep projects)</ContextMenuItem>
+              </ContextMenuContent></ContextMenu></li>}
           </ul>
         </CollapsibleContent>
       </Collapsible>
@@ -407,8 +444,9 @@ export default function CanonicalProjectList() {
       <DropdownMenu><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="Add to projects"><IconPlus className="size-3.5" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>Add to projects</TooltipContent></Tooltip>
         <DropdownMenuContent align="start" side="right" className={MENU}>
           <DropdownMenuItem onClick={() => setNewAgentOpen(true)}><IconPlus />New agent</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => startNewProject(null)}><IconFolderPlus />New project…</DropdownMenuItem>
           <DropdownMenuItem onClick={() => createFolder()}><IconFolderPlus />New folder</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setRepoOpen(true)}><IconGitBranch />Import repository</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => startImportRepo(null)}><IconGitBranch />Import repository</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       </div>
@@ -432,7 +470,15 @@ export default function CanonicalProjectList() {
       </SidebarGroupContent>
     </SidebarGroup>
 
-    <CloneDialog open={repoOpen} onOpenChange={setRepoOpen} onClone={async (repo) => { await createProject({ gitUrl: repo.url, name: repo.label }); await refreshProjects(); }} />
+    <CloneDialog open={repoOpen} onOpenChange={setRepoOpen} onClone={async (repo) => { const project = await createProject({ gitUrl: repo.url, name: repo.label }); placeNewProject(project); await refreshProjects(); }} />
+    <AppDialog open={newProject} onOpenChange={(open) => { if (!newProjectBusy) setNewProject(open); }} icon={<IconFolderPlus />} title="New project" description={createTarget ? `It will be created inside “${foldersById.get(createTarget)?.name ?? "the folder"}”.` : "An empty project you can add agents to."}
+      footer={<><Button variant="outline" disabled={newProjectBusy} onClick={() => setNewProject(false)}>Cancel</Button><Button type="submit" form="new-project-form" disabled={newProjectBusy || !newProjectName.trim()}>{newProjectBusy ? "Creating…" : "Create project"}</Button></>}>
+      <form id="new-project-form" noValidate onSubmit={(event) => { event.preventDefault(); void submitNewProject(); }} className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2"><Label htmlFor="new-project-name">Project name</Label><Input id="new-project-name" autoFocus maxLength={60} value={newProjectName} placeholder="My project" onChange={(event) => { setNewProjectName(event.target.value); setNewProjectError(null); }} /></div>
+        {newProjectError && <ErrorBanner>{newProjectError}</ErrorBanner>}
+        <button type="button" className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => { setNewProject(false); startImportRepo(createTarget); }}>Import a Git repository instead</button>
+      </form>
+    </AppDialog>
     <AppDialog open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={<IconPencil />} title="Project settings" description="These details are shared with your other Floq sessions. Image URLs load directly in your browser." footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
       <form id="canonical-project-edit" noValidate onSubmit={(event) => void saveEdit(event)} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2"><Label htmlFor="canonical-project-name">Project name</Label><Input id="canonical-project-name" autoFocus maxLength={60} value={name} onChange={(event) => { setName(event.target.value); setEditError(null); }} /></div>
