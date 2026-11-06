@@ -515,7 +515,7 @@ export interface SessionDebugLink {
 }
 
 /** An agent asking the USER to approve an irreversible or outward-facing action (`floq approval request`). */
-export interface ApprovalAgentRef { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null }
+export interface ApprovalAgentRef { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null; /** "plugin" when a Floq plugin (not an agent session) is asking. */ kind?: "agent" | "plugin" }
 export interface ApprovalRequest {
   id: string;
   requester: ApprovalAgentRef;
@@ -544,3 +544,81 @@ export interface DecisionQuestion { id: string; question: string; header?: strin
 export interface DecisionAnswer { questionId: string; optionIds: string[]; text: string }
 export interface DecisionView { id: string; source: 'cli' | 'native'; sessionId: string; projectId: string; sessionName: string; provider: 'claude' | 'codex' | null; questions: DecisionQuestion[]; status: 'pending' | 'answered' | 'cancelled' | 'expired'; createdAt: string; expiresAt: string; answerMode: 'direction' | 'hook' | 'keys' | 'terminal'; response?: { answers: DecisionAnswer[] }; deliveryStatus?: 'pending' | 'delivered' | 'failed' }
 export type DecisionFrame = { type: 'decision-request' | 'decision-updated'; decision: DecisionView } | { type: 'decision-resolved'; id: string; sessionId: string; status: 'answered' | 'cancelled' | 'expired'; response?: { answers: DecisionAnswer[] }; deliveryStatus?: 'pending' | 'delivered' | 'failed' };
+
+// ---- Plugins (hand-mirrored from runtime/src/plugins/sdk.ts and host.ts; keep key lists identical) ----
+
+export type PluginScope = "user" | "install";
+export type PluginStatus = "available" | "enabled" | "disabled" | "failed" | "invalid";
+export type PluginSettingType = "text" | "url" | "number" | "boolean" | "select" | "secretRef";
+
+export interface PluginSettingDecl {
+  key: string;
+  type: PluginSettingType;
+  label: string;
+  description?: string;
+  required?: boolean;
+  options?: { value: string; label: string }[];
+}
+export interface PluginViewDecl { id: string; label: string; icon?: string }
+export interface PluginTaskSourceDecl { id: string; label: string; view: "generic" | "custom" }
+export interface PluginRightSidebarTabDecl { id: string; label: string; icon?: string }
+
+export interface PluginContributes {
+  views: PluginViewDecl[];
+  taskSources: PluginTaskSourceDecl[];
+  rightSidebarTabs: PluginRightSidebarTabDecl[];
+  settingsPanel: boolean;
+}
+
+/** `GET /v1/plugins` row: the public manifest subset plus install, user and status state. Secret values are never included. */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  icon?: string;
+  scope: PluginScope;
+  status: PluginStatus;
+  /** Install-wide switch. */
+  enabled: boolean;
+  /** This user's switch (always true for install scope when enabled). */
+  userEnabled: boolean;
+  error?: string;
+  /** "installed" plugins come from a package and can be updated or uninstalled by an admin. */
+  source: "builtin" | "installed";
+  /** Present when the plugin ships a UI bundle: the sha256 the app checks before loading it. */
+  ui: { sha256: string } | null;
+  secrets: { name: string; description?: string; required: boolean; present: boolean }[];
+  settings: PluginSettingDecl[];
+  contributes: PluginContributes;
+}
+export type PluginSettingValues = Record<string, string | number | boolean>;
+
+// ---- Task sources (mirrors runtime/src/plugins/taskSources.ts) ----
+
+export type TaskStatusCategory = "todo" | "doing" | "done";
+export interface ExternalTask {
+  sourceId: string;
+  externalId: string;
+  title: string;
+  status: string;
+  statusCategory: TaskStatusCategory;
+  assignee?: string;
+  priority?: string;
+  url: string;
+  updatedAt: string;
+  fields: { label: string; value: string }[];
+}
+export interface TaskSourceInfo { pluginId: string; sourceId: string; label: string; view: "generic" | "custom"; icon?: string; missingSecrets: string[] }
+export interface ExternalTaskPage { items: ExternalTask[]; nextCursor?: string }
+
+// ---- Plugin catalog (installable plugins) ----
+
+export interface PluginCatalogItem {
+  id: string; name: string; version: string; apiVersion: number; description: string; icon?: string; scope: PluginScope;
+  secrets: string[]; network: string[]; contributes: string[]; minFloq?: string;
+  /** Built into this runtime: listed, but cannot be installed or removed. */
+  builtin: boolean;
+  installedVersion: string | null;
+  updateAvailable: boolean;
+}

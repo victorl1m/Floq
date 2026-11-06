@@ -9,7 +9,7 @@ import { ProjectMark } from "@/components/projects/project-identity";
 import { ProviderIcon } from "@/components/agents/provider";
 import { providerThemeProps } from "@/lib/provider-theme";
 import {
-  announceBucket, describeAnnouncement, detailIsLong, RISK_LABEL, riskLevel,
+  actorLabel, announceBucket, describeAnnouncement, detailIsLong, RISK_LABEL, riskLevel,
 } from "@/lib/approval-format";
 import {
   deferApprovals, markApprovalOutcome, pendingCount, removeApproval, reopenApprovals, selectApproval, sortedItems, useApprovalState, useApprovalSync, type ApprovalItem,
@@ -43,7 +43,7 @@ function AgentChip({ agent, projectLookup }: { agent: ApprovalAgentRef; projectL
   return (
     <span {...providerThemeProps(agent.provider)} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-(--provider-rim,var(--border)) bg-(--provider-tint,var(--muted)) px-2 py-1 text-xs">
       <ProviderIcon provider={agent.provider} className="size-3.5" />
-      <span className="truncate font-medium text-foreground">{agent.name}</span>
+      <span className="truncate font-medium text-foreground">{actorLabel(agent)}</span>
       {agent.projectName && (
         <>
           <span aria-hidden="true" className="text-muted-foreground">·</span>
@@ -64,7 +64,7 @@ function useAnnouncement(item: ApprovalItem, seconds: number): string {
     const text = item.state === "expired" ? `Approval request expired: ${item.approval.action}.`
       : item.state === "allowed" ? "Approved. The agent was notified."
       : item.state === "denied" ? "Denied. The agent was notified."
-      : describeAnnouncement(bucket, item.approval.requester.name, item.approval.action, seconds);
+      : describeAnnouncement(bucket, actorLabel(item.approval.requester), item.approval.action, seconds);
     last.current = { key, text };
   }
   return last.current.text;

@@ -12,6 +12,7 @@ import {
   setRightSidebarTab,
   setRightSidebarWidth,
   useRightSidebar,
+  resolveRightSidebarTab,
   type RightSidebarTab,
 } from "@/lib/right-sidebar";
 import { isLive } from "../provider";
@@ -20,8 +21,10 @@ import AppWindowTab, { useDisplayAnnouncements } from "./app-window-tab";
 import ConversationsTab from "./conversations-tab";
 import FilesTab from "./files-tab";
 import { PanelEmpty } from "./panel-states";
+import { PluginBoundary, usePlugins } from "@/plugins/host";
+import { resolvePluginIcon } from "@/plugins/icons";
 
-const TABS: Array<{ id: RightSidebarTab; label: string; icon: typeof IconFiles }> = [
+const CORE_TAB_DEFS: Array<{ id: RightSidebarTab; label: string; icon: typeof IconFiles }> = [
   { id: "changes", label: "Changes", icon: IconGitCompare },
   { id: "files", label: "Files", icon: IconFiles },
   { id: "conversations", label: "Conversations", icon: IconMessages },
@@ -43,7 +46,12 @@ function useNarrow(): boolean {
 /** Shared project panel for agent workspaces and the selected canvas workspace. Overlays content on narrow windows. */
 export default function RightSidebar() {
   const { client, sessions, projects, view, selectedId, selectedTerminalId, activeProjectId, canvasProjectId, activeWorkspaceId } = useRuntime();
-  const { open, width, tab, canvasSessionId } = useRightSidebar();
+  const { open, width, tab: storedTab, canvasSessionId } = useRightSidebar();
+  // The four core tabs never change; enabled plugin tabs append. A stored tab of a disabled plugin falls back to Changes.
+  const plugins = usePlugins();
+  const pluginTabs = plugins.tabs;
+  const TABS = useMemo(() => [...CORE_TAB_DEFS, ...pluginTabs.map((t) => ({ id: `plugin:${t.pluginId}/${t.tabId}` as RightSidebarTab, label: t.label, icon: resolvePluginIcon(t.icon) }))], [pluginTabs]);
+  const tab = resolveRightSidebarTab(storedTab, TABS.map((t) => t.id));
   const narrow = useNarrow();
   const [performancePrefs] = usePerformancePrefs();
   const [reducedBySystem, setReducedBySystem] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -259,6 +267,11 @@ export default function RightSidebar() {
         <div className={cn("h-full", tab !== "conversations" && "hidden")}>
           <ConversationsTab projectId={projectId} project={project} />
         </div>
+        {pluginTabs.filter((t) => tab === `plugin:${t.pluginId}/${t.tabId}`).map((t) => (
+          <div key={`${t.pluginId}/${t.tabId}`} className="relative h-full">
+            <PluginBoundary pluginId={t.pluginId}><t.Component plugin={t.plugin} tab={t.decl} /></PluginBoundary>
+          </div>
+        ))}
         <div className={cn("h-full", tab !== "app" && "hidden")}>
           <AppWindowTab client={client} session={activeSession ?? session} active={open && tab === "app"} />
         </div>

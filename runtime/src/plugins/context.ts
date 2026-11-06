@@ -1,0 +1,282 @@
+import type pg from "pg";
+import { log as coreLog } from "../logger.js";
+import { scrubSecrets } from "../vault.js";
+import { HttpError } from "../errors.js";
+import type { Approvals } from "../approvals.js";
+import type { PluginEvents } from "./events.js";
+import type { TaskSourceRegistry } from "./taskSources.js";
+import type { WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
+
+export const FETCH_TIMEOUT_MS = 15_000;
+export const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+
+export interface RouteEntry { method: PluginRouteMethod; segments: string[]; handler: PluginRouteHandler }
+
+export interface ContextDeps {
+  pool: Pick<pg.Pool, "query" | "connect">;
+  vault: { reveal(userId: string, names: string[] | null, only: null, sessionId: string | null): Promise<Record<string, string>> };
+  /** Schema mode: schema name. Prefix mode: null and `tablePrefix` is used. */
+  schema: string | null;
+  tablePrefix: string;
+  fetchImpl?: typeof fetch;
+  taskSources?: TaskSourceRegistry;
+  events?: PluginEvents;
+  /** Lazy: the server (and its Approvals) is created after plugins are loaded. */
+  approvals?: () => Pick<Approvals, "askAsPlugin"> | undefined;
+  sink?: (level: "debug" | "info" | "warn" | "error", event: string, fields: Record<string, unknown>) => void;
+}
+
+/** `scrub` redacts every secret value this plugin revealed (raw, URL-encoded and JSON-escaped forms) from strings and JSON-able values. */
+export interface WebhookEntry { handler: WebhookHandler; verify?: (req: WebhookRequest) => boolean | Promise<boolean> }
+export interface BuiltContext { ctx: PluginContext; routes: RouteEntry[]; internalRoutes: RouteEntry[]; webhooks: Map<string, WebhookEntry>; scrub: (v: unknown) => unknown; scrubText: (text: string) => string; dispose(): void }
+
+/** Exact host or `*.suffix` (any depth below suffix, never the bare suffix). */
+export function hostAllowed(host: string, allow: string[]): boolean {
+  const h = host.toLowerCase();
+  return allow.some((a) => (a.startsWith("*.") ? h.endsWith(a.slice(1).toLowerCase()) && h.length > a.length - 1 : h === a.toLowerCase()));
+}
+
+export function expandSql(sql: string, tablePrefix: string, schemaMode: boolean): string {
+  return sql.split("{{p}}").join(schemaMode ? "" : tablePrefix);
+}
+
+export function compilePattern(pattern: string): string[] {
+  if (typeof pattern !== "string" || !pattern.startsWith("/")) throw new Error("route pattern must start with /");
+  return pattern.split("/").filter(Boolean);
+}
+
+export function matchRoute(entries: RouteEntry[], method: string, path: string): { entry: RouteEntry; params: Record<string, string> } | null {
+  const parts = path.split("/").filter(Boolean);
+  for (const entry of entries) {
+    if (entry.method !== method || entry.segments.length !== parts.length) continue;
+    const params: Record<string, string> = {};
+    let ok = true;
+    for (let i = 0; i < parts.length && ok; i++) {
+      const seg = entry.segments[i];
+      if (seg.startsWith(":")) {
+        try {
+          const v = decodeURIComponent(parts[i]);
+          // Params often end up in upstream URLs or paths: refuse separators, NUL and dot segments after decoding.
+          if (/[\/\\\0]/.test(v) || v === "." || v === "..") ok = false; else params[seg.slice(1)] = v;
+        } catch { ok = false; }
+      }
+      else ok = seg === parts[i];
+    }
+    if (ok) return { entry, params };
+  }
+  return null;
+}
+
+export function buildContext(manifest: PluginManifest, deps: ContextDeps): BuiltContext {
+  const id = manifest.id;
+  const declared = new Set(manifest.secrets.map((s) => s.name));
+  const revealed = new Map<string, string>();
+  const routes: RouteEntry[] = [];
+  const internalRoutes: RouteEntry[] = [];
+  const webhooks = new Map<string, WebhookEntry>();
+  const cancels = new Set<() => void>();
+  const abort = new AbortController();
+  const schemaMode = deps.schema !== null;
+  const sink = deps.sink ?? ((level, event, fields) => coreLog[level](event, fields));
+  const doFetch = deps.fetchImpl ?? fetch;
+
+  const scrubText = (text: string): string => {
+    if (!revealed.size) return text;
+    const variants: Record<string, string> = {};
+    for (const [k, v] of revealed) {
+      for (const form of new Set([v, encodeURIComponent(v), JSON.stringify(v).slice(1, -1), Buffer.from(v).toString("base64"), Buffer.from(":" + v).toString("base64")])) variants[k + "\0" + form] = form;
+    }
+    return scrubSecrets(text, variants);
+  };
+  async function limitedFetch(u: URL, init: PluginFetchInit): Promise<PluginFetchResponse> {
+    const res = await doFetch(u, { method: init.method, headers: init.headers, body: init.body as BodyInit | undefined, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (res.body) {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > FETCH_MAX_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("plugin fetch: response exceeds the 5 MiB limit"); }
+        chunks.push(value);
+      }
+    }
+    const bytes = Buffer.concat(chunks);
+    return { status: res.status, ok: res.ok, headers: Object.fromEntries(res.headers), bytes, text: () => bytes.toString("utf8"), json: () => JSON.parse(bytes.toString("utf8")) };
+  }
+
+  /** Redacts every string leaf (and key) of a JSON-like value. Leaf-wise, so a secret that already sits in a string in its encoded form is caught too. */
+  const scrub = (v: unknown, depth = 0): unknown => {
+    if (!revealed.size) return v;
+    if (typeof v === "string") return scrubText(v);
+    if (v === null || typeof v !== "object") return v;
+    if (depth > 24) return "[unserializable]";
+    if (Array.isArray(v)) return v.map((x) => scrub(x, depth + 1));
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [scrubText(k), scrub(x, depth + 1)]));
+  };
+  const emit = (level: "debug" | "info" | "warn" | "error") => (message: string, fields?: Record<string, unknown>) =>
+    sink(level, "plugin." + id, { plugin: id, message: scrub(message), ...(fields ? (scrub(fields) as Record<string, unknown>) : {}) });
+  const logger: PluginLog = { debug: emit("debug"), info: emit("info"), warn: emit("warn"), error: emit("error") };
+
+  const addRoute = (method: PluginRouteMethod) => (pattern: string, handler: PluginRouteHandler) => {
+    if (!manifest.contributes.routes) throw new Error('plugin did not declare contributes.routes');
+    routes.push({ method, segments: compilePattern(pattern), handler });
+  };
+
+  async function dbQuery(sql: string, params: unknown[] = []) {
+    const client = await deps.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (schemaMode) await client.query(`SET LOCAL search_path TO "${deps.schema}"`);
+      const res = await client.query(expandSql(sql, deps.tablePrefix, schemaMode), params);
+      await client.query("COMMIT");
+      return { rows: res.rows as Record<string, unknown>[], rowCount: res.rowCount ?? res.rows.length };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const checkKey = (key: string) => { if (typeof key !== "string" || !key || key.length > 128) throw new Error("kv key must be 1-128 characters"); };
+
+  const ctx: PluginContext = {
+    pluginId: id,
+    manifest,
+    routes: { get: addRoute("GET"), post: addRoute("POST"), put: addRoute("PUT"), delete: addRoute("DELETE") },
+    internalRoutes: {
+      call(pattern, handler) {
+        if (!manifest.contributes.internalRoutes) throw new Error("plugin did not declare contributes.internalRoutes");
+        internalRoutes.push({ method: "POST", segments: compilePattern(pattern), handler });
+      },
+    },
+    webhooks: {
+      on(name, handler, options) {
+        if (!manifest.contributes.webhooks.includes(name)) throw new Error("webhook is not declared in the plugin manifest");
+        webhooks.set(name, { handler, verify: options?.verify });
+      },
+    },
+    httpError: (status: number, code: string, message: string) => new HttpError(status, code, String(message).slice(0, 300)),
+    async installOwner() {
+      if (manifest.scope !== "install") throw new Error("installOwner is only available to install-scoped plugins");
+      return ((await deps.pool.query("SELECT config_owner FROM floq_plugins WHERE id = $1", [id])).rows[0]?.config_owner as string | null | undefined) ?? null;
+    },
+    secrets: {
+      async getInstall(name) {
+        if (manifest.scope !== "install") throw new Error("getInstall is only available to install-scoped plugins; use get(userId, name)");
+        if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
+        const owner = (await deps.pool.query("SELECT config_owner FROM floq_plugins WHERE id = $1", [id])).rows[0]?.config_owner as string | null | undefined;
+        if (!owner) return undefined;
+        const value = (await deps.vault.reveal(owner, [name], null, "plugin:" + id))[name];
+        if (value !== undefined) revealed.set(name + "\0" + owner, value);
+        return value;
+      },
+      async get(userId, name) {
+        if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
+        const out = await deps.vault.reveal(userId, [name], null, "plugin:" + id);
+        const value = out[name];
+        if (value !== undefined) revealed.set(name + "\0" + userId, value);
+        return value;
+      },
+    },
+    fetch: (url: string, init: PluginFetchInit = {}) => {
+      let u: URL;
+      try { u = new URL(url); } catch { return Promise.reject(new Error("plugin fetch: invalid URL")); }
+      if (u.protocol !== "https:") return Promise.reject(new Error("plugin fetch: only https is allowed"));
+      if (!hostAllowed(u.hostname, manifest.network.allow)) return Promise.reject(new Error(`plugin fetch: host ${u.hostname} is not in the plugin's network allow-list`));
+      return limitedFetch(u, init);
+    },
+    /**
+     * For self-hosted services whose address the admin or user entered in a `url` setting (WAHA). Only the origin of a saved `url`
+     * setting is reachable (http or https, private networks included because the owner chose it); everything else is refused.
+     */
+    async fetchUserUrl(userId: string, url: string, init: PluginFetchInit = {}) {
+      let u: URL;
+      try { u = new URL(url); } catch { throw new Error("plugin fetch: invalid URL"); }
+      if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("plugin fetch: only http(s) is allowed");
+      const keys = manifest.settings.filter((d) => d.type === "url").map((d) => d.key);
+      if (!keys.length) throw new Error("plugin fetch: the plugin declares no url setting");
+      const saved = await ctx.settings.get(userId);
+      const origins = keys.flatMap((k) => { try { return typeof saved[k] === "string" ? [new URL(saved[k] as string).origin] : []; } catch { return []; } });
+      if (!origins.includes(u.origin)) throw new Error("plugin fetch: address is not one the owner configured in the plugin settings");
+      return limitedFetch(u, init);
+    },
+    db: {
+      query: dbQuery,
+      forUser: (userId) => ({ query: (sql, params = []) => dbQuery(sql, [userId, ...params]) }),
+    },
+    settings: {
+      async get(userId) {
+        const row = manifest.scope === "install"
+          ? (await deps.pool.query("SELECT config AS v FROM floq_plugins WHERE id = $1", [id])).rows[0]
+          : (await deps.pool.query("SELECT settings AS v FROM floq_plugin_user_settings WHERE plugin_id = $1 AND user_id = $2", [id, userId])).rows[0];
+        const { __kv: _kv, ...rest } = (row?.v ?? {}) as Record<string, unknown>;
+        return rest;
+      },
+    },
+    kv: {
+      async get(userId, key) {
+        checkKey(key);
+        const r = await deps.pool.query("SELECT settings->'__kv'->$3::text AS v FROM floq_plugin_user_settings WHERE plugin_id = $1 AND user_id = $2", [id, userId, key]);
+        return r.rows[0]?.v ?? undefined;
+      },
+      async set(userId, key, value) {
+        checkKey(key);
+        const json = JSON.stringify(value ?? null);
+        await deps.pool.query(
+          `INSERT INTO floq_plugin_user_settings (plugin_id, user_id, settings)
+           VALUES ($1, $2, jsonb_build_object('__kv', jsonb_build_object($3::text, $4::jsonb)))
+           ON CONFLICT (plugin_id, user_id) DO UPDATE SET
+             settings = jsonb_set(floq_plugin_user_settings.settings, '{__kv}', COALESCE(floq_plugin_user_settings.settings->'__kv', '{}'::jsonb) || jsonb_build_object($3::text, $4::jsonb)),
+             updated_at = now()`,
+          [id, userId, key, json],
+        );
+      },
+    },
+    taskSources: {
+      register({ id: sourceId, provider }) {
+        if (!manifest.contributes.taskSources.some((d) => d.id === sourceId)) throw new Error("task source is not declared in the plugin manifest");
+        if (!deps.taskSources) throw new Error("task sources are not available");
+        deps.taskSources.register(id, sourceId, provider);
+      },
+    },
+    events: {
+      publish(userId, name, data) {
+        if (!deps.events) throw new Error("events are not available");
+        deps.events.publish(userId, id, name, scrub(data));
+      },
+    },
+    toast(userId, toast) {
+      if (!deps.events) throw new Error("events are not available");
+      const clip = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : undefined);
+      deps.events.publish(userId, id, "toast", scrub({ title: clip(toast.title, 120) ?? "", description: clip(toast.description, 300) }));
+    },
+    approvals: {
+      request({ userId, action, detail, signal, timeoutMs }) {
+        const approvals = deps.approvals?.();
+        if (!approvals) return Promise.reject(new Error("approvals are not available"));
+        // Withdrawn when the plugin stops or the caller's own signal fires (an agent that stopped waiting).
+        const both = signal ? AbortSignal.any([abort.signal, signal]) : abort.signal;
+        const wait = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? Math.min(Math.max(timeoutMs, 1_000), 10 * 60_000) : undefined;
+        return approvals.askAsPlugin(userId, { id, name: manifest.name }, { action, detail }, both, wait);
+      },
+    },
+    log: logger,
+    schedule(intervalMs, fn) {
+      if (!Number.isFinite(intervalMs) || intervalMs < 1000) throw new Error("schedule interval must be at least 1000 ms");
+      let running = false;
+      const timer = setInterval(() => {
+        if (running) return;
+        running = true;
+        Promise.resolve().then(fn).catch((e) => logger.error("scheduled task failed", { error: e instanceof Error ? e.message : String(e) })).finally(() => { running = false; });
+      }, intervalMs);
+      timer.unref?.();
+      const cancel = () => { clearInterval(timer); cancels.delete(cancel); };
+      cancels.add(cancel);
+      return cancel;
+    },
+  };
+  return { ctx, routes, internalRoutes, webhooks, scrub, scrubText, dispose: () => { abort.abort(); for (const c of [...cancels]) c(); routes.length = 0; internalRoutes.length = 0; webhooks.clear(); deps.taskSources?.unregisterPlugin(id); } };
+}

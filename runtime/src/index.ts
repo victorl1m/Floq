@@ -24,6 +24,13 @@ import { WorkspaceFiles } from "./workspaceFiles.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { TasksService } from "./tasks.js";
+import { PluginHost } from "./plugins/host.js";
+import { BUILTIN_PLUGINS } from "./plugins/index.js";
+import { removeOwnedPluginSkill } from "./plugins/skillOwnership.js";
+import { CatalogClient } from "./plugins/catalog.js";
+import { loadInstalledPackages, pluginDirFromEnv } from "./plugins/installed.js";
+import { PluginInstaller } from "./plugins/installer.js";
+import { sha256Hex } from "./plugins/package.js";
 
 process.on("uncaughtException", (error) => log.error("process.uncaught", { error: error instanceof Error ? error.message : String(error) }));
 process.on("unhandledRejection", (reason) => log.error("process.unhandled_rejection", { error: reason instanceof Error ? reason.message : String(reason) }));
@@ -66,7 +73,20 @@ manager.subagents = subagents;
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards });
+const plugins = new PluginHost(pool, { plugins: BUILTIN_PLUGINS, vault });
+// Installed packages (Settings > Plugins > Browse plugins) load next to the built-ins; a broken one is listed as invalid and boot goes on.
+const pluginDir = pluginDirFromEnv();
+await loadInstalledPackages(pool, plugins, pluginDir, sha256Hex).then((r) => log.info("plugins.installed_loaded", r)).catch((error) => log.error("plugins.installed_load_failed", { error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+plugins.setInstaller(new PluginInstaller({ pool, host: plugins, catalog: new CatalogClient(), pluginDir }));
+plugins.setSkills({
+  setPluginSkills: (id, root, names) => skills.setPluginSkills(id, root, names),
+  // Plugin skills are copied into the user's own agent home (global scope, both providers): that is where agents load skills from.
+  installSkill: async (userId, _name, files) => { for (const provider of ["claude", "codex"] as const) await skills.addSkillPackage(userId, { scope: "global", provider, files }); },
+  // Only copies this plugin installed (marker file) are removed; a skill the user already had under that name stays.
+  removeSkill: async (userId, name, pluginId) => { await removeOwnedPluginSkill(skills, userId, name, pluginId); },
+});
+await plugins.load();
+const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
 
 await server.listen();
 log.info("runtime.listening", {
@@ -88,6 +108,7 @@ async function stop(signal: string): Promise<void> {
   stopping = true;
   log.info("runtime.stopping", { signal });
   credentials.stop();
+  await plugins.stopAll();
   await manager.shutdown();
   await server.close();
   await pool.end();

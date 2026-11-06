@@ -9,7 +9,7 @@ import { DEFAULT_LAUNCHER, MCP_FILE_SCRIPT, addToJsonConfig, describeMcp, specSe
 import { safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 
-export interface SkillInfo { name: string; description: string; source: "home" | "bundled" | "project"; scope: "global" | "project"; provider: "claude" | "codex"; location: string }
+export interface SkillInfo { name: string; description: string; source: "home" | "bundled" | "project"; scope: "global" | "project"; provider: "claude" | "codex"; location: string; /** `plugin:<id>` for skills a plugin publishes into the bundled scope. */ origin?: string }
 export interface McpServerInfo {
   name: string;
   provider: "claude" | "codex";
@@ -356,7 +356,38 @@ export function mergeSkillSources(bundled: SkillInfo[], home: SkillInfo[]): Skil
   return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Location prefix of plugin-published skills: `plugin:<id>/<folder>`. */
+export const PLUGIN_SKILL_PREFIX = "plugin:";
+
 export class SkillsService {
+  /** Skill folders plugins publish into the bundled scope: pluginId -> directory holding the skill folders, and the folders to expose. */
+  private readonly pluginSkillRoots = new Map<string, { root: string; names: string[] }>();
+
+  /** Publishes (or, with `root: null`, withdraws) a plugin's skill folders. Listed read-only with source "bundled" and origin `plugin:<id>`. */
+  setPluginSkills(pluginId: string, root: string | null, names: string[] = []): void {
+    if (root === null || !names.length) this.pluginSkillRoots.delete(pluginId);
+    else this.pluginSkillRoots.set(pluginId, { root, names });
+  }
+
+  private scanPluginSkills(provider?: "claude" | "codex"): SkillInfo[] {
+    const out: SkillInfo[] = [];
+    for (const [id, { root, names }] of this.pluginSkillRoots) {
+      for (const p of ["claude", "codex"] as const) {
+        if (provider && provider !== p) continue;
+        for (const skill of scanSkills(root, root, "bundled", p, PLUGIN_SKILL_PREFIX + id)) {
+          if (names.includes(basename(skill.location))) out.push({ ...skill, origin: PLUGIN_SKILL_PREFIX + id });
+        }
+      }
+    }
+    return out;
+  }
+
+  private pluginSkillRoot(location: string): { root: string; folder: string } | null {
+    const m = /^plugin:([a-z][a-z0-9-]*)\/([A-Za-z0-9._-]{1,100})$/.exec(location);
+    const entry = m ? this.pluginSkillRoots.get(m[1]) : undefined;
+    return m && entry && entry.names.includes(m[2]) ? { root: entry.root, folder: m[2] } : null;
+  }
+
   /** How MCP configs launch floq-vault; tests and local verification can point this at a script. */
   vaultLauncher: VaultLauncher = DEFAULT_LAUNCHER;
   constructor(
@@ -395,7 +426,7 @@ export class SkillsService {
     const bundled = this.scanBundle();
     const removed = bundled.length ? await loadRemovedSkills(this.pool, userId) : new Set<string>();
     return {
-      skills: mergeSkillSources(bundled.filter((skill) => !removed.has(`${skill.provider}:${basename(skill.location)}`)), homeSkills),
+      skills: mergeSkillSources([...bundled.filter((skill) => !removed.has(`${skill.provider}:${basename(skill.location)}`)), ...this.scanPluginSkills()], homeSkills),
       homeScanned: Boolean(handle),
     };
   }
@@ -433,6 +464,8 @@ export class SkillsService {
     if (input.scope !== "global") throw badRequest("scope must be global or project");
     if (input.source !== "home" && input.source !== "bundled") throw badRequest("source must be home or bundled");
     const match = (skill: SkillInfo) => skill.provider === provider && skill.location === location;
+    const pluginSkill = this.pluginSkillRoot(location);
+    if (pluginSkill && this.scanPluginSkills(provider).some(match)) return readSkillFolder(realpathSync(pluginSkill.root), pluginSkill.folder, path);
     const readBundle = async (): Promise<ReturnType<typeof readSkillFolder> | null> => {
       if (!this.scanBundle(provider).some(match)) return null;
       if ((await loadRemovedSkills(this.pool, userId)).has(`${provider}:${basename(location)}`)) return null;
@@ -473,6 +506,7 @@ export class SkillsService {
     const { provider, location } = input;
     if (provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex");
     if (typeof location !== "string") throw badRequest("location is required");
+    if (location.startsWith(PLUGIN_SKILL_PREFIX)) throw new HttpError(403, "skill_protected", "Skills published by a plugin are removed by disabling the plugin");
     const name = safeViewParts(location).at(-1) as string;
     if (!SAFE_SKILL_FILE_PART.test(name)) throw badRequest("Unsafe skill name", "invalid_skill_path");
     if (PROTECTED_SKILLS.includes(name.toLowerCase())) throw new HttpError(403, "skill_protected", "Floq skills cannot be deleted");
@@ -755,7 +789,8 @@ export class SkillsService {
     if (typeof name !== "string" || !name || name.length > 100) throw badRequest("skill name is required", "invalid_skill");
     if (provider !== undefined && provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex");
     const { skills } = await this.list(userId);
-    const matches = skills.filter((skill) => (skill.name === name || basename(skill.location) === name) && (!provider || skill.provider === provider));
+    // Plugin-published entries are managed by the plugin (disabling it withdraws them); only real copies in the home or bundle are removed here.
+    const matches = skills.filter((skill) => !skill.location.startsWith(PLUGIN_SKILL_PREFIX) && (skill.name === name || basename(skill.location) === name) && (!provider || skill.provider === provider));
     if (!matches.length) throw notFound("No global skill named " + name);
     let removed = 0;
     let hidden = false;

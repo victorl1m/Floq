@@ -403,3 +403,98 @@ test("the fixed instruction teaches real approvals and the refusal path", () => 
     assert.match(text, /floq approval request --target/);
   }
 });
+
+// ---------- plugin requesters ----------
+
+const PLUGIN = { id: "waha", name: "WhatsApp" };
+const pending = (frames: ApprovalFrame[]) => frames.filter((f): f is Extract<ApprovalFrame, { type: "approval-request" }> => f.type === "approval-request");
+const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(cond(), "condition not met"); };
+
+test("plugin approval: shown as a plugin requester, only the user resolves it, approve is single-use", async () => {
+  const { approvals, frames, delivered } = make({ alive: false }); // plugin requesters have no session: liveness must not cancel them
+  const result = approvals.askAsPlugin(U, PLUGIN, { action: "Send WhatsApp message to Ana", detail: "Hello" });
+  await until(() => pending(frames).length === 1);
+  const view = pending(frames)[0].approval;
+  assert.equal(view.requester.kind, "plugin");
+  assert.equal(view.requester.name, "WhatsApp");
+  assert.equal(view.requester.id, "plugin:waha");
+  assert.equal(view.target.id, view.requester.id);
+  await new Promise((r) => setTimeout(r, 30)); // several liveness ticks: still pending
+  assert.equal(approvals.list(U).length, 1);
+  // another user cannot resolve it; an agent session id is not a way in (resolve is user-side only and checks the owner)
+  await assert.rejects(approvals.resolve("someone-else", view.id, "allow"), /no longer pending/);
+  await approvals.resolve(U, view.id, "allow");
+  assert.equal(await result, "approved");
+  // the grant was consumed by the plugin call: it cannot be reused
+  assert.equal((await approvals.verify(U, "plugin:waha", view.id)).status, "CONSUMED");
+  assert.deepEqual(delivered, [], "nothing is typed into any terminal for a plugin requester");
+});
+
+test("plugin approval: deny and withdraw resolve the promise", async () => {
+  const a = make();
+  const denied = a.approvals.askAsPlugin(U, PLUGIN, { action: "Send message" });
+  await until(() => pending(a.frames).length === 1);
+  await a.approvals.resolve(U, pending(a.frames)[0].approval.id, "deny");
+  assert.equal(await denied, "denied");
+  const ac = new AbortController();
+  const b = make();
+  const aborted = b.approvals.askAsPlugin(U, PLUGIN, { action: "Send another" }, ac.signal);
+  await until(() => pending(b.frames).length === 1);
+  ac.abort();
+  assert.equal(await aborted, "expired");
+  assert.equal(b.approvals.list(U).length, 0);
+});
+
+test("plugin approval: a lapsed grant resolves as expired", async () => {
+  const a = make();
+  const p = a.approvals.askAsPlugin(U, PLUGIN, { action: "Send" });
+  await until(() => pending(a.frames).length === 1);
+  const id = pending(a.frames)[0].approval.id;
+  await a.approvals.cancel(U, "plugin:waha", id);
+  assert.equal(await p, "expired");
+});
+
+// ---------- plugin approvals are persisted (UUID columns) and bounded ----------
+
+test("plugin approvals persist with UUID party ids and read back after a restart", async () => {
+  const { persistedPartyId } = await import("../src/approvals.ts");
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  assert.match(persistedPartyId({ id: "plugin:waha", kind: "plugin" }), uuid);
+  assert.equal(persistedPartyId({ id: "plugin:waha", kind: "plugin" }), persistedPartyId({ id: "plugin:waha", kind: "plugin" }));
+  assert.notEqual(persistedPartyId({ id: "plugin:waha", kind: "plugin" }), persistedPartyId({ id: "plugin:other", kind: "plugin" }));
+  assert.equal(persistedPartyId({ id: A }), A); // agent sessions keep their own UUID
+  const db = new PGlite();
+  await db.exec(`CREATE TABLE "user" (id TEXT PRIMARY KEY)`);
+  const pool = { async query(sql: string, params?: unknown[]) { if (!params?.length) { const r = await db.exec(sql); const l = r[r.length - 1]; return { rows: l?.rows ?? [], rowCount: l?.rows?.length ?? 0 }; } const r = await db.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows || r.rows.length }; } };
+  await migrateApp(pool as never);
+  await db.exec(`INSERT INTO "user" (id) VALUES ('${U}')`);
+  const approvals = new Approvals({ pool: pool as never, livenessMs: 5 });
+  const frames: ApprovalFrame[] = [];
+  approvals.subscribe(U, (f) => frames.push(f));
+  const result = approvals.askAsPlugin(U, PLUGIN, { action: "Send WhatsApp message to x", detail: "hi" });
+  await until(() => pending(frames).length === 1);
+  const id = pending(frames)[0].approval.id;
+  await new Promise((r) => setTimeout(r, 50));
+  const row = (await db.query<any>("SELECT requester_session_id, target_session_id, status, meta FROM agent_approvals WHERE id=$1", [id])).rows[0];
+  assert.ok(row, "the INSERT succeeded (UUID columns accepted the plugin party id)");
+  assert.match(row.requester_session_id, uuid);
+  assert.equal(row.requester_session_id, row.target_session_id);
+  assert.equal(row.meta.requester.id, "plugin:waha"); assert.equal(row.meta.requester.kind, "plugin");
+  await approvals.resolve(U, id, "allow");
+  assert.equal(await result, "approved");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await db.query<any>("SELECT status FROM agent_approvals WHERE id=$1", [id])).rows[0].status, "consumed");
+  // after a restart the record loads from the database with the real plugin id
+  const restarted = new Approvals({ pool: pool as never });
+  assert.equal((await restarted.verify(U, "plugin:waha", id)).status, "CONSUMED");
+  await db.close();
+});
+
+test("a plugin approval nobody answers is withdrawn after the wait and resolves expired", async () => {
+  const { approvals, frames } = make({ alive: false });
+  const result = approvals.askAsPlugin(U, PLUGIN, { action: "Send" }, undefined, 120);
+  await until(() => pending(frames).length === 1);
+  assert.equal(await result, "expired");
+  assert.equal(approvals.list(U).length, 0);
+  assert.ok(frames.some((f) => f.type === "approval-resolved" && f.status === "cancelled"));
+});

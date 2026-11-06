@@ -23,8 +23,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { copyText } from "@/lib/clipboard";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { TaskBoard, TaskCard } from "@/lib/runtime/types";
+import type { TaskBoard, TaskCard, TaskSourceInfo } from "@/lib/runtime/types";
 import TaskCardDialog from "./task-card-dialog";
+import { TaskSourcePanel } from "./external-task-list";
+import { resolvePluginIcon } from "@/plugins/icons";
+import { usePlugins } from "@/plugins/host";
+import { closeSource, EMPTY_SOURCE_PREFS, openSource, readSourcePrefs, reconcileSourcePrefs, sourceGroups, sourceTabId, writeSourcePrefs, type SourcePrefs } from "@/lib/task-sources";
 
 type Cursor = { userId: string; name: string; x: number; y: number };
 
@@ -102,6 +106,11 @@ export default function TasksPage() {
   const [dropTargetListId, setDropTargetListId] = useState<string | null>(null);
   const [navigationPreferences, setNavigationPreferences] = useState<{ scope: string; value: BoardNavigationPreferences }>({ scope: "", value: readBoardNavigationPreferences("") });
   const [boardsReadyScope, setBoardsReadyScope] = useState("");
+  // Task sources contributed by plugins: their tabs persist next to board tabs and are validated against GET /v1/task-sources.
+  const [sources, setSources] = useState<TaskSourceInfo[]>([]);
+  // Re-read the source list whenever a plugin is turned on or off (or its secrets change status), so groups and tabs appear and go away live.
+  const pluginsSignature = usePlugins().all.map((p) => `${p.id}:${p.status}:${p.userEnabled}:${p.secrets.map((x) => (x.present ? 1 : 0)).join("")}`).join("|");
+  const [sourcePrefs, setSourcePrefs] = useState<{ scope: string; value: SourcePrefs; ready: boolean }>({ scope: "", value: EMPTY_SOURCE_PREFS, ready: false });
   const [addingCardTo, setAddingCardTo] = useState<string | null>(null);
   const [newCardTitle, setNewCardTitle] = useState("");
   const [newCardDescription, setNewCardDescription] = useState("");
@@ -118,6 +127,10 @@ export default function TasksPage() {
   const navigationScope = client && user && organizationId
     ? `floq.tasks.navigation.v1:${encodeURIComponent(client.baseUrl)}:${encodeURIComponent(user.id)}:${encodeURIComponent(organizationId)}`
     : "";
+  const sourceScope = navigationScope ? navigationScope + ":sources" : "";
+  const activeSourcePrefs = sourcePrefs.scope === sourceScope && sourcePrefs.ready ? sourcePrefs.value : EMPTY_SOURCE_PREFS;
+  const openedSources = activeSourcePrefs.open.flatMap((id) => sources.find((item) => sourceTabId(item) === id) ?? []);
+  const activeSource = sources.find((item) => sourceTabId(item) === activeSourcePrefs.active) ?? null;
   const activeNavigationPreferences = navigationPreferences.scope === navigationScope ? navigationPreferences.value : readBoardNavigationPreferences("");
   const selectedOrganization = organizations.find((organization) => organization.id === organizationId) ?? null;
   const visibleBoard = boardsReadyScope === navigationScope && board?.organizationId === organizationId ? board : null;
@@ -211,6 +224,28 @@ export default function TasksPage() {
     }).catch((reason) => live && setError(errorMessage(reason)));
     return () => { live = false; };
   }, [client, organizationId, navigationScope]);
+
+  useEffect(() => {
+    if (!client || !sourceScope) { setSources([]); setSourcePrefs({ scope: sourceScope, value: EMPTY_SOURCE_PREFS, ready: false }); return; }
+    let live = true;
+    client.taskSources().catch(() => [] as TaskSourceInfo[]).then((available) => {
+      if (!live) return;
+      setSources(available);
+      setSourcePrefs({ scope: sourceScope, value: reconcileSourcePrefs(readSourcePrefs(sourceScope), available), ready: true });
+    });
+    return () => { live = false; };
+  }, [client, sourceScope, pluginsSignature]);
+
+  useEffect(() => {
+    if (sourcePrefs.scope === sourceScope && sourcePrefs.ready) writeSourcePrefs(sourceScope, sourcePrefs.value);
+  }, [sourceScope, sourcePrefs]);
+
+  const updateSourcePrefs = (update: (current: SourcePrefs) => SourcePrefs) => setSourcePrefs((current) => ({ scope: sourceScope, ready: true, value: update(current.scope === sourceScope ? current.value : EMPTY_SOURCE_PREFS) }));
+  const openSourceTab = (item: TaskSourceInfo) => { setError(null); updateSourcePrefs((current) => openSource(current, sourceTabId(item))); requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-task-source-tab="${CSS.escape(sourceTabId(item))}"]`)?.focus()); };
+  const closeSourceTab = (id: string) => {
+    updateSourcePrefs((current) => closeSource(current, id));
+    requestAnimationFrame(() => (boardId ? boardTabRefs.current.get(boardId) : boardPickerTriggerRef.current)?.focus());
+  };
 
   const refreshBoard = useCallback(async () => {
     if (!client || !boardId) return;
@@ -309,6 +344,7 @@ export default function TasksPage() {
   };
   const selectBoard = (nextBoardId: string) => {
     setError(null);
+    updateSourcePrefs((current) => (current.active ? { ...current, active: "" } : current));
     updateNavigationPreferences((current) => ({
       ...current,
       recent: [nextBoardId, ...current.recent.filter((id) => id !== nextBoardId)].slice(0, 12),
@@ -421,15 +457,18 @@ export default function TasksPage() {
   };
 
   const cardCount = useMemo(() => visibleBoard?.lists.reduce((total, list) => total + list.cards.length, 0) ?? 0, [visibleBoard]);
-  const onBoardTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, tabId: string) => {
-    const currentIndex = openedBoards.findIndex((item) => item.id === tabId);
+  // Arrow keys, Home and End move across board tabs and source tabs as one strip (DESIGN.md "Project navigation").
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, key: string) => {
+    const tabs = [...openedBoards.map((item) => "b:" + item.id), ...openedSources.map((item) => "s:" + sourceTabId(item))];
+    const currentIndex = tabs.indexOf(key);
     if (currentIndex < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? openedBoards.length - 1 : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + openedBoards.length) % openedBoards.length;
-    const nextId = openedBoards[nextIndex]?.id;
-    if (!nextId) return;
-    selectBoard(nextId);
-    requestAnimationFrame(() => boardTabRefs.current.get(nextId)?.focus());
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    if (!next) return;
+    const id = next.slice(2);
+    if (next.startsWith("b:")) { selectBoard(id); requestAnimationFrame(() => boardTabRefs.current.get(id)?.focus()); }
+    else { updateSourcePrefs((current) => openSource(current, id)); requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-task-source-tab="${CSS.escape(id)}"]`)?.focus()); }
   };
   if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-5"><h1 className="text-base font-semibold">Tasks</h1><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
 
@@ -439,12 +478,21 @@ export default function TasksPage() {
         <div className="flex h-full min-w-0 items-center gap-1 overflow-hidden">
           <div ref={boardTabStripRef} className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Boards">
             {openedBoards.map((item) => {
-            const active = item.id === boardId;
+            const active = item.id === boardId && !activeSource;
             return <div key={item.id} role="presentation" className={`group flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}>
-              <Button ref={(node) => { if (node) boardTabRefs.current.set(item.id, node); else boardTabRefs.current.delete(item.id); }} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls="task-board-panel" id={`task-board-tab-${item.id}`} data-task-board-tab={item.id} title={item.title} variant="ghost" className="h-7 min-w-0 max-w-40 justify-start truncate px-0 text-xs" onClick={() => selectBoard(item.id)} onKeyDown={(event) => onBoardTabKeyDown(event, item.id)}>{item.title}</Button>
+              <Button ref={(node) => { if (node) boardTabRefs.current.set(item.id, node); else boardTabRefs.current.delete(item.id); }} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls="task-board-panel" id={`task-board-tab-${item.id}`} data-task-board-tab={item.id} title={item.title} variant="ghost" className="h-7 min-w-0 max-w-40 justify-start truncate px-0 text-xs" onClick={() => selectBoard(item.id)} onKeyDown={(event) => onTabKeyDown(event, "b:" + item.id)}>{item.title}</Button>
               <Button variant="ghost" size="icon-xs" className="ml-1 size-5" aria-label={`Close ${item.title} tab`} onClick={() => closeBoardTab(item.id)}><IconX className="size-3" /></Button>
             </div>;
           })}
+            {openedSources.map((item) => {
+              const id = sourceTabId(item);
+              const active = activeSource ? sourceTabId(activeSource) === id : false;
+              const Icon = resolvePluginIcon(item.icon);
+              return <div key={id} role="presentation" className={`group flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}>
+                <Button type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls="task-board-panel" id={`task-source-tab-${id}`} data-task-source-tab={id} title={item.label} variant="ghost" className="h-7 min-w-0 max-w-40 justify-start gap-1 truncate px-0 text-xs" onClick={() => updateSourcePrefs((current) => openSource(current, id))} onKeyDown={(event) => onTabKeyDown(event, "s:" + id)}><Icon className="size-3.5 shrink-0" /><span className="truncate">{item.label}</span></Button>
+                <Button variant="ghost" size="icon-xs" className="ml-1 size-5" aria-label={`Close ${item.label} tab`} onClick={() => closeSourceTab(id)}><IconX className="size-3" /></Button>
+              </div>;
+            })}
           </div>
           <Button variant="ghost" size="icon-sm" aria-label="Choose a board" title="Choose a board (B)" onClick={(event) => openBoardPicker(event.currentTarget)}><IconPlus /></Button>
         </div>,
@@ -475,7 +523,8 @@ export default function TasksPage() {
             </DropdownMenuContent></DropdownMenu>
           </header>
 
-      <div id="task-board-panel" role="tabpanel" aria-labelledby={openedBoards.some((item) => item.id === boardId) ? `task-board-tab-${boardId}` : undefined} aria-label={visibleBoard?.title ?? "Task board"} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+      <div id="task-board-panel" role="tabpanel" aria-labelledby={activeSource ? `task-source-tab-${sourceTabId(activeSource)}` : openedBoards.some((item) => item.id === boardId) ? `task-board-tab-${boardId}` : undefined} aria-label={activeSource?.label ?? visibleBoard?.title ?? "Task board"} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+        {activeSource ? <TaskSourcePanel source={activeSource} /> : <>
         {pageError && <div className="px-4 pt-3 sm:px-6"><ErrorBanner>{pageError}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void retryLoad()}>Retry</Button></ErrorBanner></div>}
         {!organizations.length ? (
           <Empty className="m-auto max-w-lg border-0">
@@ -527,6 +576,7 @@ export default function TasksPage() {
             )}
           </>
         )}
+        </>}
       </div>
         </main>
       <CommandDialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setBoardQuery(""); }} onCloseAutoFocus={restoreBoardPickerFocus} title="Choose a board" description="Search boards in your organization. Select a board to open its tab.">
@@ -546,6 +596,10 @@ export default function TasksPage() {
             <CommandEmpty>{boardsReadyScope !== navigationScope && organizationId ? "Loading boards…" : boardQuery ? "No boards match your search." : "No boards in this organization."}</CommandEmpty>
             {pickerGroups.filter((group) => group.items.length > 0).map((group) => <CommandGroup key={group.title} heading={group.title}>
               {group.items.map((item) => <CommandItem key={item.id} value={item.id} className="min-w-0" onSelect={() => { boardPickerSelectedBoardRef.current = item.id; selectBoard(item.id); setPickerOpen(false); setBoardQuery(""); }}><IconChecklist /><span className="truncate">{item.title}</span>{favoriteIds.has(item.id) && <IconStar aria-hidden="true" className="ml-auto size-3 fill-primary text-primary-text" />}{item.id === boardId && <span className="ml-auto text-xs text-muted-foreground">Open</span>}</CommandItem>)}
+            </CommandGroup>)}
+            {/* One group per source. Only the source entries are filtered by the query: external items are never mixed into board results. */}
+            {sourceGroups(sources, boardQuery).map((group) => <CommandGroup key={sourceTabId(group.source)} heading={group.title}>
+              <CommandItem value={"source:" + sourceTabId(group.source)} className="min-w-0" onSelect={() => { openSourceTab(group.source); setPickerOpen(false); setBoardQuery(""); }}>{(() => { const Icon = resolvePluginIcon(group.source.icon); return <Icon />; })()}<span className="truncate">Open {group.source.label}</span></CommandItem>
             </CommandGroup>)}
           </CommandList>
         </Command>

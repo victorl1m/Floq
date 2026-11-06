@@ -18,6 +18,7 @@
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
 //   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to forward a port to their computer (waits up to 60s for their answer)
+//   floq plugin list | call ID PATH [--json BODY]   plugins the user enabled that agents may call
 //   floq display start|env|stop|status           virtual display (Xpra) for GUI apps; the user sees it in Floq's App window panel
 //   floq skills list|search|preview|add|create|remove   find, install and author skills (add/create/remove: lead agents only)
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
@@ -49,6 +50,9 @@ Commands:
   floq inbox list | read ID              full text of messages sent to you that were too long to type into your terminal (you only see a preview and an inbox id)
   floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
   floq check <UUID|Name> [--chars N | --full]
+  floq progress "message" [--percent N] [--status working|blocked|done]   (for subagents) report structured progress to the agent that recruited you; blocked/done are pushed as one line into its terminal. Max 30 updates/min
+  floq ask-parent "question"            (for subagents) ask the agent that recruited you; it gets a one-line notification and answers with "floq ask <your UUID> ..."
+  floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time
   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only; other agents ask the orchestrator with "floq ask")
   floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
   floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
@@ -64,6 +68,8 @@ Commands:
   floq sticky delete ID                  delete a note or memory card; refused on system notes (only the user deletes those)
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
+  floq plugin list                       plugins the user enabled that agents may call, with their routes
+  floq plugin call ID PATH [--json BODY]   call a plugin route as this session (output is sanitized); outward-facing writes ask the user for approval first
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
   floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
@@ -245,9 +251,9 @@ const usage = (): never => {
 };
 
 const allowedOptions: Record<string, string[]> = {
-  top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
+  top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status"], "ask-parent": [], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
-  session: [], port: ["protocol", "reason"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
+  session: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   project: ["name", "git-url"],
@@ -385,6 +391,43 @@ switch (command) {
     if (positional.length < 1) usage();
     const r = await call<AgentReply>("agents/check", { name: positional[0], chars: typeof named.chars === "string" ? Number(named.chars) : undefined, full: named.full === true });
     console.log(formatAgentReply("check", positional[0], r).text);
+    break;
+  }
+  case "progress":
+  case "ask-parent": {
+    const question = command === "ask-parent";
+    if (!positional.length) usage();
+    const r = await call<{ seq: number; status: string; pushed: boolean; parent: { id: string; name: string } | null }>("agents/progress", { message: positional.join(" "), question, percent: typeof named.percent === "string" ? named.percent : undefined, status: typeof named.status === "string" ? named.status : undefined });
+    console.log((question ? "question" : "progress") + " #" + r.seq + " recorded (" + r.status + ")" + (r.pushed && r.parent ? "; " + r.parent.name + " was notified" : "") + (question ? "; the answer arrives in your terminal as a message from your parent" : ""));
+    break;
+  }
+  case "watch": {
+    if (positional.length < 1) usage();
+    const timeout = typeof named.timeout === "string" ? Math.min(Math.max(Number(named.timeout) || 0, 0), 30) : 0;
+    const r = await call<{ name: string; status: string; changed: boolean; cursor: number; events: { seq: number; kind: string; status: string; percent: number | null; message: string; at: string }[]; reply?: string }>("agents/watch", { name: positional[0], since: typeof named.since === "string" ? Number(named.since) : undefined, waitSec: timeout, reply: named.reply === true });
+    console.log("status: " + r.status + (r.changed ? " (changed)" : ""));
+    for (const e of r.events) console.log("#" + e.seq + " " + e.at.slice(11, 19) + " " + (e.kind === "question" ? "QUESTION" : e.status) + (e.percent === null ? "" : " " + e.percent + "%") + ": " + e.message);
+    if (!r.events.length) console.log("(no new events)");
+    if (r.reply) console.log("last reply:\n" + r.reply);
+    console.log("cursor: " + r.cursor);
+    break;
+  }
+  case "plugin": {
+    const [sub, id, path, ...extra] = positional;
+    if (extra.length || (named.json !== undefined && typeof named.json !== "string")) usage();
+    if (sub === "list" && id === undefined && named.json === undefined) {
+      const r = await call<{ plugins: { id: string; name: string; description: string; routes: string[] }[] }>("plugins/list");
+      console.log(r.plugins.length ? r.plugins.map((p) => p.id + "  " + p.name + " - " + p.description + (p.routes.length ? "\n  routes: " + p.routes.join(" ") : "")).join("\n") : "No plugins are enabled for agents.");
+      break;
+    }
+    if (sub !== "call" || !id || !path || !/^[a-z][a-z0-9-]*$/.test(id)) usage();
+    let body: unknown = {};
+    if (typeof named.json === "string") {
+      try { body = JSON.parse(named.json); } catch { console.error("floq: --json is not valid JSON"); process.exit(2); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) { console.error("floq: --json must be a JSON object"); process.exit(2); }
+    }
+    const r = await call("plugins/" + id + "/" + path.replace(/^\/+/, ""), body);
+    console.log(JSON.stringify(r, null, 2));
     break;
   }
   case "port": {

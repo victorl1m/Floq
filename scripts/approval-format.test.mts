@@ -36,3 +36,10 @@ test("capText keeps the start and the tail of long text", () => {
   assert.ok(out.endsWith("rm -rf /"));
   assert.ok(out.includes("…"));
 });
+
+test("plugin requesters read 'Plugin: <name>', agents keep their own name", async () => {
+  const { actorLabel } = await import("../src/lib/approval-format.ts");
+  assert.equal(actorLabel({ name: "WhatsApp", kind: "plugin" }), "Plugin: WhatsApp");
+  assert.equal(actorLabel({ name: "Acme API", kind: "agent" }), "Acme API");
+  assert.equal(actorLabel({ name: "Acme API" }), "Acme API");
+});

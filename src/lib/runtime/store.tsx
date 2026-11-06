@@ -13,6 +13,7 @@ import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "./client";
 import { ProjectRefreshCoordinator } from "./project-refresh";
 import { loadAutoResumeOnClick, runtimePollInterval, usePerformancePrefs } from "@/lib/prefs";
 import { runViewTransition } from "@/lib/view-transition";
+import { canTransitionViewChange, moveEntry, pluginEntry, pushEntry, type AppView } from "@/lib/view-visibility";
 import { useUndoDelete } from "@/lib/use-undo-delete";
 import { loadUserPreferences, saveUserPreferences, userPreferenceKey, USER_PREFERENCE_DEFAULTS, type UserPreferencePatch, type UserPreferences } from "@/lib/user-preferences";
 import type { AuthUser, RuntimeInfo, RuntimeProject, SessionSummary, Organization, ProjectDeleteResult } from "./types";
@@ -59,16 +60,11 @@ export function defaultBaseUrl(): string {
   }
 }
 
-export type View = "home" | "tasks" | "skills" | "secrets" | "canvas" | "terminal" | "session";
-
-function canTransitionViewChange(from: View, to: View): boolean {
-  const simpleView = (view: View) => view === "home" || view === "tasks" || view === "skills" || view === "secrets";
-  return from !== to && simpleView(from) && simpleView(to);
-}
+export type View = AppView;
 
 interface HistoryEntry {
   view: View;
-  /** Session id for the "session" view, project id for the "canvas" view. */
+  /** Session id for the "session" view, project id for the "canvas" view, `<pluginId>/<viewId>` for the "plugin" view. */
   arg: string | null;
 }
 
@@ -168,6 +164,8 @@ interface RuntimeContextValue {
   view: View;
   /** Project whose Agent Canvas is showing, or null when another view is. */
   canvasProjectId: string | null;
+  /** `<pluginId>/<viewId>` while a plugin view is showing, otherwise null. */
+  pluginViewId: string | null;
   /** Select a project and open its Agent Canvas. */
   openCanvas: (projectId: string, workspaceId?: string | null) => void;
   navigate: (view: View, arg?: string | null) => void;
@@ -245,6 +243,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const view = history.stack[history.index].view;
   /** Project whose canvas is showing (null in every other view). Single source of truth for the canvas's active state. */
   const canvasProjectId = view === "canvas" ? history.stack[history.index].arg : null;
+  const pluginViewId = view === "plugin" ? history.stack[history.index].arg : null;
   const historyRef = useRef(history);
   historyRef.current = history;
   const selectedRef = useRef(selectedId);
@@ -252,27 +251,28 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const navigate = useCallback((next: View, arg?: string | null) => {
     const h = historyRef.current;
+    if (next === "plugin" && !pluginEntry(arg)) return;
     const entry: HistoryEntry = {
       view: next,
-      arg: next === "session" ? (arg ?? selectedRef.current) : next === "canvas" ? (arg ?? activeProjectIdRef.current) : null,
+      arg: next === "session" ? (arg ?? selectedRef.current) : next === "canvas" ? (arg ?? activeProjectIdRef.current) : next === "plugin" ? arg ?? null : null,
     };
     const current = h.stack[h.index];
-    if (current.view === entry.view && current.arg === entry.arg) return;
-    const stack = [...h.stack.slice(0, h.index + 1), entry];
-    const update = () => setHistory({ stack, index: stack.length - 1 });
+    const pushed = pushEntry(h, entry);
+    if (!pushed) return;
+    const update = () => setHistory(pushed);
     if (canTransitionViewChange(current.view, entry.view)) runViewTransition(update, performancePrefs.reduceMotion);
     else update();
   }, [performancePrefs.reduceMotion]);
 
   const go = useCallback((delta: number) => {
     const h = historyRef.current;
-    const index = h.index + delta;
-    if (index < 0 || index >= h.stack.length) return;
-    const entry = h.stack[index];
+    const moved = moveEntry(h, delta);
+    if (!moved) return;
+    const { entry } = moved;
     const update = () => {
       if (entry.view === "session") setSelectedId(entry.arg);
       if (entry.view === "canvas" && entry.arg) setActiveProjectId(entry.arg);
-      setHistory({ ...h, index });
+      setHistory(moved.state);
     };
     const current = h.stack[h.index];
     if (canTransitionViewChange(current.view, entry.view)) runViewTransition(update, performancePrefs.reduceMotion);
@@ -970,6 +970,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       online,
       view,
       canvasProjectId,
+      pluginViewId,
       openCanvas,
       navigate,
       openSettings,
@@ -1046,6 +1047,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       online,
       history,
       canvasProjectId,
+      pluginViewId,
       openCanvas,
       navigate,
       openSettings,
