@@ -8,6 +8,8 @@ import type { SessionSummary } from "@/lib/runtime/types";
 import { AttachmentChips, pastedFiles, pastedTauriImage, useAttachments, useTauriDrop } from "./canvas-attachments";
 import type { Attachment } from "./canvas-send";
 import { matchSlash } from "./slash-commands";
+import { isControlKey, keyToSequence } from "./terminal-keys";
+import { useRuntime } from "@/lib/runtime/store";
 
 interface Props {
   session: SessionSummary;
@@ -20,6 +22,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<"idle" | "sending" | "sent">("idle");
   const [hover, setHover] = useState(false);
+  const { client } = useRuntime();
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const attachments = useAttachments();
@@ -92,6 +95,11 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setSlashIndex((i) => (i + (event.key === "ArrowDown" ? 1 : slash.length - 1)) % slash.length); return; }
               if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) { event.preventDefault(); completeSlash(slash[Math.min(slashIndex, slash.length - 1)].name); return; }
               if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
+            }
+            // Empty bar on a running agent: control keys (Shift+Tab, Esc, arrows, Tab, Ctrl+C/O/R...) drive the agent's terminal.
+            if (!sleeping && client && text === "" && attachments.items.length === 0 && !event.nativeEvent.isComposing && isControlKey(event)) {
+              const data = keyToSequence(event);
+              if (data !== null) { event.preventDefault(); void client.sendInput(session.id, data).catch(() => undefined); return; }
             }
             if (event.key === "Escape") event.currentTarget.blur();
             else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }

@@ -5,6 +5,7 @@ import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
 import { useRuntime } from "@/lib/runtime/store";
 import { minimumContrastRatio, terminalTheme, useTerminalDark } from "@/lib/terminal-theme";
 import type { ServerFrame, SessionSummary } from "@/lib/runtime/types";
+import { keyToSequence } from "./terminal-keys";
 import { cn } from "cn";
 
 /** Read-only mirror: same palettes as the interactive terminal, with the cursor hidden (painted as background). */
@@ -180,7 +181,8 @@ export default memo(function SessionMirror({ session, interactive = false }: { s
   return (
     <div
       ref={hostRef}
-      className={cn("terminal-surface size-full overflow-hidden", interactive && "nodrag nopan nowheel cursor-default")}
+      tabIndex={interactive ? 0 : undefined}
+      className={cn("terminal-surface size-full overflow-hidden", interactive && "nodrag nopan nowheel nokey cursor-default outline-none")}
       aria-label={interactive ? `Live output of ${session.title}: scroll and click go to the agent` : `Live output of ${session.title} (view only)`}
       onWheel={interactive ? (event) => {
         event.stopPropagation();
@@ -201,7 +203,26 @@ export default memo(function SessionMirror({ session, interactive = false }: { s
           term.scrollLines(steps * 3);
         }
       } : undefined}
+      onKeyDown={interactive ? (event) => {
+        // Keys go to the agent like in a real terminal; the canvas must not also act on them (Delete, Backspace, Esc...).
+        if (event.nativeEvent.isComposing) return;
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") return; // paste event follows
+        if (event.metaKey && event.key.toLowerCase() === "c") return;
+        const data = keyToSequence(event);
+        if (data === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        sendInput(data);
+      } : undefined}
+      onPaste={interactive ? (event) => {
+        const text = event.clipboardData.getData("text/plain");
+        if (!text) return;
+        event.preventDefault();
+        event.stopPropagation();
+        sendInput("\x1b[200~" + text.replace(/\x1b\[20[01]~/g, "") + "\x1b[201~");
+      } : undefined}
       onPointerDown={interactive ? (event) => {
+        event.currentTarget.focus({ preventScroll: true });
         if (event.button > 2 || !tracking()) return;
         const cell = cellAt(event.clientX, event.clientY);
         if (!cell) return;
