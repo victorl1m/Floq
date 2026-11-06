@@ -7,7 +7,15 @@ import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
 
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
-export default function IslandRoot({ initialSnapshot = null, initialExpanded = false }: { initialSnapshot?: IslandSnapshot | null; initialExpanded?: boolean } = {}) {
+/** What the user just answered: shown as a short colored result state instead of falling back to the stale "N waiting" pill. */
+type Outcome = { id: string; kind: 'accepted' | 'refused' | 'sent'; title: string };
+const OUTCOME_LABEL: Record<Outcome['kind'], string> = { accepted: 'Accepted', refused: 'Refused', sent: 'Sent' };
+/** The result stays on screen this long. It must stay under the main window's 1.5s empty-queue deferral so the OS window is still there. */
+const OUTCOME_HOLD_MS = 1200;
+function OutcomeMark({ kind }: { kind: Outcome['kind'] }) {
+  return <svg className="island-result-svg" viewBox="0 0 48 48" aria-hidden="true"><circle className="island-result-ring" cx="24" cy="24" r="20"/>{kind === 'refused' ? <path className="island-result-glyph" d="M17 17 L31 31 M31 17 L17 31"/> : <path className="island-result-glyph" d="M15 25 L21.5 31.5 L33 18"/>}</svg>;
+}
+export default function IslandRoot({ initialSnapshot = null, initialExpanded = false, initialOutcome = null }: { initialSnapshot?: IslandSnapshot | null; initialExpanded?: boolean; initialOutcome?: Outcome | null } = {}) {
   const [snapshot, setSnapshot] = useState<IslandSnapshot | null>(initialSnapshot);
   const [displaySnapshot, setDisplaySnapshot] = useState<IslandSnapshot | null>(initialSnapshot?.items.length ? initialSnapshot : null);
   const [motion, setMotion] = useState<'enter' | 'exit' | 'pulse-a' | 'pulse-b' | 'idle'>(initialSnapshot?.items.length ? 'enter' : 'idle');
@@ -29,6 +37,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const sawBusy = useRef(false);
   const [submission, setSubmission] = useState<'busy' | 'success' | null>(null);
   const previous = useRef<IslandSnapshot | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(initialOutcome);
+  const pendingOutcome = useRef<Outcome | null>(null);
+  /** Requests answered in this window: never counted or shown again, even while the main window still replays them (empty-queue deferral). */
+  const answeredIds = useRef(new Set<string>());
   const oldEpochs = useRef(new Set<string>());
   useEffect(() => {
     if (displayed.current?.items.length) motionTimer.current = setTimeout(() => setMotion('idle'), 420);
@@ -71,7 +83,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     })();
     return () => { disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
   }, []);
-  const items = displaySnapshot?.items ?? [];
+  const items = (displaySnapshot?.items ?? []).filter(i => !answeredIds.current.has(i.id));
   const lastCurrent = useRef<AttentionItem | undefined>(undefined);
   const active = items.find(i => i.id === selected) ?? items[0];
   if (active && !submission) lastCurrent.current = active;
@@ -99,29 +111,51 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     const id = submitting.current;
     if (!id || !snapshot) return;
     if (snapshot.busy.includes(id)) { sawBusy.current = true; return; }
-    if (snapshot.error) { submitting.current = null; sawBusy.current = false; setSubmission(null); return; }
+    if (snapshot.error) { submitting.current = null; sawBusy.current = false; pendingOutcome.current = null; setSubmission(null); return; }
     if (sawBusy.current || !snapshot.items.some(item => item.id === id)) {
-      submitting.current = null; sawBusy.current = false; setSubmission('success');
+      submitting.current = null; sawBusy.current = false;
+      if (pendingOutcome.current?.id === id) { answeredIds.current.add(id); setOutcome(pendingOutcome.current); }
+      pendingOutcome.current = null;
+      setSubmission('success');
 
     }
   }, [snapshot]);
   useEffect(() => {
     if (submission !== 'success') return;
-    const timer = setTimeout(() => { setSubmission(null); setPinned(false); setExpanded(false); }, 700);
+    const timer = setTimeout(() => {
+      setSubmission(null); setPinned(false); setExpanded(false); setOutcome(null);
+      // Nothing else is waiting: play the normal exit now (the empty snapshot may still be deferred by the main window).
+      if (outcome && !displayed.current?.items.some(item => !answeredIds.current.has(item.id))) {
+        clearTimeout(motionTimer.current); setMotion('exit');
+        motionTimer.current = setTimeout(() => { displayed.current = null; setDisplaySnapshot(null); setMotion('idle'); }, 260);
+      }
+    }, outcome ? OUTCOME_HOLD_MS : 700);
     return () => clearTimeout(timer);
   }, [submission]);
   const disabled = !snapshot?.connected || !!submission || (!!current && snapshot.busy.includes(current.id));
   const act = (intent: IslandIntent) => {
     if (intent.type === 'ready' || submitting.current || disabled) return;
     setLocalError(undefined); submitting.current = intent.id; sawBusy.current = false; setSubmission('busy');
-    void send(intent).catch(e => { submitting.current = null; setSubmission(null); setLocalError(String(e)); });
+    const item = items.find(i => i.id === intent.id);
+    pendingOutcome.current = intent.type === 'approval'
+      ? { id: intent.id, kind: intent.decision === 'allow' ? 'accepted' : 'refused', title: item?.kind === 'approval' ? item.approval.action : '' }
+      : intent.type === 'decision'
+        ? { id: intent.id, kind: 'sent', title: item?.kind === 'decision' ? item.decision.questions[0]?.header || item.decision.sessionName : '' }
+        : null;
+    void send(intent).catch(e => { submitting.current = null; pendingOutcome.current = null; setSubmission(null); setLocalError(String(e)); });
   };
   const cycle = (delta: number) => { const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
   const answer = (questionId: string, optionIds: string[], text: string) => setAnswers(old => [...old.filter(a => a.questionId !== questionId), {questionId, optionIds, text}]);
-  if (!displaySnapshot) return null;
-  return <div className={'island island-' + motion + ' ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
-    <div className="island-header island-pill"><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></div>
-    {current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
+  if ((!displaySnapshot || !items.length) && !outcome) return null;
+  // An exit triggered by the emptied queue must not fade the result away while it is still being shown.
+  const shownMotion = outcome && motion === 'exit' ? 'idle' : motion;
+  return <div className={'island island-' + shownMotion + ' ' + (expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind : '')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+    <div className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
+    {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!expanded} inert={!expanded}>
+      <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
+      <strong className="island-result-label">{OUTCOME_LABEL[outcome.kind]}</strong>
+      {outcome.title && <span className="island-result-sub">{outcome.title}</span>}
+    </div> : current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
         <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${actorLabel(current.approval.requester)}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>

@@ -34,3 +34,25 @@ test('empty initial snapshot renders no capsule and non-empty snapshot enters', 
     assert.match(renderToStaticMarkup(React.createElement(Island, {initialSnapshot:{...snapshot, items:[item]}})), /island-enter/);
   } finally { await server.close(); }
 });
+
+test('an answered request shows a colored Accepted/Refused result, never the stale "N waiting" pill', async () => {
+  const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+  try {
+    const { default: Island } = await server.ssrLoadModule('/src/components/island/island-root.tsx');
+    const empty = {epoch:'test', revision:1, connected:true, items:[], busy:[]};
+    const render = (outcome, expanded) => renderToStaticMarkup(React.createElement(Island, { initialSnapshot: empty, initialOutcome: outcome, initialExpanded: expanded }));
+    const accepted = render({ id:'a', kind:'accepted', title:'Deploy main' }, false);
+    assert.match(accepted, /island-outcome-accepted/);
+    assert.match(accepted, /island-pill-accepted/);
+    assert.match(accepted, />Accepted</);
+    assert.doesNotMatch(accepted, /waiting/);
+    const refused = render({ id:'a', kind:'refused', title:'Deploy main' }, true);
+    assert.match(refused, /island-outcome-refused/);
+    assert.match(refused, />Refused</);
+    assert.match(refused, /island-result-sub[^>]*>Deploy main</);
+    assert.match(refused, /role="status"/);
+    assert.doesNotMatch(refused, /waiting|Needs your OK/);
+    assert.match(render({ id:'d', kind:'sent', title:'' }, true), />Sent</);
+    assert.equal(render(null, false), ''); // no outcome and nothing waiting: nothing is rendered
+  } finally { await server.close(); }
+});

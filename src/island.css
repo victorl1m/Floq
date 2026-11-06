@@ -67,3 +67,30 @@ button.island-circle { display:grid; place-items:center; padding:0; width:36px; 
 @keyframes island-fade-out { from { opacity:1; } to { opacity:0; } }
 
 html::-webkit-scrollbar, body::-webkit-scrollbar, .island::-webkit-scrollbar, .island-content::-webkit-scrollbar { display:none; }
+
+/* Result of an answered request: a short colored confirmation instead of falling back to "N waiting". */
+.island-outcome { --outcome:#34d27b; --outcome-bg:#06281a; }
+.island-outcome-refused { --outcome:#ff453a; --outcome-bg:#2c0c0a; }
+.island.island-outcome { background:#000; animation:island-outcome-tint 520ms ease-out forwards; }
+.island.island-outcome-refused { animation:island-outcome-tint 520ms ease-out forwards, island-refuse-shake 420ms cubic-bezier(.36,.07,.19,.97) both; }
+.island-outcome::after { content:''; position:absolute; inset:0; pointer-events:none; background:radial-gradient(circle at 50% 50%, var(--outcome) 0%, transparent 62%); opacity:0; animation:island-outcome-burst 760ms ease-out both; }
+.island-pill-accepted, .island-pill-refused, .island-pill-sent { color:var(--outcome); gap:8px; }
+.island-pill .island-result-svg { width:22px; height:22px; flex:none; }
+.island-result { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:16px 18px 18px; text-align:center; }
+.island-result-mark { display:grid; place-items:center; width:52px; height:52px; border-radius:50%; background:color-mix(in srgb, var(--outcome) 16%, transparent); animation:island-result-pop 520ms cubic-bezier(.2,.9,.25,1.4) both; }
+.island-result-svg { width:44px; height:44px; fill:none; stroke:var(--outcome); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.island-result-ring { stroke-dasharray:126; stroke-dashoffset:126; animation:island-result-draw 460ms ease-out 40ms forwards; }
+.island-result-glyph { stroke-dasharray:40; stroke-dashoffset:40; animation:island-result-draw 320ms ease-out 260ms forwards; }
+.island-result-label { font-size:16px; font-weight:650; color:var(--outcome); letter-spacing:.01em; animation:island-result-rise 360ms ease-out 120ms both; }
+.island-result-sub { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8e8e93; font-size:11px; animation:island-result-rise 360ms ease-out 200ms both; }
+@keyframes island-outcome-tint { from { background:#000; } to { background:var(--outcome-bg); } }
+@keyframes island-outcome-burst { 0% { opacity:0; transform:scale(.4); } 30% { opacity:.5; } 100% { opacity:0; transform:scale(1.5); } }
+@keyframes island-result-pop { 0% { transform:scale(.4); opacity:0; } 100% { transform:scale(1); opacity:1; } }
+@keyframes island-result-draw { to { stroke-dashoffset:0; } }
+@keyframes island-result-rise { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
+@keyframes island-refuse-shake { 10%,90% { transform:translateX(-1px); } 20%,80% { transform:translateX(3px); } 30%,50%,70% { transform:translateX(-5px); } 40%,60% { transform:translateX(5px); } }
+@media (prefers-reduced-motion:reduce) {
+  .island.island-outcome, .island.island-outcome-refused { animation:none; background:var(--outcome-bg); }
+  .island-outcome::after, .island-result-mark, .island-result-label, .island-result-sub { animation:none; }
+  .island-result-ring, .island-result-glyph { animation:none; stroke-dashoffset:0; }
+}
