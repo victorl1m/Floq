@@ -10,6 +10,100 @@ const MAX_HEIGHT: f64 = 560.0;
 const TOP_GAP: f64 = 12.0;
 const HIDE_DELAY_MS: u64 = 320;
 
+/// True while the island was hidden (or its show was skipped) because a full-screen app is in front.
+static FULLSCREEN_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// SHQueryUserNotificationState values that mean "do not disturb": busy (a full-screen app or a presentation),
+/// a Direct3D full-screen game, or presentation mode.
+fn quns_is_busy(state: i32) -> bool {
+    matches!(state, 2..=4)
+}
+
+/// A window that fills its whole monitor (borderless full-screen games and videos included), by rectangle.
+fn rect_covers(window: (i32, i32, i32, i32), monitor: (i32, i32, i32, i32)) -> bool {
+    window.0 <= monitor.0 && window.1 <= monitor.1 && window.2 >= monitor.2 && window.3 >= monitor.3
+}
+
+#[cfg(windows)]
+fn fullscreen_app_active_now() -> bool {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    use windows::Win32::UI::Shell::SHQueryUserNotificationState;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+    };
+    unsafe {
+        if let Ok(state) = SHQueryUserNotificationState() {
+            if quns_is_busy(state.0) {
+                return true;
+            }
+        }
+        // Fallback for borderless full-screen windows the shell does not flag.
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == std::process::id() {
+            return false;
+        }
+        let mut class = [0u16; 64];
+        let len = GetClassNameW(hwnd, &mut class);
+        if len > 0 {
+            let name = String::from_utf16_lossy(&class[..len as usize]);
+            if matches!(name.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
+                return false;
+            }
+        }
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return false;
+        }
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return false;
+        }
+        rect_covers(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (
+                info.rcMonitor.left,
+                info.rcMonitor.top,
+                info.rcMonitor.right,
+                info.rcMonitor.bottom,
+            ),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn fullscreen_app_active_now() -> bool {
+    false
+}
+
+/// Whether a full-screen app (a game, a video, a presentation) is in front, so the island must stay out of the way.
+/// Cached for a moment: the hover monitor asks every tick.
+fn fullscreen_suppressed() -> bool {
+    static CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+    let now = std::time::Instant::now();
+    if let Ok(mut cache) = CACHE.lock() {
+        if let Some((at, value)) = *cache {
+            if now.duration_since(at) < std::time::Duration::from_millis(400) {
+                return value;
+            }
+        }
+        let value = fullscreen_app_active_now();
+        *cache = Some((now, value));
+        return value;
+    }
+    false
+}
+
 struct IslandState {
     visibility_generation: u64,
     active: bool,
@@ -290,6 +384,12 @@ fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(
 
 #[cfg(windows)]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    if visible && fullscreen_suppressed() {
+        // Never pop over a game or a full-screen video; the monitor shows it once the full-screen app is gone.
+        FULLSCREEN_HIDDEN.store(true, Ordering::SeqCst);
+        diagnostic(window.app_handle(), "show suppressed (full-screen app)");
+        return Ok(());
+    }
     diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
     use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow};
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
@@ -332,6 +432,10 @@ pub fn keep_on_top(_: &WebviewWindow) {}
 
 #[cfg(not(windows))]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    if visible && fullscreen_suppressed() {
+        FULLSCREEN_HIDDEN.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
     diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
     if visible {
         window.show()
@@ -676,6 +780,23 @@ fn hover_tick(app: &tauri::AppHandle) {
             state.outside_since,
         )
     };
+    if active {
+        let visible = window.is_visible().unwrap_or(false);
+        if fullscreen_suppressed() {
+            // A game or full-screen video is in front: step aside (the request keeps waiting) and never touch z-order.
+            if visible {
+                FULLSCREEN_HIDDEN.store(true, Ordering::SeqCst);
+                diagnostic(app, "hide (full-screen app)");
+                let _ = set_visible_without_activation(&window, false);
+            }
+            return;
+        }
+        if FULLSCREEN_HIDDEN.swap(false, Ordering::SeqCst) && !visible {
+            diagnostic(app, "show (full-screen app gone)");
+            let _ = set_visible_without_activation(&window, true);
+            return;
+        }
+    }
     if !active || !window.is_visible().unwrap_or(false) {
         return;
     }
@@ -767,6 +888,22 @@ mod tests {
         set_island_enabled, update_snapshot_state,
     };
     use serde_json::json;
+
+    #[test]
+    fn busy_notification_states_suppress_the_island() {
+        use super::{quns_is_busy, rect_covers};
+        for busy in [2, 3, 4] {
+            assert!(quns_is_busy(busy), "{busy}");
+        }
+        for free in [0, 1, 5, 6, 7] {
+            assert!(!quns_is_busy(free), "{free}");
+        }
+        let monitor = (0, 0, 1920, 1080);
+        assert!(rect_covers((0, 0, 1920, 1080), monitor));
+        assert!(rect_covers((-8, -8, 1928, 1088), monitor));
+        assert!(!rect_covers((0, 0, 1920, 1040), monitor), "a maximized window leaves the taskbar");
+        assert!(!rect_covers((100, 100, 900, 700), monitor));
+    }
 
     #[test]
     fn stale_hide_cannot_hide_a_new_active_or_empty_generation() {
