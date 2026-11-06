@@ -82,3 +82,23 @@ test('client install methods hit the documented admin routes with the typed conf
     assert.equal(ui.sha256, 'abc');
   } finally { globalThis.fetch = realFetch; await server.close(); }
 });
+
+test('repository installs: the stronger warning, the review facts (including the sha256) and the app-open toast text', () => {
+  assert.match(U.REPO_TRUST_WARNING, /GitHub repository you chose/); assert.match(U.REPO_TRUST_WARNING, /cannot vouch/); assert.match(U.REPO_TRUST_WARNING, /guard rail, not a sandbox/);
+  const lines = U.previewLines({ repo: 'someone/my-plugin', tag: 'v1.0.0', version: '1.0.0', secrets: ['MINE_TOKEN'], network: ['api.example.com'], contributes: ['routes'], scope: 'user', sha256: 'a'.repeat(64), size: 10 });
+  assert.equal(lines[0], 'Repository: someone/my-plugin (v1.0.0)'); assert.ok(lines.includes('Secrets: MINE_TOKEN')); assert.ok(lines.includes('Contacts: api.example.com')); assert.ok(lines.includes('sha256: ' + 'a'.repeat(64)));
+  assert.equal(U.updateToast([]), null);
+  const one = U.updateToast([{ name: 'Movidesk', installedVersion: '1.0.0', availableVersion: '1.1.0' }]);
+  assert.equal(one.title, 'A plugin update is available'); assert.match(one.description, /Movidesk 1\.0\.0 to 1\.1\.0/); assert.match(one.description, /Settings > Plugins/);
+  const many = U.updateToast(['A', 'B', 'C', 'D', 'E'].map((name) => ({ name, installedVersion: '1.0.0', availableVersion: '2.0.0' })));
+  assert.equal(many.title, '5 plugin updates are available'); assert.match(many.description, /and 2 more/);
+});
+
+test('wiring: the dialog reviews before installing and updates stay manual; the toast only reads and only for admins', () => {
+  const dialog = fs.readFileSync('src/components/settings/plugin-catalog-dialog.tsx', 'utf8');
+  assert.match(dialog, /inspectPluginRepo/); assert.match(dialog, /installPluginFromRepo\(url, preview\.sha256, typed\.trim\(\)\)/); assert.match(dialog, /updatePlugin\(preview\.id, preview\.sha256\)/);
+  assert.match(dialog, /REPO_TRUST_WARNING/);
+  const host = fs.readFileSync('src/plugins/host.tsx', 'utf8');
+  assert.match(host, /myRole\(\)\) !== "admin"/); assert.match(host, /pluginUpdates\(\)/); assert.match(host, /openSettings\("plugins"\)/);
+  assert.doesNotMatch(host, /updatePlugin\(/); // the toast never updates anything
+});

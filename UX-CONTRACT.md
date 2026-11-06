@@ -24,7 +24,7 @@ This file records durable interaction ownership for the desktop coding-agent wor
 | Task source groups | `src/components/tasks/tasks-page.tsx`, `external-task-list.tsx` | Runtime `/v1/task-sources` | Generic list / plugin custom view | No mixing with native search, tab restore validated, missing-secret state |
 | Plugin settings | `src/components/settings/plugins-section.tsx` | Manifest `settings` + `/v1/plugins/:id/settings` | Admin install toggle; user toggle; generic form; optional custom panel | Validation errors, secret presence without values, admin gating |
 | Plugin approvals | Existing ApprovalHost / island | `approvals.ts` | Requester kind plugin | Plugin label shown; user-only resolution |
-| Plugin install | `src/components/settings/plugin-catalog-dialog.tsx` (opened from `plugins-section.tsx`) | `GET /v1/plugins/catalog` and the install routes (admin only) | Browse list; install / update / uninstall / delete data, each behind a confirmation | Admin-only visibility, trust warning, typed id before install, uninstall and delete data, compact rows, shared toast for errors |
+| Plugin install | `src/components/settings/plugin-catalog-dialog.tsx` (opened from `plugins-section.tsx`) | `GET /v1/plugins/catalog` and the install routes (admin only) | Browse list; install / update / uninstall / delete data, each behind a confirmation | Admin-only visibility, trust warning, typed id before install, uninstall and delete data, compact rows, shared toast for errors; install from a GitHub address reviews first (sha256 shown, stronger warning); a toast on app open tells admins about plugin updates, which stay manual |
 
 ## State and feedback
 

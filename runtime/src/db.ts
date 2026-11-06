@@ -393,6 +393,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       installed_by TEXT REFERENCES "user"(id) ON DELETE SET NULL,
       installed_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE floq_plugin_packages ADD COLUMN IF NOT EXISTS source_repo TEXT;
     CREATE TABLE IF NOT EXISTS floq_plugin_migrations (
       plugin_id TEXT NOT NULL,
       migration_id TEXT NOT NULL,

@@ -614,6 +614,13 @@ export interface ExternalTaskPage { items: ExternalTask[]; nextCursor?: string }
 
 // ---- Plugin catalog (installable plugins) ----
 
+/** What the runtime found in a GitHub repository's newest release: shown before an install or update, never stored by the preview. */
+export interface PluginRepoPreview {
+  repo: string; tag: string; id: string; name: string; version: string; description: string; scope: PluginScope;
+  secrets: string[]; network: string[]; contributes: string[]; sha256: string; size: number; installedVersion: string | null; builtin: boolean;
+}
+export interface PluginUpdateNotice { id: string; name: string; installedVersion: string; availableVersion: string; repo: string | null }
+
 export interface PluginCatalogItem {
   id: string; name: string; version: string; apiVersion: number; description: string; icon?: string; scope: PluginScope;
   secrets: string[]; network: string[]; contributes: string[]; minFloq?: string;
