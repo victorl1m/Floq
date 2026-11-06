@@ -24,9 +24,11 @@ export function withPaths(text: string, paths: string[]): string {
 
 /** Bracketed paste so a multi-line message is one input in the Claude/Codex TUI, then Enter to submit it. */
 export async function deliverMessage(client: RuntimeClient, sessionId: string, text: string): Promise<void> {
-  await client.sendInput(sessionId, PASTE_START);
+  // A one-line slash command is typed as is (not pasted) so the CLI runs it as a command.
+  const slashCommand = /^\/[\w:-]+(?: [^\r\n]*)?$/.test(text);
+  if (!slashCommand) await client.sendInput(sessionId, PASTE_START);
   for (let i = 0; i < text.length; i += CHUNK) await client.sendInput(sessionId, text.slice(i, i + CHUNK));
-  await client.sendInput(sessionId, PASTE_END);
+  if (!slashCommand) await client.sendInput(sessionId, PASTE_END);
   await sleep(150);
   await client.sendInput(sessionId, "\r");
 }
