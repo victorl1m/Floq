@@ -57,7 +57,7 @@ const COLUMN_MAX_HEIGHT = 1500;
  * System notes come first, then memory, then plain notes (by title). Each note keeps its own size; a column
  * is as wide as its widest note and notes in it share a left edge. Returns grid-snapped positions by note id.
  */
-export function stackNotes(notes: readonly StackNote[], left: number, top: number): Record<string, { x: number; y: number }> {
+export function stackNotes(notes: readonly StackNote[], left: number, top: number, gap = COLUMN_GAP * 2): Record<string, { x: number; y: number }> {
   const sorted = [...notes].sort((a, b) => (KIND_ORDER[a.kind ?? ""] ?? 2) - (KIND_ORDER[b.kind ?? ""] ?? 2) || (a.title ?? "").localeCompare(b.title ?? "") || a.id.localeCompare(b.id));
   const columns: StackNote[][] = [];
   let height = 0;
@@ -67,7 +67,7 @@ export function stackNotes(notes: readonly StackNote[], left: number, top: numbe
     else { column.push(note); height += STACK_GAP + note.h; }
   }
   const positions: Record<string, { x: number; y: number }> = {};
-  let right = left - COLUMN_GAP * 2;
+  let right = left - gap;
   for (const column of columns) {
     const width = Math.max(...column.map((note) => note.w));
     const x = snap(right - width);
@@ -79,4 +79,9 @@ export function stackNotes(notes: readonly StackNote[], left: number, top: numbe
     right = x - COLUMN_GAP;
   }
   return positions;
+}
+
+/** Keychains get their own column(s) one column-gap left of `left` (the leftmost edge of the notes or agents), sorted by name. */
+export function stackKeychains(keychains: readonly { id: string; w: number; h: number; name?: string | null }[], left: number, top: number, gap = COLUMN_GAP * 2) {
+  return stackNotes(keychains.map((kc) => ({ id: kc.id, w: kc.w, h: kc.h, title: kc.name })), left, top, gap);
 }

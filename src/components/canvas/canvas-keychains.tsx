@@ -10,7 +10,7 @@ import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
 import {
   createKeychainRequest, deleteKeychainRequest, fetchKeychains, linkKeychain, unlinkKeychain, updateKeychainRequest,
-  type Keychain, type KeychainPatch, type NoteColor,
+  type Keychain, type KeychainPatch, type KeychainSecret, type NoteColor,
 } from "./canvas-data";
 import { COLORS, COLOR_KEYS } from "./canvas-notes";
 import { pathOf, RESIZER_ABOVE, route, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE, useRect } from "./wire-edge";
@@ -45,10 +45,25 @@ interface KeychainCtxValue {
   renamingId: string | null;
   clearRenaming: () => void;
   isNew: (id: string) => boolean;
+  titleOf: (sessionId: string) => string;
 }
 // Inert default so a card rendered outside (or out of sync with) its provider degrades instead of crashing the canvas.
-const KeychainCtx = createContext<KeychainCtxValue>({ patch: () => {}, manage: () => {}, setEditing: () => {}, renamingId: null, clearRenaming: () => {}, isNew: () => false });
+const KeychainCtx = createContext<KeychainCtxValue>({ patch: () => {}, manage: () => {}, setEditing: () => {}, renamingId: null, clearRenaming: () => {}, isNew: () => false, titleOf: () => "agent" });
 export const KeychainProvider = KeychainCtx.Provider;
+
+const heightOf = (h: number | null | undefined) => h ?? KC_DEFAULT.height;
+
+const RECENT_MS = 30_000;
+const relTime = (iso: string, now: number) => {
+  const sec = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (sec < 10) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+};
+/** Secrets with usage info; falls back to bare names when the runtime sent none. */
+const secretsOf = (kc: Keychain): KeychainSecret[] => kc.secrets ?? kc.secretNames.map((name) => ({ name, createdBy: null, lastUsedAt: null, lastUsedBy: null, uses: 0 }));
 
 const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
 
@@ -72,7 +87,15 @@ const KeychainCard = memo(function KeychainCard({ data, selected }: NodeProps<Ke
     if (!next) { setName(kc.name); return; }
     if (next !== kc.name) ctx.patch(kc.id, { name: next });
   };
-  const shown = kc.secretNames.slice(0, 4);
+  const count = kc.secretNames.length;
+  const linked = kc.linkedSessionIds.length;
+  // Show as many name rows as the card height fits (header 32 + footer ~40 + padding).
+  const rows = Math.max(1, Math.floor(((heightOf(kc.h)) - 96) / 40));
+  const secrets = secretsOf(kc);
+  const shown = secrets.slice(0, count > rows ? Math.max(1, rows - 1) : rows);
+  // Re-render every few seconds so relative times and the "just used" pulse stay current.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 5000); return () => clearInterval(timer); }, []);
 
   return (
     <div className="group/kc relative size-full">
@@ -92,50 +115,65 @@ const KeychainCard = memo(function KeychainCard({ data, selected }: NodeProps<Ke
           style={SIDE_STRIP_STYLE[position]}
           className={SIDE_STRIP_CLASS} />
       ))}
-      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border-2 border-amber-500/60 bg-card text-card-foreground shadow-sm", selected && "ring-2 ring-amber-500/40", "peer-hover/h:ring-2 peer-hover/h:ring-amber-500/60 peer-hover/h:shadow-[0_0_16px_0_var(--color-amber-500)]", connecting && "group-hover/kc:border-emerald-500 group-hover/kc:ring-2 group-hover/kc:ring-emerald-500/50 group-hover/kc:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
-      <div aria-hidden className={cn("pointer-events-none absolute inset-0 opacity-60", palette.tint)} />
-      <div className="kc-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1.5 border-b border-amber-500/40 bg-amber-500/15 px-2 active:cursor-grabbing">
-        <IconLock size={14} className="shrink-0 text-amber-500" aria-hidden="true" />
-        <input
-          ref={inputRef}
-          value={name}
-          maxLength={80}
-          spellCheck={false}
-          aria-label="Keychain name"
-          onChange={(event) => setName(event.target.value)}
-          onFocus={() => { editing.current = true; ctx.setEditing(kc.id, true); }}
-          onBlur={commit}
-          onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setName(kc.name); event.currentTarget.blur(); } }}
-          className="nodrag nopan min-w-0 flex-1 truncate bg-transparent text-[13px] font-medium outline-none focus:underline"
-        />
-        <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums" title={`${kc.secretNames.length} secret${kc.secretNames.length === 1 ? "" : "s"}`}>{kc.secretNames.length}</span>
-        <Popover>
-          <PopoverTrigger asChild>
-            <button type="button" className="nodrag nopan flex size-5 items-center justify-center rounded hover:bg-foreground/10" aria-label="Keychain color" title="Color">
-              <span className={cn("size-3 rounded-full", palette.dot)} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="flex w-auto gap-1.5 p-2" side="bottom" align="end">
-            {COLOR_KEYS.map((key: NoteColor) => (
-              <button key={key} type="button" aria-label={COLORS[key].label} title={COLORS[key].label} onClick={() => ctx.patch(kc.id, { color: key })}
-                className={cn("size-5 rounded-full ring-offset-2 ring-offset-popover", COLORS[key].dot, kc.color === key && "ring-2 ring-foreground/60")} />
-            ))}
-          </PopoverContent>
-        </Popover>
-      </div>
-      <div className="relative flex min-h-0 flex-1 flex-col gap-1 p-2" onClick={() => ctx.manage(kc.id)}>
-        <div className="flex min-h-0 flex-1 flex-wrap content-start gap-1 overflow-hidden">
-          {shown.map((secretName) => <span key={secretName} className="max-w-full truncate rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px]">{secretName}</span>)}
-          {kc.secretNames.length > shown.length && <span className="px-1 py-0.5 text-[10px] text-muted-foreground">+{kc.secretNames.length - shown.length}</span>}
-          {kc.secretNames.length === 0 && <span className="text-[11px] text-muted-foreground">No secrets yet</span>}
+      <div className={cn("relative flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow", palette.border, selected && "border-amber-500/70 shadow-md ring-2 ring-amber-500/30", "peer-hover/h:ring-2 peer-hover/h:ring-amber-500/60 peer-hover/h:shadow-[0_0_16px_0_var(--color-amber-500)]", connecting && "group-hover/kc:border-emerald-500 group-hover/kc:ring-2 group-hover/kc:ring-emerald-500/50 group-hover/kc:shadow-[0_0_16px_0_var(--color-emerald-500)]")}>
+        <div aria-hidden className={cn("pointer-events-none absolute inset-0", palette.tint)} />
+        <div className={cn("kc-drag relative flex h-8 shrink-0 cursor-grab items-center gap-1.5 border-b px-2 active:cursor-grabbing", palette.border)}>
+          <IconLock size={14} className="shrink-0 text-amber-500" aria-hidden="true" />
+          <input
+            ref={inputRef}
+            value={name}
+            maxLength={80}
+            spellCheck={false}
+            aria-label="Keychain name"
+            onChange={(event) => setName(event.target.value)}
+            onFocus={() => { editing.current = true; ctx.setEditing(kc.id, true); }}
+            onBlur={commit}
+            onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setName(kc.name); event.currentTarget.blur(); } }}
+            className="nodrag nopan min-w-0 flex-1 truncate bg-transparent text-[13px] font-medium outline-none focus:underline"
+          />
+          <span className="shrink-0 rounded-full bg-muted/70 px-1.5 text-[10px] text-muted-foreground tabular-nums" title={`${count} secret${count === 1 ? "" : "s"}`}>{count}</span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className="nodrag nopan flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10" aria-label="Keychain color" title="Color">
+                <span className={cn("size-3 rounded-full", palette.dot)} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="flex w-auto gap-1.5 p-2" side="bottom" align="end">
+              {COLOR_KEYS.map((key: NoteColor) => (
+                <button key={key} type="button" aria-label={COLORS[key].label} title={COLORS[key].label} onClick={() => ctx.patch(kc.id, { color: key })}
+                  className={cn("size-5 rounded-full ring-offset-2 ring-offset-popover", COLORS[key].dot, kc.color === key && "ring-2 ring-foreground/60")} />
+              ))}
+            </PopoverContent>
+          </Popover>
         </div>
-        <div className="flex items-center gap-1">
-          <Button type="button" variant="secondary" size="xs" className="nodrag nopan h-6 flex-1 text-[11px]" onClick={(event) => { event.stopPropagation(); ctx.manage(kc.id); }}>
-            <IconPlus size={12} />Manage secrets
-          </Button>
-          {kc.linkedSessionIds.length > 0 && <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground tabular-nums" title={`Linked to ${kc.linkedSessionIds.length} agent${kc.linkedSessionIds.length === 1 ? "" : "s"}`}><IconKey size={11} />{kc.linkedSessionIds.length}</span>}
+        <div className="relative flex min-h-0 flex-1 flex-col gap-1.5 p-2" onClick={() => ctx.manage(kc.id)}>
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
+            {shown.map((secret) => {
+              const recent = !!secret.lastUsedAt && now - new Date(secret.lastUsedAt).getTime() < RECENT_MS;
+              const usedLine = secret.lastUsedAt
+                ? `used by ${secret.lastUsedBy ? ctx.titleOf(secret.lastUsedBy) : "an agent"} · ${relTime(secret.lastUsedAt, now)} · ${secret.uses}×`
+                : "never used";
+              return (
+                <div key={secret.name} className={cn("flex min-w-0 flex-col rounded-md border bg-background/60 px-1.5 py-0.5 transition-shadow", recent && "animate-pulse border-amber-500 shadow-[0_0_10px_0_var(--color-amber-500)]")} title={[secret.name, usedLine, secret.createdBy ? `added by ${ctx.titleOf(secret.createdBy)}` : ""].filter(Boolean).join("\n")}>
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <IconKey size={11} className="shrink-0 text-amber-500" aria-hidden="true" />
+                    <span className="min-w-0 truncate font-mono text-[11px]">{secret.name}</span>
+                  </div>
+                  <span className={cn("truncate pl-4 text-[10px] leading-tight", secret.lastUsedAt ? "text-foreground/70" : "text-muted-foreground")}>{usedLine}</span>
+                  {secret.createdBy && <span className="truncate pl-4 text-[10px] leading-tight text-muted-foreground">added by {ctx.titleOf(secret.createdBy)}</span>}
+                </div>
+              );
+            })}
+            {count > shown.length && <span className="px-1 text-[10px] text-muted-foreground">+{count - shown.length} more</span>}
+            {count === 0 && <span className="flex flex-1 items-center justify-center text-[11px] text-muted-foreground">No secrets yet</span>}
+          </div>
+          <div className="flex items-center gap-2 border-t border-border/60 pt-1.5">
+            <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground tabular-nums" title={`Linked to ${linked} agent${linked === 1 ? "" : "s"}`}>{linked} agent{linked === 1 ? "" : "s"} linked</span>
+            <Button type="button" variant="secondary" size="xs" className="nodrag nopan h-6 shrink-0 text-[11px]" onClick={(event) => { event.stopPropagation(); ctx.manage(kc.id); }}>
+              <IconPlus size={12} />Manage
+            </Button>
+          </div>
         </div>
-      </div>
       </div>
     </div>
   );
@@ -184,13 +222,15 @@ export const keychainEdgeTypes = { "keychain-wire": KeychainWireEdgeView };
 
 const sameKeychain = (a: Keychain, b: Keychain) =>
   a.name === b.name && a.color === b.color && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h &&
-  a.secretNames.join("\n") === b.secretNames.join("\n") && a.linkedSessionIds.join("\n") === b.linkedSessionIds.join("\n");
+  a.secretNames.join("\n") === b.secretNames.join("\n") && JSON.stringify(a.secrets ?? null) === JSON.stringify(b.secrets ?? null) && a.linkedSessionIds.join("\n") === b.linkedSessionIds.join("\n");
 
 /** Keychains of one project: polled every 5s, optimistic edits with rollback, never clobbering one being edited or dragged. */
 export function useCanvasKeychains(client: RuntimeClient | null, projectId: string | null, titleOf: (sessionId: string) => string) {
   const [nodes, setNodes, onNodesChange] = useNodesState<KeychainNode>([]);
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
+  const titleOfRef = useRef(titleOf);
+  titleOfRef.current = titleOf;
   const editing = useRef(new Set<string>());
   const pending = useRef(new Map<string, number>());
   const created = useRef(new Map<string, number>());
@@ -215,6 +255,17 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
     let server: Keychain[];
     try { server = await fetchKeychains(client, projectId); } catch { return; }
     server = server.filter((kc) => !deleted.current.has(kc.id));
+    // Announce secrets an agent pulled since the last poll (never on first load: only keychains we already hold).
+    for (const kc of server) {
+      const before = nodesRef.current.find((node) => node.data.keychain.id === kc.id)?.data.keychain;
+      if (!before) continue;
+      const was = new Map(secretsOf(before).map((secret) => [secret.name, secret.lastUsedAt]));
+      for (const secret of secretsOf(kc)) {
+        if (secret.lastUsedAt && was.has(secret.name) && was.get(secret.name) !== secret.lastUsedAt) {
+          toast(`${secret.lastUsedBy ? titleOfRef.current(secret.lastUsedBy) : "An agent"} used ${secret.name} from ${kc.name}`);
+        }
+      }
+    }
     setNodes((current) => {
       const byId = new Map(current.map((node) => [node.data.keychain.id, node]));
       const next: KeychainNode[] = server.map((kc) => {
@@ -295,7 +346,7 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
     apply(id, { linkedSessionIds: [...before, sessionId] });
     track(id, linkKeychain(client, id, sessionId)).then(() => {
       toast.success(`${kc.name} linked to ${titleOf(sessionId)}`, {
-        description: "Applies on the next start of the agent; running agents can run floq secret get NAME.",
+        description: "The agent can now read its secrets with floq secret get NAME.",
       });
     }).catch((error) => {
       apply(id, { linkedSessionIds: before });
@@ -322,6 +373,7 @@ export function useCanvasKeychains(client: RuntimeClient | null, projectId: stri
     renamingId,
     clearRenaming: () => setRenamingId(null),
     isNew: (id) => { if (newId.current !== id) return false; newId.current = null; return true; },
+    titleOf: (sessionId) => titleOfRef.current(sessionId),
   }), [patch, setEditing, renamingId]);
 
   const dragStart = useCallback((node: Node) => setEditing(node.id.slice(KC_PREFIX.length), true), [setEditing]);

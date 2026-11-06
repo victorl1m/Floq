@@ -111,12 +111,21 @@ export const unlinkNote = (client: RuntimeClient, id: string, sessionId: string)
 
 // ---- keychains: a wallet of secrets linked to agents (values are write-only) ----
 // Typed here and called through the generic request helper until the runtime client exposes methods.
+export interface KeychainSecret {
+  name: string;
+  createdBy: string | null;
+  lastUsedAt: string | null;
+  lastUsedBy: string | null;
+  uses: number;
+}
 export interface Keychain {
   id: string;
   projectId: string | null;
   name: string;
   color: NoteColor;
   secretNames: string[];
+  /** Per-secret provenance and usage; optional so an older runtime still renders. */
+  secrets?: KeychainSecret[];
   linkedSessionIds: string[];
   x: number;
   y: number;

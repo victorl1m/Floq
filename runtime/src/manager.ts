@@ -11,7 +11,6 @@ import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
 import { streamToFile, validAttachmentName } from "./attachments.js";
 import type { Readable } from "node:stream";
-import { mergeSecretEnv } from "./secrets.js";
 import type { Keychains } from "./keychains.js";
 import { buildWiredNotice, type WireRef, type WiredContext } from "./wiredContext.js";
 import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
@@ -1364,12 +1363,9 @@ export class SessionManager {
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
     Object.assign(env, forcedSessionEnv(row.provider)); // a vault entry must not undo the renderer pin
-    // Secrets of the keychains linked to this agent: env after the base env, never over reserved names. Children do not inherit them.
-    if (this.keychains) {
-      const own = await this.keychains.resolve(row.user_id, row.id);
-      mergeSecretEnv(env, own);
-      try { this.syncSecretFiles(handle, row.id, own); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
-    }
+    // Keychain secrets are NOT injected into the environment or written to files any more: an agent pulls each one with
+    // `floq secret get NAME`, which the runtime logs so the user sees which keys were used. Clear files left by older versions.
+    try { this.syncSecretFiles(handle, row.id, {}); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
     // Per-user netns (FLOQ_NETNS): the runtime is reached through the namespace gateway, which pasta maps to the runtime's loopback.
     env.FLOQ_API_URL = "http://" + (handle.netns ? NETNS_GATEWAY : "127.0.0.1") + ":" + this.config.port;
     env.FLOQ_AGENT_TOKEN = this.vault.issueToken(row.user_id, row.id);
@@ -2272,15 +2268,9 @@ export class SessionManager {
    * Never logs values.
    */
   async syncSessionSecrets(userId: string, sessionId: string): Promise<boolean> {
-    const live = this.live.get(sessionId);
-    if (!live || live.userId !== userId || !this.keychains) return false;
-    try {
-      const secrets = await this.keychains.resolve(userId, sessionId);
-      await this.withUserShardActivity(userId, async (handle) => this.syncSecretFiles(handle, sessionId, secrets));
-    } catch (error) {
-      log.warn("secret.sync_failed", { sessionId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
-    }
-    return true;
+    // Pull model: agents read keychains on demand through the API, so a change applies immediately and nothing needs refreshing.
+    void userId; void sessionId;
+    return false;
   }
 
   /** Tell a running agent its wires changed (typed like `floq ask`). Returns false when it is not live. Never throws. */
