@@ -28,7 +28,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "prisma generate && tsc -p tsconfig.json && tsc -p tsconfig.image.json",
+    "build": "prisma generate && tsc -p tsconfig.json && tsc -p tsconfig.image.json && node scripts/copy-plugin-assets.mjs",
     "test": "npm run build && node --import tsx --test test/*.test.mts",
     "prisma:deploy": "prisma migrate deploy",
     "start": "prisma migrate deploy && node dist/index.js",

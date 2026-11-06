@@ -12,6 +12,7 @@ import Footer from "@/components/window/footer";
 import ErrorBoundary from "@/components/error-boundary";
 import { RuntimeProvider } from "@/lib/runtime/store";
 import { useRuntime } from "@/lib/runtime/store";
+import { PluginsProvider } from "@/plugins/host";
 
 function PersistedSidebarProvider({ children }: { children: React.ReactNode }) {
     const { userPreferences, updateUserPreferences } = useRuntime();
@@ -32,6 +33,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(islan
 ) : (
   <React.StrictMode>
     <RuntimeProvider>
+    <PluginsProvider>
     <PersistedSidebarProvider>
 
       <Titlebar />
@@ -47,6 +49,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(islan
       </ThemeProvider>
     </PersistedSidebarProvider>
     <Footer />
+    </PluginsProvider>
     </RuntimeProvider>
   </React.StrictMode>
 ));

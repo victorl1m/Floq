@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type pg from "pg";
 import { HttpError, badRequest, notFound } from "./errors.js";
 import { log } from "./logger.js";
@@ -33,7 +34,23 @@ const NEVER_MS = 10 * 365 * 24 * 3_600_000;
 
 export type ApprovalStatus = "pending" | "granted" | "denied" | "expired" | "cancelled" | "consumed";
 
-export interface ApprovalAgent { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null }
+/** `kind: "plugin"` marks a requester that is a Floq plugin, not an agent session: nothing is typed into a terminal and no liveness check applies. */
+/**
+ * `agent_approvals.requester_session_id/target_session_id` are UUID columns, and a plugin requester has no session. Persist a stable
+ * name-based (v5-style) UUID of its id instead; the real id and `kind: "plugin"` stay in `meta`, which is what `load()` reads back.
+ */
+export function persistedPartyId(agent: { id: string; kind?: string }): string {
+  if (agent.kind !== "plugin") return agent.id;
+  const h = createHash("sha1").update("floq-plugin-approval:" + agent.id).digest();
+  h[6] = (h[6] & 0x0f) | 0x50; h[8] = (h[8] & 0x3f) | 0x80;
+  const x = h.subarray(0, 16).toString("hex");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+}
+
+/** How long a plugin waits for the user before giving up (the approval is withdrawn). Nothing else bounds a pending approval. */
+export const PLUGIN_APPROVAL_WAIT_MS = 10 * 60_000;
+
+export interface ApprovalAgent { id: string; name: string; provider: "claude" | "codex"; projectId: string | null; projectName: string | null; kind?: "agent" | "plugin" }
 
 export interface ApprovalRecord {
   id: string;
@@ -162,7 +179,7 @@ export class Approvals {
       `INSERT INTO agent_approvals (id,user_id,requester_session_id,target_session_id,requester_project_id,target_project_id,action,action_hash,detail,status,meta,created_at,expires_at,valid_until,decided_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,to_timestamp($12/1000.0),to_timestamp($13/1000.0),to_timestamp($14/1000.0),to_timestamp($15/1000.0))
        ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, valid_until=EXCLUDED.valid_until, decided_at=EXCLUDED.decided_at`,
-      [a.id, a.userId, a.requester.id, a.target.id, a.requester.projectId, a.target.projectId, a.action, a.actionHash, a.detail, a.status, meta, a.createdAt, a.expiresAt, a.validUntil, a.decidedAt],
+      [a.id, a.userId, persistedPartyId(a.requester), persistedPartyId(a.target), a.requester.projectId, a.target.projectId, a.action, a.actionHash, a.detail, a.status, meta, a.createdAt, a.expiresAt, a.validUntil, a.decidedAt],
     )).catch((error) => log.warn("approval.persist_failed", { approvalId: a.id, error: String(error).slice(0, 120) }));
   }
 
@@ -263,7 +280,7 @@ export class Approvals {
     if (a.waiter) this.polled.set(id, t);
     const timers: Timers = {
       liveness: setInterval(() => {
-        if (this.options.isAlive && !this.options.isAlive(userId, input.requester.id)) { if (a.status === "pending") this.settle(a, "cancelled"); }
+        if (input.requester.kind !== "plugin" && this.options.isAlive && !this.options.isAlive(userId, input.requester.id)) { if (a.status === "pending") this.settle(a, "cancelled"); }
         else this.refresh(a);
       }, this.options.livenessMs ?? 2_000),
     };
@@ -300,7 +317,7 @@ export class Approvals {
   /** The runtime types the decision (marked as issued by the user) into the target, and a short notice into the requester. */
   private async announce(a: ApprovalRecord): Promise<void> {
     const deliver = this.options.deliver;
-    if (!deliver) return;
+    if (!deliver || a.target.kind === "plugin") return;
     const decision = a.status === "granted" ? "granted" : "denied";
     const base = { id: a.id, action: a.action, decision, validUntil: a.validUntil ?? 0 } as const;
     try {
@@ -366,6 +383,24 @@ export class Approvals {
       return { status: "GRANTED", valid: true, ...base, consumed: true, validUntil: a.validUntil ? new Date(a.validUntil).toISOString() : undefined, message: `GRANTED (now used up): the user approved exactly: "${a.action}" for this session. Do only that, once.` };
     }
     return { status: "GRANTED", valid: true, ...base, consumed: false, validUntil: a.validUntil ? new Date(a.validUntil).toISOString() : undefined, message: `GRANTED: the user approved exactly: "${a.action}" for this session (single use). Run \`floq approval verify ${a.id} --consume\` right before acting.` };
+  }
+
+  /**
+   * A plugin asks the user. Same pipeline as an agent request (the user resolves it in the app; agent tokens can never resolve),
+   * but the plugin is both requester and target, so the grant is consumed here, once. Resolves "approved" only when this call
+   * consumed a valid grant; deny -> "denied"; everything else (expiry, cancel, abort, plugin stopped) -> "expired".
+   */
+  async askAsPlugin(userId: string, plugin: { id: string; name: string }, input: { action: unknown; detail?: unknown }, signal?: AbortSignal, timeoutMs = PLUGIN_APPROVAL_WAIT_MS): Promise<"approved" | "denied" | "expired"> {
+    const who: ApprovalAgent = { id: "plugin:" + plugin.id, name: plugin.name, provider: "claude", projectId: null, projectName: null, kind: "plugin" };
+    const { id } = await this.request(userId, { requester: who, target: who, action: input.action, detail: input.detail, waiting: true });
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (signal?.aborted || Date.now() >= deadline) { await this.cancel(userId, who.id, id).catch(() => undefined); return "expired"; }
+      const st = await this.status(userId, who.id, id, Math.min(5_000, Math.max(1, deadline - Date.now())));
+      if (st.status === "pending") continue;
+      if (st.status === "granted") return (await this.verify(userId, who.id, id, { consume: true })).valid ? "approved" : "expired";
+      return st.status === "denied" ? "denied" : "expired";
+    }
   }
 
   /** The requester withdraws a pending request. */

@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 
-export type RightSidebarTab = "changes" | "files" | "conversations" | "app";
+export type CoreRightSidebarTab = "changes" | "files" | "conversations" | "app";
+/** Plugin tabs are `plugin:<pluginId>/<tabId>`. */
+export type RightSidebarTab = CoreRightSidebarTab | `plugin:${string}`;
 export const RIGHT_SIDEBAR_MIN = 260;
 export const RIGHT_SIDEBAR_MAX = 720;
 
@@ -13,7 +15,17 @@ interface RightSidebarState {
 }
 
 const KEY = "floq.right-sidebar.v1";
-const TABS: RightSidebarTab[] = ["changes", "files", "conversations", "app"];
+export const CORE_TABS: CoreRightSidebarTab[] = ["changes", "files", "conversations", "app"];
+const PLUGIN_TAB = /^plugin:[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
+
+/**
+ * The tab to actually show. A stored plugin tab cannot be validated at load (plugins load later), so it is resolved here against the
+ * plugin tabs that are active right now: one from a disabled or removed plugin falls back to "changes".
+ */
+export function resolveRightSidebarTab(tab: RightSidebarTab, activePluginTabs: readonly string[]): RightSidebarTab {
+    if (CORE_TABS.includes(tab as CoreRightSidebarTab)) return tab;
+    return activePluginTabs.includes(tab) ? tab : "changes";
+}
 const clamp = (width: number) => Math.min(RIGHT_SIDEBAR_MAX, Math.max(RIGHT_SIDEBAR_MIN, Math.round(width)));
 
 function load(): RightSidebarState {
@@ -24,7 +36,7 @@ function load(): RightSidebarState {
         return {
             open: value.open === true,
             width: typeof value.width === "number" && Number.isFinite(value.width) ? clamp(value.width) : fallback.width,
-            tab: TABS.includes(value.tab as RightSidebarTab) ? (value.tab as RightSidebarTab) : fallback.tab,
+            tab: CORE_TABS.includes(value.tab as CoreRightSidebarTab) || (typeof value.tab === "string" && PLUGIN_TAB.test(value.tab)) ? (value.tab as RightSidebarTab) : fallback.tab,
             canvasSessionId: null,
         };
     } catch { return fallback; }

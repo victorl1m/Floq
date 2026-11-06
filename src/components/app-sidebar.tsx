@@ -10,12 +10,15 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
+    SidebarSeparator,
     useSidebar,
 } from "@/components/ui/sidebar";
 import CommandPalette from "@/components/sidebar/command-palette";
 import ProjectList from "@/components/sidebar/project-list";
 import UserCard from "@/components/sidebar/user-card";
 import { useRuntime, type View } from "@/lib/runtime/store";
+import { usePlugins } from "@/plugins/host";
+import { resolvePluginIcon } from "@/plugins/icons";
 
 const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
     { view: "home", label: "Home", icon: IconHome },
@@ -26,7 +29,9 @@ const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
 ];
 
 export function AppSidebar() {
-    const { view, navigate, setSearchOpen } = useRuntime();
+    const { view, navigate, setSearchOpen, pluginViewId } = useRuntime();
+    // Core navigation order is fixed. Enabled plugin views follow below a separator, in plugin-name order.
+    const pluginViews = usePlugins().views;
     const { setOpenMobile } = useSidebar();
 
     return (
@@ -72,6 +77,33 @@ export function AppSidebar() {
                                     </SidebarMenuItem>
                                 ))}
                             </SidebarMenu>
+                            {pluginViews.length > 0 && (
+                                <>
+                                    <SidebarSeparator className="mx-0 my-2" />
+                                    <SidebarMenu aria-label="Plugins" className="sidebar-nav gap-1 group-data-[collapsible=icon]:gap-0">
+                                        {pluginViews.map((item) => {
+                                            const id = `${item.pluginId}/${item.viewId}`;
+                                            const active = view === "plugin" && pluginViewId === id;
+                                            const Icon = resolvePluginIcon(item.icon);
+                                            return (
+                                                <SidebarMenuItem key={id}>
+                                                    <SidebarMenuButton
+                                                        tooltip={item.label}
+                                                        isActive={active}
+                                                        aria-current={active ? "page" : undefined}
+                                                        data-plugin-nav={id}
+                                                        className="h-8"
+                                                        onClick={() => { navigate("plugin", id); setOpenMobile(false); }}
+                                                    >
+                                                        <Icon />
+                                                        <span>{item.label}</span>
+                                                    </SidebarMenuButton>
+                                                </SidebarMenuItem>
+                                            );
+                                        })}
+                                    </SidebarMenu>
+                                </>
+                            )}
                         </SidebarGroupContent>
                     </SidebarGroup>
                     <ProjectList />

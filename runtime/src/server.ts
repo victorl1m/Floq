@@ -38,6 +38,7 @@ import { TasksService } from "./tasks.js";
 import { OrganizationsService, organizationLimitsFromEnv, routeOrganizations } from "./organizations.js";
 import { expireStaleCursors } from "./taskPresence.js";
 import { registerWithInvitation } from "./invitationRegistration.js";
+import { WEBHOOK_MAX_BYTES, type PluginHost } from "./plugins/host.js";
 import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from "./admin.js";
 import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
@@ -79,9 +80,11 @@ interface Deps {
   /** Enables the read-only WebDAV mounts (Open in Explorer). */
   shards?: ShardService;
   tasks: TasksService;
+  /** Optional so existing callers keep working; absent = /v1/plugins is not served. */
+  plugins?: PluginHost;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards }: Deps) {
+export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -103,6 +106,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text),
   });
   void approvals.init();
+  plugins?.setApprovals(approvals);
   const decisions = new Decisions({ pool, scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
   const decisionsReady = decisions.init();
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
@@ -169,7 +173,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key");
-    res.setHeader("Access-Control-Expose-Headers", "set-auth-token");
+    res.setHeader("Access-Control-Expose-Headers", "set-auth-token, X-Floq-Plugin-Sha256");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Max-Age", "600");
   }
@@ -239,6 +243,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       throw error;
     }
   }
+
+  plugins?.setMcp({
+    install: (userId, body) => installMcp(userId, null, body, false),
+    remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
+  });
 
   /** `--project`/`--global` for `floq mcp`: an explicit choice wins; otherwise the calling session's own project, else global. */
   function toolkitScope(body: Record<string, unknown>, callerProjectId: string | null): { scope: "global" | "project"; projectId?: string } {
@@ -313,6 +322,14 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         }
       };
       const send = (r: ServerResponse, status: number, payload: unknown): void => sendPlain(r, status, path.startsWith("vault/") || path.startsWith("secrets/") ? payload : neutralizeDeep(payload));
+      if (plugins && path === "plugins/list") return send(res, 200, { plugins: await plugins.listInternal(userId) });
+      const pluginCall = plugins ? /^plugins\/([a-z][a-z0-9-]*)\/(.*)$/.exec(path) : null;
+      if (plugins && pluginCall) {
+        // Aborted when the agent's request goes away, so long waits (a user approval) are withdrawn instead of completing unseen.
+        const gone = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) gone.abort(); });
+        return send(res, 200, await plugins.handleInternal({ userId, sessionId, pluginId: pluginCall[1], path: pluginCall[2], body, signal: gone.signal }));
+      }
       switch (path) {
         case "vault/secrets":
           return send(res, 200, { secrets: (await vault.list(userId)).map((s) => ({ name: s.name, description: s.description })) });
@@ -485,6 +502,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, await orchestrator.check(userId, sessionId, body.name, Number(body.chars) || undefined, body.full === true));
         case "agents/wait":
           return send(res, 200, await orchestrator.wait(userId, sessionId, body.name, Number(body.timeoutSec) || undefined, Number(body.chars) || undefined, body.full === true));
+        case "agents/progress":
+          return send(res, 200, await orchestrator.reportProgress(userId, sessionId, body));
+        case "agents/watch":
+          return send(res, 200, await orchestrator.watch(userId, sessionId, body.name, body.since, Number(body.waitSec) || undefined, body.reply === true));
         case "agents/connect":
           return send(res, 200, await orchestrator.connect(userId, sessionId, body.from, body.to));
         case "agents/recruit":
@@ -691,8 +712,38 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       return workspaceFiles.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
     }
 
+    const hookMatch = plugins && method === "POST" ? /^\/v1\/plugins\/([a-z][a-z0-9-]*)\/hooks\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_-]{16,128})$/.exec(url.pathname) : null;
+    if (plugins && hookMatch) {
+      // Unauthenticated by design: the install token in the path is the credential (see PluginHost.handleWebhook).
+      const result = await plugins.handleWebhook({
+        pluginId: hookMatch[1], name: hookMatch[2], token: hookMatch[3], ip: clientIp(req), query: url.searchParams, headers: req.headers,
+        readRaw: async () => {
+          const declared = Number(req.headers["content-length"]);
+          if (Number.isFinite(declared) && declared > WEBHOOK_MAX_BYTES) throw new HttpError(413, "payload_too_large", "Request body too large");
+          const chunks: Buffer[] = []; let size = 0;
+          for await (const chunk of req) { size += (chunk as Buffer).length; if (size > WEBHOOK_MAX_BYTES) throw new HttpError(413, "payload_too_large", "Request body too large"); chunks.push(chunk as Buffer); }
+          return Buffer.concat(chunks);
+        },
+      });
+      return send(res, 200, result);
+    }
+
     const { userId, authSessionId } = await authFor(req.headers);
     davMounts.touch(userId);
+
+    if (plugins && (url.pathname === "/v1/plugins" || url.pathname.startsWith("/v1/plugins/") || url.pathname === "/v1/task-sources" || url.pathname.startsWith("/v1/task-sources/"))) {
+      const result = await plugins.handle({
+        userId, method, pathname: url.pathname, query: url.searchParams,
+        readBody: () => (method === "POST" || method === "PUT" ? readJson<unknown>(req) : Promise.resolve(undefined)),
+        requireAdmin: () => requireAdmin(pool, config.bootstrapAdminEmail, userId),
+      });
+      if (result?.raw) {
+        res.writeHead(result.status, { "Content-Type": result.raw.contentType, "Content-Length": Buffer.byteLength(result.raw.text), "Cache-Control": "no-store", ...(result.raw.headers ?? {}) });
+        res.end(result.raw.text);
+        return;
+      }
+      if (result) return send(res, result.status, result.body);
+    }
 
     if (url.pathname.startsWith("/v1/admin/") || url.pathname === "/v1/me/role") {
       if (url.pathname === "/v1/me/role" && method === "GET") return send(res, 200, { role: await getRole(pool, config.bootstrapAdminEmail, userId) });
@@ -1381,7 +1432,8 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDecisions = decisions.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
-          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offDisplays(); };
+          const offPlugins = plugins ? plugins.events.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) : () => undefined;
+          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offDisplays(); offPlugins(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });

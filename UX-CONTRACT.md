@@ -19,6 +19,12 @@ This file records durable interaction ownership for the desktop coding-agent wor
 | Scrollbar | Global application stylesheet in `src/index.css` | `DESIGN.md` | Theme-aware global surface; documented geometry exceptions | Visible, keyboard-operable, theme and forced-colors check |
 | Home agent composer | `src/components/home/home-view.tsx` | This contract and runtime API | Prompt starter / custom draft; project/workspace/provider/model | Starter fill/focus, no draft replacement, Enter/Shift+Enter, IME, busy/error states |
 | Agent and terminal workspaces | Existing runtime and terminal components | Runtime contracts | Session / shell view | Preserve terminal mounting, scrollback, authentication, payloads, and server lifecycle |
+| Plugin views and nav | `src/plugins/host.tsx`, `src/components/app-sidebar.tsx`, `src/App.tsx` | Plugin manifest + this contract | Core nav fixed; plugin views after separator | Enable/disable shows/hides, history, terminal stays mounted, keyboard nav |
+| Plugin UI kit | `src/plugins/kit` re-exporting `src/components/ui` owners | `DESIGN.md` Plugins + this contract | `PluginPage`; `PluginState` loading/empty/error/not-configured/disabled | Import guard, token test, theme/forced-colors/reduced-motion checks |
+| Task source groups | `src/components/tasks/tasks-page.tsx`, `external-task-list.tsx` | Runtime `/v1/task-sources` | Generic list / plugin custom view | No mixing with native search, tab restore validated, missing-secret state |
+| Plugin settings | `src/components/settings/plugins-section.tsx` | Manifest `settings` + `/v1/plugins/:id/settings` | Admin install toggle; user toggle; generic form; optional custom panel | Validation errors, secret presence without values, admin gating |
+| Plugin approvals | Existing ApprovalHost / island | `approvals.ts` | Requester kind plugin | Plugin label shown; user-only resolution |
+| Plugin install | `src/components/settings/plugin-catalog-dialog.tsx` (opened from `plugins-section.tsx`) | `GET /v1/plugins/catalog` and the install routes (admin only) | Browse list; install / update / uninstall / delete data, each behind a confirmation | Admin-only visibility, trust warning, typed id before install, uninstall and delete data, compact rows, shared toast for errors |
 
 ## State and feedback
 
@@ -36,3 +42,5 @@ This file records durable interaction ownership for the desktop coding-agent wor
 ## Scope boundary
 
 Visual changes must not alter provider authentication, runtime request/response shapes, session creation semantics, terminal mounting, or server lifecycle. New navigation and screen-specific interaction owners require an explicit contract update before implementation.
+
+Plugins must not alter provider authentication, session creation, terminal mounting, server lifecycle or core request shapes. New plugin contribution points require a contract update.

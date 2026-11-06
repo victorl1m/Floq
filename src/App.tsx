@@ -30,9 +30,12 @@ import { useNativeMaterial } from "@/lib/native-material";
 import { usePerformancePrefs } from "@/lib/prefs";
 import { useIslandBridge } from "./components/island/main-bridge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PluginViewHost, usePlugins } from "@/plugins/host";
+import { isTerminalHidden } from "@/lib/view-visibility";
 
 function App() {
-  const { ready, user, view } = useRuntime();
+  const { ready, user, view, pluginViewId } = useRuntime();
+  const pluginViewLabel = usePlugins().views.find((v) => `${v.pluginId}/${v.viewId}` === pluginViewId)?.label;
   const [performancePrefs] = usePerformancePrefs();
   const [material] = useMaterialPreference();
   useLayoutEffect(() => { document.documentElement.dataset.material = material; }, [material]);
@@ -41,11 +44,11 @@ function App() {
   const islandReady = useIslandBridge();
   const pendingApprovals = usePendingApprovals();
   useEffect(() => {
-    const title = titleWithPending(view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
+    const title = titleWithPending(view === "plugin" ? `${pluginViewLabel ?? "Plugin"} — Floq` : view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
     document.title = title;
     // Native window title too, so the taskbar shows "(1) Floq" while the window is minimized or unfocused.
     if (isTauri()) void getCurrentWindow().setTitle(title).catch(() => undefined);
-  }, [view, pendingApprovals]);
+  }, [view, pendingApprovals, pluginViewLabel]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("floq-reduced-motion", performancePrefs.reduceMotion);
@@ -75,7 +78,8 @@ function App() {
             {view === "skills" && <div className="absolute inset-0 overflow-y-auto"><SkillsPage /></div>}
             {view === "secrets" && <div className="absolute inset-0 overflow-y-auto"><SecretsPage /></div>}
             {/* Kept mounted so xterm scrollback survives switching views. */}
-            <div className={view === "home" || view === "tasks" || view === "canvas" || view === "skills" || view === "secrets" ? "hidden" : "absolute inset-0"}>
+            {view === "plugin" && <PluginViewHost viewId={pluginViewId} />}
+            <div className={isTerminalHidden(view) ? "hidden" : "absolute inset-0"}>
               <TerminalPanel />
             </div>
           </>

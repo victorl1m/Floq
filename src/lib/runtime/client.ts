@@ -51,6 +51,12 @@ import type {
   IssuedOrganizationInvitation,
   IncomingOrganizationInvitation,
   TaskBoard,
+  PluginInfo,
+  PluginSettingValues,
+  TaskSourceInfo,
+  ExternalTask,
+  ExternalTaskPage,
+  PluginCatalogItem,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
 import type { FileContent, FileListing } from "./workspace-files";
@@ -404,6 +410,85 @@ export class RuntimeClient {
   /** Irreversible: removes the project, its sessions and canvas data, and its Floq-managed checkouts. */
   deleteProject(projectId: string): Promise<ProjectDeleteResult> {
     return this.call("DELETE", `/v1/projects/${encodeURIComponent(projectId)}`, undefined, { timeoutMs: 5 * 60_000 });
+  }
+
+  // --- task sources (plugins) ---
+
+  async taskSources(): Promise<TaskSourceInfo[]> {
+    return (await this.call<{ sources: TaskSourceInfo[] }>("GET", "/v1/task-sources")).sources;
+  }
+
+  taskSourceItems(pluginId: string, sourceId: string, params: { query?: string; cursor?: string } = {}): Promise<ExternalTaskPage> {
+    const q = new URLSearchParams();
+    if (params.query) q.set("query", params.query);
+    if (params.cursor) q.set("cursor", params.cursor);
+    const suffix = q.size ? "?" + q.toString() : "";
+    return this.call<ExternalTaskPage>("GET", `/v1/task-sources/${encodeURIComponent(pluginId)}/${encodeURIComponent(sourceId)}/items${suffix}`);
+  }
+
+  async taskSourceItem(pluginId: string, sourceId: string, externalId: string): Promise<ExternalTask> {
+    return (await this.call<{ item: ExternalTask }>("GET", `/v1/task-sources/${encodeURIComponent(pluginId)}/${encodeURIComponent(sourceId)}/items/${encodeURIComponent(externalId)}`)).item;
+  }
+
+  // --- installable plugins (admin only) ---
+
+  async pluginCatalog(): Promise<PluginCatalogItem[]> {
+    return (await this.call<{ plugins: PluginCatalogItem[] }>("GET", "/v1/plugins/catalog", undefined, { timeoutMs: 60_000 })).plugins;
+  }
+
+  /** `confirm` is the plugin id the admin typed. */
+  async installPlugin(id: string, confirm: string): Promise<PluginInfo> {
+    return (await this.call<{ plugin: PluginInfo }>("POST", "/v1/plugins/install", { id, confirm }, { timeoutMs: 2 * 60_000 })).plugin;
+  }
+
+  async updatePlugin(id: string): Promise<PluginInfo> {
+    return (await this.call<{ plugin: PluginInfo }>("POST", `/v1/plugins/${encodeURIComponent(id)}/update`, {}, { timeoutMs: 2 * 60_000 })).plugin;
+  }
+
+  async uninstallPlugin(id: string, confirm: string): Promise<void> {
+    await this.call("DELETE", `/v1/plugins/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirm)}`);
+  }
+
+  /** "Delete data": drops the plugin's schema, settings and migration ledger. The plugin must be off. */
+  async purgePluginData(id: string, confirm: string): Promise<void> {
+    await this.call("POST", `/v1/plugins/${encodeURIComponent(id)}/purge`, { confirm });
+  }
+
+  /** The UI bundle of an installed plugin, with the sha256 the runtime reports for it (checked by the caller). */
+  async pluginUiScript(id: string): Promise<{ text: string; sha256: string }> {
+    const response = await fetch(`${this.baseUrl}/v1/plugins/${encodeURIComponent(id)}/ui.js`, { headers: this.token ? { Authorization: "Bearer " + this.token } : {} });
+    if (!response.ok) throw new RuntimeError(response.status, "http_" + response.status, "The plugin UI could not be loaded.");
+    return { text: await response.text(), sha256: response.headers.get("X-Floq-Plugin-Sha256") ?? "" };
+  }
+
+  // --- plugins ---
+
+  async listPlugins(): Promise<PluginInfo[]> {
+    return (await this.call<{ plugins: PluginInfo[] }>("GET", "/v1/plugins")).plugins;
+  }
+
+  /** `install` (admin) enables the plugin for the whole runtime; `user` is the signed-in user's own switch for user-scoped plugins. */
+  async setPluginEnabled(id: string, enabled: boolean, level: "install" | "user" = "install"): Promise<{ plugin: PluginInfo; mcpProblems: string[] }> {
+    const path = `/v1/plugins/${encodeURIComponent(id)}`;
+    const res = level === "user"
+      ? await this.call<{ plugin: PluginInfo; mcpProblems?: string[] }>("PUT", path + "/user", { enabled })
+      : await this.call<{ plugin: PluginInfo; mcpProblems?: string[] }>("POST", path + (enabled ? "/enable" : "/disable"));
+    return { plugin: res.plugin, mcpProblems: res.mcpProblems ?? [] };
+  }
+
+  async getPluginSettings(id: string): Promise<PluginSettingValues> {
+    return (await this.call<{ settings: PluginSettingValues }>("GET", `/v1/plugins/${encodeURIComponent(id)}/settings`)).settings;
+  }
+
+  async savePluginSettings(id: string, settings: PluginSettingValues): Promise<PluginSettingValues> {
+    return (await this.call<{ settings: PluginSettingValues }>("PUT", `/v1/plugins/${encodeURIComponent(id)}/settings`, { settings })).settings;
+  }
+
+  /** Call a route the plugin registered under `/v1/plugins/<id>/api/`. `path` starts with `/`. */
+  pluginFetch<T = unknown>(id: string, path: string, init: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {}): Promise<T> {
+    // Defense in depth: a plugin path must stay under /api/ and never reach core routes with the user's token.
+    if (/(^|[/\\])\.\.?([/\\?#]|$)|%2e|%2f|%5c|\/\/|\\/i.test(path)) throw new Error("Invalid plugin path");
+    return this.call<T>(init.method ?? "GET", `/v1/plugins/${encodeURIComponent(id)}/api${path.startsWith("/") ? path : "/" + path}`, init.body);
   }
 
   projectFolders(): Promise<ProjectFoldersState> {

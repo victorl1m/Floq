@@ -16,6 +16,7 @@ import { AgentOutbox, MessageInbox, OUTBOX_APPROVAL_MAX_AGE_MS, OUTBOX_MESSAGE_M
 import type { ProviderId, SessionSummary } from "./types.js";
 import { parseRecruitSkills } from "./recruitSkills.js";
 import { descendantsOf } from "./subagents.js";
+import { AgentProgress, WATCH_MAX_WAIT_SEC, cleanPercent, cleanProgressMessage, cleanStatus, pushLine } from "./progress.js";
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const QUIET_MS = 5_000;
@@ -130,6 +131,7 @@ export class Orchestrator {
     private readonly inbox: MessageInbox = new MessageInbox(pool),
     private readonly readiness: { quietMs: number; timeoutMs: number; pollMs: number } = { quietMs: READY_QUIET_MS, timeoutMs: READY_TIMEOUT_MS, pollMs: 250 },
     readonly outbox: AgentOutbox = new AgentOutbox(pool),
+    readonly progressLog: AgentProgress = new AgentProgress(pool),
   ) {}
 
   /**
@@ -497,6 +499,60 @@ export class Orchestrator {
       return this.scrubResult(userId, [other.id, me.id], { ...this.turnResult(other, target, why, turn, chars, full, stripAnsi(collected.join("")).trim()), delivery });
     } finally {
       unsubscribe();
+    }
+  }
+
+  /**
+   * Subagent -> orchestrator, structured and cheap (`floq progress`, `floq ask-parent`). Stored per session with a
+   * cursor. `blocked`, `done` and questions are also pushed as ONE line into the parent's terminal (via the outbox,
+   * so a sleeping parent gets it on its next ready). Updates are rate limited and identical pushes are deduped.
+   */
+  async reportProgress(userId: string, sessionId: string, input: { message?: unknown; percent?: unknown; status?: unknown; question?: unknown }) {
+    const me = await this.caller(userId, sessionId);
+    const question = input.question === true;
+    const message = cleanProgressMessage(input.message);
+    const status = question ? "blocked" as const : cleanStatus(input.status);
+    const parent = me.parent_session_id ? (await this.rows(userId)).find((r) => r.id === me.parent_session_id) : undefined;
+    if (question && !parent) throw badRequest("You have no parent agent; ask the user or use floq ask <UUID> for a specific agent");
+    const { event, push } = await this.progressLog.add(userId, me.id, { kind: question ? "question" : "progress", status, percent: cleanPercent(input.percent), message });
+    let pushed = false;
+    if (push && parent) {
+      await this.outbox.enqueue(userId, parent.id, "message", pushLine({ id: me.id, title: me.title }, event));
+      void this.deliverPending(userId, parent.id).catch(() => undefined);
+      pushed = true;
+    }
+    return { seq: event.seq, status: event.status, pushed, parent: parent ? { id: parent.id, name: parent.title } : null };
+  }
+
+  /**
+   * Orchestrator side: only NEW progress events of one agent since `cursor`, plus its current status. With `waitSec`
+   * (max 30) it long-polls until an event arrives or the status changes, so callers never need long timeouts.
+   */
+  async watch(userId: string, sessionId: string, name: unknown, since: unknown, waitSec?: number, withReply = false) {
+    const { me, other } = await this.target(userId, sessionId, name);
+    const from = since === undefined || since === null || since === "" ? 0 : Number(since);
+    if (!Number.isInteger(from) || from < 0) throw badRequest("since must be a cursor number from a previous watch");
+    const waitMs = Math.min(Math.max(waitSec ?? 0, 0), WATCH_MAX_WAIT_SEC) * 1000;
+    const statusOf = () => {
+      const live = this.manager.findLive(other.id, userId);
+      return live ? this.snapshot(live, userId).status : ("asleep" as AgentStatus);
+    };
+    const first = statusOf();
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const { events, cursor } = await this.progressLog.since(userId, other.id, from);
+      const status = statusOf();
+      if (events.length || status !== first || Date.now() >= deadline) {
+        let reply: string | undefined;
+        if (withReply && status === "idle") {
+          const live = this.manager.findLive(other.id, userId);
+          const turn = live ? this.snapshot(live, userId).turn : null;
+          if (turn?.reply) reply = (await this.scrub(userId, [other.id, me.id], truncateReply(turn.reply, DEFAULT_REPLY_CHARS).text));
+        }
+        const clean = await Promise.all(events.map(async (e) => ({ ...e, message: await this.scrub(userId, [other.id, me.id], e.message) })));
+        return { id: other.id, name: other.title, status, changed: status !== first, cursor, events: clean, ...(reply ? { reply } : {}) };
+      }
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

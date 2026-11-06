@@ -192,6 +192,17 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     );
     ALTER TABLE agent_outbox ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS agent_outbox_pending_idx ON agent_outbox (to_session_id, created_at) WHERE delivered_at IS NULL AND expired_at IS NULL;
+    CREATE TABLE IF NOT EXISTS agent_progress (
+      seq BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('progress','question')),
+      status TEXT NOT NULL CHECK (status IN ('working','blocked','done')),
+      percent INTEGER CHECK (percent IS NULL OR (percent >= 0 AND percent <= 100)),
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    );
+    CREATE INDEX IF NOT EXISTS agent_progress_session_idx ON agent_progress (session_id, seq);
     CREATE TABLE IF NOT EXISTS agent_approvals (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
@@ -352,6 +363,41 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       version INTEGER NOT NULL DEFAULT 1,
       doc JSONB NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS floq_plugins (
+      id TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      version TEXT,
+      status TEXT NOT NULL DEFAULT 'available',
+      config JSONB NOT NULL DEFAULT '{}',
+      config_owner TEXT REFERENCES "user"(id) ON DELETE SET NULL,
+      webhook_token_hash TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS floq_plugin_user_settings (
+      plugin_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      settings JSONB NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (plugin_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS floq_plugin_packages (
+      id TEXT PRIMARY KEY,
+      version TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      manifest JSONB NOT NULL,
+      runtime TEXT NOT NULL,
+      ui TEXT,
+      skills JSONB NOT NULL DEFAULT '{}',
+      installed_by TEXT REFERENCES "user"(id) ON DELETE SET NULL,
+      installed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS floq_plugin_migrations (
+      plugin_id TEXT NOT NULL,
+      migration_id TEXT NOT NULL,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (plugin_id, migration_id)
     );
   `);
 }

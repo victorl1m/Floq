@@ -52,3 +52,8 @@ export function titleWithPending(title: string, pending: number): string {
 export function detailIsLong(detail: string): boolean {
   return detail.length > 160 || detail.split("\n").length > 3;
 }
+
+/** How a requester or target is named in the prompt: plugins read "Plugin: <name>", agents keep their own name. */
+export function actorLabel(actor: { name: string; kind?: string }): string {
+  return actor.kind === "plugin" ? `Plugin: ${actor.name}` : actor.name;
+}

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { acceptSnapshot, validAnswers, type AttentionItem, type DecisionAnswer, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRight, IconCheck, IconLoader2, IconX } from '@tabler/icons-react';
-import { riskLevel, RISK_LABEL } from '@/lib/approval-format';
+import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
 
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
@@ -124,10 +124,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     {current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
-        <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${current.approval.requester.name}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>
+        <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${actorLabel(current.approval.requester)}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>
         {current.kind === 'approval' && <div className="island-header-actions"><button className="island-circle" aria-label="Decline" disabled={disabled} onClick={() => act({type:'approval', id:current.id, decision:'deny'})}><IconX size={18}/></button><button className="primary" disabled={disabled} onClick={() => act({type:'approval', id:current.id, decision:'allow'})}><IconCheck size={16}/> Accept</button></div>}
       </div>
-      {current.kind === 'approval' ? <><div className="island-detail"><div><span className="island-risk">{RISK_LABEL[riskLevel(current.approval.action, current.approval.detail, current.approval.irreversible)]}</span>{current.approval.detail && <p>{current.approval.detail}</p>}<p className="island-meta">From {current.approval.requester.name} · Target {current.approval.target.name}</p></div></div></> : <DecisionCard decision={current.decision} answers={answers} answer={answer} disabled={disabled} act={act} submission={submission}/>}
+      {current.kind === 'approval' ? <><div className="island-detail"><div><span className="island-risk">{RISK_LABEL[riskLevel(current.approval.action, current.approval.detail, current.approval.irreversible)]}</span>{current.approval.detail && <p>{current.approval.detail}</p>}<p className="island-meta">From {actorLabel(current.approval.requester)} · Target {actorLabel(current.approval.target)}</p></div></div></> : <DecisionCard decision={current.decision} answers={answers} answer={answer} disabled={disabled} act={act} submission={submission}/>}
       {items.length > 1 && <div className="island-cycle"><button onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Request ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
       {!snapshot?.connected && <p role="status">Disconnected. Reconnecting…</p>}{(snapshot?.error || localError) && <p role="alert" className="island-error">{snapshot?.error || localError}</p>}
     </div>}

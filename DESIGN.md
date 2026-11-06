@@ -125,7 +125,7 @@ The composer is the primary home action. Keep its project, workspace, provider, 
 
 Use the supplied Orca sidebar reference for density and hierarchy: 32 px project and workspace rows, 28 px agent rows with 4 px between agents, shallow indentation without tree rails, muted branch icons, and a small primary-checkout badge. Retain the existing semantic theme tokens and provider marks. Project, workspace, and folder disclosure state is saved per runtime and user; unseen entries remain expanded by default. Workspace rows provide a direct New agent action that selects the exact project and branch before opening the shared composer. Only the hovered row reveals its utility actions; keyboard focus and open menus reveal them too, and touch keeps them visible. Refresh failures sit below the retained project list with Retry. The terminal split toolbar control is temporarily hidden.
 
-Primary navigation order is Home, Tasks, Skills & MCP, Secrets, Terminal. Tasks is an organization workspace; keep task boards within the established compact, token-based surface language. Skills & MCP is a first-class workspace view; keep the terminal panel mounted but hidden while another view is active so terminal scrollback survives navigation.
+Primary navigation order is Home, Tasks, Skills & MCP, Secrets, Terminal. Enabled plugin views follow Terminal below a separator. Tasks is an organization workspace; keep task boards within the established compact, token-based surface language. Skills & MCP is a first-class workspace view; keep the terminal panel mounted but hidden while another view is active so terminal scrollback survives navigation.
 
 The account menu owns the active organization scope shared with Tasks. Show the selected organization in the account card and switch it through the menu; validate persisted selections against the organizations available to the signed-in user. Keep account preferences and the global sidebar state scoped to the runtime and user. Treat local storage as optional and avoid storing credentials there.
 
@@ -138,3 +138,12 @@ The required sign-in dialog offers a dedicated invitation registration panel wit
 Workspace rows reserve fixed space for disclosure and worktree menu buttons, including when hidden. Long branch names truncate before these controls; row-specific padding and action offsets take precedence over shared sidebar defaults.
 
 Terminal sessions accept dragged files and a keyboard-accessible picker. Keep upload feedback compact and token-based; show per-file progress/errors while preserving valid files in a mixed selection. Limit files to 4 MiB each, 16 MiB total, and 20 files per drop. Save attachments in the user's private runtime storage outside the checkout, then paste shell-quoted absolute paths into the terminal without executing them. Drag and drop must keep the picker alternative.
+
+## Plugins
+
+- Plugins extend Floq through declared contribution points only. They never restyle core surfaces or change core navigation order.
+- **Navigation:** primary order stays Home, Tasks, Skills & MCP, Secrets, Terminal. Enabled plugin views follow below a separator, in plugin-name order, using 32 px rows and Tabler icons. They behave like core simple views: the terminal stays mounted and hidden, and history covers them.
+- **Task sources:** each enabled source is one source group in the Tasks board picker (stable source ID, label, view slot), as already anticipated in "Project navigation". A source shows only data the user is authorized to see, never mixes into native board results, and needs no placeholder sources.
+- **Settings:** plugin enablement and configuration live in Settings > Plugins. Credentials are vault secrets referenced by name and are never typed into plugin settings.
+- **Surfaces:** plugin views use `PluginPage` and the plugin kit (`src/plugins/kit`). Plugin views follow the same material, blur and opacity rules as core pages, and plugins add no new blur layers or ambient motion.
+- **Failure:** a failing plugin shows its own contained error state, and the rest of Floq stays usable.

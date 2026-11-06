@@ -6,6 +6,7 @@ import { applyDecisionFrame, clearAttention as clearDecisionAttention, replaceDe
 import type { DecisionFrame } from "@/lib/runtime/types";
 import type { ApprovalFrame, ApprovalRequest } from "@/lib/runtime/types";
 import { newestFirst } from "@/lib/approval-format";
+import { dispatchPluginFrame } from "@/plugins/events";
 
 /**
  * Pending approvals the user has to answer. The runtime is authoritative (it enforces the expiry and the single
@@ -144,6 +145,7 @@ export function useApprovalSync(client: RuntimeClient | null) {
         try {
           const frame = JSON.parse(String(message.data)) as ApprovalFrame;
           if (frame && (frame.type === "approval-request" || frame.type === "approval-resolved")) applyFrame(frame);
+          else if (frame && (frame as { type?: string }).type === "plugin") dispatchPluginFrame(frame);
           else if (frame && ["decision-request", "decision-updated", "decision-resolved"].includes((frame as {type:string}).type)) applyDecisionFrame(frame as unknown as DecisionFrame);
         } catch { /* ignore malformed frames */ }
       };
