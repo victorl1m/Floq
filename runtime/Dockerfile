@@ -10,6 +10,8 @@ COPY prisma.config.ts ./
 COPY prisma ./prisma
 COPY src ./src
 COPY image ./image
+# `npm run build` ends with scripts/copy-plugin-assets.mjs (copies plugin skill folders next to the compiled plugins).
+COPY scripts/copy-plugin-assets.mjs ./scripts/copy-plugin-assets.mjs
 # Prisma generation reads the config's datasource URL but does not connect; use a build-only placeholder.
 RUN DATABASE_URL=postgresql://floq:build-only@127.0.0.1:5432/floq npm run build && npm prune --omit=dev
 
