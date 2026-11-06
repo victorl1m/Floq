@@ -53,7 +53,7 @@ test("launch applies the block on start and resume for every claude/codex sessio
 test("question hook composes with subagent blocking but is enabled only for verified Claude versions", () => {
   const settings = claudeBlockSettings(BLOCK_HOOK_PATH, QUESTION_HOOK_PATH) as any;
   assert.deepEqual(settings.hooks.PreToolUse.map((entry:any) => entry.matcher), ["Agent|Task", "AskUserQuestion"]);
-  assert.equal(settings.hooks.PreToolUse[1].hooks[0].timeout, 300);
+  assert.equal(settings.hooks.PreToolUse[1].hooks[0].timeout, 86400);
   const args = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.318" });
   assert.equal(JSON.parse(args[args.indexOf("--settings") + 1]).hooks.PreToolUse.length, 2);
   const old = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.100" });

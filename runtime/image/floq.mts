@@ -63,9 +63,9 @@ Commands:
   floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
-  floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--ttl SECONDS] [--wait]
+  floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
-  floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. Default timeout 600s (max 3600)
+  floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. It never times out by default: the user answers yes or no whenever they like; --timeout SEC makes this command give up and withdraw after SEC seconds
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
   floq skills list [--project [UUID] | --global]
@@ -472,10 +472,11 @@ switch (command) {
     if (sub === "request" && !id) {
       const action = text(named.action);
       if (!action || (named.detail !== undefined && typeof named.detail !== "string") || (named.target !== undefined && typeof named.target !== "string") || (named.timeout !== undefined && !/^\d+$/.test(String(named.timeout)))) usage();
-      const timeoutSec = named.timeout ? Math.min(3600, Math.max(30, Number(named.timeout))) : 600;
+      // No timeout by default: the request waits until the user answers. --timeout SEC makes THIS command give up (and withdraw) sooner.
+      const timeoutSec = named.timeout ? Math.min(86400, Math.max(30, Number(named.timeout))) : 0;
       const r = await call<{ id: string; deduped: boolean; approval: { expiresAt: string; target: { name: string; id: string }; requester: { id: string } } }>("approvals/request", { action, detail: text(named.detail), target: text(named.target), timeoutSec, wait: named.wait === true });
       const forOther = r.approval.target.id !== r.approval.requester.id;
-      console.error("approval " + r.id + " requested" + (r.deduped ? " (already pending)" : "") + ": waiting for the USER to answer in the Floq app (expires " + r.approval.expiresAt.slice(11, 16) + " UTC)");
+      console.error("approval " + r.id + " requested" + (r.deduped ? " (already pending)" : "") + ": waiting for the USER to answer in the Floq app)");
       if (named.wait !== true) {
         console.log(r.id + "\npending: the user decides in the Floq app. Floq types the decision into " + (forOther ? r.approval.target.name + "'s" : "your") + " terminal as a line starting with \"[FLOQ APPROVAL " + r.id + "\"; or check with: floq approval status " + r.id + " --wait");
         break;
@@ -493,14 +494,14 @@ switch (command) {
       };
       for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, withdraw);
       let st: Status = { id: r.id, status: "pending", message: "" };
-      const until = Date.now() + timeoutSec * 1000 + 5000;
+      const until = timeoutSec ? Date.now() + timeoutSec * 1000 + 5000 : Infinity;
       while (st.status === "pending" && Date.now() < until) st = await call<Status>("approvals/status", { id: r.id, waitSec: 50 });
       settled = true;
       console.log(st.status === "granted" ? "GRANTED by the user: " + st.message + (forOther ? "\nThe target agent was told by Floq and must verify it itself." : "\nBefore acting run: floq approval verify " + r.id + " --consume --action " + JSON.stringify(action)) : String(st.status).toUpperCase() + ": " + st.message);
       process.exitCode = st.status === "granted" ? 0 : 1;
     } else if (sub === "status" && id) {
       let st = await call<Status>("approvals/status", { id: id26(id), waitSec: named.wait === true ? 50 : 0 });
-      if (named.wait === true) for (let i = 0; i < 12 && st.status === "pending"; i++) st = await call<Status>("approvals/status", { id: id26(id), waitSec: 50 });
+      if (named.wait === true) while (st.status === "pending") st = await call<Status>("approvals/status", { id: id26(id), waitSec: 50 });
       console.log(String(st.status).toUpperCase() + ": " + st.message);
       process.exitCode = st.status === "granted" ? 0 : 1;
     } else if (sub === "verify" && id) {

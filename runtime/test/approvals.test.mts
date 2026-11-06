@@ -114,7 +114,7 @@ test("request, grant: view, events, audit-visible state and verify semantics", a
   assert.equal(r.approval.irreversible, true);
   assert.equal(r.approval.requester.name, "Acme API");
   assert.equal(r.approval.target.projectName, "Globex");
-  assert.equal(r.approval.remainingMs, APPROVAL_DEFAULT_TTL_MS);
+  assert.ok(r.approval.remainingMs > 365 * 24 * 3_600_000, "pending requests do not run down a clock");
   assert.equal(frames[0].type, "approval-request");
   assert.equal(approvals.list(U).length, 1);
   assert.equal(approvals.list("someone-else").length, 0);
@@ -157,27 +157,33 @@ test("requester waiting suppresses the requester notice; self approvals are deli
   assert.equal(delivered.filter((d) => d.session === A).length, 1);
 });
 
-test("server-side expiry: pending requests expire, late Allow is rejected, grants lapse", async () => {
+test("a pending request never expires on a clock; the user answers whenever, and a grant still lapses", async () => {
   const { approvals, frames, advance } = make();
   const r = await ask(approvals, "git push origin main", { ttlSec: 60 });
-  advance(61_000);
-  assert.equal(approvals.list(U).length, 0);
-  assert.deepEqual(frames.at(-1), { type: "approval-resolved", id: r.id, status: "expired", requesterSessionId: A, targetSessionId: B });
-  await assert.rejects(approvals.resolve(U, r.id, "allow"), /no longer pending/);
-  assert.equal((await approvals.verify(U, B, r.id)).status, "EXPIRED");
-  const g = await ask(approvals, "deploy to production", { ttlSec: 60 });
-  await approvals.resolve(U, g.id, "allow");
-  assert.equal((await approvals.verify(U, B, g.id)).valid, true);
-  advance(61_000);
-  const late = await approvals.verify(U, B, g.id, { consume: true });
+  advance(30 * 24 * 3_600_000); // a month later it is still waiting for the user
+  assert.equal(approvals.list(U).length, 1);
+  assert.equal((await approvals.verify(U, B, r.id)).status, "PENDING");
+  assert.ok(!frames.some((f) => f.type === "approval-resolved"));
+  assert.deepEqual(await approvals.resolve(U, r.id, "allow"), { status: "granted" });
+  assert.equal((await approvals.verify(U, B, r.id)).valid, true);
+  // the grant itself is only usable for a limited window after the user said yes
+  advance(APPROVAL_DEFAULT_TTL_MS + 1000);
+  const late = await approvals.verify(U, B, r.id, { consume: true });
   assert.deepEqual([late.status, late.valid], ["EXPIRED", false]);
+  // deny works the same way after any wait
+  const d = await ask(approvals, "deploy to production");
+  advance(7 * 24 * 3_600_000);
+  assert.deepEqual(await approvals.resolve(U, d.id, "deny"), { status: "denied" });
 });
 
-test("timeouts are clamped: default 10 minutes, minimum 30 seconds, maximum 60 minutes", async () => {
-  const { approvals } = make();
-  assert.equal((await ask(approvals, "a")).approval.timeoutMs, APPROVAL_DEFAULT_TTL_MS);
-  assert.equal((await ask(approvals, "b", { ttlSec: 99999 })).approval.timeoutMs, APPROVAL_MAX_TTL_MS);
-  assert.equal((await ask(approvals, "c", { ttlSec: 1 })).approval.timeoutMs, 30_000);
+test("the timeout option is accepted but does not limit how long a request waits", async () => {
+  const { approvals, advance } = make();
+  for (const ttlSec of [undefined, 1, 99999]) {
+    const r = await ask(approvals, "x" + String(ttlSec), ttlSec === undefined ? {} : { ttlSec });
+    assert.equal(r.approval.timeoutMs, APPROVAL_DEFAULT_TTL_MS);
+  }
+  advance(365 * 24 * 3_600_000);
+  assert.equal(approvals.list(U).length, 3);
   await assert.rejects(ask(approvals, "d", { ttlSec: "abc" }), /timeout/);
 });
 

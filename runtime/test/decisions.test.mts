@@ -36,12 +36,14 @@ test('two simultaneous answers have one winner', async () => {
   assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
 });
 
-test('TTL expires a pending request and startup expires persisted pending rows', async () => {
+test('a pending decision never expires on a clock; a gone waiter withdraws it; startup closes persisted pending rows', async () => {
   let now=1000; const sql:string[]=[];
   const pool={query:async (query:string)=>{sql.push(query);return {rows:[],rowCount:1} as any;}} as any;
   const decisions=new Decisions({now:()=>now,pool}); await decisions.init();
   assert.match(sql[0],/UPDATE agent_decisions SET status='expired'.*status='pending'/);
   const {id}=await decisions.request('u',{sessionId:'s',projectId:null,sessionName:'A',ttlMs:30000,questions:[{id:'q',question:'?',options:[],allowText:true}]});
-  now+=30000; decisions.sweep(); assert.equal((await decisions.status('u','s',id,0)).status,'expired');
-  await assert.rejects(()=>decisions.resolve('u',id,[{questionId:'q',optionIds:[],text:'x'}]));
+  now+=30*24*3600000; decisions.sweep(); assert.equal((await decisions.status('u','s',id,0)).status,'pending');
+  assert.equal((await decisions.resolve('u',id,[{questionId:'q',optionIds:[],text:'x'}])).status,'answered');
+  const waited=await decisions.request('u',{sessionId:'s',projectId:null,sessionName:'A',wait:true,questions:[{id:'q',question:'?',options:[],allowText:true}]});
+  now+=75000; decisions.sweep(); assert.equal((await decisions.status('u','s',waited.id,0)).status,'cancelled');
 });

@@ -31,7 +31,7 @@ function atLeast(v: [number, number, number], min: [number, number, number]): bo
 export function claudeBlockSettings(hookPath = BLOCK_HOOK_PATH, questionHookPath: string | null = null): Record<string, unknown> {
   return {
     permissions: { deny: [...CLAUDE_BLOCKED_TOOLS] },
-    hooks: { PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }, ...(questionHookPath ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${questionHookPath}`, timeout: 300 }] }] : [])] },
+    hooks: { PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }, ...(questionHookPath ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${questionHookPath}`, timeout: 86400 }] }] : [])] },
   };
 }
 

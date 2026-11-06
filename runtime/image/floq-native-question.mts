@@ -21,7 +21,7 @@ async function main() {
   }
   const call=async(path:string,body:unknown,timeout:number)=>{const r=await fetch(base+'/internal/decisions/'+path,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(timeout)});if(!r.ok) throw new Error('unavailable');return await r.json() as Record<string,unknown>;};
   let id:string|undefined; let answered=false;
-  const deadline=Date.now()+280000;
+  const deadline=Date.now()+86_300_000;
   try {
     const created=await call('native-request',{providerRequestId:input.tool_use_id,questions:questions.map((q,i)=>({id:'q'+i,question:q.question,header:q.header,options:q.options.map((o,j)=>({id:'o'+j,label:o.label,description:o.description})),multiSelect:q.multiSelect===true,allowText:true})),ttlMs:55000,wait:true},5000);
     if(typeof created.id!=='string') return; id=created.id;
