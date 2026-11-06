@@ -293,7 +293,8 @@ export class PluginHost {
     this.taskSources.invalidate(id);
   }
 
-  private installer?: { catalog(): Promise<unknown>; install(id: string, adminUserId: string): Promise<unknown>; update(id: string): Promise<unknown>; uninstall(id: string): Promise<unknown> };
+  private installer?: { catalog(): Promise<unknown>; install(id: string, adminUserId: string): Promise<unknown>; update(id: string): Promise<unknown>; uninstall(id: string): Promise<unknown>;
+    inspectRepo(url: unknown): Promise<unknown>; installFromRepo(url: unknown, sha256: unknown, adminUserId: string): Promise<string>; updateFromRepo(id: string, sha256: unknown): Promise<unknown>; sources(): Promise<Record<string, string>>; updates(): Promise<unknown> };
   setInstaller(installer: NonNullable<PluginHost["installer"]>): void { this.installer = installer; }
 
   ids(): string[] { return [...this.entries.keys()]; }
@@ -668,6 +669,21 @@ export class PluginHost {
     const installer = () => { if (!this.installer) throw new HttpError(503, "installer_unavailable", "Plugin installation is not available."); return this.installer; };
     const confirmed = (given: unknown) => { if (given !== id) throw badRequest("Type the plugin id to confirm.", "confirmation_required"); };
     if (id === "catalog" && rest.length === 1 && method === "GET") { await i.requireAdmin(); return { status: 200, body: await installer().catalog() }; }
+    // From a GitHub repository address (any owner): preview first (nothing stored), then install with the sha256 that was reviewed.
+    if (id === "sources" && rest.length === 1 && method === "GET") { await i.requireAdmin(); return { status: 200, body: { sources: await installer().sources() } }; }
+    if (id === "updates" && rest.length === 1 && method === "GET") { await i.requireAdmin(); return { status: 200, body: await installer().updates() }; }
+    if (id === "inspect-url" && rest.length === 1 && method === "POST") {
+      await i.requireAdmin();
+      return { status: 200, body: { preview: await installer().inspectRepo(((await i.readBody()) as { url?: unknown } | undefined)?.url) } };
+    }
+    if (id === "install-url" && rest.length === 1 && method === "POST") {
+      await i.requireAdmin();
+      const b = (await i.readBody()) as { url?: unknown; sha256?: unknown; confirm?: unknown } | undefined;
+      const preview = (await installer().inspectRepo(b?.url)) as { id: string };
+      if (typeof b?.confirm !== "string" || b.confirm !== preview.id) throw badRequest("Type the plugin id to confirm.", "confirmation_required");
+      const pid = await installer().installFromRepo(b?.url, b?.sha256, i.userId);
+      return { status: 200, body: { plugin: await this.one(pid, i.userId) } };
+    }
     if (id === "install" && rest.length === 1 && method === "POST") {
       await i.requireAdmin();
       const b = (await i.readBody()) as { id?: unknown; confirm?: unknown } | undefined;
@@ -691,7 +707,8 @@ export class PluginHost {
     }
     if (sub === "update" && rest.length === 2 && method === "POST") {
       await i.requireAdmin();
-      await installer().update(id);
+      if ((await installer().sources())[id]) await installer().updateFromRepo(id, ((await i.readBody()) as { sha256?: unknown } | undefined)?.sha256);
+      else await installer().update(id);
       return { status: 200, body: { plugin: await this.one(id, i.userId) } };
     }
     if (sub === "ui.js" && rest.length === 2 && method === "GET") {

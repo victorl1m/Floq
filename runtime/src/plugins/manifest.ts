@@ -8,7 +8,7 @@ export class ManifestError extends Error {
 
 /** No "--" or trailing "-": ids map to schema/prefix names where those would collide (a--b vs a + b__). */
 /** Path segments of the host\'s own `/v1/plugins/*` routes. */
-export const RESERVED_IDS = ["catalog", "install"];
+export const RESERVED_IDS = ["catalog", "install", "sources", "inspect-url", "install-url", "updates"];
 const ID = /^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){1,31}$/;
 const SUB_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;

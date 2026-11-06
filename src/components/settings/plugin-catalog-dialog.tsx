@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { PluginCatalogItem } from "@/lib/runtime/types";
-import { ACTION_LABEL, TRUST_WARNING, confirmMatches, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
+import type { PluginCatalogItem, PluginRepoPreview } from "@/lib/runtime/types";
+import { ACTION_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, confirmMatches, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { usePlugins } from "@/plugins/host";
 
@@ -66,6 +66,27 @@ export function ConfirmBody({ item, action, typed, onTyped }: { item: PluginCata
     );
 }
 
+/** Review step for a plugin that comes from a GitHub repository: what it declares, its sha256, the stronger trust warning and the typed id. */
+export function RepoConfirmBody({ preview, mode, typed, onTyped }: { preview: PluginRepoPreview; mode: "install" | "update"; typed: string; onTyped: (v: string) => void }) {
+    return (
+        <div className="space-y-4" data-slot="plugin-repo-confirm" data-mode={mode}>
+            <Alert variant="destructive"><IconAlertTriangle /><AlertDescription>{REPO_TRUST_WARNING}</AlertDescription></Alert>
+            <div className="space-y-1">
+                <p className="text-sm font-medium">{preview.name} <span className="font-mono text-xs text-muted-foreground">{preview.id}</span></p>
+                {preview.description && <p className="text-xs text-muted-foreground">{preview.description}</p>}
+                <ul className="space-y-0.5 break-all text-xs text-muted-foreground">{previewLines(preview).map((line) => <li key={line}>{line}</li>)}</ul>
+                {mode === "update" && preview.installedVersion && <p className="text-xs text-muted-foreground">Installed: v{preview.installedVersion}. If the new version fails to start, Floq goes back to it.</p>}
+            </div>
+            {mode === "install" && (
+                <div className="space-y-2">
+                    <Label htmlFor="plugin-repo-confirm-id">Type <code className="rounded bg-muted px-1 py-0.5 font-mono">{preview.id}</code> to confirm</Label>
+                    <Input id="plugin-repo-confirm-id" value={typed} onChange={(e) => onTyped(e.target.value)} autoComplete="off" spellCheck={false} className="font-mono" />
+                </div>
+            )}
+        </div>
+    );
+}
+
 /** Settings > Plugins > Browse plugins (administrators only). Install, update, uninstall and delete data from the floq-plugins catalog. */
 export default function PluginCatalogDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
     const { client } = useRuntime();
@@ -75,15 +96,46 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const [busy, setBusy] = useState(false);
     const [pending, setPending] = useState<{ item: PluginCatalogItem; action: CatalogAction } | null>(null);
     const [typed, setTyped] = useState("");
+    const [repoUrl, setRepoUrl] = useState("");
+    const [sources, setSources] = useState<Record<string, string>>({});
+    const [repoPending, setRepoPending] = useState<{ url: string; preview: PluginRepoPreview; mode: "install" | "update" } | null>(null);
+    const { all: plugins } = usePlugins();
 
     const load = useCallback(async () => {
         if (!client) return;
         setError("");
         try { setItems(await client.pluginCatalog()); } catch (e) { setItems(null); setError(errorMessage(e)); }
+        try { setSources(await client.pluginSources()); } catch { setSources({}); }
     }, [client]);
     useEffect(() => { if (open) { setItems(null); void load(); } }, [open, load]);
 
     function ask(item: PluginCatalogItem, action: CatalogAction) { setTyped(""); setPending({ item, action }); }
+
+    /** Fetches and verifies the repository's newest release, then opens the review step. Nothing is installed yet. */
+    async function review(url: string, mode: "install" | "update") {
+        if (!client) return;
+        setBusy(true);
+        try { setTyped(""); setRepoPending({ url, preview: await client.inspectPluginRepo(url), mode }); }
+        catch (e) { toast.error(mode === "install" ? "Could not review that repository" : "Could not check for the update", { description: errorMessage(e) }); }
+        finally { setBusy(false); }
+    }
+
+    async function runRepo() {
+        if (!client || !repoPending) return;
+        const { url, preview, mode } = repoPending;
+        setBusy(true);
+        try {
+            if (mode === "install") await client.installPluginFromRepo(url, preview.sha256, typed.trim());
+            else await client.updatePlugin(preview.id, preview.sha256);
+            toast.success(mode === "install" ? `${preview.name} installed` : `${preview.name} updated to v${preview.version}`, mode === "install" ? { description: "It is off until you turn it on in the list." } : undefined);
+            setRepoPending(null); setRepoUrl("");
+            await Promise.all([refresh(), load()]);
+        } catch (e) {
+            toast.error(`Could not ${mode} ${preview.name}`, { description: errorMessage(e) });
+        } finally { setBusy(false); }
+    }
+
+    const repoItems = plugins.filter((p) => p.source === "installed" && sources[p.id]);
 
     async function run() {
         if (!client || !pending) return;
@@ -106,13 +158,41 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const ok = pending ? (pending.action === "update" || confirmMatches(typed, pending.item.id)) : false;
     return (
         <>
-            <AppDialog open={open && !pending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." size="lg"
+            <AppDialog open={open && !pending && !repoPending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." size="lg"
                 footer={<Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>}>
                 {error ? (
                     <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{error}</p><Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button></div>
                 ) : items === null ? <p role="status" className="text-sm text-muted-foreground">Loading the catalog…</p>
                 : items.length === 0 ? <p className="text-sm text-muted-foreground">The catalog is empty.</p>
                 : <ul aria-label="Plugin catalog" className="max-h-[50dvh] divide-y divide-border overflow-y-auto rounded-xl border border-border">{items.map((item) => <CatalogRow key={item.id} item={item} busy={busy} onAction={ask} />)}</ul>}
+                <section aria-label="Install from GitHub" className="mt-4 space-y-3" data-slot="plugin-repo-install">
+                    <div className="space-y-1">
+                        <Label htmlFor="plugin-repo-url">Install from a GitHub repository</Label>
+                        <p className="text-xs text-muted-foreground">Any owner. Floq reads the repository's newest release and shows you what it contains before anything is installed. Updates are manual.</p>
+                    </div>
+                    <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (repoUrl.trim()) void review(repoUrl.trim(), "install"); }}>
+                        <Input id="plugin-repo-url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="https://github.com/owner/repo" autoComplete="off" spellCheck={false} className="font-mono" />
+                        <Button type="submit" variant="outline" disabled={busy || !repoUrl.trim()}>Review</Button>
+                    </form>
+                    {repoItems.length > 0 && (
+                        <ul aria-label="Installed from GitHub" className="divide-y divide-border rounded-xl border border-border">
+                            {repoItems.map((p) => (
+                                <li key={p.id} data-plugin-repo={p.id} className="flex items-center justify-between gap-2 p-3">
+                                    <div className="min-w-0"><span className="text-sm font-medium">{p.name}</span> <Badge variant="outline" className="font-mono">v{p.version}</Badge><p className="truncate font-mono text-xs text-muted-foreground">{sources[p.id]}</p></div>
+                                    <div className="flex shrink-0 gap-2">
+                                        <Button size="sm" variant="default" disabled={busy} onClick={() => void review(`https://github.com/${sources[p.id]}`, "update")}><IconRefresh />Check for update</Button>
+                                        <Button size="sm" variant="outline" disabled={busy} onClick={() => ask({ id: p.id, name: p.name, version: p.version, apiVersion: 1, description: p.description, scope: p.scope, secrets: [], network: [], contributes: [], builtin: false, installedVersion: p.version, updateAvailable: false }, "uninstall")}>Uninstall</Button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </section>
+            </AppDialog>
+            <AppDialog open={!!repoPending} onOpenChange={(o) => { if (!busy && !o) setRepoPending(null); }} icon={<IconAlertTriangle />} size="md"
+                title={repoPending ? `${repoPending.mode === "install" ? "Install" : "Update"} ${repoPending.preview.name}?` : ""}
+                footer={<><Button variant="outline" disabled={busy} onClick={() => setRepoPending(null)}>Cancel</Button><Button disabled={busy || !repoPending || (repoPending.mode === "install" ? !confirmMatches(typed, repoPending.preview.id) : (repoPending.preview.installedVersion === repoPending.preview.version))} onClick={() => void runRepo()}>{repoPending?.mode === "update" ? "Update" : "Install"}</Button></>}>
+                {repoPending && <RepoConfirmBody preview={repoPending.preview} mode={repoPending.mode} typed={typed} onTyped={setTyped} />}
             </AppDialog>
             <AppDialog open={!!pending} onOpenChange={(o) => { if (!busy && !o) setPending(null); }} icon={<IconAlertTriangle />} size="md"
                 title={pending ? `${ACTION_LABEL[pending.action]} ${pending.item.name}?` : ""}

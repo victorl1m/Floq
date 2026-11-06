@@ -141,6 +141,13 @@ Verify everything first (sha256, JSON shape, `parseManifest`, id and version equ
 - **Uninstall**: turns the plugin off (removing its MCP servers and skill copies), then deletes the package row and cache folder. **Data is kept** (schema `plugin_<id>`, settings, kv), so installing it again picks it up. **Delete data** is a separate admin action with a typed confirmation; it drops the schema and the settings rows and is refused while the plugin is running.
 - Built-in plugins are listed in the catalog but can be neither installed over nor uninstalled. The compiled-in copies of Movidesk, Azure DevOps and WAHA stay until the packages have passed an end-to-end check.
 
+### Installing from a GitHub repository (any owner)
+In Browse plugins an administrator can paste `https://github.com/<owner>/<repo>`: a Floq plugin, or one of their own. Floq asks the GitHub release API for the repository's **newest published release** and takes its single `*.floqpkg.json` asset, which must be a release download of that same repository (never a branch or a file in the tree). The same limits apply as for catalog packages: https, `github.com`, redirects only to the pinned CDN hosts, 30 s, 5 MiB, manifest validation, no built-in id, skill path rules.
+
+There is no catalog checksum, so nobody vouches for the bytes except the repository's owner. Floq therefore works in two steps: **review** (download and verify, store nothing, show the id, version, secrets, hosts, contributions and the sha256) and **install** (the admin types the plugin id, and the request carries the reviewed sha256: if the release changed in between, nothing is installed). The repository is recorded, so an update can only come from the same repository. The warning for this path is stronger: the code is from an author Floq cannot vouch for.
+
+**Updates are manual.** When the app opens, an administrator gets a toast if an installed plugin has a newer version (`GET /v1/plugins/updates`, read-only). Nothing is installed until the admin clicks **Check for update**, reviews the new sha256 and confirms. Only a strictly newer version of the same plugin id from the same repository is accepted.
+
 ### Publishing checklist
 
 - [ ] `plugin.json` is valid for `parseManifest` and `id`/`version` match the release tag.

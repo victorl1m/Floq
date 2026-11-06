@@ -5,6 +5,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { useRuntime } from "@/lib/runtime/store";
 import type { PluginInfo } from "@/lib/runtime/types";
 import { toast } from "sonner";
+import { updateToast } from "./install-ui";
 import { subscribePluginEvent, subscribePluginToasts } from "./events";
 import { UI_PLUGINS } from "./index";
 import { loadRemoteUi } from "./remote-ui";
@@ -38,6 +39,22 @@ export function PluginsProvider({ children, loaders = UI_PLUGINS }: { children: 
 
   // `ctx.toast` from any plugin shows on every screen.
   useEffect(() => subscribePluginToasts(({ title, description }) => { toast(title, description ? { description } : undefined); }), []);
+
+  // On app open an administrator is told once if an installed plugin has a newer version. Updating stays a manual action in Settings > Plugins.
+  const notifiedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!client || !user || notifiedFor.current === user.id) return;
+    notifiedFor.current = user.id;
+    let live = true;
+    void (async () => {
+      try {
+        if ((await client.myRole()) !== "admin") return;
+        const note = updateToast(await client.pluginUpdates());
+        if (note && live) toast(note.title, { description: note.description, duration: 12_000, action: { label: "Review", onClick: () => openSettings("plugins") } });
+      } catch { /* an older runtime or an unreachable source: no toast */ }
+    })();
+    return () => { live = false; };
+  }, [client, user, openSettings]);
 
   const refresh = useCallback(async () => {
     if (!client) { setAll([]); return; }
