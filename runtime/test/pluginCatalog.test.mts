@@ -14,6 +14,15 @@ test("package URLs: https, github.com, the floq-plugins release path, nothing el
     "https://u:p@github.com" + PACKAGE_PATH_PREFIX + "x", "https://github.com:8443" + PACKAGE_PATH_PREFIX + "x", "https://github.com" + PACKAGE_PATH_PREFIX + "../../x", "javascript:alert(1)", "not a url", "https://raw.githubusercontent.com/victorl1m/floq-plugins/main/x"]) assert.ok(!packageUrlAllowed(bad), bad);
 });
 
+test("package URLs may also live in a floq-plugin-<id> repo of the same owner, and only there", () => {
+  const ok = (repo: string) => `https://github.com/victorl1m/${repo}/releases/download/v1.0.0/x.floqpkg.json`;
+  for (const repo of ["floq-plugin-movidesk", "floq-plugin-azure-devops", "floq-plugin-waha", "floq-plugin-a1"]) assert.ok(packageUrlAllowed(ok(repo)), repo);
+  for (const bad of [ok("floq-plugin-"), ok("floq-plugin"), ok("floq-plugins2"), ok("floq-plugin-Movidesk"), ok("floq-plugin--x"), ok("floq-plugin-x-"), ok("floq-plugin-a/b"), ok("floq-pluginx"), ok("xfloq-plugin-a"),
+    "https://github.com/evil/floq-plugin-movidesk/releases/download/v1/x", "https://github.com/victorl1m2/floq-plugin-movidesk/releases/download/v1/x", "https://github.com/victorl1m/floq-plugin-movidesk/archive/main.zip",
+    "https://github.com/victorl1m/floq-plugin-movidesk/releases/latest/download/x", "https://github.com/victorl1m/floq-plugin-movidesk/releases/download/../../x",
+    "http://github.com/victorl1m/floq-plugin-movidesk/releases/download/v1/x", "https://evil.test/victorl1m/floq-plugin-movidesk/releases/download/v1/x", "https://u:p@github.com/victorl1m/floq-plugin-movidesk/releases/download/v1/x"]) assert.ok(!packageUrlAllowed(bad), bad);
+});
+
 test("the catalog keeps valid entries and drops malformed, duplicate or off-location ones", () => {
   const list = parseCatalog(catalog([entry(), entry({ id: "azure-devops", name: "Azure DevOps" }), entry({ id: "azure-devops" }), entry({ id: "Bad_Id" }), entry({ id: "x2", package: "https://evil.test/p.json" }),
     entry({ id: "x3", sha256: "short" }), entry({ id: "x4", version: "latest" }), entry({ id: "x5", apiVersion: 2 }), null, "x"]));
