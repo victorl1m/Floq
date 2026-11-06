@@ -40,7 +40,7 @@
 # Hardening note: third-party actions are pinned to major tags; consider pinning
 # them to full commit SHAs later (e.g. with Dependabot or pinact).
 # Verify a download: compare it with the release's SHA256SUMS, and run
-# `gh attestation verify <installer>.exe --repo <owner>/<repo>` for the build provenance.
+# `gh attestation verify <installer>.exe --repo <owner>/<repo>` for the build provenance (public repositories only).
 
 name: Build Windows
 
@@ -104,8 +104,10 @@ jobs:
           projectPath: .
           args: --bundles nsis
 
+      # GitHub offers attestations only for public repositories (user-owned private repos get a 422 and fail the build), so
+      # this step runs only when the repo is public. SHA256SUMS on the release still covers integrity either way.
       - name: Attest build provenance
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event.repository.private == false
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: src-tauri/target/release/bundle/nsis/*.exe
