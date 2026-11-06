@@ -984,7 +984,7 @@ export class SessionManager {
       }
       const branchName = workspace.cwd === workspace.projectCwd ? "Main" : "Worktree";
       const result = await this.pool.query(
-        `UPDATE floq_project_workspaces SET branch=$1,name=CASE WHEN $1 IS NULL THEN 'Detached HEAD' ELSE $2 END
+        `UPDATE floq_project_workspaces SET branch=$1::text,name=CASE WHEN $1::text IS NULL THEN 'Detached HEAD' ELSE $2::text END
          WHERE id=$3 AND project_id=$4 AND user_id=$5 RETURNING id`,
         [branch, branchName, workspaceId, projectId, userId],
       );
