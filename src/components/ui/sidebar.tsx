@@ -278,12 +278,12 @@ function SidebarTrigger({
     <Button
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
-      aria-expanded={expanded}
+      aria-pressed={expanded}
       aria-controls={isMobile ? undefined : "app-navigation-sidebar"}
       aria-label={expanded ? "Hide navigation" : "Show navigation"}
       variant="ghost"
       size="icon-sm"
-      className={cn("aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:bg-transparent dark:aria-expanded:hover:bg-foreground/10", className)}
+      className={className}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()
