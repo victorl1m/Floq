@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { IconCheck, IconClipboard, IconCopy, IconExternalLink } from "@tabler/icons-react";
 import { toast } from "sonner";
-import { AppDialog, ErrorBanner, Steps } from "@/components/ui/app-dialog";
+import { AppDialog, ErrorBanner, FlowStep } from "@/components/ui/app-dialog";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -183,48 +183,50 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
                     Connected{plan ? " · " + plan : ""}
                 </p>
             ) : (
-                <>
-                    <Steps steps={["Open the sign-in page", "Sign in and approve", "Paste the code"]} current={opened ? 3 : 1} />
-                    {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
-                    {flow ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                onClick={() => {
-                                    setOpened(true);
-                                    void openExternal(flow.authorizeUrl).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
-                                    setTimeout(() => input.current?.focus(), 100);
-                                }}
-                            >
-                                <IconExternalLink />
-                                Open sign-in page
-                            </Button>
-                            <Button variant="outline" size="icon" aria-label="Copy link" onClick={() => void copyLink()}>
-                                {copied ? <IconCheck /> : <IconCopy />}
-                            </Button>
-                        </div>
-                    ) : (
-                        <Skeleton className="h-8 w-44" />
-                    )}
-                    <div className="flex flex-col gap-2">
-                        <Label htmlFor="claude-code">Authorization code</Label>
-                        <div className="flex gap-2">
-                            <Input
-                                id="claude-code"
-                                ref={input}
-                                className="font-mono"
-                                autoComplete="off"
-                                spellCheck={false}
-                                disabled={!flow}
-                                placeholder="Paste the code from the sign-in page"
-                                value={code}
-                                aria-invalid={codeError !== null}
-                                onChange={(e) => {
-                                    setCode(e.target.value);
-                                    setCodeError(null);
-                                }}
-                                onPaste={onPasteCode}
-                                onKeyDown={(e) => e.key === "Enter" && void submit()}
-                            />
+                <div className="flex flex-col gap-3">
+                    {notice && <p className="rounded-xl bg-muted/60 px-3 py-2 text-xs text-muted-foreground">{notice}</p>}
+                    <FlowStep index={1} state={opened ? "done" : "active"} title="Open the sign-in page" hint="Sign in with your Claude account and approve access.">
+                        {flow ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                    onClick={() => {
+                                        setOpened(true);
+                                        void openExternal(flow.authorizeUrl).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
+                                        setTimeout(() => input.current?.focus(), 100);
+                                    }}
+                                >
+                                    <IconExternalLink />
+                                    Open sign-in page
+                                </Button>
+                                <Button variant="outline" size="icon" aria-label="Copy link" onClick={() => void copyLink()}>
+                                    {copied ? <IconCheck /> : <IconCopy />}
+                                </Button>
+                            </div>
+                        ) : (
+                            <Skeleton className="h-8 w-44" />
+                        )}
+                    </FlowStep>
+                    <FlowStep index={2} state={opened ? "active" : "idle"} title="Paste the code" hint="Copy the authorization code shown after you approve, then paste it here.">
+                        <Label htmlFor="claude-code" className="sr-only">Authorization code</Label>
+                        <Input
+                            id="claude-code"
+                            ref={input}
+                            className="h-10 w-full font-mono"
+                            autoComplete="off"
+                            spellCheck={false}
+                            disabled={!flow}
+                            placeholder="Paste the code from the sign-in page"
+                            value={code}
+                            aria-invalid={codeError !== null}
+                            onChange={(e) => {
+                                setCode(e.target.value);
+                                setCodeError(null);
+                            }}
+                            onPaste={onPasteCode}
+                            onKeyDown={(e) => e.key === "Enter" && void submit()}
+                        />
+                        {codeError && <p className="text-xs text-destructive">{codeError}</p>}
+                        <div className="flex flex-wrap items-center justify-end gap-2">
                             <Button variant="outline" disabled={!flow} onClick={() => void pasteFromClipboard()}>
                                 <IconClipboard />
                                 Paste
@@ -234,9 +236,8 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
                                 {cooldown > 0 ? `Retry in ${cooldown}s` : "Submit code"}
                             </Button>
                         </div>
-                        {codeError && <p className="text-xs text-destructive">{codeError}</p>}
-                    </div>
-                </>
+                    </FlowStep>
+                </div>
             )}
         </AppDialog>
     );

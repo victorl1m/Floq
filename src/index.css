@@ -1631,4 +1631,27 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
 @media (prefers-reduced-transparency: reduce) and (forced-colors: none) {
   :root[data-native-material] .sidebar-search { background: var(--card); box-shadow: var(--shadow-elev-2), inset 0 1px 0 var(--glass-highlight); }
 }
+
+/* Mica for dialogs: settings and the app-dialog shells (sign-in flows) show the native backdrop through a light tint.
+   Controls inside stay on opaque --card surfaces. Falls back to the solid dialog without the native material. */
+:root[data-native-material] :is(.settings-dialog, .app-dialog).floq-frosted-dialog {
+  background-color: rgb(250 250 252 / 0.58);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-native-material].dark :is(.settings-dialog, .app-dialog).floq-frosted-dialog {
+  background-color: rgb(24 24 27 / 0.56);
+}
+:root[data-native-material] .settings-dialog .settings-nav { background: rgb(255 255 255 / 0.22) !important; }
+:root[data-native-material].dark .settings-dialog .settings-nav { background: rgb(255 255 255 / 0.04) !important; }
+:root[data-native-material] .settings-dialog .settings-group { background-color: color-mix(in oklab, var(--card) 80%, transparent); }
+:root[data-native-material].dark .settings-dialog .settings-group { background-color: rgb(32 32 36 / 0.7); }
+:root[data-native-material] .app-dialog .flow-step { background-color: color-mix(in oklab, var(--card) 72%, transparent); }
+:root[data-native-material] .app-dialog .flow-step[data-state="active"] { background-color: color-mix(in oklab, var(--primary) 8%, var(--card) 78%); }
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-native-material] :is(.settings-dialog, .app-dialog).floq-frosted-dialog { background-color: var(--card); }
+}
+@media (forced-colors: active) {
+  :root[data-native-material] :is(.settings-dialog, .app-dialog).floq-frosted-dialog { background: Canvas; }
+}
 /* === end native window material === */
