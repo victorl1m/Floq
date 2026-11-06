@@ -46,6 +46,7 @@ import { Keys } from "./canvas-kbd";
 import KeychainDialog from "./keychain-dialog";
 import VaultPopover from "./vault-popover";
 import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
+import { stackNotes } from "./note-placement";
 import { NOTE_DEFAULT, NOTE_PREFIX, NOTE_TEAL, NoteProvider, NoteWireCtx, isNoteId, isNoteLinkId, noteEdgeTypes, noteLinkId, noteNodeTypes, useCanvasNotes, type NoteWireEdge } from "./canvas-notes";
 import CanvasComposer from "./canvas-composer";
 import TerminalDialog from "./terminal-dialog";
@@ -662,6 +663,7 @@ function AgentCanvas() {
   }, [nodes, allLinks]);
 
   // Re-layout changes POSITIONS only: sizes and collapsed state stay, and the result is persisted for every agent right away.
+  const notePatch = notes.patch;
   const relayout = useCallback(() => {
     const current = nodesRef.current;
     const widest = current.reduce((max, node) => Math.max(max, node.width ?? DEFAULT_NODE_SIZE.width), DEFAULT_NODE_SIZE.width);
@@ -673,8 +675,20 @@ function AgentCanvas() {
     savedRef.current = { ...savedRef.current, positions: { ...savedRef.current.positions, ...layout } };
     setNodes((items) => items.map((node) => layout[node.id] ? { ...node, position: layout[node.id] } : node));
     persistMany(layout);
+    // Notes: stack them in tidy columns to the left of the agents, top-aligned with the first row.
+    const noteNodes = notesNodesRef.current;
+    if (noteNodes.length) {
+      const points = Object.values(layout);
+      const left = points.length ? Math.min(...points.map((point) => point.x)) : 0;
+      const top = points.length ? Math.min(...points.map((point) => point.y)) : 0;
+      const stacked = stackNotes(noteNodes.map((node) => ({ id: node.data.note.id, w: node.width ?? NOTE_DEFAULT.width, h: node.height ?? NOTE_DEFAULT.height, kind: node.data.note.kind, title: node.data.note.title })), left, top);
+      for (const node of noteNodes) {
+        const spot = stacked[node.data.note.id];
+        if (spot && (Math.round(node.position.x) !== spot.x || Math.round(node.position.y) !== spot.y)) notePatch(node.data.note.id, { x: spot.x, y: spot.y });
+      }
+    }
     requestAnimationFrame(() => void fitView({ duration: 200, ...fitOptsRef.current }));
-  }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback]);
+  }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback, notePatch]);
 
   // ---- branch canvases ----
   type BranchTag = { branch: string; resume?: boolean };
