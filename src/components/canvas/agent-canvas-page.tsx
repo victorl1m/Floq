@@ -744,38 +744,34 @@ function AgentCanvas() {
     if (!client || !projectId || !groundWorkspace || !leaving || target === leaving || switchingRef.current) return;
     switchingRef.current = true;
     setSwitching(true);
-    const isRunning = (session: SessionSummary) => session.state === "running" || session.state === "starting";
     const projectAll = () => sessionsRef.current.filter((session) => session.projectId === projectId);
     const groundIds = new Set(sessionsForWorkspace(projectId, groundWorkspace, projectSessions).map((session) => session.id));
-    const wasRunning = new Set(projectAll().filter(isRunning).map((session) => session.id));
-
-    // a. Remember which branch each visible ground agent belongs to, and which ones were live.
-    writeBranchTags(projectId, (tags) => {
-      for (const id of groundIds) tags[id] = wasRunning.has(id) ? { branch: leaving, resume: true } : { branch: leaving };
-      return tags;
-    });
-
-    const slept: SessionSummary[] = [];
     const resumeOne = async (session: SessionSummary): Promise<boolean> => {
       try { upsertSession(await client.resumeSession(session.id)); return true; }
       catch (error) { toast.error(`Could not wake ${session.title}`, { description: errorMessage(error) }); return false; }
     };
     try {
-      // b. Sleep every live agent of the project (the server refuses to switch otherwise).
-      for (const session of projectAll().filter(isRunning)) {
-        const updated = await client.sleepSession(session.id);
-        slept.push(session);
-        upsertSession(updated);
-      }
-      // c. Check the branch out.
-      await client.switchProjectBranch(projectId, groundWorkspace.id, target);
-      await refreshProjects(true);
-    } catch (error) {
-      for (const session of slept) await resumeOne(session);
+      // a. Pre-flight with no side effects: a refused switch (dirty tree, branch in use, unknown branch) leaves every session untouched.
+      await client.checkProjectBranchSwitch(projectId, groundWorkspace.id, target);
+      // b. Remember which branch each visible ground agent belongs to. Live agents are NOT slept: they keep running
+      // (the idle check handles resource use), so no resume flag is needed for them.
+      const before = { ...(prefsRef.current.canvasBranchSessions[projectId] ?? {}) };
       writeBranchTags(projectId, (tags) => {
-        for (const id of groundIds) if (tags[id]) tags[id] = { branch: tags[id].branch };
+        for (const id of groundIds) tags[id] = { branch: leaving };
         return tags;
       });
+      // c. Check the branch out.
+      try {
+        await client.switchProjectBranch(projectId, groundWorkspace.id, target);
+      } catch (error) {
+        writeBranchTags(projectId, (tags) => {
+          for (const id of groundIds) { if (before[id]) tags[id] = before[id]; else delete tags[id]; }
+          return tags;
+        });
+        throw error;
+      }
+      await refreshProjects(true);
+    } catch (error) {
       toast.error(`Could not switch to ${target}`, { description: errorMessage(error) });
       switchingRef.current = false;
       setSwitching(false);
@@ -789,9 +785,8 @@ function AgentCanvas() {
       for (const session of toWake) tags[session.id] = { branch: target };
       return tags;
     });
-    const woken = new Set(toWake.map((session) => session.id));
-    for (const session of [...toWake, ...slept.filter((item) => !groundIds.has(item.id) && !woken.has(item.id))]) await resumeOne(session);
-    toast.success(`Switched to ${target}`, { description: "Agents that were running on this branch were resumed." });
+    for (const session of toWake) await resumeOne(session);
+    toast.success(`Switched to ${target}`, { description: "Running agents were left untouched." });
     switchingRef.current = false;
     setSwitching(false);
     // e. The canvas is new (possibly empty): refit once its nodes are in.

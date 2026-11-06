@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listProjectBranches, switchProjectBranch } from "../dist/projectBranches.js";
+import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch } from "../dist/projectBranches.js";
 import { SessionManager } from "../dist/manager.js";
 
 const execFile = promisify(execFileCallback);
@@ -126,26 +126,46 @@ test("manager switches only a registered owner's workspace and refreshes its pro
   assert.equal(result.workspaces[0].branch, "feature");
 });
 
-test("manager refuses branch changes while an agent is active in the project", async (t) => {
-  const { root } = await makeRepo(t);
+function managerFor(root, queries) {
   const handle = { userId: "user-a", uid: 1000, mountPath: root };
   const manager = Object.create(SessionManager.prototype);
   manager.projectBranchLocks = new Map();
-  manager.pool = { async query(sql) {
+  manager.pool = { async query(sql, values) {
+    queries.push(sql);
     if (sql.includes("SELECT w.cwd,p.cwd AS project_cwd")) return { rows: [{ cwd: "repo", project_cwd: "repo" }] };
-    if (sql.includes("SELECT id FROM agent_sessions")) return { rows: [{ id: "agent-a" }] };
+    if (sql.includes("UPDATE floq_project_workspaces")) return { rows: [{ id: "workspace-a" }] };
     assert.fail(`Unexpected manager query: ${sql}`);
   } };
   manager.withShardActivity = (_userId, operation) => operation();
   manager.shards = {
-    driver: {
-      name: "local",
-      homePath: () => root,
-      spawn: (_handle, spec) => spawnCommand(spec.file, spec.args, { cwd: join(root, spec.cwd), env: spec.env }),
-    },
+    driver: { name: "local", homePath: () => root, spawn: (_h, spec) => spawnCommand(spec.file, spec.args, { cwd: join(root, spec.cwd), env: spec.env }) },
     async wake() { return handle; },
   };
   manager.assertLifecycleOpen = () => {};
-  await assert.rejects(manager.switchProjectBranch("user-a", "project-a", "workspace-a", "feature"), { code: "project_agents_active" });
-  assert.equal((await git(join(root, "repo"), ["branch", "--show-current"])).trim(), "main");
+  manager.project = async () => ({ id: "project-a", workspaces: [] });
+  return manager;
+}
+
+test("manager switches with live agents without touching sessions", async (t) => {
+  const { root, repo } = await makeRepo(t);
+  const queries = [];
+  const manager = managerFor(root, queries);
+  await manager.switchProjectBranch("user-a", "project-a", "workspace-a", "feature");
+  assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "feature");
+  assert.ok(!queries.some((sql) => sql.includes("agent_sessions")), "must not consult or modify sessions");
+});
+
+test("refused switch (dirty/invalid) is rejected by the dry-run pre-flight and changes nothing", async (t) => {
+  const { root, repo } = await makeRepo(t);
+  const queries = [];
+  const manager = managerFor(root, queries);
+  assert.deepEqual(await manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "feature"), { ok: true, needsSwitch: true });
+  assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
+  await assert.rejects(manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "missing"), { code: "invalid_branch" });
+  writeFileSync(join(repo, "tracked.txt"), "changed\n");
+  await assert.rejects(manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "feature"), { code: "project_worktree_dirty" });
+  await assert.rejects(manager.switchProjectBranch("user-a", "project-a", "workspace-a", "feature"), { code: "project_worktree_dirty" });
+  assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
+  assert.ok(!queries.some((sql) => sql.includes("agent_sessions") || sql.includes("UPDATE")), "no session or workspace writes");
+  assert.deepEqual(await checkProjectBranchSwitch(async (args) => ({ stdout: args[0] === "for-each-ref" ? "main\n" : "main\n", exitCode: 0 }), "main"), { branch: "main", needsSwitch: false });
 });

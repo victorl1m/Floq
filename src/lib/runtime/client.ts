@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  PluginRepoPreview,
+  PluginUpdateNotice,
   AgentLink,
   Keychain,
   KeychainInput,
@@ -390,7 +392,12 @@ export class RuntimeClient {
     return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branches`, undefined, { timeoutMs: 30_000 });
   }
 
-  /** Checks out a local branch in the workspace. Fails if agents are live, the tree is dirty or the branch is held by another worktree. */
+  /** Pre-flight for `switchProjectBranch`: rejects with the same error, changes nothing. */
+  async checkProjectBranchSwitch(projectId: string, workspaceId: string, branch: string): Promise<{ ok: true; needsSwitch: boolean }> {
+    return this.call("POST", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branch`, { branch, dryRun: true }, { timeoutMs: 30_000 });
+  }
+
+  /** Checks out a local branch in the workspace. Live agents keep running; fails if the tree is dirty or the branch is held by another worktree. */
   async switchProjectBranch(projectId: string, workspaceId: string, branch: string): Promise<RuntimeProject> {
     return (await this.call<{ project: RuntimeProject }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branch`, { branch }, { timeoutMs: 60_000 })).project;
   }
@@ -441,8 +448,29 @@ export class RuntimeClient {
     return (await this.call<{ plugin: PluginInfo }>("POST", "/v1/plugins/install", { id, confirm }, { timeoutMs: 2 * 60_000 })).plugin;
   }
 
-  async updatePlugin(id: string): Promise<PluginInfo> {
-    return (await this.call<{ plugin: PluginInfo }>("POST", `/v1/plugins/${encodeURIComponent(id)}/update`, {}, { timeoutMs: 2 * 60_000 })).plugin;
+  /** `sha256` is the digest the admin reviewed: required for plugins installed from a repository, ignored for catalog plugins. */
+  async updatePlugin(id: string, sha256?: string): Promise<PluginInfo> {
+    return (await this.call<{ plugin: PluginInfo }>("POST", `/v1/plugins/${encodeURIComponent(id)}/update`, sha256 ? { sha256 } : {}, { timeoutMs: 2 * 60_000 })).plugin;
+  }
+
+  /** Fetches and verifies the newest release of a GitHub repository (any owner) without installing it. */
+  async inspectPluginRepo(url: string): Promise<PluginRepoPreview> {
+    return (await this.call<{ preview: PluginRepoPreview }>("POST", "/v1/plugins/inspect-url", { url }, { timeoutMs: 2 * 60_000 })).preview;
+  }
+
+  /** `sha256` is the digest from the preview, `confirm` the plugin id the admin typed. */
+  async installPluginFromRepo(url: string, sha256: string, confirm: string): Promise<PluginInfo> {
+    return (await this.call<{ plugin: PluginInfo }>("POST", "/v1/plugins/install-url", { url, sha256, confirm }, { timeoutMs: 2 * 60_000 })).plugin;
+  }
+
+  /** `id -> owner/repo` of plugins installed from a repository. */
+  async pluginSources(): Promise<Record<string, string>> {
+    return (await this.call<{ sources: Record<string, string> }>("GET", "/v1/plugins/sources")).sources;
+  }
+
+  /** Installed plugins with a newer version available (for the toast on app open). Read-only. */
+  async pluginUpdates(): Promise<PluginUpdateNotice[]> {
+    return (await this.call<{ updates: PluginUpdateNotice[] }>("GET", "/v1/plugins/updates", undefined, { timeoutMs: 60_000 })).updates;
   }
 
   async uninstallPlugin(id: string, confirm: string): Promise<void> {

@@ -25,7 +25,7 @@ import { createWorktree } from "./worktree.js";
 import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
 import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } from "./claudeSettings.js";
 import { isAllowedProjectImage } from "./projectImage.js";
-import { listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
+import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
@@ -954,6 +954,18 @@ export class SessionManager {
     });
   }
 
+  /** Read-only: throws what `switchProjectBranch` would refuse with, changing nothing (no checkout, no DB write). */
+  async checkProjectBranchSwitch(userId: string, projectId: string, workspaceId: string, branch: unknown): Promise<{ ok: true; needsSwitch: boolean }> {
+    return this.withShardActivity(userId, async () => {
+      const workspace = await this.getRegisteredWorkspace(userId, projectId, workspaceId);
+      const handle = await this.shards.wake(userId);
+      this.assertLifecycleOpen();
+      this.assertSafeRegisteredCheckout(handle, workspace.cwd);
+      const checked = await checkProjectBranchSwitch((args) => this.runWorkspaceGit(handle, workspace.cwd, args), branch);
+      return { ok: true as const, needsSwitch: checked.needsSwitch };
+    });
+  }
+
   async switchProjectBranch(userId: string, projectId: string, workspaceId: string, branch: unknown): Promise<RuntimeProject> {
     return this.withShardActivity(userId, () => this.withProjectBranchLock(projectId, async () => {
       const workspace = await this.getRegisteredWorkspace(userId, projectId, workspaceId);
@@ -966,11 +978,8 @@ export class SessionManager {
         throw badRequest("Choose a branch available in this project.", "invalid_branch");
       }
       if (current.currentBranch !== branch) {
-        const active = await this.pool.query(
-          "SELECT id FROM agent_sessions WHERE user_id=$1 AND project_id=$2 AND state IN ('running','starting') LIMIT 1",
-          [userId, projectId],
-        );
-        if (active.rows[0]) throw conflict("Sleep the active agents in this project before switching branches.", "project_agents_active");
+        // Live agents are deliberately NOT a blocker: their terminals keep running (files change under them, like any
+        // checkout). Data safety is covered by the clean-tree, branch-in-use and git index-lock checks in switchProjectBranch.
         await switchProjectBranch(run, branch);
       }
       const branchName = workspace.cwd === workspace.projectCwd ? "Main" : "Worktree";

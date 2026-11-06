@@ -1117,7 +1117,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     }
     const projectBranch = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)\/branch$/.exec(url.pathname);
     if (projectBranch && method === "POST") {
-      const body = await readJson<{ branch?: unknown }>(req);
+      const body = await readJson<{ branch?: unknown; dryRun?: unknown }>(req);
+      if (body.dryRun === true) return send(res, 200, await manager.checkProjectBranchSwitch(userId, projectBranch[1], projectBranch[2], body.branch));
       return send(res, 200, { project: await manager.switchProjectBranch(userId, projectBranch[1], projectBranch[2], body.branch) });
     }
     const projectWorktreeStatus = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)\/delete-status$/.exec(url.pathname);
