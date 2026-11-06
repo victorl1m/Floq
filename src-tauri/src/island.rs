@@ -8,6 +8,7 @@ const EXPANDED_WIDTH: f64 = 440.0;
 const COLLAPSED_HEIGHT: f64 = 40.0;
 const MAX_HEIGHT: f64 = 560.0;
 const TOP_GAP: f64 = 12.0;
+const HIDE_DELAY_MS: u64 = 320;
 
 struct IslandState {
     active: bool,
@@ -69,9 +70,6 @@ fn clamped_height(height: f64) -> f64 {
 }
 
 fn active_snapshot(snapshot: &Value) -> bool {
-    if snapshot.get("connected").and_then(Value::as_bool) == Some(false) {
-        return false;
-    }
     if let Some(count) = snapshot.get("pendingCount").and_then(Value::as_u64) {
         return count > 0;
     }
@@ -193,7 +191,7 @@ fn apply_region(
     use windows::Win32::Graphics::Dwm::{
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
     };
-    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
+    use windows::Win32::Graphics::Gdi::SetWindowRgn;
 
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
     let diameter = (radius * 2.0).round().max(1.0) as i32;
@@ -205,22 +203,10 @@ fn apply_region(
             &preference as *const _ as *const _,
             std::mem::size_of_val(&preference) as u32,
         );
-        // Regions use exclusive right/bottom coordinates. Windows owns the region on success.
-        let region = CreateRoundRectRgn(
-            0,
-            0,
-            width as i32 + 1,
-            height as i32 + 1,
-            diameter,
-            diameter,
-        );
-        if region.is_invalid() {
-            return Err("Could not create island window region".into());
-        }
-        if SetWindowRgn(hwnd, Some(region), true) == 0 {
-            let _ = DeleteObject(region.into());
-            return Err("Could not set island window region".into());
-        }
+        // The CSS capsule is anti-aliased over a transparent window; a native region would
+        // clip it with hard edges and leave a visible rectangle, so clear any region.
+        let _ = SetWindowRgn(hwnd, None, true);
+        let _ = (width, height, diameter);
     }
     Ok(())
 }
@@ -268,8 +254,36 @@ fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Resu
     unsafe {
         let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
     }
+    if visible {
+        keep_on_top(window);
+    }
     Ok(())
 }
+
+/// Re-assert the topmost z-order without activating, so the island stays above the
+/// main Floq window (and everything else) whether or not the app is visible or focused.
+#[cfg(windows)]
+pub fn keep_on_top(window: &WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn keep_on_top(_: &WebviewWindow) {}
 
 #[cfg(not(windows))]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
@@ -409,7 +423,22 @@ pub fn island_publish(
         set_visible_without_activation(&island, true)?;
     } else {
         cancel_animation(&runtime.1);
-        set_visible_without_activation(&island, false)?;
+        let _ = island.set_ignore_cursor_events(true);
+        // Let the frontend play its exit animation before the OS window goes away.
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(HIDE_DELAY_MS));
+            let runtime = handle.state::<IslandRuntime>();
+            let still_inactive = runtime.0.lock().map(|state| !state.active).unwrap_or(false);
+            if !still_inactive {
+                return;
+            }
+            if let Some(window) = handle.get_webview_window("island") {
+                let _ = handle.run_on_main_thread(move || {
+                    let _ = set_visible_without_activation(&window, false);
+                });
+            }
+        });
     }
     Ok(())
 }
@@ -566,7 +595,11 @@ fn hover_tick(app: &tauri::AppHandle) {
             state.outside_since,
         )
     };
-    if !active || pinned || !window.is_visible().unwrap_or(false) {
+    if !active || !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    keep_on_top(&window);
+    if pinned {
         return;
     }
     let animating = app
@@ -687,7 +720,7 @@ mod tests {
         assert!(!active_snapshot(
             &json!({"connected": true, "pendingCount": 0})
         ));
-        assert!(!active_snapshot(
+        assert!(active_snapshot(
             &json!({"connected": false, "pendingCount": 2})
         ));
         assert!(active_snapshot(
