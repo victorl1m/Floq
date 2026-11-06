@@ -9,6 +9,11 @@ import type { DecisionView } from '@/lib/runtime/types';
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
 export default function IslandRoot({ initialSnapshot = null, initialExpanded = false }: { initialSnapshot?: IslandSnapshot | null; initialExpanded?: boolean } = {}) {
   const [snapshot, setSnapshot] = useState<IslandSnapshot | null>(initialSnapshot);
+  const [displaySnapshot, setDisplaySnapshot] = useState<IslandSnapshot | null>(initialSnapshot?.items.length ? initialSnapshot : null);
+  const [motion, setMotion] = useState<'enter' | 'exit' | 'pulse-a' | 'pulse-b' | 'idle'>(initialSnapshot?.items.length ? 'enter' : 'idle');
+  const displayed = useRef(initialSnapshot?.items.length ? initialSnapshot : null);
+  const motionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pulse = useRef(false);
   const [expanded, setExpanded] = useState(initialExpanded);
   const [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string>();
@@ -22,6 +27,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const previous = useRef<IslandSnapshot | null>(null);
   const oldEpochs = useRef(new Set<string>());
   useEffect(() => {
+    if (displayed.current?.items.length) motionTimer.current = setTimeout(() => setMotion('idle'), 420);
     let disposed = false; let retry: ReturnType<typeof setInterval> | undefined; const unlisteners: (() => void)[] = [];
     void (async () => {
       try {
@@ -29,6 +35,28 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
           if (oldEpochs.current.has(payload.epoch) || !acceptSnapshot(previous.current, payload)) return;
           if (previous.current && previous.current.epoch !== payload.epoch) oldEpochs.current.add(previous.current.epoch);
           previous.current = payload; setSnapshot(payload);
+          const old = displayed.current;
+          if (payload.items.length) {
+            clearTimeout(motionTimer.current);
+            displayed.current = payload; setDisplaySnapshot(payload);
+            if (!old || old.items.length === 0) {
+              setMotion('enter');
+              motionTimer.current = setTimeout(() => setMotion('idle'), 420);
+            } else if (payload.items.some(item => !old.items.some(existing => existing.id === item.id))) {
+              pulse.current = !pulse.current;
+              setMotion(pulse.current ? 'pulse-a' : 'pulse-b');
+              motionTimer.current = setTimeout(() => setMotion('idle'), 420);
+            } else {
+              setMotion(currentMotion => currentMotion === 'exit' ? 'enter' : currentMotion);
+              motionTimer.current = setTimeout(() => setMotion('idle'), 420);
+            }
+          } else if (old?.items.length) {
+            clearTimeout(motionTimer.current);
+            // Mark the presentation as exiting while retaining its last contents.
+            displayed.current = { ...old, items: [] };
+            setMotion('exit');
+            motionTimer.current = setTimeout(() => { displayed.current = null; setDisplaySnapshot(null); setMotion('idle'); }, 260);
+          }
         });
         if (disposed) { snapshotListener(); return; } unlisteners.push(snapshotListener);
         const hoverListener = await listen<{expanded:boolean}>('island:hover', ({payload}) => setExpanded(payload.expanded));
@@ -37,9 +65,9 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         retry = setInterval(() => { if (!previous.current) void send({type:'ready'}).catch(() => undefined); }, 1000);
       } catch (e) { if (!disposed) setLocalError(String(e)); }
     })();
-    return () => { disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); };
+    return () => { disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
   }, []);
-  const items = snapshot?.items ?? [];
+  const items = displaySnapshot?.items ?? [];
   const lastCurrent = useRef<AttentionItem | undefined>(undefined);
   const active = items.find(i => i.id === selected) ?? items[0];
   if (active && !submission) lastCurrent.current = active;
@@ -83,7 +111,8 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   };
   const cycle = (delta: number) => { const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
   const answer = (questionId: string, optionIds: string[], text: string) => setAnswers(old => [...old.filter(a => a.questionId !== questionId), {questionId, optionIds, text}]);
-  return <div className={'island ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+  if (!displaySnapshot) return null;
+  return <div className={'island island-' + motion + ' ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div className="island-header island-pill"><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></div>
     {current && <div className="island-content" aria-hidden={!expanded} inert={!expanded}>
       <div className="island-card-header">

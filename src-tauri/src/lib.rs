@@ -835,16 +835,10 @@ pub fn run() {
                         }
                     })?;
                 }
-                let material_available = !native_material_support_list().is_empty();
-                match island::create_window(app.handle(), material_available) {
-                    Ok(island) => {
-                        if material_available {
-                            let support = native_material_support_list();
-                            let default = if support.contains(&"mica") { "mica" } else { support.first().copied().unwrap_or("none") };
-                            if apply_native_material(&island, default, None) == "none" {
-                                let _ = island.set_background_color(Some(tauri::window::Color(245, 246, 248, 255)));
-                            }
-                        }
+                // The island is a solid black capsule drawn by CSS over a transparent window:
+                // no native material, so no backdrop rectangle shows around the rounded corners.
+                match island::create_window(app.handle(), true) {
+                    Ok(_island) => {
                         island::start_hover_monitor(app.handle().clone());
                     }
                     Err(error) => eprintln!("Failed to create the approval island: {error}"),

@@ -4,7 +4,7 @@
 * { box-sizing:border-box; }
 html, body, #root { margin:0; width:100%; background:transparent; }
 button, textarea, input { font:inherit; }
-.island { position:relative; width:100%; max-height:560px; overflow:auto; border-radius:34px; background:#000; box-shadow:0 12px 30px rgb(0 0 0 / .35); transform-origin:top center; transition:border-radius 320ms cubic-bezier(.2,.9,.25,1.15), height 320ms cubic-bezier(.2,.9,.25,1.15); }
+.island { position:relative; width:100%; max-height:560px; overflow:auto; border-radius:34px; background:#000; transform-origin:top center; transition:border-radius 320ms cubic-bezier(.2,.9,.25,1.15), height 320ms cubic-bezier(.2,.9,.25,1.15); }
 .island.collapsed { height:40px; overflow:hidden; border-radius:999px; }
 .island.expanded { animation:shell-unfurl 320ms cubic-bezier(.2,.9,.25,1.15) both; }
 .island-header { height:40px; display:flex; align-items:center; justify-content:center; gap:9px; padding:0 16px; font-size:12px; white-space:nowrap; }
@@ -42,3 +42,26 @@ button.island-circle { display:grid; place-items:center; padding:0; width:36px; 
 .island-error { color:#ff453a; }.island-spinner { animation:spin .7s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } } @keyframes dot-pulse { 50% { opacity:.55; transform:scale(.8); } } @keyframes shell-unfurl { 0% { clip-path:inset(0 calc(50% - 100px) calc(100% - 40px) round 20px); } 35% { clip-path:inset(0 0 calc(100% - 40px) round 20px); } 100% { clip-path:inset(0 0 0 round 34px); } }
 @media (prefers-reduced-motion:reduce) { .island.expanded { animation:none; } .island, .island-content, .collapsed .island-content { transform:none; filter:none; transition:opacity 80ms ease; } .island-dot, .island-spinner { animation:none; } }
+
+/* The window remains transparent; only the capsule itself is painted. */
+.island.island-enter { animation:island-enter 420ms cubic-bezier(.2,.9,.25,1.15) both; }
+.island.island-exit { animation:island-exit 260ms ease-in both; pointer-events:none; }
+.island.island-pulse-a { animation:island-pulse-a 420ms ease-out; }
+.island.island-pulse-b { animation:island-pulse-b 420ms ease-out; }
+.island-enter .island-header, .island-enter.expanded .island-content { animation:island-content-enter 300ms ease 120ms both; }
+.island-pulse-a .island-badge, .island-pulse-a .island-count { animation:island-badge-a 420ms ease-out; }
+.island-pulse-b .island-badge, .island-pulse-b .island-count { animation:island-badge-b 420ms ease-out; }
+@keyframes island-enter { from { transform:translateY(-120%) scale(.55); opacity:0; } to { transform:translateY(0) scale(1); opacity:1; } }
+@keyframes island-exit { from { transform:translateY(0) scale(1); opacity:1; } to { transform:translateY(-140%) scale(.6); opacity:0; } }
+@keyframes island-content-enter { from { opacity:0; filter:blur(5px); } to { opacity:1; filter:blur(0); } }
+@keyframes island-pulse-a { 50% { transform:scale(1.04); } }
+@keyframes island-pulse-b { 50% { transform:scale(1.04); } }
+@keyframes island-badge-a { 50% { transform:scale(1.2); } }
+@keyframes island-badge-b { 50% { transform:scale(1.2); } }
+@media (prefers-reduced-motion:reduce) {
+  .island.island-enter { animation:island-fade-in 160ms ease both; }
+  .island.island-exit { animation:island-fade-out 160ms ease both; }
+  .island.island-pulse-a, .island.island-pulse-b, .island-enter .island-header, .island-enter.expanded .island-content, .island-pulse-a .island-badge, .island-pulse-b .island-badge, .island-pulse-a .island-count, .island-pulse-b .island-count { animation:none; }
+}
+@keyframes island-fade-in { from { opacity:0; } to { opacity:1; } }
+@keyframes island-fade-out { from { opacity:1; } to { opacity:0; } }
