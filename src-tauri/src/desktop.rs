@@ -8,7 +8,7 @@ use tauri::menu::CheckMenuItem;
 use tauri::{
     Manager, WebviewWindow,
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -281,6 +281,19 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
+        // Left click or double click on the tray icon brings Floq back (the menu stays on right click).
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            }
+            | TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } => show_main(tray.app_handle()),
+            _ => {}
+        })
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main(app),
             "island" => toggle_island_from_tray(app),

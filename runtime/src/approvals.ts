@@ -28,6 +28,8 @@ const ACTIVE_POLL_MS = 90_000;
  * answer: the request is withdrawn instead of staying on the user's screen, where a late Allow would grant to no one.
  */
 export const WAITER_GONE_MS = 75_000;
+/** Pending requests never expire on a clock: the user answers yes or no. This far-future instant only fills the stored expiry. */
+const NEVER_MS = 10 * 365 * 24 * 3_600_000;
 
 export type ApprovalStatus = "pending" | "granted" | "denied" | "expired" | "cancelled" | "consumed";
 
@@ -185,8 +187,7 @@ export class Approvals {
   /** Server-side expiry: independent of any client, timer or clock in the app. */
   private refresh(a: ApprovalRecord): void {
     const t = this.now();
-    if (a.status === "pending" && t >= a.expiresAt) this.settle(a, "expired");
-    else if (a.status === "pending" && a.waiter && t - (this.polled.get(a.id) ?? a.createdAt) >= WAITER_GONE_MS) {
+    if (a.status === "pending" && a.waiter && t - (this.polled.get(a.id) ?? a.createdAt) >= WAITER_GONE_MS) {
       log.info("agent.approval_waiter_gone", this.ids(a));
       this.settle(a, "cancelled");
     }
@@ -229,11 +230,12 @@ export class Approvals {
     const hash = actionHash(action);
     const t = this.now();
 
-    let ttlMs = APPROVAL_DEFAULT_TTL_MS;
+    // The user decides when to answer: nothing expires while pending. ttlMs is only how long a GRANT stays usable.
+    const ttlMs = APPROVAL_DEFAULT_TTL_MS;
     if (input.ttlSec !== undefined && input.ttlSec !== null && input.ttlSec !== "") {
       const sec = Number(input.ttlSec);
       if (!Number.isFinite(sec) || sec <= 0) throw badRequest("timeout must be a positive number of seconds", "invalid_timeout");
-      ttlMs = Math.min(APPROVAL_MAX_TTL_MS, Math.max(APPROVAL_MIN_TTL_MS, Math.round(sec * 1000)));
+      // accepted for older agents, but no longer limits how long the request waits
     }
 
     let forSession = 0;
@@ -256,17 +258,15 @@ export class Approvals {
     this.requests.set(input.requester.id, recent);
 
     const id = newApprovalId();
-    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + ttlMs, validUntil: null, decidedAt: null, ttlMs, waiter: input.waiting === true };
+    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + NEVER_MS, validUntil: null, decidedAt: null, ttlMs, waiter: input.waiting === true };
     this.records.set(id, a);
     if (a.waiter) this.polled.set(id, t);
     const timers: Timers = {
-      expiry: setTimeout(() => this.refresh(a), ttlMs + 20),
       liveness: setInterval(() => {
         if (this.options.isAlive && !this.options.isAlive(userId, input.requester.id)) { if (a.status === "pending") this.settle(a, "cancelled"); }
         else this.refresh(a);
       }, this.options.livenessMs ?? 2_000),
     };
-    timers.expiry?.unref();
     timers.liveness?.unref();
     this.timers.set(id, timers);
     this.persist(a);

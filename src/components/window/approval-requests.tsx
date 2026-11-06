@@ -9,7 +9,7 @@ import { ProjectMark } from "@/components/projects/project-identity";
 import { ProviderIcon } from "@/components/agents/provider";
 import { providerThemeProps } from "@/lib/provider-theme";
 import {
-  announceBucket, describeAnnouncement, detailIsLong, formatRemaining, RISK_LABEL, riskLevel,
+  announceBucket, describeAnnouncement, detailIsLong, RISK_LABEL, riskLevel,
 } from "@/lib/approval-format";
 import {
   deferApprovals, markApprovalOutcome, pendingCount, removeApproval, reopenApprovals, selectApproval, sortedItems, useApprovalState, useApprovalSync, type ApprovalItem,
@@ -24,8 +24,6 @@ import { useRuntime, errorMessage } from "@/lib/runtime/store";
  * dialog it stacks on top without closing it, and traps focus until it is answered or deferred with Esc.
  */
 const Z = { pill: 2147483200, overlay: 2147483300, content: 2147483301 } as const;
-const RING_R = 9;
-const RING_C = 2 * Math.PI * RING_R;
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 function useSecondsLeft(deadline: number, active: boolean): number {
@@ -39,17 +37,6 @@ function useSecondsLeft(deadline: number, active: boolean): number {
   return Math.max(0, Math.ceil((deadline - now) / 1000));
 }
 
-function Ring({ seconds, total }: { seconds: number; total: number }) {
-  const fraction = total > 0 ? Math.min(1, seconds / total) : 0;
-  return (
-    <span aria-hidden="true" data-slot="approval-ring" className="relative inline-flex size-7 shrink-0 items-center justify-center">
-      <svg viewBox="0 0 24 24" className="absolute inset-0 -rotate-90">
-        <circle cx="12" cy="12" r={RING_R} fill="none" strokeWidth="2.5" className="stroke-border" />
-        <circle cx="12" cy="12" r={RING_R} fill="none" strokeWidth="2.5" strokeLinecap="round" className={seconds <= 30 ? "stroke-destructive" : "stroke-foreground/70"} strokeDasharray={RING_C} strokeDashoffset={RING_C * (1 - fraction)} />
-      </svg>
-    </span>
-  );
-}
 
 function AgentChip({ agent, projectLookup }: { agent: ApprovalAgentRef; projectLookup: (id: string | null) => { imageUrl: string | null; gitUrl: string | null } }) {
   const project = projectLookup(agent.projectId);
@@ -141,12 +128,7 @@ export function ApprovalCard({ item, autoFocusDeny, onAnswer, error, busy }: {
             {RISK_LABEL[level]}
           </p>
         </div>
-        {pending ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <Ring seconds={seconds} total={Math.round(approval.timeoutMs / 1000)} />
-            <span data-slot="approval-remaining" className="text-xs tabular-nums text-muted-foreground"><span className="sr-only">Expires in </span>{formatRemaining(seconds)}</span>
-          </div>
-        ) : <span className="shrink-0 text-xs text-muted-foreground">Expired</span>}
+        {pending ? null : <span className="shrink-0 text-xs text-muted-foreground">Closed</span>}
       </header>
 
       <DialogPrimitive.Description asChild>
