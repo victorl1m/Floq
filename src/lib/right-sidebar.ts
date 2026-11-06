@@ -5,6 +5,7 @@ export type CoreRightSidebarTab = "changes" | "files" | "conversations" | "app";
 export type RightSidebarTab = CoreRightSidebarTab | `plugin:${string}`;
 export const RIGHT_SIDEBAR_MIN = 260;
 export const RIGHT_SIDEBAR_MAX = 720;
+export const RIGHT_SIDEBAR_DEFAULT = 360;
 
 interface RightSidebarState {
     open: boolean;
@@ -29,7 +30,7 @@ export function resolveRightSidebarTab(tab: RightSidebarTab, activePluginTabs: r
 const clamp = (width: number) => Math.min(RIGHT_SIDEBAR_MAX, Math.max(RIGHT_SIDEBAR_MIN, Math.round(width)));
 
 function load(): RightSidebarState {
-    const fallback: RightSidebarState = { open: false, width: 360, tab: "changes", canvasSessionId: null };
+    const fallback: RightSidebarState = { open: false, width: RIGHT_SIDEBAR_DEFAULT, tab: "changes", canvasSessionId: null };
     try {
         const value = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<RightSidebarState> | null;
         if (!value || typeof value !== "object") return fallback;

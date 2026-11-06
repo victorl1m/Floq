@@ -91,7 +91,7 @@ function Row({ session, project, showWorkspace, active, open, closed, onActivate
 
 /** Every agent conversation of the active project (all workspaces): open tabs, running in the background, and closed ones to restore. */
 export default function ConversationsTab({ projectId, project }: { projectId: string | null; project?: RuntimeProject }) {
-  const { sessions, archivedSessions, restoreConversation, agentTabIds, focusOnCanvas, selectedId, loaded } = useRuntime();
+  const { client, upsertSession, sessions, archivedSessions, restoreConversation, agentTabIds, focusOnCanvas, selectedId, loaded } = useRuntime();
   const [query, setQuery] = useState("");
   const multipleWorkspaces = (project?.workspaces.length ?? 0) > 1;
 
@@ -150,8 +150,14 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
                     open={opened.has(session.id)}
                     closed={group.closed}
                     onActivate={() => {
-                      if (!session.archived) { focusOnCanvas(session); return; }
-                      restoreConversation(session.id).then((restored) => focusOnCanvas(restored)).catch((error) => toast.error("Could not restore conversation", { description: error instanceof Error ? error.message : String(error) }));
+                      const fail = (error: unknown) => toast.error("Could not restore conversation", { description: error instanceof Error ? error.message : String(error) });
+                      // Open shows the agent's terminal; Restore resumes a sleeping conversation first, then shows it.
+                      const show = (target: SessionSummary) => {
+                        if (target.state !== "sleeping" || !client) { focusOnCanvas(target, { dialog: true }); return; }
+                        client.resumeSession(target.id).then((resumed) => { upsertSession(resumed); focusOnCanvas(resumed, { dialog: true }); }).catch(fail);
+                      };
+                      if (!session.archived) { show(session); return; }
+                      restoreConversation(session.id).then(show).catch(fail);
                     }}
                   />
                 ))}

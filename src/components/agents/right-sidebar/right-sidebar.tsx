@@ -11,6 +11,7 @@ import {
   setRightSidebarOpen,
   setRightSidebarTab,
   setRightSidebarWidth,
+  RIGHT_SIDEBAR_DEFAULT,
   useRightSidebar,
   resolveRightSidebarTab,
   type RightSidebarTab,
@@ -62,7 +63,9 @@ export default function RightSidebar() {
   const panelRef = useRef<HTMLElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const openFrame = useRef<number | undefined>(undefined);
-  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const drag = useRef<{ startX: number; startWidth: number; moved: boolean } | null>(null);
+  const hideTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
   const [changeCount, setChangeCount] = useState<number | null>(null);
   useDisplayAnnouncements(client, sessions);
 
@@ -171,11 +174,22 @@ export default function RightSidebar() {
   }
 
   function onResizeStart(event: PointerEvent<HTMLDivElement>) {
-    drag.current = { startX: event.clientX, startWidth: width };
+    window.clearTimeout(hideTimer.current);
+    drag.current = { startX: event.clientX, startWidth: width, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
   function onResizeMove(event: PointerEvent<HTMLDivElement>) {
-    if (drag.current) setRightSidebarWidth(drag.current.startWidth + drag.current.startX - event.clientX);
+    const state = drag.current;
+    if (!state) return;
+    if (!state.moved && Math.abs(event.clientX - state.startX) < 3) return;
+    state.moved = true;
+    setRightSidebarWidth(state.startWidth + state.startX - event.clientX);
+  }
+  // Same as the left rail: a click without a drag hides the panel (after the double-click window), a double-click resets the width.
+  function onResizeEnd(event: PointerEvent<HTMLDivElement>) {
+    const state = drag.current;
+    drag.current = null;
+    if (state && !state.moved && event.type === "pointerup") hideTimer.current = window.setTimeout(closePanel, 250);
   }
   function onResizeKey(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "ArrowLeft") { event.preventDefault(); setRightSidebarWidth(width + 24); }
@@ -211,7 +225,10 @@ export default function RightSidebar() {
           tabIndex={0}
           onPointerDown={onResizeStart}
           onPointerMove={onResizeMove}
-          onPointerUp={() => { drag.current = null; }}
+          onPointerUp={onResizeEnd}
+          onPointerCancel={onResizeEnd}
+          onDoubleClick={() => { window.clearTimeout(hideTimer.current); setRightSidebarWidth(RIGHT_SIDEBAR_DEFAULT); }}
+          title="Drag to resize, click to hide. Double-click to reset."
           onKeyDown={onResizeKey}
           className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-ring/30 focus-visible:bg-ring/40 focus-visible:outline-none"
         />
