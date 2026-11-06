@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { stackNotes } from "../src/components/canvas/note-placement.ts";
+import { stackKeychains, stackNotes } from "../src/components/canvas/note-placement.ts";
 
 const note = (id, kind, title, w = 240, h = 180) => ({ id, kind, title, w, h });
 const overlaps = (a, b, pa, pb) => pa.x < pb.x + b.w && pa.x + a.w > pb.x && pa.y < pb.y + b.h && pa.y + a.h > pb.y;
@@ -25,3 +25,15 @@ test("tall stacks wrap into more columns and nothing overlaps", () => {
 });
 
 test("no notes gives no positions", () => assert.deepEqual(stackNotes([], 0, 0), {}));
+
+test("keychains stack in their own column left of the notes without overlap", () => {
+  const notes = [note("n1", "note", "a")];
+  const npos = stackNotes(notes, 1000, 0);
+  const left = Math.min(...Object.values(npos).map((p) => p.x));
+  const kcs = [{ id: "k2", name: "b", w: 240, h: 150 }, { id: "k1", name: "a", w: 240, h: 150 }];
+  const pos = stackKeychains(kcs, left, 0, 40);
+  assert.ok(pos.k1.x + 240 < left);
+  assert.equal(pos.k1.x, pos.k2.x);
+  assert.ok(pos.k1.y < pos.k2.y);
+  assert.deepEqual(stackKeychains([], 0, 0), {});
+});

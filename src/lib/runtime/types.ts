@@ -346,9 +346,16 @@ export interface CanvasNote {
 export interface CanvasNoteInput { text?: string; color?: NoteColor; kind?: NoteKind; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
 /**
  * A canvas wallet of secrets, linked to agents with wires. Names only: values are write-only and never returned.
- * Mutations (secret set/delete, link/unlink) return the updated Keychain with appliesOnNextStart = true when a live
- * session is affected (its env changes on next start; files for `floq secret get` update immediately).
+ * Agents pull values with `floq secret get NAME`; each pull is recorded in `secrets`. Nothing is injected at start.
  */
+export interface KeychainSecret {
+  name: string;
+  /** Agent session id that added it; null when the user typed it. */
+  createdBy: string | null;
+  lastUsedAt: string | null;
+  lastUsedBy: string | null;
+  uses: number;
+}
 export interface Keychain {
   id: string;
   projectId: string | null;
@@ -360,6 +367,7 @@ export interface Keychain {
   w: number;
   h: number;
   secretNames: string[];
+  secrets: KeychainSecret[];
   linkedSessionIds: string[];
   linkedCount: number;
   createdAt: string;

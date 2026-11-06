@@ -131,7 +131,7 @@ export function buildWiredBlock(items: WireItem[], options: { secrets?: Record<s
       line = `- agent "${title}"${item.content ? ": " + clean(oneLine(item.content, 160)) : ""} (id ${item.id}; talk to it with \`floq ask ${item.id} "..."\`)`;
     } else if (item.kind === "keychain") {
       const names = (item.names ?? []).map((n) => oneLine(n, 64));
-      line = `- keychain "${title}": ${names.length ? "secret names " + names.join(", ") : "no secrets yet"}. Values are never shown; they are in your environment ($NAME) or via \`floq secret get NAME\`.`;
+      line = `- keychain "${title}": ${names.length ? "secret names " + names.join(", ") : "no secrets yet"}. Values are never shown or injected: pull one only when you need it with \`floq secret get NAME\` (every pull is logged and the user sees which keys you used).`;
     } else {
       const text = clean((item.content ?? "").trim());
       line = `- note "${title}" (id ${item.id}; \`floq sticky read ${item.id}\` for the live text):\n${text ? text.split("\n").map((l) => "    " + clip(l, 400)).join("\n") : "    (empty)"}`;

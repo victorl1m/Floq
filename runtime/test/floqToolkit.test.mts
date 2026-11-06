@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { createRuntimeServer } from "../dist/server.js";
 import { Vault } from "../dist/vault.js";
 import { Orchestrator } from "../dist/orchestrator.js";
+import { Keychains } from "../dist/keychains.js";
+import { fakeKeychainPool } from "./fixtures/fakeKeychainPool.mts";
 import { encryptSecret } from "../dist/crypto.js";
 import { fixture } from "./mcpFixture.mjs";
 import { cleanSecretInput, formatMcpReview, parseArgs, parseSecretsAdd, scopeFields, splitDashDash } from "../dist/image/floq-args.mjs";
@@ -55,10 +57,13 @@ async function harness(t) {
   const pool = { query: async (sql, params) => (await extra(sql, params)) ?? { rows: [] }, connect: async () => { throw new Error("unused"); } };
   const vault = new Vault(pool, { encryptionKey: key });
   const orchestrator = new Orchestrator(pool, {}, {});
+  const kc = fakeKeychainPool({ projects: { [P1]: "owner" }, sessions: SESSIONS });
+  const keychains = new Keychains({ query: async (sql, params) => (await kc.query(sql, params)) ?? (await pool.query(sql, params)) }, { encryptionKey: key });
   const restartCalls = [];
   const manager = {
     activeCount: 0,
     projectCreates: [],
+    async syncSessionSecrets() { return false; },
     async createProject(userId, profile, gitUrl, name) {
       this.projectCreates.push({ userId, profile, gitUrl, name });
       return { id: "project-created", name: name ?? "repo", displayName: null, imageUrl: null, gitUrl: gitUrl ?? null, cwd: ".floq/projects/project-created", createdAt: new Date(0).toISOString(), workspaces: [{ id: "workspace-created", cwd: ".floq/projects/project-created", name: "Main", branch: null, isWorktree: false, navExpanded: true, sessionIds: [] }] };
@@ -68,7 +73,7 @@ async function harness(t) {
   };
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "info" };
-  const server = createRuntimeServer({ config, manager, auth: { handler() {}, api: { async getSession() { return { user: { id: "owner" }, session: { id: "app-session" } }; } } }, settings: { async profile(userId) { return { userId }; } }, github: {}, vault, orchestrator, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
+  const server = createRuntimeServer({ config, manager, auth: { handler() {}, api: { async getSession() { return { user: { id: "owner" }, session: { id: "app-session" } }; } } }, settings: { async profile(userId) { return { userId }; } }, github: {}, vault, orchestrator, keychains, pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
   await server.listen();
   t.after(async () => { await server.close(); rmSync(f.temp, { recursive: true, force: true }); });
   const tokens = Object.fromEntries(SESSIONS.map((s) => [s.id, vault.issueToken(s.user_id, s.id)]));
@@ -83,7 +88,7 @@ async function harness(t) {
     const text = await response.text();
     return { status: response.status, text, json: JSON.parse(text) };
   };
-  return { f, call, callApp, vaultRows, audits, statements, port, tokens, vault, restartCalls, manager };
+  return { f, call, callApp, kc, keychains, vaultRows, audits, statements, port, tokens, vault, restartCalls, manager };
 }
 
 function captureLogs(t) {
@@ -240,47 +245,72 @@ test("skills: list, add into the project from a GitHub SKILL.md URL, protected s
   assert.equal((await h.call("s-lead", "skills/remove", { name: "nonexistent" })).status, 404);
 });
 
-test("secrets: create works, is tool-only, and the value never appears in any response, log, audit row or error", async (t) => {
+test("secrets add stores into a keychain (never the vault), links it to the agent, and the value never leaks", async (t) => {
   const logs = captureLogs(t);
   const h = await harness(t);
-  const created = await h.call("s-lead", "secrets/add", { name: "STRIPE_KEY", value: SECRET, description: "payments" });
+  const created = await h.call("s-lead", "secrets/add", { name: "STRIPE_KEY", value: SECRET });
   assert.equal(created.status, 201, created.text);
-  assert.deepEqual(created.json.secrets, [{ name: "STRIPE_KEY", description: "payments" }]);
+  assert.equal(created.json.created, true);
+  assert.equal(created.json.keychain.name, "Lead keychain");
+  assert.deepEqual(created.json.secretNames, ["STRIPE_KEY"]);
   assert.ok(!created.text.includes(SECRET));
-  const stored = h.vaultRows.get("ownerSTRIPE_KEY");
-  assert.equal(stored.expose, "tool");
-  assert.ok(!stored.value_enc.includes(SECRET));
-  assert.ok(h.audits.some((a) => a[0] === "owner" && a[1] === "s-lead" && a[2] === "STRIPE_KEY" && a[3] === "create"));
-  // duplicates conflict and never change the stored value
-  const before = stored.value_enc;
+  assert.equal(h.vaultRows.size, 0, "nothing goes into the global vault");
+  assert.equal(h.kc.keychains.size, 1);
+  assert.equal(h.kc.links.length, 1);
+  assert.equal(h.kc.links[0].session_id, "s-lead");
+  assert.equal(h.kc.secrets[0].created_by, "s-lead");
+  assert.ok(!h.kc.secrets[0].value_enc.toString("utf8").includes(SECRET));
+  const second = await h.call("s-lead", "secrets/add", { name: "DB_PASSWORD", value: SECRET + "2" });
+  assert.equal(second.json.created, false);
+  assert.deepEqual(second.json.secretNames, ["DB_PASSWORD", "STRIPE_KEY"]);
+  const named = await h.call("s-lead", "secrets/add", { name: "OTHER_KEY", value: SECRET + "3", keychain: "lead KEYCHAIN" });
+  assert.equal(named.status, 201);
+  assert.equal(h.kc.keychains.size, 1);
   const dupe = await h.call("s-lead", "secrets/add", { name: "STRIPE_KEY", value: SECRET + "-NEW" });
   assert.equal(dupe.status, 409);
   assert.equal(dupe.json.error.code, "secret_exists");
   assert.ok(!dupe.text.includes(SECRET));
-  assert.equal(h.vaultRows.get("ownerSTRIPE_KEY").value_enc, before);
-  // env exposure, bad and reserved names, empty values are refused
   for (const body of [{ name: "ENV_ONE", value: SECRET, expose: "env" }, { name: "lower", value: SECRET }, { name: "PATH", value: SECRET }, { name: "ANTHROPIC_API_KEY", value: SECRET }, { name: "EMPTY_ONE", value: "" }, { name: "OK_NAME" }]) {
     const r = await h.call("s-lead", "secrets/add", body);
     assert.equal(r.status, 400, JSON.stringify(body));
     assert.ok(!r.text.includes(SECRET));
   }
-  assert.equal(h.vaultRows.size, 1);
-  // agents see names and descriptions only
-  const listing = await h.call("s-member", "vault/secrets");
-  assert.deepEqual(listing.json.secrets, [{ name: "STRIPE_KEY", description: "payments" }]);
-  assert.ok(!listing.text.includes(SECRET));
   assert.ok(!logs.join("").includes(SECRET));
-  assert.ok(!JSON.stringify(h.statements.filter((s) => !/vault_secrets/.test(s.sql))).includes(SECRET));
 });
 
-test("another user's lead cannot see or create into this user's vault", async (t) => {
+test("secrets add: an existing keychain must be linked to the agent; an unknown name creates and links a new one", async (t) => {
   const h = await harness(t);
-  await h.call("s-lead", "secrets/add", { name: "MINE", value: SECRET });
-  const other = await h.call("s-other", "secrets/add", { name: "MINE", value: "other-value" });
-  assert.equal(other.status, 201);
-  assert.equal(h.vaultRows.size, 2);
-  assert.ok(h.vaultRows.has("ownerMINE") && h.vaultRows.has("otherMINE"));
-  assert.deepEqual((await h.call("s-other", "vault/secrets")).json.secrets.map((s) => s.name), ["MINE"]);
+  const first = await h.call("s-lead", "secrets/add", { name: "A_KEY", value: "v1-value", keychain: "Payments" });
+  assert.equal(first.json.created, true);
+  assert.equal(first.json.keychain.name, "Payments");
+  await assert.rejects(() => h.keychains.agentAddSecret("owner", { id: "s-member", name: "Member", projectId: P1 }, { name: "B_KEY", value: "v2-value", keychain: "Payments" }), (e) => e.status === 403 && e.code === "keychain_not_linked");
+  await h.call("s-lead", "secrets/add", { name: "C_KEY", value: "v3-value", keychain: "Other" });
+  const ambiguous = await h.call("s-lead", "secrets/add", { name: "D_KEY", value: "v4-value" });
+  assert.equal(ambiguous.status, 400);
+  assert.equal(ambiguous.json.error.code, "keychain_required");
+});
+
+test("pulling a secret returns the value only to linked agents and records the use", async (t) => {
+  const h = await harness(t);
+  await h.call("s-lead", "secrets/add", { name: "STRIPE_KEY", value: SECRET });
+  assert.deepEqual((await h.call("s-lead", "secrets/names")).json.secrets, [{ keychain: "Lead keychain", name: "STRIPE_KEY" }]);
+  assert.equal((await h.call("s-member", "secrets/pull", { name: "STRIPE_KEY" })).status, 404, "not linked: not found, no value");
+  assert.deepEqual((await h.call("s-member", "secrets/names")).json.secrets, []);
+  assert.equal(h.kc.secrets[0].use_count, 0);
+  const pulled = await h.call("s-lead", "secrets/pull", { name: "STRIPE_KEY" });
+  assert.equal(pulled.status, 200, pulled.text);
+  assert.equal(pulled.json.value, SECRET);
+  assert.equal(pulled.json.keychain, "Lead keychain");
+  assert.equal(h.kc.secrets[0].use_count, 1);
+  assert.equal(h.kc.secrets[0].last_used_by, "s-lead");
+  assert.ok(h.kc.secrets[0].last_used_at instanceof Date);
+  assert.deepEqual(h.kc.uses, [{ keychain_id: h.kc.secrets[0].keychain_id, name: "STRIPE_KEY", session_id: "s-lead" }]);
+  await h.call("s-lead", "secrets/pull", { name: "STRIPE_KEY" });
+  assert.equal(h.kc.secrets[0].use_count, 2);
+  const [kc] = await h.keychains.list("owner", P1);
+  assert.deepEqual(kc.secrets.map((s) => ({ name: s.name, createdBy: s.createdBy, lastUsedBy: s.lastUsedBy, uses: s.uses })), [{ name: "STRIPE_KEY", createdBy: "s-lead", lastUsedBy: "s-lead", uses: 2 }]);
+  assert.equal((await h.call("s-lead", "secrets/pull", { name: "MISSING_KEY" })).status, 404);
+  assert.equal((await h.call("s-lead", "secrets/pull", { name: "lowercase" })).status, 400);
 });
 
 // ---- the CLI itself ----
@@ -353,13 +383,13 @@ test("floq project create requires a trimmed name and reports the created projec
   assert.equal(h.manager.projectCreates.length, 2, "invalid CLI invocations do not reach the API");
 });
 
-test("floq secrets add reads the value from stdin, refuses it as an argument, and never echoes it", async (t) => {
+test("floq secrets add reads the value from stdin, refuses it as an argument, never echoes it; floq secret get pulls it", async (t) => {
   const h = await harness(t);
-  const ok = await runFloq(h, ["secrets", "add", "DB_PASSWORD", "--description", "prod db"], { input: SECRET + "\n" });
+  const ok = await runFloq(h, ["secrets", "add", "DB_PASSWORD", "--keychain", "Database"], { input: SECRET + "\n" });
   assert.equal(ok.code, 0, ok.stderr);
-  assert.match(ok.stdout, /created secret DB_PASSWORD/);
+  assert.match(ok.stdout, /created secret DB_PASSWORD in new keychain "Database"/);
   assert.ok(!ok.stdout.includes(SECRET) && !ok.stderr.includes(SECRET));
-  assert.equal(h.vaultRows.get("ownerDB_PASSWORD").description, "prod db");
+  assert.equal(h.vaultRows.size, 0);
   const requestsBefore = h.statements.length;
   for (const args of [["secrets", "add", "OTHER_KEY", SECRET], ["secrets", "add", "OTHER_KEY", "--value", SECRET], ["secrets", "add", "OTHER_KEY", "--expose", "env"], ["secrets", "add"]]) {
     const r = await runFloq(h, args, { input: "ignored\n" });
@@ -376,8 +406,14 @@ test("floq secrets add reads the value from stdin, refuses it as an argument, an
   assert.equal(member.code, 1);
   assert.match(member.stderr, /lead/);
   assert.ok(!member.stderr.includes(SECRET));
-  const list = await runFloq(h, ["secrets", "list"]);
-  assert.match(list.stdout, /DB_PASSWORD\tprod db/);
+  const list = await runFloq(h, ["secret", "list"]);
+  assert.match(list.stdout, /DB_PASSWORD\tkeychain Database/);
+  assert.ok(!list.stdout.includes(SECRET));
+  const got = await runFloq(h, ["secret", "get", "DB_PASSWORD"]);
+  assert.equal(got.code, 0, got.stderr);
+  assert.equal(got.stdout, SECRET);
+  assert.equal(h.kc.secrets[0].use_count, 1);
+  assert.equal((await runFloq(h, ["secret", "get", "DB_PASSWORD"], { token: h.tokens["s-member"] })).code, 1);
 });
 
 test("floq mcp add shows exactly what runs, masks env values, and --dry-run changes nothing", async (t) => {
@@ -420,7 +456,7 @@ test("argument parsing: --project optional UUID, --global, `--` split, secrets a
   assert.deepEqual(scopeFields({ project: true }), { scope: "project" });
   assert.deepEqual(scopeFields({ project: P1 }), { scope: "project", projectId: P1 });
   assert.throws(() => scopeFields({ global: true, project: true }), /either/);
-  assert.deepEqual(parseSecretsAdd(["NAME"], { description: "d" }), { name: "NAME", description: "d" });
+  assert.deepEqual(parseSecretsAdd(["NAME"], { keychain: "Pay" }), { name: "NAME", keychain: "Pay" });
   assert.throws(() => parseSecretsAdd(["NAME", "the-value"], {}), /never from an argument|stdin/);
   assert.throws(() => parseSecretsAdd(["NAME"], { value: "x" }), /--value/);
   assert.equal(cleanSecretInput("abc\n"), "abc");
@@ -431,7 +467,7 @@ test("argument parsing: --project optional UUID, --global, `--` split, secrets a
 
 test("floq mcp add: vault references work, unknown ones and plain credentials are refused, dry run lists secret names only", async (t) => {
   const h = await harness(t);
-  assert.equal((await h.call("s-lead", "secrets/add", { name: "STRIPE_KEY", value: SECRET, description: "payments" })).status, 201);
+  await h.vault.create("owner", "s-lead", { name: "STRIPE_KEY", value: SECRET, description: "payments" });
   const ref = { config: { name: "pay", command: "npx", args: ["-y", "pay-mcp"], env: { TOKEN: "${vault:STRIPE_KEY}", NODE_ENV: "ci" } }, scope: "global" };
   const dry = await h.call("s-member", "mcp/add", { ...ref, dryRun: true });
   assert.equal(dry.status, 200, dry.text);

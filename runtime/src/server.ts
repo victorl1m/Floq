@@ -503,11 +503,25 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { ...target, ...(await skills.removeMcp(userId, { ...target, provider: body.provider ?? me.provider, name: body.name })) });
         }
         case "secrets/add": {
-          await orchestrator.toolkitCaller(userId, sessionId, true);
-          // Agents may only create tool-only secrets; "env" would make the value readable by the agent.
-          if (body.expose !== undefined && body.expose !== "tool") throw badRequest("Agents can only create tool-only secrets. The owner can change exposure in Floq > Vault.", "invalid_secret");
-          const secrets = await vault.create(userId, sessionId, { name: body.name, value: body.value, description: body.description });
-          return send(res, 201, { secrets: secrets.map((s) => ({ name: s.name, description: s.description })) });
+          const me = await orchestrator.toolkitCaller(userId, sessionId, true);
+          if (!keychains) throw badRequest("Keychains are not available", "keychains_unavailable");
+          // Agents store secrets in a keychain (never in the global vault). The value is readable by the agents linked to it.
+          if (body.expose !== undefined) throw badRequest("Agent-created secrets always live in a keychain; exposure is not configurable.", "invalid_secret");
+          const result = await keychains.agentAddSecret(userId, { id: me.id, name: me.name, projectId: me.projectId }, { name: body.name, value: body.value, keychain: body.keychain });
+          await manager.syncSessionSecrets(userId, me.id);
+          await touchSessions([me.id]);
+          return send(res, 201, result);
+        }
+        // Keychain secrets are pulled on demand (never injected), so each use is recorded for the user to see.
+        case "secrets/names": {
+          await orchestrator.toolkitCaller(userId, sessionId, false);
+          return send(res, 200, { secrets: keychains ? await keychains.pullableNames(userId, sessionId) : [] });
+        }
+        case "secrets/pull": {
+          await orchestrator.toolkitCaller(userId, sessionId, false);
+          const pulled = keychains ? await keychains.pull(userId, sessionId, body.name, body.keychain) : null;
+          if (!pulled) throw notFound("No keychain linked to this agent holds a secret with that name");
+          return send(res, 200, { value: pulled.value, keychain: pulled.keychain.name });
         }
         case "wired/get": {
           if (!wired) return send(res, 200, { block: "" });

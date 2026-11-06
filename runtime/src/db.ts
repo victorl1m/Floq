@@ -301,6 +301,19 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (keychain_id, name)
     );
+    ALTER TABLE keychain_secrets ADD COLUMN IF NOT EXISTS created_by UUID;
+    ALTER TABLE keychain_secrets ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
+    ALTER TABLE keychain_secrets ADD COLUMN IF NOT EXISTS last_used_by UUID;
+    ALTER TABLE keychain_secrets ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS keychain_secret_uses (
+      id BIGSERIAL PRIMARY KEY,
+      keychain_id UUID NOT NULL REFERENCES keychains(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      session_id UUID,
+      used_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS keychain_secret_uses_kc_idx ON keychain_secret_uses(keychain_id, used_at DESC);
     CREATE TABLE IF NOT EXISTS keychain_links (
       keychain_id UUID NOT NULL REFERENCES keychains(id) ON DELETE CASCADE,
       session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
