@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useRuntime } from '@/lib/runtime/store';
 import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/approvals';
 import { useAttentionState } from '@/lib/attention';
-import { orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { deferEmptySnapshot, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
@@ -18,14 +18,12 @@ export function useIslandBridge() {
   const epoch = useRef(crypto.randomUUID());
   const revision = useRef(0);
   const latest = useRef<IslandSnapshot>(null!);
-  const previousClient = useRef(client);
-  const clientChanged = previousClient.current !== client;
-  previousClient.current = client;
+  const emptySince = useRef<number | null>(null);
   const queue: AttentionItem[] = orderAttention([
     ...approvals.filter(a => a.state === 'pending').map(a => ({kind:'approval' as const, id:a.approval.id, createdAt:a.approval.createdAt, approval:a.approval})),
     ...decisions.map(d => ({kind:'decision' as const, id:d.id, createdAt:d.createdAt, decision:d})),
   ]);
-  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected && !clientChanged, items: client && !clientChanged ? queue : [], busy, error };
+  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected, items: queue, busy, error };
   const contentKey = JSON.stringify(candidate, (key, value) => key === 'revision' ? undefined : value);
   const publish = () => invoke('island_publish', { snapshot: latest.current });
   const publishRef = useRef(publish); publishRef.current = publish;
@@ -59,10 +57,20 @@ export function useIslandBridge() {
     return () => { disposed = true; unlisten?.(); setReady(false); };
   }, []);
   useEffect(() => {
-    if (!latest.current || !sameSnapshotContent(latest.current, candidate)) {
-      latest.current = { ...candidate, revision: ++revision.current };
-      if (ready) void publishRef.current().catch(() => setReady(false));
-    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () => {
+      const deferred = deferEmptySnapshot(latest.current, candidate, emptySince.current, Date.now());
+      emptySince.current = deferred.emptySince;
+      if (!latest.current || !sameSnapshotContent(latest.current, deferred.snapshot)) {
+        latest.current = { ...deferred.snapshot, revision: ++revision.current };
+        if (ready) void publishRef.current().catch(() => setReady(false));
+      }
+      if (!candidate.items.length && deferred.snapshot.items.length) {
+        timer = setTimeout(update, Math.max(1, 1500 - (Date.now() - emptySince.current!)));
+      }
+    };
+    update();
+    return () => clearTimeout(timer);
   }, [contentKey, ready]);
   return ready && enabled;
 }

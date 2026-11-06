@@ -20,6 +20,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const [answers, setAnswers] = useState<DecisionAnswer[]>([]);
   const [localError, setLocalError] = useState<string>();
   const body = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const layoutSent = useRef('');
   const submitting = useRef<string | null>(null);
   const sawBusy = useRef(false);
@@ -74,20 +75,23 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const current = submission && lastCurrent.current ? lastCurrent.current : active;
   useEffect(() => { setAnswers([]); setLocalError(undefined); }, [current?.id]);
   useLayoutEffect(() => {
+    // A hidden native window rejects layout commands; resend after activation even
+    // when the next card happens to have exactly the same dimensions.
+    if (!snapshot?.items.length) { layoutSent.current = ''; return; }
     let frame = 0;
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const layout = { expanded, height: expanded ? Math.ceil(body.current?.scrollHeight ?? 160) : 40, pinned: pinned || !!submission || (!!current && !!snapshot?.busy.includes(current.id)) };
+        const layout = { expanded, height: expanded ? Math.min(560, Math.ceil(content.current?.scrollHeight ?? 160) + 2) : 40, pinned: pinned || !!submission || (!!current && !!snapshot?.busy.includes(current.id)) };
         const key = JSON.stringify(layout);
         if (layoutSent.current === key) return;
         layoutSent.current = key;
         void invoke('island_set_layout', layout).catch(() => { if (layoutSent.current === key) layoutSent.current = ''; });
       });
     };
-    update(); const observer = new ResizeObserver(update); if (body.current) observer.observe(body.current);
+    update(); const observer = new ResizeObserver(update); if (body.current) observer.observe(body.current); if (content.current) observer.observe(content.current);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [expanded, pinned, current?.id, snapshot?.error, snapshot?.busy, submission]);
+  }, [expanded, pinned, current?.id, snapshot?.error, snapshot?.busy, submission, displaySnapshot, snapshot?.items.length]);
   useEffect(() => {
     const id = submitting.current;
     if (!id || !snapshot) return;
@@ -114,7 +118,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   if (!displaySnapshot) return null;
   return <div className={'island island-' + motion + ' ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div className="island-header island-pill"><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></div>
-    {current && <div className="island-content" aria-hidden={!expanded} inert={!expanded}>
+    {current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
         <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${current.approval.requester.name}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>
