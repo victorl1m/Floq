@@ -57,7 +57,7 @@ import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
-import { branchChangeToFollow, followBranchChange } from "@/lib/branch-tags";
+import { branchChangeToFollow, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
@@ -155,7 +155,7 @@ function AgentCanvas() {
   const canvasTheme: "light" | "dark" = resolvedTheme === "light" ? "light" : "dark";
   const {
     sessions, deleteSessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
-    client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects,
+    client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects, info: runtimeInfo,
   } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
   // Fit options: with floors, leave room above the top band's label for the floating toolbar. Updated once the floors are known.
@@ -759,53 +759,86 @@ function AgentCanvas() {
     if (!client || !projectId || !groundWorkspace || !leaving || target === leaving || switchingRef.current) return;
     switchingRef.current = true;
     setSwitching(true);
+    // The runtime is deployed separately from the app. Only one that advertises "branch-switch-v2" has the read-only dryRun
+    // pre-flight and lets git decide; an older one still requires sleeping agents and a clean tree, and would treat dryRun as a
+    // real switch. Info is already loaded by the store (one on-demand read if it is not yet); unknown => legacy flow.
+    const modern = supportsBranchSwitchV2(runtimeInfo ?? await client.info().catch(() => null));
+    const isRunning = (session: SessionSummary) => session.state === "running" || session.state === "starting";
     const projectAll = () => sessionsRef.current.filter((session) => session.projectId === projectId);
     const groundIds = new Set(sessionsForWorkspace(projectId, groundWorkspace, projectSessions).map((session) => session.id));
+    const wasRunning = new Set(projectAll().filter(isRunning).map((session) => session.id));
+    const slept: SessionSummary[] = [];
     const resumeOne = async (session: SessionSummary): Promise<boolean> => {
       try { upsertSession(await client.resumeSession(session.id)); return true; }
       catch (error) { toast.error(`Could not wake ${session.title}`, { description: errorMessage(error) }); return false; }
     };
+    const before = { ...(prefsRef.current.canvasBranchSessions[projectId] ?? {}) };
     try {
-      // a. Pre-flight with no side effects: a refused switch (branch in use, unknown branch; local-change conflicts are caught by git in step c) leaves every session untouched.
-      await client.checkProjectBranchSwitch(projectId, groundWorkspace.id, target);
-      // b. Remember which branch each visible ground agent belongs to. Live agents are NOT slept: they keep running
-      // (the idle check handles resource use), so no resume flag is needed for them.
-      const before = { ...(prefsRef.current.canvasBranchSessions[projectId] ?? {}) };
-      writeBranchTags(projectId, (tags) => {
-        for (const id of groundIds) tags[id] = { branch: leaving };
-        return tags;
-      });
-      // c. Check the branch out.
-      try {
-        await client.switchProjectBranch(projectId, groundWorkspace.id, target);
-      } catch (error) {
+      if (modern) {
+        // a. Pre-flight with no side effects: a refused switch (branch in use, unknown branch; local-change conflicts are caught by git in step c) leaves every session untouched.
+        await client.checkProjectBranchSwitch(projectId, groundWorkspace.id, target);
+        // b. Remember which branch each visible ground agent belongs to. Live agents are NOT slept: they keep running
+        // (the idle check handles resource use), so no resume flag is needed for them.
         writeBranchTags(projectId, (tags) => {
-          for (const id of groundIds) { if (before[id]) tags[id] = before[id]; else delete tags[id]; }
+          for (const id of groundIds) tags[id] = { branch: leaving };
           return tags;
         });
-        throw error;
+        // c. Check the branch out.
+        try {
+          await client.switchProjectBranch(projectId, groundWorkspace.id, target);
+        } catch (error) {
+          writeBranchTags(projectId, (tags) => {
+            for (const id of groundIds) { if (before[id]) tags[id] = before[id]; else delete tags[id]; }
+            return tags;
+          });
+          throw error;
+        }
+      } else {
+        // LEGACY (older runtime), as before v0.6.16: no dryRun call. Tag ground agents (live ones with resume), sleep every live
+        // agent of the project (the old server refuses otherwise), switch, and wake them again afterwards.
+        writeBranchTags(projectId, (tags) => {
+          for (const id of groundIds) tags[id] = wasRunning.has(id) ? { branch: leaving, resume: true } : { branch: leaving };
+          return tags;
+        });
+        try {
+          for (const session of projectAll().filter(isRunning)) {
+            const updated = await client.sleepSession(session.id);
+            slept.push(session);
+            upsertSession(updated);
+          }
+          await client.switchProjectBranch(projectId, groundWorkspace.id, target);
+        } catch (error) {
+          for (const session of slept) await resumeOne(session);
+          writeBranchTags(projectId, (tags) => {
+            for (const id of groundIds) { if (before[id]) tags[id] = before[id]; else delete tags[id]; }
+            return tags;
+          });
+          throw error;
+        }
       }
       await refreshProjects(true);
-      // The effect above runs after this continuation (switchingRef is already false by then), so record the target as
+      // The follow-checkout effect runs after this continuation (switchingRef is already false by then), so record the target as
       // already observed: the switcher's own switch must never look like an external checkout. Set only after a
       // successful switch + refresh, so a stale poll cannot look like a reverse checkout.
       lastBranchRef.current = { workspaceId: groundWorkspace.id, branch: target };
     } catch (error) {
-      toast.error(`Could not switch to ${target}`, { description: errorMessage(error) });
+      if (!modern && isOutdatedRuntimeBranchError(error)) toast.error(`Could not switch to ${target}`, { description: OUTDATED_RUNTIME_MESSAGE });
+      else toast.error(`Could not switch to ${target}`, { description: errorMessage(error) });
       switchingRef.current = false;
       setSwitching(false);
       return;
     }
 
-    // d. Wake what was live on the target branch, plus the worktree agents slept for the switch.
+    // d. Wake what was live on the target branch (legacy: plus the agents slept for the switch).
     const targetTags = prefsRef.current.canvasBranchSessions[projectId] ?? {};
     const toWake = projectAll().filter((session) => targetTags[session.id]?.branch === target && targetTags[session.id]?.resume);
     writeBranchTags(projectId, (tags) => {
       for (const session of toWake) tags[session.id] = { branch: target };
       return tags;
     });
-    for (const session of toWake) await resumeOne(session);
-    toast.success(`Switched to ${target}`, { description: "Running agents were left untouched." });
+    const woken = new Set(toWake.map((session) => session.id));
+    for (const session of [...toWake, ...slept.filter((item) => !groundIds.has(item.id) && !woken.has(item.id))]) await resumeOne(session);
+    toast.success(`Switched to ${target}`, { description: modern ? "Running agents were left untouched." : "Agents that were running on this branch were resumed." });
     switchingRef.current = false;
     setSwitching(false);
     // e. The canvas is new (possibly empty): refit once its nodes are in.

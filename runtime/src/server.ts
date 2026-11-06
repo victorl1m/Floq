@@ -33,6 +33,7 @@ import { DownloadLinks } from "./downloadLinks.js";
 import { DavMounts, mountLocations } from "./davMounts.js";
 import { WebDav } from "./webdav.js";
 import type { ShardService } from "./shards.js";
+import { RUNTIME_CAPABILITIES } from "./capabilities.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
 import { OrganizationsService, organizationLimitsFromEnv, routeOrganizations } from "./organizations.js";
@@ -159,6 +160,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     providers: listProviders(config).filter((p) => p.available).map((p) => p.id),
     maxSessions: config.maxSessions,
     activeSessions: manager.activeCount,
+    capabilities: [...RUNTIME_CAPABILITIES],
   });
 
   function originAllowed(origin: string | undefined): boolean {

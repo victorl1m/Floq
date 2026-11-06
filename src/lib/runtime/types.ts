@@ -227,6 +227,8 @@ export interface ServerInfo {
   providers: ProviderId[];
   maxSessions: number;
   activeSessions: number;
+  /** Optional features; absent on older runtimes. */
+  capabilities?: string[];
 }
 
 export interface RuntimeInfo {

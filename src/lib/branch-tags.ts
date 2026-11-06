@@ -40,3 +40,20 @@ export function branchChangeToFollow(input: {
   if (!last || last.workspaceId !== workspaceId || last.branch === currentBranch || switching) return null;
   return { from: last.branch, to: currentBranch };
 }
+
+/** The runtime is deployed separately from the app: only a runtime that advertises this has the read-only dryRun pre-flight and lets git decide. */
+export const BRANCH_SWITCH_V2 = "branch-switch-v2";
+
+/** Capability present => new flow; absent/undefined/unknown info (older runtime) => legacy flow. */
+export function supportsBranchSwitchV2(info: { server?: { capabilities?: string[] } } | null | undefined): boolean {
+  const caps = info?.server?.capabilities;
+  return Array.isArray(caps) && caps.includes(BRANCH_SWITCH_V2);
+}
+
+export const OUTDATED_RUNTIME_MESSAGE = "Your Floq runtime is outdated. Update/redeploy it to switch branches without sleeping agents and with local changes.";
+
+/** Refusals only an older runtime gives (it required sleeping agents and a clean tree). */
+export function isOutdatedRuntimeBranchError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "project_agents_active" || code === "project_worktree_dirty";
+}

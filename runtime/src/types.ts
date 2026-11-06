@@ -131,4 +131,6 @@ export interface ServerInfo {
   providers: ProviderId[];
   maxSessions: number;
   activeSessions: number;
+  /** Optional features (see capabilities.ts). */
+  capabilities?: string[];
 }

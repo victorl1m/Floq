@@ -45,3 +45,22 @@ test('switcher switch keeps old agents on their branch; a later external checkou
   assert.deepEqual(change, { from: 'X', to: 'Y' });
   assert.deepEqual(followBranchChange(tags, ['a', 'b'], change.from, change.to), { a: { branch: 'main' }, b: { branch: 'Y' } });
 });
+
+const { supportsBranchSwitchV2, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE } = await import('../src/lib/branch-tags.ts');
+
+test('capability gating: only an explicit branch-switch-v2 selects the new flow', () => {
+  assert.equal(supportsBranchSwitchV2({ server: { capabilities: ['branch-switch-v2'] } }), true);
+  assert.equal(supportsBranchSwitchV2({ server: { capabilities: [] } }), false);
+  assert.equal(supportsBranchSwitchV2({ server: {} }), false);
+  assert.equal(supportsBranchSwitchV2({}), false);
+  assert.equal(supportsBranchSwitchV2(null), false);
+  assert.equal(supportsBranchSwitchV2(undefined), false);
+});
+
+test('older-runtime refusals are recognised and the message is one plain sentence', () => {
+  assert.equal(isOutdatedRuntimeBranchError({ code: 'project_agents_active' }), true);
+  assert.equal(isOutdatedRuntimeBranchError({ code: 'project_worktree_dirty' }), true);
+  assert.equal(isOutdatedRuntimeBranchError({ code: 'project_branch_switch_conflict' }), false);
+  assert.equal(isOutdatedRuntimeBranchError(new Error('x')), false);
+  assert.match(OUTDATED_RUNTIME_MESSAGE, /runtime is outdated/);
+});
