@@ -7,7 +7,7 @@ commands.allow = ["island_intent", "island_set_layout"]
 identifier = "allow-main-commands"
 description = "Allow the main window to use the existing application and desktop commands."
 commands.allow = [
-  "greet",
+  "set_runtime_origin",
   "get_memory_details",
   "inspect_dropped_file",
   "upload_dropped_file",

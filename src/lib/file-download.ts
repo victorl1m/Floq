@@ -14,7 +14,7 @@ export async function downloadWorkspacePath(client: RuntimeClient, sessionId: st
   try {
     const url = await client.fileDownloadUrl(sessionId, path);
     if (isTauri()) {
-      const saved = await invoke<string>("download_to_downloads", { url, origin: new URL(client.baseUrl).origin, fallbackName: fallback });
+      const saved = await invoke<string>("download_to_downloads", { url, fallbackName: fallback });
       toast.success(`Saved ${saved.split(/[\\/]/).pop() ?? fallback} to Downloads`, { id, description: saved });
       return;
     }
@@ -52,7 +52,7 @@ export async function openProjectInExplorer(client: RuntimeClient, projectId: st
     const mount = await client.createFileMount(projectId);
     const davUrl = `${client.baseUrl.replace(/\/+$/, "")}${mount.path}`;
     MOUNTS.set(projectId, mount.token);
-    const message = await invoke<string>("open_dav_mount", { davUrl, origin: new URL(client.baseUrl).origin, mapDrive });
+    const message = await invoke<string>("open_dav_mount", { davUrl, mapDrive });
     toast.success(message, { id, description: "Read-only, available for 8 hours or until you eject it. Files over 50 MB: use Download." });
   } catch (cause) {
     // Do not leave a live share behind when the OS could not open it.
@@ -68,7 +68,7 @@ export async function ejectProjectMount(client: RuntimeClient, projectId: string
   const token = MOUNTS.get(projectId);
   MOUNTS.delete(projectId);
   try {
-    if (token) await invoke("eject_dav_mount", { davUrl: `${client.baseUrl.replace(/\/+$/, "")}/dav/${token}/`, origin: new URL(client.baseUrl).origin }).catch(() => undefined);
+    if (token) await invoke("eject_dav_mount", { davUrl: `${client.baseUrl.replace(/\/+$/, "")}/dav/${token}/` }).catch(() => undefined);
     await client.revokeFileMount(projectId);
     toast.success("Explorer access stopped");
   } catch (cause) {

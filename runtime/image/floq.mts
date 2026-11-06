@@ -2,6 +2,7 @@
 // floq: agent-to-agent orchestration from inside a Floq terminal.
 //   floq list [--project NAME] [--here]    agents you can talk to: ALL the user's projects by default (--here: this project only)
 //   floq agents list [--project NAME]       same as list
+//   floq top [--project NAME] [--here] [--interval SECONDS] [--once]   live agent monitor (state, pending approvals, subagent tree)
 //   floq link <UUID|Name>                   wire yourself to an agent of any project (shown on the canvas)
 //   floq project create --name NAME [--git-url URL]   create a named project, optionally cloning a repository
 //   floq session restart                    restart this agent after replying to reload its configuration
@@ -25,7 +26,7 @@
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { abstractSocketProblems, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
-import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, formatAgentReply, formatDelivery, messageSource, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
+import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, renderTop, formatAgentReply, formatDelivery, messageSource, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 type SkillResponse = { skill: { source: string; skillId: string; name: string; provider: string; location: string; description: string }; files: { path: string; size: number }[]; markdown?: string; dryRun?: boolean; scope?: string; projectId?: string };
@@ -36,6 +37,7 @@ const help = `Floq agent coordination
 Commands:
   floq list [--project NAME] [--here]    agents of ALL your user's projects (project, role, provider, state); --project filters by project name, --here keeps this project only
   floq agents list [--project NAME]      same as "floq list"
+  floq top [--project NAME] [--here] [--interval SECONDS] [--once]   live monitor of agents (waiting-for-user first, subagents indented under their recruiter, pending approvals/decisions); redraws every 2s, q or Ctrl-C quits; prints once when not a TTY or with --once; NO_COLOR respected
   floq link <UUID|Name>                  wire yourself to an agent of any project of this user (appears on the canvas; listed in both agents' wired context)
   floq project create --name NAME [--git-url URL]   create an empty named project or import a Git repository
   floq session restart                   restart this agent to reload its current configuration
@@ -243,7 +245,7 @@ const usage = (): never => {
 };
 
 const allowedOptions: Record<string, string[]> = {
-  list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
+  top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
   session: [], port: ["protocol", "reason"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
@@ -275,6 +277,43 @@ switch (command) {
     for (const a of agents) console.log(formatAgentListEntry(a));
     if (!agents.length) console.log("no matching agents");
     break;
+  }
+  case "top": {
+    if (positional.length || (named.project !== undefined && typeof named.project !== "string")) usage();
+    const interval = named.interval === undefined ? 2 : Number(named.interval);
+    if (!Number.isFinite(interval) || interval < 0.5 || interval > 3600) { console.error("floq: --interval must be 0.5 to 3600 seconds"); process.exit(2); }
+    const fetchAgents = async () => (await call<{ agents: AgentEntry[] }>("agents/list", { project: named.project, here: named.here === true, detail: true })).agents;
+    const color = !process.env.NO_COLOR && !!process.stdout.isTTY;
+    const draw = (agents: AgentEntry[]) => renderTop(agents, { width: process.stdout.columns || 100, color, now: Date.now() });
+    if (named.once === true || !process.stdout.isTTY || !process.stdin.isTTY) {
+      console.log(draw(await fetchAgents()).join("\n"));
+      break;
+    }
+    const out = process.stdout;
+    let stopped = false;
+    const restore = () => { if (stopped) return; stopped = true; out.write("\u001b[?25h\u001b[?1049l"); if (process.stdin.isTTY) process.stdin.setRawMode(false); };
+    const quit = () => { restore(); process.exit(0); };
+    process.on("exit", restore);
+    process.on("SIGINT", quit);
+    process.on("SIGTERM", quit);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (d) => { const k = String(d); if (k === "q" || k === "Q" || k === "\u0003") quit(); });
+    out.write("\u001b[?1049h\u001b[?25l");
+    let frame: string[] = [];
+    for (;;) {
+      let lines: string[];
+      try { lines = draw(await fetchAgents()); } catch (e) { lines = ["floq top: " + (e instanceof Error ? e.message : String(e)).slice(0, 200)]; }
+      const rows = (out.rows || 40) - 1;
+      lines = lines.slice(0, Math.max(1, rows));
+      // Overwrite line by line and clear to end of line: no full-screen clear, so no flicker.
+      let buf = "\u001b[H";
+      lines.forEach((l, i) => { if (l !== frame[i]) buf += "\u001b[" + (i + 1) + ";1H" + l + "\u001b[K"; });
+      for (let i = lines.length; i < frame.length; i++) buf += "\u001b[" + (i + 1) + ";1H\u001b[K";
+      out.write(buf);
+      frame = lines;
+      await new Promise((r) => setTimeout(r, interval * 1000));
+    }
   }
   case "link": {
     if (positional.length !== 1) usage();

@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SessionManager } from "./manager.js";
 import { HttpError, badRequest, notFound, unavailable } from "./errors.js";
 import type { ShardService } from "./shards.js";
+import type { ShardHandle } from "./shard.js";
+import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 
 const COMMAND_TIMEOUT_MS = 8_000;
 const STATUS_LIMIT_BYTES = 1024 * 1024;
@@ -41,10 +42,10 @@ export class GitReview {
   constructor(private readonly manager: SessionManager, private readonly shards: ShardService) {}
 
   async changes(userId: string, sessionId: string): Promise<GitChanges> {
-    const { root, uid } = await this.repository(userId, sessionId);
+    const { root, handle } = await this.repository(userId, sessionId);
     const [status, branch] = await Promise.all([
-      this.git(root, ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], STATUS_LIMIT_BYTES, true, uid),
-      this.git(root, ["branch", "--show-current"], 4096, true, uid),
+      this.git(root, ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], STATUS_LIMIT_BYTES, true, handle),
+      this.git(root, ["branch", "--show-current"], 4096, true, handle),
     ]);
     if (status.code !== 0) throw badRequest("This project is not a Git repository", "not_git_repository");
     const parsed = parseStatus(status.stdout.toString("utf8"));
@@ -60,8 +61,8 @@ export class GitReview {
     if (typeof requestedPath !== "string" || !requestedPath || requestedPath.length > 4096 || requestedPath.includes("\0")) {
       throw badRequest("Choose a changed file to inspect", "invalid_change_path");
     }
-    const { root, uid } = await this.repository(userId, sessionId);
-    const status = await this.git(root, ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], STATUS_LIMIT_BYTES, true, uid);
+    const { root, handle } = await this.repository(userId, sessionId);
+    const status = await this.git(root, ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], STATUS_LIMIT_BYTES, true, handle);
     if (status.code !== 0) throw badRequest("This project is not a Git repository", "not_git_repository");
     const change = parseStatus(status.stdout.toString("utf8")).changes.find((item) => item.path === requestedPath);
     if (!change) throw notFound("That file is no longer changed. Refresh the change list.");
@@ -88,15 +89,15 @@ export class GitReview {
       if (info.size > DIFF_LIMIT_BYTES) {
         return { path: change.path, patch: "", binary: false, tooLarge: true };
       }
-      const untracked = await this.git(root, ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--", process.platform === "win32" ? "NUL" : "/dev/null", change.path], DIFF_LIMIT_BYTES, true, uid);
+      const untracked = await this.git(root, ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--", process.platform === "win32" ? "NUL" : "/dev/null", change.path], DIFF_LIMIT_BYTES, true, handle);
       if (untracked.code > 1) throw badRequest("Could not read this changed file", "git_diff_failed");
       collect(untracked);
     } else {
       const paths = [...new Set([change.path, ...(change.originalPath ? [change.originalPath] : [])])];
       const args = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--", ...paths];
       const [unstaged, staged] = await Promise.all([
-        this.git(root, args, DIFF_LIMIT_BYTES, false, uid),
-        this.git(root, ["--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--", ...paths], DIFF_LIMIT_BYTES, false, uid),
+        this.git(root, args, DIFF_LIMIT_BYTES, false, handle),
+        this.git(root, ["--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--", ...paths], DIFF_LIMIT_BYTES, false, handle),
       ]);
       if (unstaged.code !== 0 || staged.code !== 0) throw badRequest("Could not read this changed file", "git_diff_failed");
       collect(staged);
@@ -111,7 +112,7 @@ export class GitReview {
     };
   }
 
-  private async repository(userId: string, sessionId: string): Promise<{ root: string; uid: number }> {
+  private async repository(userId: string, sessionId: string): Promise<{ root: string; handle: ShardHandle }> {
     // manager.get performs the owner-scoped lookup and deliberately returns no host paths.
     const session = await this.manager.get(sessionId, userId);
     const handle = await this.shards.wake(userId);
@@ -120,20 +121,20 @@ export class GitReview {
     if (!sessionRoot || !isWithin(home, sessionRoot)) throw notFound("The project folder is unavailable");
     const stat = await lstat(sessionRoot).catch(() => null);
     if (!stat?.isDirectory()) throw notFound("The project folder is unavailable");
-    const top = await this.git(sessionRoot, ["rev-parse", "--show-toplevel"], 16 * 1024, true, handle.uid);
+    const top = await this.git(sessionRoot, ["rev-parse", "--show-toplevel"], 16 * 1024, true, handle);
     if (top.code !== 0) throw badRequest("This project is not a Git repository", "not_git_repository");
     const root = await realpath(top.stdout.toString("utf8").trim()).catch(() => null);
     if (!root || !isWithin(home, root)) throw notFound("The project folder is unavailable");
     const [gitDir, commonDir] = await Promise.all([
-      this.git(root, ["rev-parse", "--absolute-git-dir"], 16 * 1024, true, handle.uid),
-      this.git(root, ["rev-parse", "--git-common-dir"], 16 * 1024, true, handle.uid),
+      this.git(root, ["rev-parse", "--absolute-git-dir"], 16 * 1024, true, handle),
+      this.git(root, ["rev-parse", "--git-common-dir"], 16 * 1024, true, handle),
     ]);
     if (gitDir.code !== 0 || commonDir.code !== 0) throw badRequest("This project is not a Git repository", "not_git_repository");
     for (const output of [gitDir, commonDir]) {
       const gitPath = await realpath(resolve(root, output.stdout.toString("utf8").trim())).catch(() => null);
       if (!gitPath || !isWithin(home, gitPath)) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");
     }
-    const objectsOutput = await this.git(root, ["rev-parse", "--git-path", "objects"], 16 * 1024, true, handle.uid);
+    const objectsOutput = await this.git(root, ["rev-parse", "--git-path", "objects"], 16 * 1024, true, handle);
     if (objectsOutput.code !== 0) throw badRequest("This project is not a Git repository", "not_git_repository");
     const objects = await realpath(resolve(root, objectsOutput.stdout.toString("utf8").trim())).catch(() => null);
     if (!objects || !isWithin(home, objects)) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");
@@ -147,12 +148,12 @@ export class GitReview {
         if (!alternatePath || !isWithin(home, alternatePath)) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");
       }
     }
-    return { root, uid: handle.uid };
+    return { root, handle };
   }
 
-  private git(root: string, args: string[], maxBytes: number, allowFailure: boolean, uid: number): Promise<CommandResult> {
+  private git(root: string, args: string[], maxBytes: number, allowFailure: boolean, handle: ShardHandle): Promise<CommandResult> {
     return new Promise((resolveResult, reject) => {
-      const gitArgs = ["--no-pager", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, ...args];
+      const gitArgs = ["--no-pager", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, ...GIT_HARDENING_ARGS, ...args];
       const env = {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         HOME: tmpdir(),
@@ -160,17 +161,17 @@ export class GitReview {
         LANG: "C.UTF-8",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+        ...GIT_HARDENING_ENV,
         GIT_OPTIONAL_LOCKS: "0",
         GIT_TERMINAL_PROMPT: "0",
         GIT_LITERAL_PATHSPECS: "1",
         GIT_PAGER: "cat",
         PAGER: "cat",
       };
-      // The encrypted mount is owned by the caller. Running as that uid preserves FUSE access rules.
-      const [file, childArgs] = this.shards.driver.name === "linux"
-        ? ["setpriv", ["--reuid=" + uid, "--regid=" + uid, "--clear-groups", "git", ...gitArgs]]
-        : ["git", gitArgs];
-      const child = spawn(file, childArgs, { stdio: ["ignore", "pipe", "ignore"], env, windowsHide: true });
+      // Agent-controlled .git/config and info/attributes can name filter drivers, so git runs in the agent's own sandbox
+      // (bwrap + per-user netns), never on the host. The home is also bound at its host path there, so `-C root` resolves.
+      const child = this.shards.driver.spawnPipe(handle, { file: "git", args: gitArgs, env, cwd: "." });
+      child.stderr?.resume();
       const stdout: Buffer[] = [];
       let size = 0;
       let settled = false;
@@ -180,7 +181,7 @@ export class GitReview {
         clearTimeout(timer);
         reject(error);
       };
-      child.stdout.on("data", (chunk: Buffer) => {
+      child.stdout!.on("data", (chunk: Buffer) => {
         if (settled) return;
         size += chunk.length;
         if (size > maxBytes) {

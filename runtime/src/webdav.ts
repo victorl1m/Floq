@@ -1,7 +1,7 @@
 import { constants as fsConstants } from "node:fs";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { extname, join } from "node:path";
+import { extname, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { DavFolder, DavMounts } from "./davMounts.js";
 import { HttpError, badRequest, notFound } from "./errors.js";
@@ -183,6 +183,8 @@ export class WebDav {
     if (!real) throw notFound("Not found");
     if (!isWithin(root, real)) throw new HttpError(403, "forbidden", "Forbidden");
     // Verify on the descriptor actually used (the path check above is only a fast first filter; see openWithin).
+    // Hidden names are also rejected on the resolved path, so a symlink to node_modules is not served.
+    if (relative(root, real).split(sep).some((part) => HIDDEN_NAMES.has(part))) throw notFound("Not found");
     const fh = await openWithin(root, real, fsConstants.O_RDONLY);
     let owned = true;
     try {
@@ -193,9 +195,12 @@ export class WebDav {
         const entries: DavEntry[] = [{ href: hrefOf(token, hrefSegments, true), name, dir: true, mtime: info.mtimeMs }];
         if (depth === "1") {
           const base = HAS_PROC_FD ? `/proc/self/fd/${fh.fd}` : real;
-          const dirents = await readdir(base, { withFileTypes: true });
-          for (const dirent of dirents) {
-            if (entries.length > PROPFIND_ENTRY_CAP) break;
+          // opendir streams entries, so a huge directory is never materialised: stop at the cap.
+          const dir = await opendir(base);
+          let scanned = 0;
+          try {
+          for await (const dirent of dir) {
+            if (entries.length > PROPFIND_ENTRY_CAP || ++scanned > PROPFIND_ENTRY_CAP * 25) break;
             const child = dirent.name;
             if (HIDDEN_NAMES.has(child) || child.includes("\0") || child.includes("\\")) continue;
             let stats: { isDirectory(): boolean; isFile(): boolean; size: number; mtimeMs: number } | null = null;
@@ -208,6 +213,9 @@ export class WebDav {
             }
             if (!stats || (!stats.isDirectory() && !stats.isFile())) continue;
             entries.push({ href: hrefOf(token, [...hrefSegments, child], stats.isDirectory()), name: child, dir: stats.isDirectory(), size: stats.size, mtime: stats.mtimeMs });
+          }
+          } finally {
+            await dir.close().catch(() => {});
           }
         }
         return this.multistatus(res, false, entries);

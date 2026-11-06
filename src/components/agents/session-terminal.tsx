@@ -283,8 +283,8 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
             allowTransparency: transparentBackground,
             minimumContrastRatio: minimumContrastRatio(themeRef.current.dark),
             theme: terminalTheme(themeRef.current.dark, transparentBackground),
-            // Clicking a link opens it directly (no native confirm dialog).
-            linkHandler: { activate: (_event, uri) => void openExternal(uri), allowNonHttpProtocols: false },
+            // OSC 8 links carry a label the agent chooses: show the real target and open only on an explicit click.
+            linkHandler: { activate: (_event, uri) => { toast("Open this link?", { description: uri.length > 300 ? `${uri.slice(0, 300)}…` : uri, action: { label: "Open", onClick: () => void openExternal(uri) } }); }, allowNonHttpProtocols: false },
         });
         const fit = new FitAddon();
         const search = new SearchAddon();

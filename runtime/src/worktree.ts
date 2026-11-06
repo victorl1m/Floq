@@ -1,13 +1,24 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lchownSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { badRequest, conflict } from "./errors.js";
+import { mkdirOwnedSegment } from "./shard.js";
 
 const execFile = promisify(execFileCallback);
 const GIT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
+
+/**
+ * Git is launched outside the sandbox on repositories the agent controls. `filter.<name>.clean/smudge/process` drivers cannot
+ * be disabled by name, so every source of attributes that would select one is neutralised instead: system and global
+ * attribute files, and (git >= 2.40) the worktree/index .gitattributes via an empty attribute tree. info/attributes inside
+ * .git is the one source git offers no switch for.
+ */
+export const GIT_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+export const GIT_HARDENING_ENV: Record<string, string> = { GIT_ATTR_NOSYSTEM: "1", GIT_ATTR_SOURCE: GIT_EMPTY_TREE, GIT_TERMINAL_PROMPT: "0" };
+export const GIT_HARDENING_ARGS = ["-c", "core.attributesFile=" + NULL_DEVICE, "-c", "protocol.ext.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + NULL_DEVICE];
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -15,7 +26,7 @@ function inside(root: string, path: string): boolean {
 }
 
 async function git(args: string[], cwd: string, runAsUser?: (args: string[]) => Promise<string>): Promise<string> {
-  const command = ["-c", "core.hooksPath=" + NULL_DEVICE, "-c", "core.fsmonitor=false", "-C", cwd, ...args];
+  const command = [...GIT_HARDENING_ARGS, "-C", cwd, ...args];
   if (runAsUser) return runAsUser(command);
   try {
     const result = await execFile("git", command, {
@@ -23,7 +34,7 @@ async function git(args: string[], cwd: string, runAsUser?: (args: string[]) => 
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES,
       windowsHide: true,
-      env: { PATH: process.env.PATH ?? "", HOME: process.platform === "win32" ? process.env.TEMP ?? "C:\\Temp" : "/tmp", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: NULL_DEVICE },
+      env: { PATH: process.env.PATH ?? "", HOME: process.platform === "win32" ? process.env.TEMP ?? "C:\\Temp" : "/tmp", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: NULL_DEVICE, ...GIT_HARDENING_ENV },
     });
     return result.stdout.trim();
   } catch (error) {
@@ -75,8 +86,8 @@ export async function createWorktree(request: WorktreeRequest): Promise<{ cwd: s
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Worktree destination parent must be a real directory", "isolation_invalid_path");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      mkdirSync(current);
-      if (request.uid !== undefined) lchownSync(current, request.uid, request.uid);
+      // Created and chowned through an O_NOFOLLOW descriptor proven to be inside the home (a swapped parent cannot redirect root).
+      mkdirOwnedSegment(home, current, request.uid ?? process.getuid?.() ?? 0);
     }
   }
   let targetParent: string;

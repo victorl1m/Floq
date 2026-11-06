@@ -46,7 +46,19 @@ export interface AgentView {
   role: string | null;
   /** Project of the agent (id is null outside a registered project); `same` is true for the caller's own project. */
   project: { id: string | null; name: string; same: boolean };
+  /** Read-only monitor fields (only with `detail`, used by `floq top`). */
+  parentId?: string | null;
+  /** working | idle | waiting-for-input | exited | asleep (same vocabulary as `floq check`). */
+  status?: AgentStatus;
+  startedAt?: number | null;
+  lastActivityAt?: number | null;
+  /** Last non-empty terminal line, scrubbed of secrets and truncated. */
+  lastLine?: string | null;
+  pendingApprovals?: number;
+  pendingDecisions?: number;
 }
+
+export type PendingCounts = Map<string, { approvals: number; decisions: number }>;
 
 export async function selectableAgentModels(
   config: { models: { claude: ModelEntry[]; codex: ModelEntry[] }; codexModelsOverridden: boolean },
@@ -216,7 +228,7 @@ export class Orchestrator {
   }
 
   private async rows(userId: string) {
-    return (await this.pool.query("SELECT s.id, s.title, s.provider, s.model, s.state, s.lead, s.role, s.cwd, s.git_url, s.project_cwd, s.project_id, s.workspace_id, p.name AS project_name FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id WHERE s.user_id = $1 AND s.provider <> 'shell' AND s.archived_at IS NULL", [userId])).rows as Array<{
+    return (await this.pool.query("SELECT s.id, s.title, s.provider, s.model, s.state, s.lead, s.role, s.cwd, s.git_url, s.project_cwd, s.project_id, s.workspace_id, s.parent_session_id, p.name AS project_name FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id WHERE s.user_id = $1 AND s.provider <> 'shell' AND s.archived_at IS NULL", [userId])).rows as Array<{
       id: string;
       title: string;
       provider: ProviderId;
@@ -230,6 +242,7 @@ export class Orchestrator {
       project_id: string | null;
       workspace_id: string | null;
       project_name: string | null;
+      parent_session_id?: string | null;
     }>;
   }
 
@@ -301,27 +314,49 @@ export class Orchestrator {
    * Agents the caller can reach. Default: every agent of the user's projects (when "Allow agents to talk across
    * projects" is on; otherwise only the caller's own project). `project` filters by project name or id, `here` by own project.
    */
-  async list(userId: string, sessionId: string, options: { project?: unknown; here?: unknown } = {}): Promise<AgentView[]> {
+  async list(userId: string, sessionId: string, options: { project?: unknown; here?: unknown; detail?: boolean; pending?: PendingCounts } = {}): Promise<AgentView[]> {
     const rows = await this.rows(userId);
     const me = rows.find((r) => r.id === sessionId);
     if (!me) throw notFound("Calling session not found");
     const crossOk = await this.crossAllowed(userId);
     const wanted = typeof options.project === "string" && options.project.trim() ? options.project.trim().toLowerCase() : null;
-    return rows
+    const visible = rows
       .map((r) => ({ r, same: this.sameProject(me, r) }))
-      .filter(({ r, same }) => (same || (crossOk && options.here !== true)) && (!wanted || (r.project_name ?? "").toLowerCase().includes(wanted) || r.project_id === wanted))
-      .map(({ r, same }) => ({
-        id: r.id,
-        name: r.title,
-        provider: r.provider,
-        model: r.model,
-        state: r.state,
-        lead: r.lead,
-        linked: r.id !== me.id,
-        self: r.id === me.id,
-        role: r.role,
-        project: { id: r.project_id, name: this.projectName(r), same },
-      }));
+      .filter(({ r, same }) => (same || (crossOk && options.here !== true)) && (!wanted || (r.project_name ?? "").toLowerCase().includes(wanted) || r.project_id === wanted));
+    return Promise.all(visible.map(async ({ r, same }): Promise<AgentView> => ({
+      id: r.id,
+      name: r.title,
+      provider: r.provider,
+      model: r.model,
+      state: r.state,
+      lead: r.lead,
+      linked: r.id !== me.id,
+      self: r.id === me.id,
+      role: r.role,
+      project: { id: r.project_id, name: this.projectName(r), same },
+      ...(options.detail ? await this.monitorFields(userId, me.id, r, options.pending) : {}),
+    })));
+  }
+
+  private async monitorFields(userId: string, callerId: string, r: { id: string; state: string; parent_session_id?: string | null }, pending?: PendingCounts) {
+    const live = this.manager.findLive(r.id, userId);
+    let status: AgentStatus = r.state === "sleeping" || !live ? "asleep" : "exited";
+    let lastLine: string | null = null;
+    if (live) {
+      status = this.snapshot(live, userId).status;
+      const tail = stripAnsi(live.replaySince(0).chunks.slice(-12).map((c) => c.data).join("")).split("\n").map((l) => l.trim()).filter(Boolean).pop();
+      if (tail) lastLine = (await this.scrub(userId, [r.id, callerId], tail)).slice(0, 200);
+    }
+    const counts = pending?.get(r.id);
+    return {
+      parentId: r.parent_session_id ?? null,
+      status,
+      startedAt: live ? live.startedAtMs : null,
+      lastActivityAt: live ? live.lastActivity : null,
+      lastLine,
+      pendingApprovals: counts?.approvals ?? 0,
+      pendingDecisions: counts?.decisions ?? 0,
+    };
   }
 
   /** Snapshot of another agent: explicit status plus the parsed transcript turn (null without a transcript). */

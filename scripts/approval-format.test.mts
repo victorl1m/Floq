@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { announceBucket, describeAnnouncement, detailIsLong, formatRemaining, newestFirst, riskLevel, RISK_LABEL, titleWithPending } from "../src/lib/approval-format.ts";
+import { capText } from "../src/lib/island-contract.ts";
 
 test("risk levels", () => {
   assert.equal(RISK_LABEL[riskLevel("git push origin main", "", true)], "Irreversible · affects production");
   assert.equal(riskLevel("deploy the site", "", true), "production");
+  // Agent-written words never raise the label without the server flag.
+  assert.equal(riskLevel("git push origin main", "deploy to production", false), "neutral");
   assert.equal(riskLevel("delete the remote branch feature/x", "", true), "irreversible");
   assert.equal(riskLevel("open a draft PR", "", false), "neutral");
   assert.equal(RISK_LABEL.neutral, "Needs your OK");
@@ -24,4 +27,12 @@ test("ordering, title and detail collapse", () => {
   assert.equal(titleWithPending("Floq", 2), "(2) Floq");
   assert.equal(titleWithPending("Floq", 0), "Floq");
   assert.ok(detailIsLong("x".repeat(200)) && detailIsLong("a\nb\nc\nd") && !detailIsLong("short"));
+});
+
+test("capText keeps the start and the tail of long text", () => {
+  assert.equal(capText("short", 10), "short");
+  const out = capText("a".repeat(500) + "rm -rf /", 90);
+  assert.ok(out.length <= 90);
+  assert.ok(out.endsWith("rm -rf /"));
+  assert.ok(out.includes("…"));
 });

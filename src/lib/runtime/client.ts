@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   AgentLink,
   Keychain,
@@ -79,6 +80,18 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /** Thin REST client for floq-runtime. Auth is a better-auth bearer token. */
+/** Tell the desktop shell which runtime the signed-in user talks to; Rust checks download, upload and share URLs against it, not against the request. */
+function registerRuntimeOrigin(baseUrl: string): void {
+  if (!isTauri()) return;
+  let origin: string;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    return;
+  }
+  void invoke("set_runtime_origin", { origin }).catch(() => undefined);
+}
+
 export class RuntimeClient {
   private readonly createSessionKeys = new Map<string, string>();
 
@@ -87,7 +100,10 @@ export class RuntimeClient {
     readonly token: string | null = null,
     /** Called when an authenticated request comes back 401 (token expired/revoked). */
     readonly onUnauthorized?: () => void,
-  ) {}
+  ) {
+    // Only an authenticated client (after sign-in or a restored session) becomes the runtime the shell trusts.
+    if (token) registerRuntimeOrigin(baseUrl);
+  }
 
   withToken(token: string | null): RuntimeClient {
     return new RuntimeClient(this.baseUrl, token, this.onUnauthorized);

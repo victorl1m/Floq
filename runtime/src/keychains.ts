@@ -309,7 +309,7 @@ export class Keychains {
     return mergeKeychainLayers(layers);
   }
 
-  /** Redact secret values of the given sessions from runtime-generated text. Never throws. */
+  /** Redact secret values of the given sessions from runtime-generated text. Never throws; fails closed (masks the whole text) on error. */
   async redact(userId: string, sessionIds: string[], text: string): Promise<string> {
     if (!text) return text;
     try {
@@ -319,7 +319,8 @@ export class Keychains {
       for (const id of new Set(sessionIds)) out = redactSecrets(out, await this.resolve(userId, id));
       return out;
     } catch {
-      return text;
+      // Fail closed: if we cannot tell what to mask, show none of the text.
+      return "[redacted: secret scrubbing unavailable]";
     }
   }
 }

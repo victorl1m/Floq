@@ -3,7 +3,7 @@ mod island;
 mod desktop;
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -33,12 +33,6 @@ struct MemoryDetails {
     system_total: u64,
     system_used: u64,
     processes: Vec<ProcessMemory>,
-}
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
@@ -116,6 +110,73 @@ const MAX_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 #[derive(Default)]
 struct Uploads(Mutex<HashMap<String, Arc<AtomicBool>>>);
 
+/// Absolute paths the OS reported through a drag-drop onto the main window. Only these may be inspected or uploaded,
+/// so a compromised renderer cannot name an arbitrary file.
+#[derive(Default)]
+struct DroppedPaths(Mutex<HashSet<String>>);
+
+/// The runtime origin (`scheme://host:port`) the user signed in to. Network commands compare against this, never against
+/// a value supplied with the same request.
+#[derive(Default)]
+struct RuntimeOrigin(Mutex<Option<String>>);
+
+/// Reduce `value` to a bare, validated `scheme://host[:port]` origin.
+fn normalize_origin(value: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "Invalid runtime address".to_string())?;
+    if url.cannot_be_a_base() || url.host_str().is_none() {
+        return Err("Invalid runtime address".into());
+    }
+    // same_origin_url applies the scheme, credential and host-character rules to a URL on that origin.
+    let checked = same_origin_url(url.as_str(), url.as_str())?;
+    Ok(checked.origin().ascii_serialization())
+}
+
+/// Record the runtime origin after sign-in (called by the main window only).
+#[tauri::command]
+fn set_runtime_origin(window: WebviewWindow, state: tauri::State<'_, RuntimeOrigin>, origin: String) -> Result<(), String> {
+    require_main(&window)?;
+    let normalized = normalize_origin(&origin)?;
+    *state.0.lock().map_err(|_| "Runtime state unavailable".to_string())? = Some(normalized);
+    Ok(())
+}
+
+fn current_origin(state: &tauri::State<'_, RuntimeOrigin>) -> Result<String, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "Runtime state unavailable".to_string())?
+        .clone()
+        .ok_or_else(|| "Not signed in to a runtime".to_string())
+}
+
+fn record_dropped_paths(app: &tauri::AppHandle, paths: &[std::path::PathBuf]) {
+    if let Ok(mut set) = app.state::<DroppedPaths>().0.lock() {
+        if set.len() > 2000 {
+            set.clear();
+        }
+        for path in paths {
+            set.insert(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
+fn require_dropped(dropped: &tauri::State<'_, DroppedPaths>, path: &str) -> Result<(), String> {
+    let known = dropped.0.lock().map_err(|_| "Drop state unavailable".to_string())?.contains(path);
+    if known {
+        Ok(())
+    } else {
+        Err("Only files dropped onto Floq can be uploaded".into())
+    }
+}
+
+/// `/v1/sessions/<id>/attachments` with nothing but a `name` query parameter.
+fn valid_attachment_url(url: &reqwest::Url) -> bool {
+    let parts: Vec<&str> = url.path().split('/').collect();
+    let id_ok = |id: &str| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    parts.len() == 5 && parts[0].is_empty() && parts[1] == "v1" && parts[2] == "sessions" && id_ok(parts[3]) && parts[4] == "attachments"
+        && url.query_pairs().all(|(key, _)| key == "name")
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DroppedFileInfo {
@@ -154,8 +215,9 @@ fn inspect_file(path: String) -> Result<DroppedFileInfo, String> {
 }
 
 #[tauri::command]
-fn inspect_dropped_file(window: WebviewWindow, path: String) -> Result<DroppedFileInfo, String> {
+fn inspect_dropped_file(window: WebviewWindow, dropped: tauri::State<'_, DroppedPaths>, path: String) -> Result<DroppedFileInfo, String> {
     require_main(&window)?;
+    require_dropped(&dropped, &path)?;
     inspect_file(path)
 }
 
@@ -166,6 +228,8 @@ async fn upload_dropped_file(
     window: WebviewWindow,
     app: tauri::AppHandle,
     uploads: tauri::State<'_, Uploads>,
+    dropped: tauri::State<'_, DroppedPaths>,
+    runtime_origin: tauri::State<'_, RuntimeOrigin>,
     upload_id: String,
     url: String,
     token: Option<String>,
@@ -176,7 +240,9 @@ async fn upload_dropped_file(
     use tokio::io::AsyncReadExt;
 
     require_main(&window)?;
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
+    require_dropped(&dropped, &path)?;
+    let parsed_url = same_origin_url(&url, &current_origin(&runtime_origin)?)?;
+    if !valid_attachment_url(&parsed_url) {
         return Err("Invalid upload URL".into());
     }
     let info = inspect_file(path.clone())?;
@@ -225,7 +291,7 @@ async fn upload_dropped_file(
     });
 
     let mut request = reqwest::Client::new()
-        .put(&url)
+        .put(parsed_url)
         .header("Content-Type", "application/octet-stream")
         .header("Content-Length", total)
         .body(reqwest::Body::wrap_stream(body_stream));
@@ -360,11 +426,12 @@ fn valid_download_url(url: &reqwest::Url) -> bool {
 /// Only links on the runtime's own origin are fetched, redirects are refused, and the file name comes from the response.
 /// Returns the saved path. Never overwrites: a taken name becomes "name (1).ext".
 #[tauri::command]
-async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, url: String, origin: String, fallback_name: String) -> Result<String, String> {
+async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, runtime_origin: tauri::State<'_, RuntimeOrigin>, url: String, fallback_name: String) -> Result<String, String> {
     require_main(&window)?;
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
+    let origin = current_origin(&runtime_origin)?;
     let parsed = same_origin_url(&url, &origin)?;
     if !valid_download_url(&parsed) {
         return Err("Invalid download URL".into());
@@ -452,6 +519,24 @@ async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, url
     tokio::fs::rename(&part, &target)
         .await
         .map_err(|_| "Could not finish saving the file".to_string())?;
+    // Mark-of-the-Web: tell Windows (SmartScreen, Office) the file came from the internet, as a browser download would.
+    #[cfg(windows)]
+    {
+        let mut stream_name = target.clone().into_os_string();
+        stream_name.push(":Zone.Identifier");
+        let _ = std::fs::write(stream_name, format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={origin}\r\n"));
+    }
+    // Gatekeeper quarantine, as a browser download would carry (the system xattr tool: no extra dependency).
+    #[cfg(target_os = "macos")]
+    {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .arg("-w")
+            .arg("com.apple.quarantine")
+            .arg(format!("0083;{stamp:x};Floq;"))
+            .arg(&target)
+            .output();
+    }
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -558,9 +643,9 @@ fn open_dav_blocking(url: reqwest::Url, map_drive: bool) -> Result<String, Strin
 
 /// Open the project's read-only WebDAV share in the OS file manager. `map_drive` (Windows) maps the first free drive letter instead.
 #[tauri::command]
-async fn open_dav_mount(window: WebviewWindow, dav_url: String, origin: String, map_drive: bool) -> Result<String, String> {
+async fn open_dav_mount(window: WebviewWindow, runtime_origin: tauri::State<'_, RuntimeOrigin>, dav_url: String, map_drive: bool) -> Result<String, String> {
     require_main(&window)?;
-    let url = same_origin_url(&dav_url, &origin)?;
+    let url = same_origin_url(&dav_url, &current_origin(&runtime_origin)?)?;
     if !valid_dav_url(&url) {
         return Err("Invalid share address".into());
     }
@@ -571,9 +656,9 @@ async fn open_dav_mount(window: WebviewWindow, dav_url: String, origin: String, 
 
 /// Best-effort disconnect of a share mapped with `net use` (Windows). The server-side revoke is what actually ends access.
 #[tauri::command]
-async fn eject_dav_mount(window: WebviewWindow, dav_url: String, origin: String) -> Result<(), String> {
+async fn eject_dav_mount(window: WebviewWindow, runtime_origin: tauri::State<'_, RuntimeOrigin>, dav_url: String) -> Result<(), String> {
     require_main(&window)?;
-    let url = same_origin_url(&dav_url, &origin)?;
+    let url = same_origin_url(&dav_url, &current_origin(&runtime_origin)?)?;
     if !valid_dav_url(&url) {
         return Err("Invalid share address".into());
     }
@@ -756,9 +841,18 @@ pub fn run() {
         }))
         .manage(port_forward::Forwards::default())
         .manage(Uploads::default())
+        .manage(DroppedPaths::default())
+        .manage(RuntimeOrigin::default())
         .manage(NativeMaterial::default())
         .manage(island::IslandRuntime::default())
         .manage(desktop::DesktopState::default())
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                    record_dropped_paths(window.app_handle(), paths);
+                }
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
@@ -768,7 +862,7 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            greet,
+            set_runtime_origin,
             get_memory_details,
             inspect_dropped_file,
             upload_dropped_file,

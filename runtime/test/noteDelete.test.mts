@@ -53,7 +53,7 @@ test("sticky delete: memory and linked notes go, system is refused, unseen/other
   t.after(() => db.close());
   const memory = await notes.agentCreate(U, S1, { kind: "memory", text: "m" });
   const plain = await notes.agentCreate(U, S1, { text: "n" });
-  const system = await notes.agentCreate(U, S1, { kind: "system", text: "rules" });
+  const system = await notes.create(U, P1, { kind: "system", text: "rules", x: 0, y: 0 }, "user");
   await assert.rejects(notes.agentDelete(U, S1, system.id), (e: any) => e.status === 403 && e.code === "system_note_readonly");
   assert.equal((await notes.get(U, system.id)).text, "rules");
   const m = await notes.agentDelete(U, S1, memory.id);

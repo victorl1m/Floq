@@ -1,7 +1,8 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { opendir, rm } from "node:fs/promises";
+import { dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
 import { unavailable } from "./errors.js";
@@ -21,6 +22,7 @@ export const TMP_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const TMP_REL = ".floq/tmp";
 const PRUNE_MAX_DEPTH = 6;
 const PRUNE_MAX_ENTRIES = 10_000;
+const PRUNE_MAX_CHILDREN = 5_000;
 
 /** Newest mtime anywhere under `path` (not following symlinks); null when the bounded walk (depth / entry count) was exceeded. */
 function newestMtime(path: string, budget: { left: number }, depth = 0): number | null {
@@ -43,7 +45,7 @@ function newestMtime(path: string, budget: { left: number }, depth = 0): number 
  */
 export function pruneOldEntries(dir: string, maxAgeMs: number, now = Date.now()): number {
   let removed = 0;
-  for (const name of readdirSync(dir)) {
+  for (const name of readdirSync(dir).slice(0, PRUNE_MAX_CHILDREN)) {
     const path = join(dir, name);
     try {
       const newest = newestMtime(path, { left: PRUNE_MAX_ENTRIES });
@@ -54,6 +56,31 @@ export function pruneOldEntries(dir: string, maxAgeMs: number, now = Date.now())
     } catch {
       /* raced with a running process; keep it */
     }
+  }
+  return removed;
+}
+
+/** Async twin of pruneOldEntries for the wake path: streams the directory, caps the children scanned and yields between entries. */
+export async function pruneOldEntriesAsync(dir: string, maxAgeMs: number, now = Date.now()): Promise<number> {
+  let removed = 0;
+  let scanned = 0;
+  const handle = await opendir(dir);
+  try {
+    for await (const dirent of handle) {
+      if (++scanned > PRUNE_MAX_CHILDREN) break;
+      const path = join(dir, dirent.name);
+      try {
+        const newest = newestMtime(path, { left: PRUNE_MAX_ENTRIES });
+        if (newest !== null && now - newest > maxAgeMs) {
+          await rm(path, { recursive: true, force: true });
+          removed++;
+        }
+      } catch {
+        /* raced with a running process; keep it */
+      }
+    }
+  } finally {
+    await handle.close().catch(() => {});
   }
   return removed;
 }
@@ -91,6 +118,8 @@ export interface ShardDriver {
   /** Provision (first use) and unlock the user's encrypted home. */
   wake(identity: ShardIdentity, dataKey: Buffer): Promise<ShardHandle>;
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess;
+  /** Same sandbox and network namespace as spawn(), but plain pipes (exact bytes, no PTY): for runtime-driven git on agent-controlled repos. */
+  spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess;
   /** Lock the home again. Callers guarantee no sandboxed process still uses it. */
   sleep(handle: ShardHandle): Promise<void>;
   /** Host path of a relative path inside the user's home. */
@@ -124,17 +153,67 @@ export function ownTree(path: string, uid: number, maxDepth = Infinity): void {
   if (stat.isDirectory() && maxDepth > 0) for (const entry of readdirSync(path)) ownTree(join(path, entry), uid, maxDepth - 1);
 }
 
-/** mkdir -p inside a mounted home, creating every missing segment owned by the user. */
+/**
+ * Create one directory under `home` owned by `uid`, without letting a swapped parent redirect root: the new directory is
+ * opened with O_NOFOLLOW and proven (on the descriptor) to live inside the real home before it is chowned.
+ */
+export function mkdirOwnedSegment(home: string, path: string, uid: number, mode = 0o777): void {
+  mkdirSync(path, { mode });
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY);
+    let inside = true;
+    try {
+      const actual = realpathSync(`/proc/self/fd/${fd}`);
+      const rel = relative(realpathSync(home), actual);
+      inside = rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !rel.startsWith("/");
+    } catch { /* no /proc: lstat checks above are all we have */ }
+    if (!inside) throw new Error("path escapes the home directory");
+    fchownSync(fd, uid, uid);
+  } catch (error) {
+    try { rmdirSync(path); } catch { /* best effort */ }
+    throw error;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** mkdir -p inside a mounted home, creating every missing segment owned by the user. Symlinked segments are rejected, never followed. */
 export function mkdirOwned(root: string, dir: string, uid: number): void {
   const rel = relative(root, dir);
   if (rel.startsWith("..")) throw new Error("path escapes the home directory");
   let current = root;
   for (const part of rel.split(sep).filter(Boolean)) {
     current = join(current, part);
-    if (!existsSync(current)) {
-      mkdirSync(current);
-      lchownSync(current, uid, uid);
+    let info;
+    try { info = lstatSync(current); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      mkdirOwnedSegment(root, current, uid);
+      continue;
     }
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("path crosses a symlink or non-directory in the home directory");
+  }
+}
+
+/**
+ * Write a file inside a mounted home as root without ever following a planted symlink: a fresh O_EXCL|O_NOFOLLOW temp file
+ * (mode set with fchmod on the descriptor, owner with fchown) is renamed over the destination, which replaces a symlink itself.
+ */
+export function writeFileOwned(path: string, data: string | Buffer, uid: number, mode = 0o600): void {
+  const temp = join(dirname(path), `.${randomBytes(8).toString("hex")}.tmp`);
+  const fd = openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode);
+  try {
+    try {
+      writeSync(fd, typeof data === "string" ? Buffer.from(data) : data);
+      fchmodSync(fd, mode);
+      fchownSync(fd, uid, uid);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, path);
+  } catch (error) {
+    try { rmSync(temp, { force: true }); } catch { /* best effort */ }
+    throw error;
   }
 }
 
@@ -325,14 +404,15 @@ export class LinuxShardDriver implements ShardDriver {
    * Create the user's /tmp (sticky 1777, owned by their uid) and prune entries unused for TMP_MAX_AGE_MS. Called when the home
    * is (re)mounted; a shard is only locked with no live session, so no session of this user is running during the prune.
    */
-  private prepareTmp(handle: ShardHandle): void {
+  private prepareTmp(handle: ShardHandle): Promise<number | void> {
     const dir = this.tmpPath(handle);
     try {
       mkdirOwned(handle.mountPath, dir, handle.uid);
       chmodSync(dir, 0o1777);
-      pruneOldEntries(dir, TMP_MAX_AGE_MS);
+      return pruneOldEntriesAsync(dir, TMP_MAX_AGE_MS).catch((error) => log.warn("shard.tmp_prune_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }));
     } catch (error) {
       log.warn("shard.tmp_prepare_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+      return Promise.resolve();
     }
   }
 
@@ -349,6 +429,27 @@ export class LinuxShardDriver implements ShardDriver {
   }
 
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {
+    const launch = this.sandboxLaunch(handle, spec);
+    return spawnPty(launch.file, launch.args, {
+      name: "xterm-256color",
+      cols: spec.cols,
+      rows: spec.rows,
+      cwd: "/",
+      env: { ...spec.env, HOME: SANDBOX_HOME, USER: "agent", LOGNAME: "agent" },
+    });
+  }
+
+  spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess {
+    const launch = this.sandboxLaunch(handle, spec);
+    return spawn(launch.file, launch.args, {
+      cwd: "/",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...spec.env, HOME: SANDBOX_HOME, USER: "agent", LOGNAME: "agent" },
+      windowsHide: true,
+    });
+  }
+
+  private sandboxLaunch(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): { file: string; args: string[] } {
     const { uid } = handle;
     const home = handle.mountPath;
     // Never silently run offline or in the host network: a namespace whose pasta was given up on fails the launch.
@@ -415,14 +516,7 @@ export class LinuxShardDriver implements ShardDriver {
     // containers) and run everything under it as "unpriv_bwrap", which denies CAP_SETUID/SETGID/CHOWN, so
     // setpriv could never drop to the per-user uid. The image ships an identical copy at /usr/local/bin/floq-bwrap.
     // With a per-user netns the launch is wrapped in `nsenter --net=<path> --`; without one this is the identity.
-    const launch = wrapLaunch(process.env.FLOQ_BWRAP_BIN?.trim() || "floq-bwrap", args, handle.netns);
-    return spawnPty(launch.file, launch.args, {
-      name: "xterm-256color",
-      cols: spec.cols,
-      rows: spec.rows,
-      cwd: "/",
-      env: { ...spec.env, HOME: SANDBOX_HOME, USER: "agent", LOGNAME: "agent" },
-    });
+    return wrapLaunch(process.env.FLOQ_BWRAP_BIN?.trim() || "floq-bwrap", args, handle.netns);
   }
 
   async sleep(handle: ShardHandle): Promise<void> {
@@ -467,6 +561,12 @@ export class LocalShardDriver implements ShardDriver {
 
   claudeManagedDir(): null {
     return null;
+  }
+
+  spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess {
+    const cwd = this.hostPath(handle, spec.cwd);
+    mkdirSync(cwd, { recursive: true });
+    return spawn(spec.file, spec.args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: spec.env, windowsHide: true });
   }
 
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {

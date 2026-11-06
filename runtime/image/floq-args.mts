@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export type NamedArgs = Record<string, string | boolean>;
 export interface ScopeResult { scope?: "global" | "project"; projectId?: string; dryRun?: boolean }
-export interface AgentEntry { project?: { id: string | null; name: string; same: boolean }; role?: string | null; self?: boolean; name: string; id: string; provider: string; model?: string | null; state: string; lead?: boolean }
+export interface AgentEntry { project?: { id: string | null; name: string; same: boolean }; role?: string | null; self?: boolean; name: string; id: string; provider: string; model?: string | null; state: string; lead?: boolean; parentId?: string | null; status?: string; startedAt?: number | null; lastActivityAt?: number | null; lastLine?: string | null; pendingApprovals?: number; pendingDecisions?: number }
 export interface ModelEntry { id: string; label: string }
 export interface McpReview { name: string; type: "stdio" | "http"; summary: string; secrets?: { target: string; secret: string }[]; plaintext?: string[] }
 export interface McpServer { provider: string; name: string; transport: string; command?: string; urlHost?: string; usesSecrets?: boolean; secretNames?: string[]; protected?: boolean; source?: string }
@@ -12,7 +12,7 @@ export interface SkillSummary { provider: string; name: string; source: string; 
 export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
   const named: NamedArgs = {};
-  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here", "consume"]);
+  const booleanFlags = new Set(["isolated", "global", "dry-run", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here", "consume", "once"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
       positional.push(args[i]);
@@ -330,4 +330,99 @@ export function abstractSocketProblems(listeners: { path: string; inode: string 
 /** Shell lines for `eval "$(floq display env)"`; values are fixed formats (":N", a /tmp path), quoted anyway. */
 export function displayEnvExports(display: string): string {
   return "export DISPLAY='" + display + "' XAUTHORITY='" + DISPLAY_PATHS.xauthority + "'";
+}
+
+// ---- floq top: pure rendering ----
+const TOP_ORDER = ["waiting-for-user", "working", "idle", "error", "stopped"];
+const TOP_GLYPH: Record<string, string> = { "waiting-for-user": "?", working: "*", idle: "-", error: "!", stopped: "x" };
+const TOP_COLOR: Record<string, string> = { "waiting-for-user": "33", working: "32", idle: "90", error: "31", stopped: "90" };
+
+/** Map the runtime status (+ pending counts) to the monitor vocabulary. */
+export function topState(a: AgentEntry): string {
+  if ((a.pendingApprovals ?? 0) + (a.pendingDecisions ?? 0) > 0 || a.status === "waiting-for-input") return "waiting-for-user";
+  if (a.status === "working") return "working";
+  if (a.status === "idle") return "idle";
+  if (a.state === "failed") return "error";
+  if (a.status === "exited" || a.status === "asleep" || a.state === "exited" || a.state === "sleeping") return "stopped";
+  return a.status ?? "idle";
+}
+
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
+  return Math.floor(s / 86400) + "d" + String(Math.floor((s % 86400) / 3600)).padStart(2, "0") + "h";
+}
+
+function clip(text: string, width: number): string {
+  const t = text.replace(/[\u0000-\u001f\u007f]/g, " ");
+  return t.length <= width ? t : width <= 1 ? t.slice(0, Math.max(0, width)) : t.slice(0, width - 1) + "\u2026";
+}
+
+/** Order: waiting-for-user first, then working, then idle; subagents indented under their recruiter. */
+export function topRows(agents: AgentEntry[]): { agent: AgentEntry; state: string; depth: number }[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const rank = (a: AgentEntry) => { const i = TOP_ORDER.indexOf(topState(a)); return i < 0 ? TOP_ORDER.length : i; };
+  const cmp = (a: AgentEntry, b: AgentEntry) => rank(a) - rank(b) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+  const children = new Map<string, AgentEntry[]>();
+  const roots: AgentEntry[] = [];
+  for (const a of agents) {
+    if (a.parentId && byId.has(a.parentId) && a.parentId !== a.id) children.set(a.parentId, [...(children.get(a.parentId) ?? []), a]);
+    else roots.push(a);
+  }
+  const out: { agent: AgentEntry; state: string; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (a: AgentEntry, depth: number) => {
+    if (seen.has(a.id)) return;
+    seen.add(a.id);
+    out.push({ agent: a, state: topState(a), depth });
+    for (const c of (children.get(a.id) ?? []).sort(cmp)) walk(c, depth + 1);
+  };
+  // A family sorts by its best-ranked member so a waiting subagent surfaces its orchestrator.
+  const best = (a: AgentEntry): number => Math.min(rank(a), ...(children.get(a.id) ?? []).filter((c) => c !== a).map(best));
+  for (const r of roots.sort((a, b) => best(a) - best(b) || cmp(a, b))) walk(r, 0);
+  for (const a of agents) walk(a, 0); // cycles: never drop an agent
+  return out;
+}
+
+export interface TopOptions { width: number; color: boolean; now: number }
+
+/** Render the whole screen as lines, each at most `width` visible characters. */
+export function renderTop(agents: AgentEntry[], opts: TopOptions): string[] {
+  const width = Math.max(20, opts.width);
+  const rows = topRows(agents);
+  const counts: Record<string, number> = {};
+  let approvals = 0, decisions = 0;
+  for (const r of rows) { counts[r.state] = (counts[r.state] ?? 0) + 1; approvals += r.agent.pendingApprovals ?? 0; decisions += r.agent.pendingDecisions ?? 0; }
+  const paint = (code: string, text: string) => (opts.color ? "\u001b[" + code + "m" + text + "\u001b[0m" : text);
+  const summary = rows.length + " agents  " + TOP_ORDER.map((k) => k + " " + (counts[k] ?? 0)).join("  ") + "  pending approvals " + approvals + " decisions " + decisions;
+  const lines = [paint("1", clip(summary, width))];
+  const header = ["STATE", "NAME", "PROJECT", "ROLE", "PROVIDER/MODEL", "AGE", "ACTIVITY"];
+  const table = rows.map(({ agent: a, state, depth }) => {
+    const idle = a.lastActivityAt ? formatDuration(opts.now - a.lastActivityAt) : "-";
+    const up = a.startedAt ? formatDuration(opts.now - a.startedAt) : "-";
+    const pend = (a.pendingApprovals ?? 0) + (a.pendingDecisions ?? 0);
+    return {
+      state,
+      cells: [
+        TOP_GLYPH[state] + " " + state,
+        (a.self ? "* " : "") + "  ".repeat(depth) + (depth ? "\u2514 " : "") + a.name,
+        a.project?.name ?? "-",
+        a.role ?? "-",
+        a.provider + "/" + (a.model ?? "default"),
+        state === "working" ? "up " + up : state === "stopped" ? "-" : "idle " + idle,
+        (pend ? "[" + pend + " pending] " : "") + (a.lastLine ?? ""),
+      ],
+    };
+  });
+  const widths = header.map((h, i) => Math.min(i === 6 ? 0 : 28, Math.max(h.length, ...table.map((r) => r.cells[i].length))));
+  const fmt = (cells: string[]) => cells.map((c, i) => (i === 6 ? c : clip(c, widths[i]).padEnd(widths[i]))).join("  ");
+  lines.push(paint("4", clip(fmt(header), width).padEnd(Math.min(width, fmt(header).length))));
+  for (const r of table) {
+    const plain = clip(fmt(r.cells), width);
+    lines.push(opts.color ? paint(TOP_COLOR[r.state] ?? "0", plain) : plain);
+  }
+  if (!rows.length) lines.push("no matching agents");
+  return lines;
 }

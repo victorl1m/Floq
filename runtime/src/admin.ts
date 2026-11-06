@@ -27,16 +27,16 @@ export function requireRoleValue(value: unknown): Role {
 }
 
 /**
- * Bootstrap only: when no administrator exists yet, promote the configured bootstrap email, or failing that the
- * earliest registered user. After that the database is the single source of truth.
+ * Bootstrap only: when no administrator exists yet, promote the configured bootstrap email (or, when none is
+ * configured, the earliest registered user). After that the database is the single source of truth.
  */
 async function ensureAdminExists(db: Db, bootstrapEmail: string | null): Promise<void> {
   const existing = await db.query("SELECT 1 FROM collaboration.user_roles WHERE role = 'admin' LIMIT 1");
   if (existing.rowCount) return;
-  const picked = await db.query(
-    'SELECT id FROM public."user" ORDER BY (lower(email) = $1) DESC, "createdAt" ASC LIMIT 1',
-    [bootstrapEmail ?? ""],
-  );
+  // With a configured bootstrap email only that account may become the first admin: never the earliest registrant.
+  const picked = bootstrapEmail
+    ? await db.query('SELECT id FROM public."user" WHERE lower(email) = $1 LIMIT 1', [bootstrapEmail.toLowerCase()])
+    : await db.query('SELECT id FROM public."user" ORDER BY "createdAt" ASC LIMIT 1');
   const id = picked.rows[0]?.id as string | undefined;
   if (!id) return;
   const res = await db.query(

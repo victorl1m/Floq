@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { HttpError, badRequest, notFound } from "./errors.js";
+import { HttpError, badRequest, notFound, tooMany } from "./errors.js";
 import type { SettingsStore } from "./settings.js";
 
 // What `gh auth login` requests.
 const SCOPE = "repo read:org workflow gist";
 const MAX_PENDING_PER_USER = 3;
+/** Device-flow starts per user inside the window: one tenant must not burn the runtime IP's GitHub rate limit for everyone. */
+const MAX_STARTS_PER_WINDOW = 5;
+const START_WINDOW_MS = 10 * 60_000;
 
 interface PendingFlow {
   userId: string;
@@ -24,6 +27,7 @@ export type PollResult =
 /** GitHub OAuth device flow (the `github.com/login/device` experience). */
 export class GithubLinker {
   private readonly flows = new Map<string, PendingFlow>();
+  private readonly starts = new Map<string, number[]>();
 
   constructor(
     private readonly config: Config,
@@ -55,6 +59,15 @@ export class GithubLinker {
 
   async start(userId: string) {
     this.prune();
+    const now = Date.now();
+    const recent = (this.starts.get(userId) ?? []).filter((t) => now - t < START_WINDOW_MS);
+    if (recent.length >= MAX_STARTS_PER_WINDOW) {
+      this.starts.set(userId, recent);
+      throw tooMany("Too many GitHub sign-in attempts. Wait a few minutes and try again.");
+    }
+    recent.push(now);
+    this.starts.set(userId, recent);
+    if (this.starts.size > 1000) for (const [id, times] of this.starts) if (!times.some((t) => now - t < START_WINDOW_MS)) this.starts.delete(id);
     const mine = [...this.flows.entries()].filter(([, f]) => f.userId === userId);
     if (mine.length >= MAX_PENDING_PER_USER) this.flows.delete(mine[0][0]);
 

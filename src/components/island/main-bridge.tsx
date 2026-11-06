@@ -4,14 +4,14 @@ import { listen } from '@tauri-apps/api/event';
 import { useRuntime } from '@/lib/runtime/store';
 import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/approvals';
 import { useAttentionState } from '@/lib/attention';
-import { deferEmptySnapshot, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { capAttention, deferEmptySnapshot, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
   const { items: approvals } = useApprovalState();
   const { decisions, connected } = useAttentionState();
-  const [ready, setReady] = useState(false);
-  const [enabled, setEnabled] = useState(false);
+  const [ready, setReady] = useState(true);
+  const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState<string[]>([]);
   const [error, setError] = useState<string>();
   const inflight = useRef(new Set<string>());
@@ -23,7 +23,7 @@ export function useIslandBridge() {
     ...approvals.filter(a => a.state === 'pending').map(a => ({kind:'approval' as const, id:a.approval.id, createdAt:a.approval.createdAt, approval:a.approval})),
     ...decisions.map(d => ({kind:'decision' as const, id:d.id, createdAt:d.createdAt, decision:d})),
   ]);
-  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected, items: queue, busy, error };
+  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected, items: capAttention(queue), busy, error };
   const contentKey = JSON.stringify(candidate, (key, value) => key === 'revision' ? undefined : value);
   const publish = () => invoke('island_publish', { snapshot: latest.current });
   const publishRef = useRef(publish); publishRef.current = publish;
@@ -47,7 +47,7 @@ export function useIslandBridge() {
     let disposed = false;
     const update = (event: Event) => setEnabled(!!(event as CustomEvent<{islandEnabled:boolean}>).detail.islandEnabled);
     window.addEventListener('floq:desktop-preferences', update);
-    void invoke<{islandEnabled:boolean}>('get_desktop_preferences').then(p => { if (!disposed) setEnabled(p.islandEnabled); }).catch(() => setEnabled(false));
+    void invoke<{islandEnabled:boolean}>('get_desktop_preferences').then(p => { if (!disposed) setEnabled(p.islandEnabled); }).catch(() => setEnabled(true));
     return () => { disposed = true; window.removeEventListener('floq:desktop-preferences', update); };
   }, []);
   useEffect(() => {

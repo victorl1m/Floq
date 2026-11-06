@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { spawn as spawnChild } from "node:child_process";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type pg from "pg";
@@ -172,11 +172,48 @@ function within(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function readBoundedRegularFile(path: string, maxBytes: number): string | null {
+const HAS_PROC_FD = existsSync("/proc/self/fd");
+
+/**
+ * Proves, on an already-open descriptor, that it lives inside `root`. Path checks (lstat/realpath) before an open are a
+ * race: the sandboxed agent controls the tree and can swap a checked intermediate directory for a symlink between the
+ * check and the open. The kernel's view of the descriptor cannot be raced.
+ */
+function descriptorWithin(fd: number, root: string, path: string): boolean {
+  let actual: string | null = null;
+  if (HAS_PROC_FD) { try { actual = realpathSync(`/proc/self/fd/${fd}`).replace(/ \(deleted\)$/, ""); } catch { return false; } }
+  if (actual === null) {
+    // No /proc (dev hosts): the path must still resolve to the very inode that was opened.
+    try {
+      const resolved = realpathSync(path);
+      const opened = fstatSync(fd);
+      const current = statSync(resolved);
+      if (opened.dev !== current.dev || opened.ino !== current.ino) return false;
+      actual = resolved;
+    } catch { return false; }
+  }
+  return within(root, actual);
+}
+
+/** Opens `path` read-only without following a final symlink, then verifies the descriptor stays inside `root`. */
+function openVerified(root: string, path: string, flags: number): number {
+  const fd = openSync(path, flags | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  if (!descriptorWithin(fd, realpathSync(root), path)) { closeSync(fd); throw new Error("UNSAFE"); }
+  return fd;
+}
+
+/** Lists a directory through a verified descriptor, so a swapped intermediate directory cannot redirect the listing. */
+function readDirVerified(root: string, dir: string): Dirent[] {
+  const fd = openVerified(root, dir, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+  try { return readdirSync(HAS_PROC_FD ? `/proc/self/fd/${fd}` : dir, { withFileTypes: true }); }
+  finally { closeSync(fd); }
+}
+
+function readBoundedRegularFile(path: string, maxBytes: number, root?: string): string | null {
   let fd: number | undefined;
   try {
     if (lstatSync(path).isSymbolicLink()) return null;
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    fd = root ? openVerified(root, path, constants.O_RDONLY) : openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > maxBytes) return null;
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
@@ -197,7 +234,7 @@ export function scanSkills(base: string, trustedRoot: string, source: SkillInfo[
     const allowed = realpathSync(trustedRoot);
     const root = realpathSync(base);
     if (!within(allowed, root) || !lstatSync(base).isDirectory()) return [];
-    const entries = readdirSync(root).slice(0, MAX_ENTRIES);
+    const entries = readDirVerified(allowed, root).map((d) => d.name).slice(0, MAX_ENTRIES);
     const found: SkillInfo[] = [];
     for (const entry of entries) {
       const dir = join(root, entry);
@@ -207,7 +244,7 @@ export function scanSkills(base: string, trustedRoot: string, source: SkillInfo[
         const path = join(dir, "SKILL.md");
         const actualFile = realpathSync(path);
         if (!within(root, actualFile) || !within(allowed, actualFile) || !lstatSync(path).isFile() || lstatSync(path).size > MAX_LISTED_SKILL_BYTES) continue;
-        const raw = readBoundedRegularFile(actualFile, MAX_LISTED_SKILL_BYTES);
+        const raw = readBoundedRegularFile(actualFile, MAX_LISTED_SKILL_BYTES, allowed);
         if (raw === null) continue;
         const info = parseSkillMetadata(raw);
         if (info) found.push({ ...info, source, scope, provider, location: `${location}/${entry}` });
@@ -268,7 +305,7 @@ export function readSkillFolder(trustedRoot: string, location: string, path?: st
   if (path === undefined) {
     const files: SkillFileEntry[] = [];
     const walk = (current: string, prefix: string, depth: number) => {
-      for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const entry of readDirVerified(trustedRoot, current).sort((a, b) => a.name.localeCompare(b.name))) {
         if (files.length >= MAX_VIEW_FILES) return;
         if (entry.isSymbolicLink() || /[\u0000-\u001f\u007f\\:]/.test(entry.name)) continue;
         const full = join(current, entry.name);
@@ -285,7 +322,7 @@ export function readSkillFolder(trustedRoot: string, location: string, path?: st
     const parent = walkRealDirectory(dir, parts.slice(0, -1));
     const file = join(parent, parts[parts.length - 1]);
     if (lstatSync(file).isSymbolicLink()) throw notFound("File is unavailable");
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    fd = openVerified(trustedRoot, file, constants.O_RDONLY);
     const stat = fstatSync(fd);
     if (!stat.isFile() || realpathSync(file) !== file) throw notFound("File is unavailable");
     if (stat.size > MAX_VIEW_FILE_BYTES) throw new HttpError(413, "file_too_large", "File is too large to preview");
@@ -905,7 +942,7 @@ export class SkillsService {
       }
       const stat = lstatSync(absolute);
       if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_MCP_CONFIG_BYTES || realpathSync(absolute) !== absolute) return null;
-      const fd = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+      const fd = openVerified(root, absolute, constants.O_RDONLY);
       try {
         const opened = fstatSync(fd);
         if (!opened.isFile() || opened.size > MAX_MCP_CONFIG_BYTES) return null;

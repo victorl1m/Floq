@@ -283,7 +283,7 @@ function SidebarTrigger({
       aria-label={expanded ? "Hide navigation" : "Show navigation"}
       variant="ghost"
       size="icon-sm"
-      className={cn(className)}
+      className={cn("aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:bg-transparent dark:aria-expanded:hover:bg-foreground/10", className)}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()

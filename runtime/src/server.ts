@@ -11,7 +11,7 @@ import { loadSkillFromCatalog, previewCatalogSkill, searchSkillCatalog } from ".
 import type { CredentialBroker } from "./credentials.js";
 import { createBootstrapAdmin, setupAvailable, type Auth } from "./auth.js";
 import type { Config } from "./config.js";
-import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized } from "./errors.js";
+import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import type { SessionManager } from "./manager.js";
 import type { GithubLinker } from "./github.js";
@@ -20,7 +20,7 @@ import type { AgentLinks } from "./links.js";
 import type { CanvasNotes } from "./notes.js";
 import type { Keychain, Keychains } from "./keychains.js";
 import type { WiredContext } from "./wiredContext.js";
-import { selectableAgentModels, type Orchestrator } from "./orchestrator.js";
+import { selectableAgentModels, type Orchestrator, type PendingCounts } from "./orchestrator.js";
 import { buildSubagentInstruction, TOOL_SPECS, type SubagentService } from "./subagents.js";
 import type { PatchSecret, PutSecret, Vault } from "./vault.js";
 import { listProviders } from "./providers.js";
@@ -110,10 +110,20 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
   const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
+  // Client address for rate limits: the socket peer, unless FLOQ_TRUST_PROXY=true (a proxy we control appends to
+  // X-Forwarded-For; the rightmost hop is the one it added, earlier hops are client-controlled).
+  function clientIp(req: IncomingMessage): string {
+    if (process.env.FLOQ_TRUST_PROXY === "true") {
+      const forwarded = req.headers["x-forwarded-for"];
+      const raw = Array.isArray(forwarded) ? forwarded[forwarded.length - 1] : forwarded;
+      const hop = raw?.split(",").pop()?.trim();
+      if (hop) return hop;
+    }
+    return req.socket.remoteAddress || "unknown";
+  }
+
   function rateLimitSetup(req: IncomingMessage): void {
-    const forwarded = req.headers["x-forwarded-for"];
-    const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const ip = raw?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    const ip = clientIp(req);
     const now = Date.now();
     for (const [key, hit] of setupHits) if (hit.resetAt <= now) setupHits.delete(key);
     const hit = setupHits.get(ip) ?? { count: 0, resetAt: now + 60_000 };
@@ -308,15 +318,56 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { secrets: (await vault.list(userId)).map((s) => ({ name: s.name, description: s.description })) });
         case "vault/reveal": {
           const names = Array.isArray(body.names) ? body.names.filter((n): n is string => typeof n === "string") : null;
+          // Bulk reveal never returns tool-only secrets and needs a lead. A named reveal of a tool-only secret
+          // (the `floq-vault run` path) also needs a lead; env-exposed secrets are already in the sandbox environment.
+          if (!names) {
+            await orchestrator.toolkitCaller(userId, sessionId, true);
+            return send(res, 200, { secrets: await vault.reveal(userId, null, "env", sessionId) });
+          }
+          const exposure = new Map((await vault.list(userId)).map((s) => [s.name, s.expose]));
+          if (names.some((n) => exposure.get(n) !== "env")) await orchestrator.toolkitCaller(userId, sessionId, true);
           return send(res, 200, { secrets: await vault.reveal(userId, names, null, sessionId) });
+        }
+        // `floq-vault run`: the runtime launches the command in the caller's sandbox with the secrets injected; the cleartext is never returned.
+        case "vault/run": {
+          const names = Array.isArray(body.names) ? body.names.filter((n): n is string => typeof n === "string") : null;
+          const argv = Array.isArray(body.argv) && body.argv.length > 0 && body.argv.length <= 512 && body.argv.every((a) => typeof a === "string" && a.length <= 32768 && !a.includes("\0")) ? (body.argv as string[]) : null;
+          if (!argv || argv[0] === "") throw badRequest("argv must be a non-empty list of strings", "invalid_argv");
+          if (names && (names.length > 100 || names.some((n) => !/^[A-Z][A-Z0-9_]{0,63}$/.test(n)))) throw badRequest("invalid secret names", "invalid_name");
+          // Same authorization as a reveal: a lead for anything beyond secrets already in the sandbox environment.
+          const exposure = new Map((await vault.list(userId)).map((s) => [s.name, s.expose]));
+          if (!names || names.some((n) => exposure.get(n) !== "env")) await orchestrator.toolkitCaller(userId, sessionId, true);
+          const handle = shards?.awakeHandle(userId);
+          if (!shards || !handle) throw unavailable("Your sandbox is not running", "sandbox_unavailable");
+          const given = body.env && typeof body.env === "object" && !Array.isArray(body.env) ? Object.entries(body.env as Record<string, unknown>) : [];
+          const env: Record<string, string> = {};
+          for (const [k, v] of given.slice(0, 512)) if (typeof v === "string" && v.length <= 32768 && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k) && !/^(FLOQ_AGENT_TOKEN|FLOQ_API_URL|LD_.*|NODE_OPTIONS)$/.test(k)) env[k] = v;
+          const home = shards.driver.homePath(handle);
+          let cwd = ".";
+          if (typeof body.cwd === "string" && (body.cwd === home || body.cwd.startsWith(home + "/"))) {
+            const rel = body.cwd.slice(home.length).replace(/^\/+/, "");
+            if (rel && !rel.split("/").some((p) => p === ".." || p.includes("\0"))) cwd = rel;
+          }
+          const result = await vault.run(userId, sessionId, names, (secrets) => shards.driver.spawnPipe(handle, { file: argv[0], args: argv.slice(1), env: { ...env, ...secrets }, cwd }));
+          return send(res, 200, result);
         }
         // Global vault secrets exposed as env (expose="env") for floq secret get/list; tool-only entries are never returned.
         case "secrets/global":
           return send(res, 200, { secrets: await vault.reveal(userId, null, "env", sessionId) });
         case "agents/list":
-          return send(res, 200, { agents: await orchestrator.list(userId, sessionId, { project: body.project, here: body.here === true }) });
+        {
+          const detail = body.detail === true;
+          const pending: PendingCounts = new Map();
+          if (detail) {
+            const bump = (id: string, key: "approvals" | "decisions") => pending.set(id, { approvals: 0, decisions: 0, ...pending.get(id), [key]: (pending.get(id)?.[key] ?? 0) + 1 });
+            for (const a of approvals.list(userId)) bump(a.requester.id, "approvals");
+            for (const d of decisions.list(userId)) bump(d.sessionId, "decisions");
+          }
+          return send(res, 200, { agents: await orchestrator.list(userId, sessionId, { project: body.project, here: body.here === true, detail, pending }) });
+        }
         case "projects/create": {
           if (method !== "POST") return send(res, 405, { error: { code: "method_not_allowed", message: "Use POST" } });
+          await orchestrator.toolkitCaller(userId, sessionId, true);
           const input = projectCreateInput(body);
           const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name);
           return send(res, 201, { project });
@@ -552,11 +603,13 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
           return send(res, 200, { ok: true });
         }
         case "notes/delete": {
+          await notes.requireAgentNoteAccess(userId, sessionId, body.name);
           const { sessionIds } = await notes.agentNoteDelete(userId, body.name);
           await touchSessions(sessionIds);
           return send(res, 200, { ok: true });
         }
         case "notes/write": {
+          await notes.requireAgentNoteAccess(userId, sessionId, body.name);
           const written = await orchestrator.noteWrite(userId, body.name, body.content, body.append === true);
           // Show the note on the writing agent's project canvas, wired to it. Never fail the write over the mirror.
           if (typeof body.name === "string") await notes.mirrorAgentNote(userId, sessionId, body.name).catch((e) => log.warn("note.mirror.failed", { userId, error: String(e) }));
@@ -571,13 +624,19 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     if (url.pathname.startsWith("/api/auth/")) {
       // Logging out puts the user's terminals and shard to sleep.
+      req.headers["x-forwarded-for"] = clientIp(req);
+      delete req.headers["x-real-ip"];
       let signingOut: string | null = null;
+      let signingOutSession = "";
       if (url.pathname === "/api/auth/sign-out") {
         const who = await authFor(req.headers).catch(() => null);
         signingOut = who?.userId ?? null;
+        signingOutSession = who?.authSessionId ?? "";
         if (who) { downloadLinks.revokeSession(who.authSessionId); downloadLinks.revokeUser(who.userId); davMounts.revokeSession(who.authSessionId); davMounts.revokeUser(who.userId); }
       }
       await authHandler(req, res);
+      if (signingOut) closeLivePeers((peer) => peer.authSessionId === signingOutSession || peer.userId === signingOut);
+      else if (req.method === "POST") void revalidatePeers();
       if (signingOut) {
         void manager.sleepUser(signingOut, "logout").catch((error) =>
           log.error("logout.sleep_failed", { userId: signingOut, error: String(error) }),
@@ -681,7 +740,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     }
 
     const organizationRoute = await routeOrganizations({ service: organizations, userId, method, pathname: url.pathname, readJson: () => readJson(req) });
-    if (organizationRoute) return send(res, organizationRoute.status, organizationRoute.body);
+    if (organizationRoute) {
+      if (method !== "GET") void revalidatePeers(); // removal / leave: drop board sockets of members that lost access
+      return send(res, organizationRoute.status, organizationRoute.body);
+    }
     const organizationMatch = /^\/v1\/organizations\/([\w-]+)\/(boards)$/.exec(url.pathname);
     if (organizationMatch) {
       const [, organizationId, action] = organizationMatch;
@@ -1224,15 +1286,51 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   // Large attachment uploads can take longer than Node's default 5 minute whole-request limit; headersTimeout still applies.
   server.requestTimeout = 0;
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
+  // Browsers cannot set headers on a WebSocket. The token may ride in the query string (legacy) or, preferably, as a
+// Sec-WebSocket-Protocol entry "floq.bearer.<token>" next to "floq.v1": URLs end up in logs and proxies, subprotocols do not.
+// Only "floq.v1" is ever echoed back, never the bearer entry.
+const wsToken = (req: IncomingMessage, url: URL): string | null => {
+  const offered = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((p) => p.trim());
+  const bearer = offered.find((p) => p.startsWith("floq.bearer."));
+  return (bearer ? bearer.slice("floq.bearer.".length) : "") || url.searchParams.get("token");
+};
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD, handleProtocols: (protocols) => (protocols.has("floq.v1") ? "floq.v1" : false) });
+  type LivePeer = { ws: WebSocket; userId: string; authSessionId: string; headers: IncomingMessage["headers"]; boardId?: string };
+  const livePeers = new Set<LivePeer>();
+  function closeLivePeers(match: (peer: LivePeer) => boolean): void {
+    for (const peer of livePeers) if (match(peer)) { try { peer.ws.close(1008, "Session ended"); } catch { /* already closed */ } livePeers.delete(peer); }
+  }
+  // Authorization is checked at upgrade only; re-run it so a revoked session or a removed org member loses open sockets.
+  let revalidating = false;
+  async function revalidatePeers(): Promise<void> {
+    if (revalidating) return;
+    revalidating = true;
+    try {
+      for (const peer of [...livePeers]) {
+        try {
+          const who = await authFor(peer.headers);
+          if (who.userId !== peer.userId) throw unauthorized();
+          if (peer.boardId) await tasks.requireBoard(peer.userId, peer.boardId);
+        } catch (error) {
+          if (error instanceof HttpError && (error.status === 401 || error.status === 404 || error.status === 403)) closeLivePeers((p) => p === peer);
+        }
+      }
+    } finally { revalidating = false; }
+  }
+  const revalidateTimer = setInterval(() => { void revalidatePeers(); }, 30_000);
+  revalidateTimer.unref();
   type TaskPeer = { ws: WebSocket; boardId: string; userId: string; name: string; x: number; y: number; activeAt: number; sentAt: number; cursorVisible: boolean };
   const taskPeers = new Set<TaskPeer>();
   async function broadcastTaskBoard(boardId: string): Promise<void> {
     const viewers = [...taskPeers].filter((peer) => peer.boardId === boardId && peer.ws.readyState === peer.ws.OPEN);
     if (!viewers.length) return;
-    const board = await tasks.board(viewers[0].userId, boardId);
-    const frame = JSON.stringify({ type: "board", board });
-    for (const peer of viewers) peer.ws.send(frame);
+    // Per-peer authorization: a removed member never receives another viewer's copy of the board.
+    for (const peer of viewers) {
+      try {
+        const board = await tasks.board(peer.userId, boardId);
+        if (peer.ws.readyState === peer.ws.OPEN) peer.ws.send(JSON.stringify({ type: "board", board }));
+      } catch { try { peer.ws.close(1008, "Access revoked"); } catch { /* already closed */ } }
+    }
   }
   const expireTaskCursors = setInterval(() => {
     const now = Date.now();
@@ -1257,24 +1355,27 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       const url = new URL(req.url ?? "/", "http://runtime");
       if (url.pathname === "/v1/tasks/realtime") {
         if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
-        const token = url.searchParams.get("token");
+        const token = wsToken(req, url);
         const boardId = url.searchParams.get("boardId");
         if (!token || !boardId) return reject(401, "Unauthorized");
         const headers = { ...req.headers, authorization: "Bearer " + token };
-        const userId = await userFor(headers);
+        const { userId, authSessionId } = await authFor(headers);
         const organizationId = await tasks.requireBoard(userId, boardId);
         const members = await tasks.members(userId, organizationId);
         const self = members.find((member) => member.id === userId);
-        wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Member"));
+        wss.handleUpgrade(req, socket, head, (ws) => attachTaskPeer(ws, boardId, userId, self?.name || self?.email || "Member", authSessionId, headers));
         return;
       }
       if (url.pathname === "/v1/events") {
         if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
-        const token = url.searchParams.get("token");
+        const token = wsToken(req, url);
         const headers = { ...req.headers };
         if (token) headers.authorization = "Bearer " + token;
-        const userId = await userFor(headers);
+        const { userId, authSessionId } = await authFor(headers);
         wss.handleUpgrade(req, socket, head, (ws) => {
+          const live: LivePeer = { ws, userId, authSessionId, headers };
+          livePeers.add(live);
+          ws.on("close", () => livePeers.delete(live));
           const off = links.hub.subscribe(userId, (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); });
           const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
@@ -1290,7 +1391,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (tunnel) {
         if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
         // Same auth as the terminal stream: bearer header, or ?token= where headers cannot be set.
-        const token = url.searchParams.get("token");
+        const token = wsToken(req, url);
         const headers = { ...req.headers };
         if (token) headers.authorization = "Bearer " + token;
         const userId = await userFor(headers);
@@ -1333,7 +1434,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (!match || match[2] !== "stream") return reject(404, "Not Found");
       if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
       // Browsers cannot set headers on WebSocket, so accept the bearer token as ?token=.
-      const token = url.searchParams.get("token");
+      const token = wsToken(req, url);
       const headers = { ...req.headers };
       if (token) headers.authorization = "Bearer " + token;
       const userId = await userFor(headers);
@@ -1345,7 +1446,10 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     }
   }
 
-  function attachTaskPeer(ws: WebSocket, boardId: string, userId: string, name: string): void {
+  function attachTaskPeer(ws: WebSocket, boardId: string, userId: string, name: string, authSessionId: string, headers: IncomingMessage["headers"]): void {
+    const live: LivePeer = { ws, userId, authSessionId, headers, boardId };
+    livePeers.add(live);
+    ws.on("close", () => livePeers.delete(live));
     const peer: TaskPeer = { ws, boardId, userId, name, x: 0, y: 0, activeAt: Date.now(), sentAt: 0, cursorVisible: true };
     taskPeers.add(peer);
     const send = (frame: unknown) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); };

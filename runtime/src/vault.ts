@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type pg from "pg";
 import type { Config } from "./config.js";
@@ -215,6 +216,46 @@ export class Vault {
     return out;
   }
 
+  /**
+   * Server-side `floq-vault run`: the command is launched by the runtime (in the caller's sandbox) with the secrets already in its
+   * environment, and only redacted, size-capped output goes back. The cleartext never travels to the agent process.
+   */
+  async run(
+    userId: string,
+    sessionId: string,
+    names: string[] | null,
+    launch: (secrets: Record<string, string>) => ChildProcess,
+    limits: { maxBytes?: number; timeoutMs?: number } = {},
+  ): Promise<{ code: number; stdout: string; stderr: string; truncated: boolean }> {
+    const secrets = await this.reveal(userId, names, null, sessionId);
+    if (names) {
+      const missing = names.filter((n) => !(n in secrets));
+      if (missing.length) throw notFound("Secret " + missing.join(", ") + " was not found");
+    }
+    const maxBytes = limits.maxBytes ?? 4 * 1024 * 1024;
+    const child = launch(secrets);
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let size = 0;
+    let truncated = false;
+    const collect = (sink: Buffer[]) => (chunk: Buffer) => {
+      if (size >= maxBytes) { truncated = true; return; }
+      const room = maxBytes - size;
+      const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
+      if (part.length < chunk.length) truncated = true;
+      size += part.length;
+      sink.push(part);
+    };
+    child.stdout?.on("data", collect(out));
+    child.stderr?.on("data", collect(err));
+    const timer = setTimeout(() => child.kill("SIGKILL"), limits.timeoutMs ?? 10 * 60_000);
+    const code = await new Promise<number>((resolve) => {
+      child.on("error", (e) => { err.push(Buffer.from("floq-vault: " + e.message + "\n")); resolve(127); });
+      child.on("close", (c, signal) => resolve(c ?? (signal ? 1 : 0)));
+    }).finally(() => clearTimeout(timer));
+    return { code, stdout: scrubSecrets(Buffer.concat(out).toString("utf8"), secrets), stderr: scrubSecrets(Buffer.concat(err).toString("utf8"), secrets), truncated };
+  }
+
   private async audit(userId: string, sessionId: string | null, name: string, action: string): Promise<void> {
     // Never log values, only which secret was touched.
     await this.pool
@@ -259,4 +300,10 @@ export class Vault {
     scope.hits.push(now);
     return scope;
   }
+}
+
+/** Replaces every secret value (4+ chars, longest first) with [REDACTED]. */
+export function scrubSecrets(text: string, secrets: Record<string, string>): string {
+  for (const value of Object.values(secrets).filter((v) => v.length >= 4).sort((a, b) => b.length - a.length)) text = text.split(value).join("[REDACTED]");
+  return text;
 }

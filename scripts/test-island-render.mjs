@@ -17,7 +17,7 @@ test('renders pill, approval card and decision card states', async () => {
     assert.match(card, /island-queue/);
     assert.match(card, /Needs your OK/);
     assert.match(card, /aria-label="Decline"/);
-    assert.match(card, /island-expiry/);
+    assert.doesNotMatch(card, /island-expiry/); // requests no longer expire, so no countdown ring
     assert.match(card, /Accept/);
     assert.match(render([decision], true), /Option/);
     assert.match(render([decision], true), /Open terminal/);
