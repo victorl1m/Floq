@@ -57,7 +57,7 @@ import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
-import { followBranchChange } from "@/lib/branch-tags";
+import { branchChangeToFollow, followBranchChange } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
@@ -737,9 +737,10 @@ function AgentCanvas() {
     if (!activeProjectId || !groundWorkspace || !currentBranch) return;
     const last = lastBranchRef.current;
     lastBranchRef.current = { workspaceId: groundWorkspace.id, branch: currentBranch };
-    if (!last || last.workspaceId !== groundWorkspace.id || last.branch === currentBranch || switchingRef.current) return;
+    const change = branchChangeToFollow({ last, workspaceId: groundWorkspace.id, currentBranch, switching: switchingRef.current });
+    if (!change) return;
     const ids = sessionsForWorkspace(activeProjectId, groundWorkspace, sessionsRef.current.filter((session) => session.projectId === activeProjectId)).map((session) => session.id);
-    writeBranchTags(activeProjectId, (tags) => followBranchChange(tags, ids, last.branch, currentBranch));
+    writeBranchTags(activeProjectId, (tags) => followBranchChange(tags, ids, change.from, change.to));
   }, [activeProjectId, groundWorkspace, currentBranch, writeBranchTags]);
 
   // Branches held by other worktrees cannot be checked out in the main checkout.
@@ -785,6 +786,10 @@ function AgentCanvas() {
         throw error;
       }
       await refreshProjects(true);
+      // The effect above runs after this continuation (switchingRef is already false by then), so record the target as
+      // already observed: the switcher's own switch must never look like an external checkout. Set only after a
+      // successful switch + refresh, so a stale poll cannot look like a reverse checkout.
+      lastBranchRef.current = { workspaceId: groundWorkspace.id, branch: target };
     } catch (error) {
       toast.error(`Could not switch to ${target}`, { description: errorMessage(error) });
       switchingRef.current = false;

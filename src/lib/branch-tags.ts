@@ -23,3 +23,20 @@ export function followBranchChange(
   }
   return next;
 }
+
+/**
+ * Decides whether the canvas must retag sessions after the ground workspace's branch was observed.
+ * `last` is the previously observed {workspaceId, branch}. Returns {from,to} only for an EXTERNAL checkout
+ * (an agent ran `git checkout -b`, etc.): never on first sight, for another workspace, unchanged branch, or
+ * while/after the switcher itself switched (it records the target in `last` so this returns null).
+ */
+export function branchChangeToFollow(input: {
+  last: { workspaceId: string; branch: string } | null;
+  workspaceId: string;
+  currentBranch: string;
+  switching: boolean;
+}): { from: string; to: string } | null {
+  const { last, workspaceId, currentBranch, switching } = input;
+  if (!last || last.workspaceId !== workspaceId || last.branch === currentBranch || switching) return null;
+  return { from: last.branch, to: currentBranch };
+}
