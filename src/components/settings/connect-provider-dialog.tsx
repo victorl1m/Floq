@@ -4,7 +4,7 @@ import { IconCheck, IconClipboard, IconCopy, IconExternalLink } from "@tabler/ic
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import ClaudeOAuthDialog from "./claude-oauth-dialog";
-import { AppDialog, CodeBox, ErrorBanner, Steps } from "@/components/ui/app-dialog";
+import { AppDialog, CodeBox, ErrorBanner, FlowStep } from "@/components/ui/app-dialog";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
 import { cn } from "cn";
@@ -213,7 +213,6 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
     }
 
     const BrandIcon = provider === "claude" ? IconBrandClaude : IconBrandCodex;
-    const step = connected ? 4 : promptSeen ? 3 : url ? 2 : 1;
     const failed = error !== null || stopped || loginFailed !== null || finishFailed;
     const lastLines = tail.current
         .split(/\r?\n/)
@@ -314,64 +313,60 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                     {NAME[provider]} is connected.
                 </p>
             ) : (
-                <>
+                <div className="flex flex-col gap-3">
                     {isCodex ? (
-                        <Steps
-                            steps={["Open the sign-in page", "Enter this code", "Approve"]}
-                            current={finishing ? 3 : opened ? 2 : 1}
-                        />
-                    ) : (
-                        <Steps steps={["Open the link", "Sign in", "Paste the code here if asked"]} current={step} />
-                    )}
-                    {isCodex && (
-                        <div className="flex flex-col gap-4 rounded-xl border border-border bg-card/40 p-5">
-                            {deviceCode ? (
-                                <CodeBox code={deviceCode} copied={copied} onCopy={() => void copyDeviceCode()} />
-                            ) : (
-                                <Skeleton className="mx-auto h-12 w-64" />
-                            )}
-                            <div className="flex flex-col items-center gap-2">
-                                <Button
-                                    disabled={!url}
-                                    onClick={() => {
-                                        if (!url) return;
-                                        setOpened(true);
-                                        if (deviceCode) void copyDeviceCode(true);
-                                        void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
-                                    }}
-                                >
-                                    <IconExternalLink />
-                                    Open sign-in page
-                                </Button>
-                                {expiresMin !== null && (
-                                    <p className="text-xs text-muted-foreground">The code expires in {expiresMin} min.</p>
+                        <>
+                            <FlowStep index={1} state={opened || finishing ? "done" : "active"} title="Your one-time code" hint="Enter this code on the sign-in page.">
+                                {deviceCode ? (
+                                    <CodeBox code={deviceCode} copied={copied} onCopy={() => void copyDeviceCode()} />
+                                ) : (
+                                    <Skeleton className="mx-auto h-12 w-64" />
                                 )}
-                                <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                                    <Spinner className="size-3" /> Waiting for you to approve in the browser...
-                                </p>
-                            </div>
-                        </div>
-                    )}
-                    {!isCodex && url ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button onClick={() => void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }))}>
-                                <IconExternalLink />
-                                Open sign-in page
-                            </Button>
-                            <Button variant="outline" size="icon" aria-label="Copy link" onClick={() => void copy()}>
-                                {copied ? <IconCheck /> : <IconCopy />}
-                            </Button>
-                        </div>
-                    ) : null}
-                    {!isCodex && (promptSeen || url) && (
-                        <div className="flex flex-col gap-2">
-                            <Label htmlFor="auth-code">Authorization code</Label>
-                            <div className="flex gap-2">
+                            </FlowStep>
+                            <FlowStep index={2} state={finishing ? "done" : opened ? "active" : deviceCode ? "active" : "idle"} title="Open the sign-in page and approve" hint={expiresMin !== null ? "The code expires in " + expiresMin + " min." : "Approve access in your browser."}>
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <Button
+                                        disabled={!url}
+                                        onClick={() => {
+                                            if (!url) return;
+                                            setOpened(true);
+                                            if (deviceCode) void copyDeviceCode(true);
+                                            void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }));
+                                        }}
+                                    >
+                                        <IconExternalLink />
+                                        Open sign-in page
+                                    </Button>
+                                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <Spinner className="size-3" /> Waiting for you to approve...
+                                    </p>
+                                </div>
+                            </FlowStep>
+                        </>
+                    ) : (
+                        <>
+                            <FlowStep index={1} state={url ? "done" : "active"} title="Open the sign-in link" hint="Sign in with your Claude account and approve access.">
+                                {url ? (
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Button onClick={() => void openExternal(url).catch((e) => toast.error("Could not open the browser", { description: errorMessage(e) }))}>
+                                            <IconExternalLink />
+                                            Open sign-in page
+                                        </Button>
+                                        <Button variant="outline" size="icon" aria-label="Copy link" onClick={() => void copy()}>
+                                            {copied ? <IconCheck /> : <IconCopy />}
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <Skeleton className="h-8 w-44" />
+                                )}
+                            </FlowStep>
+                            <FlowStep index={2} state={promptSeen || url ? "active" : "idle"} title="Paste the code if asked" hint="Copy the authorization code shown after you approve, then paste it here.">
+                                <Label htmlFor="auth-code" className="sr-only">Authorization code</Label>
                                 <Input
                                     id="auth-code"
                                     ref={codeInput}
                                     onPaste={onPasteCode}
-                                    className="font-mono"
+                                    className="h-10 w-full font-mono"
                                     autoComplete="off"
                                     spellCheck={false}
                                     placeholder="Paste the code from the sign-in page"
@@ -383,24 +378,22 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                                     }}
                                     onKeyDown={(e) => e.key === "Enter" && void submitCode()}
                                 />
-                                <Button variant="outline" onClick={() => void pasteFromClipboard()}>
-                                    <IconClipboard />
-                                    Paste
-                                </Button>
-                                <Button disabled={sending || !code.trim()} onClick={() => void submitCode()}>
-                                    {sending && <Spinner />}
-                                    Submit code
-                                </Button>
-                            </div>
-                            {codeError && <p className="text-xs text-destructive">{codeError}</p>}
-                        </div>
+                                {codeError && <p className="text-xs text-destructive">{codeError}</p>}
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                    <Button variant="outline" onClick={() => void pasteFromClipboard()}>
+                                        <IconClipboard />
+                                        Paste
+                                    </Button>
+                                    <Button disabled={sending || !code.trim()} onClick={() => void submitCode()}>
+                                        {sending && <Spinner />}
+                                        Submit code
+                                    </Button>
+                                </div>
+                            </FlowStep>
+                        </>
                     )}
                     {isCodex && (
-                        <Button variant="link" size="xs"
-                            type="button"
-                            className="self-start px-0 text-muted-foreground"
-                            onClick={() => setShowDetails((v) => !v)}
-                        >
+                        <Button variant="link" size="xs" type="button" className="self-start px-1 text-muted-foreground" onClick={() => setShowDetails((v) => !v)}>
                             {showDetails ? "Hide details" : "Show details"}
                         </Button>
                     )}
@@ -424,7 +417,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                             )}
                         </div>
                     </div>
-                </>
+                </div>
             )}
         </AppDialog>
     );

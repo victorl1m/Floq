@@ -59,7 +59,7 @@ function AppDialog({
         onEscapeKeyDown={block}
         onPointerDownOutside={block}
         onInteractOutside={block}
-        className={cn("flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0", SIZES[size], className)}
+        className={cn("app-dialog flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0", SIZES[size], className)}
       >
         <div className="flex shrink-0 items-start gap-3 border-b border-border px-6 py-5 pr-12">
           {icon && (
@@ -76,7 +76,7 @@ function AppDialog({
             )}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           {children}
         </div>
         {(footer || footerStart) && (
@@ -136,6 +136,50 @@ function Steps({ steps, current }: { steps: string[]; current: number }) {
   )
 }
 
+/** One numbered step of a sign-in flow: badge + title + hint, with the step's action underneath. */
+function FlowStep({
+  index,
+  state,
+  title,
+  hint,
+  children,
+}: {
+  index: number
+  state: "done" | "active" | "idle"
+  title: ReactNode
+  hint?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <section
+      data-state={state}
+      className={cn(
+        "flow-step flex gap-4 rounded-2xl border p-4 transition-colors",
+        state === "active" ? "border-primary/35 bg-primary/[0.06]" : "border-border/70 bg-card/40",
+        state === "idle" && "opacity-60"
+      )}
+    >
+      <span
+        className={cn(
+          "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+          state === "done" && "border-primary bg-primary text-primary-foreground",
+          state === "active" && "border-primary text-foreground",
+          state === "idle" && "border-border text-muted-foreground"
+        )}
+      >
+        {state === "done" ? <IconCheck className="size-3.5" /> : index}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-sm font-medium leading-6">{title}</h3>
+          {hint && <p className="text-xs leading-5 text-muted-foreground">{hint}</p>}
+        </div>
+        {children}
+      </div>
+    </section>
+  )
+}
+
 /** Large monospace code with per-character spacing and a copy button. */
 function CodeBox({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
   return (
@@ -178,4 +222,4 @@ function StatusPill({ ok, children }: { ok: boolean; children: ReactNode }) {
   )
 }
 
-export { AppDialog, ErrorBanner, Steps, CodeBox, StatusPill }
+export { AppDialog, ErrorBanner, FlowStep, Steps, CodeBox, StatusPill }
