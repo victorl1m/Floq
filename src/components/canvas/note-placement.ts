@@ -43,3 +43,40 @@ export function findFreeSpot(size: { w: number; h: number }, occupied: Rect[], a
   }
   return { x: snap(anchor.x + anchor.w + GAP), y: snap(anchor.y) };
 }
+
+export interface StackNote { id: string; w: number; h: number; kind?: string | null; title?: string | null }
+
+const KIND_ORDER: Record<string, number> = { system: 0, memory: 1 };
+const STACK_GAP = 24;
+const COLUMN_GAP = 40;
+/** A column wraps into the next one once it is taller than this. */
+const COLUMN_MAX_HEIGHT = 1500;
+
+/**
+ * Stacks notes into tidy vertical columns whose right edge sits one gap left of `left`, top-aligned at `top`.
+ * System notes come first, then memory, then plain notes (by title). Each note keeps its own size; a column
+ * is as wide as its widest note and notes in it share a left edge. Returns grid-snapped positions by note id.
+ */
+export function stackNotes(notes: readonly StackNote[], left: number, top: number): Record<string, { x: number; y: number }> {
+  const sorted = [...notes].sort((a, b) => (KIND_ORDER[a.kind ?? ""] ?? 2) - (KIND_ORDER[b.kind ?? ""] ?? 2) || (a.title ?? "").localeCompare(b.title ?? "") || a.id.localeCompare(b.id));
+  const columns: StackNote[][] = [];
+  let height = 0;
+  for (const note of sorted) {
+    const column = columns[columns.length - 1];
+    if (!column || (height > 0 && height + STACK_GAP + note.h > COLUMN_MAX_HEIGHT)) { columns.push([note]); height = note.h; }
+    else { column.push(note); height += STACK_GAP + note.h; }
+  }
+  const positions: Record<string, { x: number; y: number }> = {};
+  let right = left - COLUMN_GAP * 2;
+  for (const column of columns) {
+    const width = Math.max(...column.map((note) => note.w));
+    const x = snap(right - width);
+    let y = snap(top);
+    for (const note of column) {
+      positions[note.id] = { x, y };
+      y = snap(y + note.h + STACK_GAP);
+    }
+    right = x - COLUMN_GAP;
+  }
+  return positions;
+}
