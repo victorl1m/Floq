@@ -554,7 +554,8 @@ fn hover_tick(app: &tauri::AppHandle) {
     // marshal to the main thread, which may itself be waiting on this mutex
     // inside a sync command (that deadlock froze the whole app on Send).
     let (active, pinned, expanded, height, outside_since) = {
-        let Ok(state) = app.state::<IslandRuntime>().0.lock() else {
+        let runtime = app.state::<IslandRuntime>();
+        let Ok(state) = runtime.0.lock() else {
             return;
         };
         (
