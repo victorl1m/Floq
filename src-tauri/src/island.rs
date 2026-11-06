@@ -177,7 +177,7 @@ fn ease_out(progress: f64) -> f64 {
 
 fn corner_radius(height: u32, scale: f64, expanded: bool) -> f64 {
     if expanded {
-        (26.0 * scale).min(height as f64 / 2.0)
+        (34.0 * scale).min(height as f64 / 2.0)
     } else {
         height as f64 / 2.0
     }

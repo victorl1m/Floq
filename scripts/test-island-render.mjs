@@ -15,6 +15,10 @@ test('renders pill, approval card and decision card states', async () => {
     const card = render([approval, decision], true);
     assert.match(card, /Irreversible · affects production/);
     assert.match(card, /island-queue/);
+    assert.match(card, /Needs your OK/);
+    assert.match(card, /aria-label="Decline"/);
+    assert.match(card, /island-expiry/);
+    assert.match(card, /Accept/);
     assert.match(render([decision], true), /Option/);
     assert.match(render([decision], true), /Open terminal/);
   } finally { await server.close(); }
