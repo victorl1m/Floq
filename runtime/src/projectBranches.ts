@@ -34,13 +34,17 @@ export async function listProjectBranches(run: GitCommand): Promise<ProjectBranc
   return { currentBranch, branches };
 }
 
-export async function switchProjectBranch(run: GitCommand, branch: unknown): Promise<string> {
+/**
+ * Side-effect-free pre-flight: throws the same error `switchProjectBranch` would (invalid branch, dirty tree, branch held
+ * by another worktree) without touching the checkout. Returns whether a checkout is needed (false = already on it).
+ */
+export async function checkProjectBranchSwitch(run: GitCommand, branch: unknown): Promise<{ branch: string; needsSwitch: boolean }> {
   if (typeof branch !== "string" || !branch.trim() || branch.length > 250 || /[\u0000-\u001f\u007f]/.test(branch)) {
     throw badRequest("Choose a valid local branch.", "invalid_branch");
   }
   const [branches, currentBranch] = await Promise.all([readBranches(run), readCurrentBranch(run)]);
   if (!branches.includes(branch)) throw badRequest("That local branch is no longer available.", "invalid_branch");
-  if (branch === currentBranch) return branch;
+  if (branch === currentBranch) return { branch, needsSwitch: false };
 
   const status = requireSuccess(await run(["status", "--porcelain=v1", "--untracked-files=all"]), "check the working tree");
   if (status.length > 0) throw conflict("Commit or move your uncommitted and untracked changes before switching branches.", "project_worktree_dirty");
@@ -51,9 +55,15 @@ export async function switchProjectBranch(run: GitCommand, branch: unknown): Pro
     throw conflict("That branch is already checked out in another workspace.", "project_branch_in_use");
   }
 
-  const switched = await run(["switch", "--quiet", "--no-recurse-submodules", "--", branch]);
+  return { branch, needsSwitch: true };
+}
+
+export async function switchProjectBranch(run: GitCommand, branch: unknown): Promise<string> {
+  const checked = await checkProjectBranchSwitch(run, branch);
+  if (!checked.needsSwitch) return checked.branch;
+  const switched = await run(["switch", "--quiet", "--no-recurse-submodules", "--", checked.branch]);
   if (switched.exitCode !== 0) {
     throw conflict("Git could not switch branches. The working tree may have changed; review it and try again.", "project_branch_switch_failed");
   }
-  return branch;
+  return checked.branch;
 }
