@@ -471,7 +471,7 @@ pub fn island_publish(
         .map_err(|error| error.to_string())?;
     if active {
         island
-            .set_ignore_cursor_events(!expanded)
+            .set_ignore_cursor_events(false)
             .map_err(|error| error.to_string())?;
         if !was_active {
             apply_bounds(&island, expanded, height)?;
@@ -481,7 +481,7 @@ pub fn island_publish(
         }
     } else {
         cancel_animation(&runtime.1);
-        let _ = island.set_ignore_cursor_events(true);
+        let _ = island.set_ignore_cursor_events(false);
         // Let the frontend play its exit animation before the OS window goes away.
         let handle = app.clone();
         std::thread::spawn(move || {
@@ -532,7 +532,7 @@ pub fn set_enabled(
         .emit("island:snapshot", snapshot)
         .map_err(|error| error.to_string())?;
     window
-        .set_ignore_cursor_events(!expanded)
+        .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
     apply_bounds(&window, expanded, height)?;
     set_visible_without_activation(&window, true)
@@ -574,7 +574,7 @@ pub fn island_set_layout(
         previous
     };
     window
-        .set_ignore_cursor_events(!expanded)
+        .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
     diagnostic(
         window.app_handle(),
@@ -622,7 +622,7 @@ pub fn create_window(
     let _ = has_native_material;
     let window = builder.build()?;
     let _ = apply_bounds(&window, false, COLLAPSED_HEIGHT);
-    let _ = window.set_ignore_cursor_events(true);
+    let _ = window.set_ignore_cursor_events(false);
     Ok(window)
 }
 
@@ -745,7 +745,7 @@ fn hover_tick(app: &tauri::AppHandle) {
             state.expanded = now_expanded;
             state.outside_since = since;
         }
-        let _ = window.set_ignore_cursor_events(!now_expanded);
+        let _ = window.set_ignore_cursor_events(false);
         animate_bounds(
             window.clone(),
             app.state::<IslandRuntime>().1.clone(),

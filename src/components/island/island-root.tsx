@@ -16,6 +16,9 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const pulse = useRef(false);
   const [expanded, setExpanded] = useState(initialExpanded);
   const [pinned, setPinned] = useState(false);
+  const pinnedRef = useRef(false);
+  pinnedRef.current = pinned;
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [selected, setSelected] = useState<string>();
   const [answers, setAnswers] = useState<DecisionAnswer[]>([]);
   const [localError, setLocalError] = useState<string>();
@@ -116,7 +119,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const cycle = (delta: number) => { const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
   const answer = (questionId: string, optionIds: string[], text: string) => setAnswers(old => [...old.filter(a => a.questionId !== questionId), {questionId, optionIds, text}]);
   if (!displaySnapshot) return null;
-  return <div className={'island island-' + motion + ' ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+  return <div className={'island island-' + motion + ' ' + (expanded ? 'expanded' : 'collapsed')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div className="island-header island-pill"><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></div>
     {current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
       <div className="island-card-header">
