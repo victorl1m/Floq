@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitReview } from "../dist/gitReview.js";
+
+/** Stand-in for the sandbox driver: records every spawnPipe call (git must go through it, never a bare host spawn). */
+const pipeCalls = [];
+function spawnPipe(_handle, spec) {
+  pipeCalls.push(spec);
+  return spawn(spec.file, spec.args, { stdio: ["ignore", "pipe", "pipe"], env: spec.env });
+}
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -41,7 +48,8 @@ test("lists and reads staged, unstaged, renamed, untracked, binary and literal-p
 
   const fakeShards = {
     driver: {
-      name: "local",
+      name: "linux",
+      spawnPipe,
       hostPath: (_handle, relative) => join(home, ...relative.split("/")),
     },
     wake: async () => ({ userId: "user-1", uid: typeof process.getuid === "function" ? process.getuid() : 1000, mountPath: home }),
@@ -75,6 +83,14 @@ test("lists and reads staged, unstaged, renamed, untracked, binary and literal-p
   const rename = await review.diff("user-1", "session-1", "rename-to.txt");
   assert.match(rename.patch, /rename from rename-from\.txt/);
   assert.match(rename.patch, /rename to rename-to\.txt/);
+  // F1: every git call went through the sandbox driver with the hardening env, none through bare setpriv/host spawn.
+  assert.ok(pipeCalls.length > 5);
+  for (const call of pipeCalls) {
+    assert.equal(call.file, "git");
+    assert.equal(call.cwd, ".");
+    assert.equal(call.env.GIT_ATTR_NOSYSTEM, "1");
+    assert.ok(call.args.includes("core.hooksPath=/dev/null"));
+  }
 });
 
 test("rejects a Git common directory outside the user's shard", async (t) => {
@@ -88,7 +104,7 @@ test("rejects a Git common directory outside the user's shard", async (t) => {
   mkdirSync(repo);
   git(repo, "init", "-q", "--separate-git-dir", external);
   const fakeShards = {
-    driver: { name: "local", hostPath: (_handle, relative) => join(home, ...relative.split("/")) },
+    driver: { name: "linux", spawnPipe, hostPath: (_handle, relative) => join(home, ...relative.split("/")) },
     wake: async () => ({ userId: "user-1", uid: 1000, mountPath: home }),
   };
   const review = new GitReview({ get: async () => ({ cwd: "repo" }) }, fakeShards);

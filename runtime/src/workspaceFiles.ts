@@ -1,5 +1,5 @@
 import { constants as fsConstants, existsSync } from "node:fs";
-import { lstat, open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
+import { lstat, open, opendir, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -11,6 +11,7 @@ import { safeRelative } from "./shard.js";
 import type { ShardService } from "./shards.js";
 
 const LIST_LIMIT = 2_000;
+const LIST_SCAN_LIMIT = 50_000;
 const READ_LIMIT_BYTES = 512 * 1024;
 export const HIDDEN_NAMES = new Set([".git", "node_modules"]);
 export const ZIP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -131,36 +132,58 @@ export class WorkspaceFiles {
   async list(userId: string, sessionId: string, requested: unknown): Promise<FileListing> {
     const root = await this.root(userId, sessionId);
     const { rel, real } = await resolveInside(root, requested);
-    const info = await stat(real).catch(() => null);
-    if (!info?.isDirectory()) throw notFound("That folder is no longer available");
-    const dirents = await readdir(real, { withFileTypes: true }).catch(() => null);
-    if (!dirents) throw notFound("That folder is no longer available");
+    const realRoot = await realpath(root).catch(() => null);
+    if (!realRoot) throw notFound("The project folder is unavailable");
+    // Read through a verified descriptor: a swapped directory cannot redirect this root-run listing outside the workspace.
+    const dirHandle = await openWithin(realRoot, real, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY).catch(() => null);
+    if (!dirHandle) throw notFound("That folder is no longer available");
     const entries: FileEntry[] = [];
-    for (const dirent of dirents) {
-      if (HIDDEN_NAMES.has(dirent.name) || dirent.name.includes("\0")) continue;
-      let type: FileEntry["type"] | null = dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : null;
-      if (dirent.isSymbolicLink()) {
-        // Only show links that resolve to something inside the workspace.
-        const target = await realpath(join(real, dirent.name)).catch(() => null);
-        const targetInfo = target && isWithin(await realpath(root), target) ? await stat(target).catch(() => null) : null;
-        type = targetInfo?.isDirectory() ? "dir" : targetInfo?.isFile() ? "file" : null;
+    let truncated = false;
+    try {
+      const info = await dirHandle.stat();
+      if (!info.isDirectory()) throw notFound("That folder is no longer available");
+      const base = HAS_PROC_FD ? `/proc/self/fd/${dirHandle.fd}` : real;
+      const dir = await opendir(base).catch(() => null);
+      if (!dir) throw notFound("That folder is no longer available");
+      let scanned = 0;
+      try {
+        for await (const dirent of dir) {
+          // Cap both what is shown and what is scanned so a directory with millions of entries cannot stall the runtime.
+          if (++scanned > LIST_SCAN_LIMIT || entries.length > LIST_LIMIT) { truncated = true; break; }
+          if (HIDDEN_NAMES.has(dirent.name) || dirent.name.includes("\0")) continue;
+          let type: FileEntry["type"] | null = dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : null;
+          if (dirent.isSymbolicLink()) {
+            // Only show links that resolve to something inside the workspace, proven on a descriptor.
+            const linked = await openWithin(realRoot, join(base, dirent.name)).catch(() => null);
+            const targetInfo = linked ? await linked.stat().catch(() => null) : null;
+            await linked?.close().catch(() => {});
+            type = targetInfo?.isDirectory() ? "dir" : targetInfo?.isFile() ? "file" : null;
+          }
+          if (!type) continue;
+          entries.push({ name: dirent.name, path: rel ? `${rel}/${dirent.name}` : dirent.name, type });
+        }
+      } finally {
+        await dir.close().catch(() => {});
       }
-      if (!type) continue;
-      entries.push({ name: dirent.name, path: rel ? `${rel}/${dirent.name}` : dirent.name, type });
+    } finally {
+      await dirHandle.close().catch(() => {});
     }
     entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
-    return { path: rel, entries: entries.slice(0, LIST_LIMIT), truncated: entries.length > LIST_LIMIT };
+    return { path: rel, entries: entries.slice(0, LIST_LIMIT), truncated: truncated || entries.length > LIST_LIMIT };
   }
 
   async read(userId: string, sessionId: string, requested: unknown): Promise<FileContent> {
     const root = await this.root(userId, sessionId);
     const { rel, real } = await resolveInside(root, requested);
     if (!rel) throw badRequest("Choose a file to read", "invalid_file_path");
-    const info = await stat(real).catch(() => null);
-    if (!info?.isFile()) throw notFound("That file is no longer available");
-    if (info.size > READ_LIMIT_BYTES) return { path: rel, size: info.size, binary: false, tooLarge: true, content: "" };
-    const handle = await open(real, "r");
+    const realRoot = await realpath(root).catch(() => null);
+    if (!realRoot) throw notFound("The project folder is unavailable");
+    // Verified, non-blocking open: the type is checked on the handle, never on a path that could be swapped (or a FIFO).
+    const handle = await openWithin(realRoot, real, fsConstants.O_RDONLY);
     try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw notFound("That file is no longer available");
+      if (info.size > READ_LIMIT_BYTES) return { path: rel, size: info.size, binary: false, tooLarge: true, content: "" };
       const buffer = Buffer.alloc(Math.min(info.size, READ_LIMIT_BYTES));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       const data = buffer.subarray(0, bytesRead);
@@ -259,6 +282,7 @@ export class WorkspaceFiles {
         const child = join(base, name);
         if (dirent.isDirectory()) {
           wrote = true;
+          if (++budget.entries > ZIP_MAX_ENTRIES) throw badRequest("This folder is too large to download as a zip", "download_too_large");
           await this.zipWalk(realRoot, child, `${prefix}${name}/`, zip, budget, isAborted, track);
           continue;
         }

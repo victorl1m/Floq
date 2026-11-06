@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { bearer } from "better-auth/plugins";
+import { APIError } from "better-auth/api";
 import type pg from "pg";
 import type { Config } from "./config.js";
 import { log } from "./logger.js";
@@ -40,6 +41,19 @@ export function createAuth(config: Config, pool: pg.Pool) {
       useSecureCookies: config.authUrl.startsWith("https://"),
       defaultCookieAttributes: { httpOnly: true, sameSite: "none", secure: config.authUrl.startsWith("https://") },
       ipAddress: { ipAddressHeaders: ["x-forwarded-for", "x-real-ip"] },
+    },
+    // The bootstrap admin account is created only through /v1/setup/admin (direct insert, not this path): open signup
+    // must never let someone else claim that email.
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => {
+            if (config.bootstrapAdminEmail && String(user.email ?? "").trim().toLowerCase() === config.bootstrapAdminEmail.toLowerCase()) {
+              throw new APIError("FORBIDDEN", { message: "This email is reserved for setup" });
+            }
+          },
+        },
+      },
     },
     plugins: [bearer()],
   });

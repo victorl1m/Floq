@@ -236,7 +236,7 @@ test("prepareTmp creates <home>/.floq/tmp as sticky 1777 and prunes unused entri
     writeFileSync(join(dir, "keep"), "x");
     const past = new Date(Date.now() - TMP_MAX_AGE_MS - 3600_000);
     utimesSync(join(dir, "old"), past, past);
-    driver.prepareTmp(handle);
+    await driver.prepareTmp(handle);
     assert.equal(statSync(dir).mode & 0o7777, 0o1777);
     assert.equal(existsSync(join(dir, "old")), false);
     assert.equal(existsSync(join(dir, "keep")), true);

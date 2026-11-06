@@ -49,6 +49,11 @@ fn load_preferences(app: &tauri::AppHandle) -> Preferences {
         .ok()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|data| serde_json::from_slice(&data).ok())
+        .map(|mut preferences: Preferences| {
+            // The island is always on: a preference saved by an older build cannot hide it.
+            preferences.island_enabled = true;
+            preferences
+        })
         .unwrap_or_default()
 }
 
@@ -128,8 +133,9 @@ pub fn set_desktop_preference(
     match preference.as_str() {
         "keepRunningInBackground" => preferences.keep_running_in_background = enabled,
         "islandEnabled" => {
-            preferences.island_enabled = enabled;
-            island_enabled_change = Some(enabled);
+            // Always shown: the island can no longer be turned off.
+            preferences.island_enabled = true;
+            island_enabled_change = Some(true);
         }
         "launchAtLogin" => {
             #[cfg(windows)]

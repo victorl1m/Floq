@@ -353,8 +353,11 @@ test("app and agent project creation share validation and user-scoped manager cr
   assert.equal(agentProject.status, 201, agentProject.text);
   assert.deepEqual(h.manager.projectCreates[1], { userId: "other", profile: { userId: "other" }, gitUrl: "https://example.test/team/repo.git", name: "Imported" });
 
-  const invalid = await h.call("s-member", "projects/create", { name: "  " });
+  const invalid = await h.call("s-lead", "projects/create", { name: "  " });
   assert.equal(invalid.status, 400);
+  const nonLead = await h.call("s-member", "projects/create", { name: "Nope" });
+  assert.equal(nonLead.status, 403);
+  assert.equal(nonLead.json.error.code, "not_lead");
   const unauthorized = await h.call("s-member", "projects/create", { name: "Nope" }, "not-a-token");
   assert.equal(unauthorized.status, 401);
   assert.equal(h.manager.projectCreates.length, 2);
@@ -489,4 +492,25 @@ test("floq mcp add: vault references work, unknown ones and plain credentials ar
   assert.equal(member.status, 403);
   const cli = await runFloq(h, ["mcp", "list", "--global", "--provider", "claude"]);
   assert.match(cli.stdout, /claude\tpay\tstdio\tnpx\t\(uses vault secrets: STRIPE_KEY\)/);
+});
+
+test("vault run (server-side injection): non-lead is refused, bad argv is rejected, and no cleartext route result carries a secret (RA-03)", async (t) => {
+  const h = await harness(t);
+  const member = await h.call("s-member", "vault/run", { names: ["ANY_SECRET"], argv: ["true"] });
+  assert.equal(member.status, 403);
+  assert.equal(member.json.error.code, "not_lead");
+  const bad = await h.call("s-lead", "vault/run", { names: ["ANY_SECRET"], argv: [] });
+  assert.equal(bad.status, 400);
+  const noSandbox = await h.call("s-lead", "vault/run", { names: [], argv: ["true"] });
+  assert.equal(noSandbox.status, 503);
+});
+
+test("vault reveal: non-lead agents cannot bulk reveal or read tool-only secrets (RA-03)", async (t) => {
+  const h = await harness(t);
+  const bulk = await h.call("s-member", "vault/reveal", {});
+  assert.equal(bulk.status, 403);
+  assert.equal(bulk.json.error.code, "not_lead");
+  const named = await h.call("s-member", "vault/reveal", { names: ["ANY_SECRET"] });
+  assert.equal(named.status, 403);
+  assert.equal(named.json.error.code, "not_lead");
 });

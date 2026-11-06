@@ -40,7 +40,8 @@ const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { composeSystemBlocks } from "./subagents.js";
 import { NETNS_GATEWAY } from "./netns.js";
-import { mkdirOwned, ownTree, safeRelative, type ShardHandle } from "./shard.js";
+import { mkdirOwned, mkdirOwnedSegment, ownTree, safeRelative, writeFileOwned, type ShardHandle } from "./shard.js";
+import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
@@ -49,6 +50,16 @@ import { PROVIDER_IDS, type CreateSessionInput, type ProviderId, type RuntimePro
 import { serialPerTarget, typeMessage } from "./messageDelivery.js";
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[\w.@:/~+-]+$/;
+/** GIT_URL plus: no option-like host or user (`ssh://-oProxyCommand=...`, `git@-host:x`) that ssh could parse as a flag. */
+export function isAllowedGitUrl(url: string): boolean {
+  const match = GIT_URL.exec(url);
+  if (!match) return false;
+  const rest = url.slice(match[1].length);
+  const authority = match[1] === "git@" ? "git@" + rest.split(":")[0] : rest.split("/")[0];
+  return !authority.split("@").some((part) => part.startsWith("-"));
+}
+const MAX_UPLOADS_PER_USER = 3;
+const uploadsInFlight = new Map<string, number>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REAP_INTERVAL_MS = 15_000;
 /** If a resumed agent dies this fast with an error, there was nothing to resume: start fresh. */
@@ -401,9 +412,7 @@ export class SessionManager {
       mkdirOwned(handle.mountPath, home, handle.uid);
       this.shards.seed(home, ".codex", handle.uid);
       const authFile = join(home, "auth.json");
-      writeFileSync(authFile, JSON.stringify(credential), { mode: 0o600 });
-      chmodSync(authFile, 0o600);
-      lchownSync(authFile, handle.uid, handle.uid);
+      writeFileOwned(authFile, JSON.stringify(credential), handle.uid, 0o600);
 
       const profile: RuntimeProfile = {
         claudeAutoApprove: false,
@@ -1219,8 +1228,7 @@ export class SessionManager {
         if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirSync(current, { mode: 0o700 });
-        lchownSync(current, handle.uid, handle.uid);
+        mkdirOwnedSegment(handle.mountPath, current, handle.uid, 0o700);
       }
     }
     return { hostDirectory, relativeDirectory, directoryPath: current };
@@ -1230,6 +1238,11 @@ export class SessionManager {
   async uploadSessionAttachmentStream(id: string, userId: string, name: unknown, source: Readable, options: { maxBytes: number; contentLength: number | null }): Promise<{ path: string; size: number }> {
     this.getLive(id, userId);
     if (!validAttachmentName(name)) throw badRequest("Choose a file with a valid name", "invalid_attachment_name");
+    // Uploads land on the shared shards volume: bound how many one user can stream at once.
+    const inFlight = uploadsInFlight.get(userId) ?? 0;
+    if (inFlight >= MAX_UPLOADS_PER_USER) throw tooMany("Too many uploads in progress, wait for one to finish");
+    uploadsInFlight.set(userId, inFlight + 1);
+    const release = () => { const left = (uploadsInFlight.get(userId) ?? 1) - 1; if (left <= 0) uploadsInFlight.delete(userId); else uploadsInFlight.set(userId, left); };
     return this.withUserShardActivity(userId, async (handle) => {
       const { hostDirectory, relativeDirectory, directoryPath } = this.prepareAttachmentDirectory(handle);
       const destination = join(hostDirectory, name);
@@ -1244,7 +1257,7 @@ export class SessionManager {
         rmSync(directoryPath, { recursive: true, force: true });
         throw error;
       }
-    });
+    }).finally(release);
   }
 
   /** Run a helper as the user's uid (setpriv) so what it creates in the mounted home is theirs. */
@@ -1254,15 +1267,18 @@ export class SessionManager {
   }
 
   private clone(url: string, destination: string, profile: RuntimeProfile, handle: ShardHandle): Promise<void> {
-    if (!GIT_URL.test(url)) throw badRequest("Unsupported git URL", "invalid_git_url");
+    if (!isAllowedGitUrl(url)) throw badRequest("Unsupported git URL", "invalid_git_url");
     return new Promise((done, fail) => {
-      const [file, args] = this.asUser(handle, "git", ["clone", "--depth", "50", "--", url, destination]);
-      const child = spawn(file, args, {
-        stdio: ["ignore", "ignore", "pipe"],
+      const rel = relative(handle.mountPath, destination);
+      // Cloned inside the sandbox (netns egress rules apply; a hostile repo's config cannot run on the host).
+      const child = this.shards.driver.spawnPipe(handle, {
+        file: "git",
+        args: [...GIT_HARDENING_ARGS, "clone", "--depth", "50", "--", url, this.shards.driver.homePath(handle) + "/" + rel],
+        cwd: ".",
         env: { ...buildSessionEnv(this.config, "claude", profile, "clone"), HOME: "/tmp" },
       });
       let stderr = "";
-      child.stderr.on("data", (chunk) => {
+      child.stderr!.on("data", (chunk) => {
         if (stderr.length < 2000) stderr += chunk.toString();
       });
       const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
@@ -1740,23 +1756,25 @@ export class SessionManager {
         branch: "floq/" + id,
         uid: this.shards.driver.name === "linux" ? handle.uid : undefined,
         runAsUser: async (args) => {
-          const [file, commandArgs] = this.asUser(handle, "git", args);
           const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+          // Same bwrap sandbox and netns as the agent: filter drivers from the agent's .git config cannot run on the host.
+          const child = this.shards.driver.spawnPipe(handle, {
+            file: "git",
+            args,
+            cwd: ".",
+            env: {
+              PATH: process.env.PATH ?? "",
+              HOME: process.platform === "win32" ? process.env.TEMP ?? "C:\\Temp" : "/tmp",
+              GIT_CONFIG_NOSYSTEM: "1",
+              GIT_CONFIG_GLOBAL: nullDevice,
+              ...GIT_HARDENING_ENV,
+            },
+          });
           return await new Promise<string>((resolveRun, rejectRun) => {
-            const child = spawn(file, commandArgs, {
-              cwd: handle.mountPath,
-              env: {
-                PATH: process.env.PATH ?? "",
-                HOME: process.platform === "win32" ? process.env.TEMP ?? "C:\\Temp" : "/tmp",
-                GIT_CONFIG_NOSYSTEM: "1",
-                GIT_CONFIG_GLOBAL: nullDevice,
-              },
-              stdio: ["ignore", "pipe", "pipe"],
-            });
             let stderr = "";
             let stdout = "";
-            child.stdout.on("data", (chunk) => { if (stdout.length < 64 * 1024) stdout += chunk.toString(); });
-            child.stderr.on("data", (chunk) => { if (stderr.length < 2000) stderr += chunk.toString(); });
+            child.stdout!.on("data", (chunk) => { if (stdout.length < 64 * 1024) stdout += chunk.toString(); });
+            child.stderr!.on("data", (chunk) => { if (stderr.length < 2000) stderr += chunk.toString(); });
             const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
             child.on("error", (error) => { clearTimeout(timer); rejectRun(error); });
             child.on("close", (code) => {
@@ -1901,9 +1919,7 @@ export class SessionManager {
 
   private writeCredFile(handle: ShardHandle, path: string, content: string): void {
     mkdirOwned(handle.mountPath, dirname(path), handle.uid);
-    writeFileSync(path, content, { mode: 0o600 });
-    chmodSync(path, 0o600);
-    lchownSync(path, handle.uid, handle.uid);
+    writeFileOwned(path, content, handle.uid, 0o600);
     this.credMtime.set(path, statSync(path).mtimeMs);
   }
 
@@ -1966,8 +1982,7 @@ export class SessionManager {
     settings.includeCoAuthoredBy = false;
     settings = claudeStartupSettings(settings, profile.claudeAutoApprove);
     mkdirOwned(handle.mountPath, dirname(path), handle.uid);
-    writeFileSync(path, JSON.stringify(settings, null, 2));
-    lchownSync(path, handle.uid, handle.uid);
+    writeFileOwned(path, JSON.stringify(settings, null, 2), handle.uid, 0o644);
   }
 
   /** Hand a fresh credential to the user's running CLIs. */

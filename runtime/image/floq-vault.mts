@@ -130,26 +130,13 @@ if (command === "list") {
     child.on("error", (e) => { console.error("floq-vault: " + e.message); process.exit(127); });
     child.on("close", (code, signal) => { err.end(); process.exit(code ?? (signal ? 1 : 0)); });
   } else {
-  const { secrets } = await call<SecretResponse>("/internal/vault/reveal", { names });
-  const executable = argv[0];
-  if (!executable) { console.error("usage: floq-vault run [--only NAME,NAME] -- command [args...]"); process.exit(2); }
-  const child = spawn(executable, argv.slice(1), {
-    stdio: ["inherit", "pipe", "pipe"],
-    env: { ...process.env, ...secrets, FLOQ_AGENT_TOKEN: "", FLOQ_API_URL: "" },
-  });
-  const out = redactor(secrets, (s) => process.stdout.write(s));
-  const err = redactor(secrets, (s) => process.stderr.write(s));
-  child.stdout.on("data", (c) => out.push(c));
-  child.stderr.on("data", (c) => err.push(c));
-  child.on("error", (e) => {
-    console.error("floq-vault: " + e.message);
-    process.exit(127);
-  });
-  child.on("close", (code, signal) => {
-    out.end();
-    err.end();
-    process.exit(code ?? (signal ? 1 : 0));
-  });
+  // The runtime launches the command in this sandbox with the secrets injected; the cleartext never comes back here.
+  // Trade-offs: output arrives when the command ends (already redacted) and stdin is not forwarded.
+  const result = await call<{ code: number; stdout: string; stderr: string; truncated?: boolean }>("/internal/vault/run", { names, argv, cwd: process.cwd(), env: process.env });
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  if (result.truncated) console.error("floq-vault: output truncated");
+  process.exit(result.code);
   }
 } else if (command === "headers") {
   // Called by Claude Code as an MCP "headersHelper". It prints header values for one named MCP server, so it is exactly as

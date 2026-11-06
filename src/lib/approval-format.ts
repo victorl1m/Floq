@@ -4,10 +4,13 @@ export type RiskLevel = "production" | "irreversible" | "neutral";
 
 const PRODUCTION = /\b(production|prod|main|master|deploy(?:s|ed|ing|ment)?|release[sd]?|publish(?:es|ed|ing)?)\b/i;
 
-/** "Irreversible · affects production" for deploy/main/prod style actions, "Irreversible" for other risky ones (server flag), else neutral. */
+/**
+ * "Irreversible" only when the server flagged the request. The action and detail text is written by the agent, so it never
+ * lowers or raises the label; production-looking words only sharpen the label once the server already said irreversible.
+ */
 export function riskLevel(action: string, detail: string, irreversible: boolean): RiskLevel {
-  if (PRODUCTION.test(action + " " + detail)) return "production";
-  return irreversible ? "irreversible" : "neutral";
+  if (!irreversible) return "neutral";
+  return PRODUCTION.test(action + " " + detail) ? "production" : "irreversible";
 }
 
 export const RISK_LABEL: Record<RiskLevel, string> = {

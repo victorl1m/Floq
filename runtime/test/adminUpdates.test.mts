@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertRoleChangeAllowed, requireAdmin, requireRoleValue, setUserRole } from "../dist/admin.js";
+import { assertRoleChangeAllowed, getRole, requireAdmin, requireRoleValue, setUserRole } from "../dist/admin.js";
 import { compareVersions, isNewer, isUpdateTarget, parseCommand, parseVersion, UpdateService } from "../dist/updates.js";
 
 /** Minimal in-memory stand-in for the role queries. */
@@ -77,4 +77,23 @@ test("apply rejects bad targets, requires force with live sessions, and uses fix
   assert.deepEqual(svc.plan("claude"), [{ file: "npm", args: ["install", "-g", "@anthropic-ai/claude-code@latest"] }]);
   assert.deepEqual(svc.plan("codex")[0].args, ["install", "-g", "@openai/codex@latest"]);
   assert.throws(() => svc.plan("runtime"), { code: "update_unsupported" });
+});
+
+test("a configured bootstrap email never lets the earliest other user become admin (RA-04)", async () => {
+  const inserted: unknown[][] = [];
+  const queries: string[] = [];
+  const db = {
+    async query(sql: string, values: unknown[] = []) {
+      queries.push(sql);
+      if (sql.includes("WHERE role = 'admin' LIMIT 1")) return { rowCount: 0, rows: [] };
+      if (sql.includes('FROM public."user" WHERE lower(email)')) return { rowCount: 0, rows: [] }; // bootstrap account not registered yet
+      if (sql.includes('FROM public."user"')) return { rowCount: 1, rows: [{ id: "attacker" }] };
+      if (sql.startsWith("INSERT INTO collaboration.user_roles")) { inserted.push(values); return { rowCount: 1, rows: [] }; }
+      return { rowCount: 0, rows: [] };
+    },
+  } as never;
+  assert.equal(await getRole(db, "owner@example.com", "attacker"), "member");
+  assert.equal(inserted.length, 0);
+  await getRole(db, null, "attacker"); // no bootstrap email configured: legacy earliest-user behaviour
+  assert.equal(inserted.length, 1);
 });

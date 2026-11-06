@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chownSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { promisify } from "node:util";
@@ -281,6 +281,13 @@ export interface NetnsOptions {
   pastaUid?: number;
 }
 
+/** Default uid for pasta: FLOQ_NETNS_PASTA_UID (0 keeps root) or "nobody". */
+function envPastaUid(): number {
+  const raw = process.env.FLOQ_NETNS_PASTA_UID?.trim();
+  if (raw && /^\d{1,9}$/.test(raw)) return Number(raw);
+  return 65534;
+}
+
 /** pasta restarts: at most this many in a row; the counter resets once a pasta has stayed up STABLE_MS. */
 export const PASTA_MAX_RESTARTS = 5;
 export const PASTA_STABLE_MS = 60_000;
@@ -297,9 +304,12 @@ export class NetnsManager {
   private readonly active = new Map<number, Active>();
   private readonly pending = new Map<number, Promise<string>>();
   private enabled = true;
+  /** uid pasta actually runs as: resolved at init (dedicated unprivileged uid when it works, 0 only as a logged fallback). */
+  private pastaUid: number;
 
   constructor(private readonly options: NetnsOptions) {
     this.dir = options.dir ?? NETNS_DIR;
+    this.pastaUid = options.pastaUid ?? envPastaUid();
     parseAllowList((options.allow ?? []).join(","));
   }
 
@@ -324,12 +334,24 @@ export class NetnsManager {
       await this.cleanStale();
       for (const [tool, args] of [["socat", ["-V"]], ["nsenter", ["--version"]], ["setpriv", ["--version"]]] as const) await run(tool, [...args], { timeout: 5_000 });
       const probe = join(this.dir, "probe");
-      const entry = this.newEntry(probe);
+      const probePasta = async (): Promise<void> => {
+        const entry = this.newEntry(probe);
+        try {
+          await this.bringUp(probe, join(this.dir, "probe.pasta.pid"), entry);
+        } finally {
+          entry.removing = true;
+          await this.teardown(probe, join(this.dir, "probe.pasta.pid"), entry);
+        }
+      };
       try {
-        await this.bringUp(probe, join(this.dir, "probe.pasta.pid"), entry);
-      } finally {
-        entry.removing = true;
-        await this.teardown(probe, join(this.dir, "probe.pasta.pid"), entry);
+        await probePasta();
+      } catch (error) {
+        // pasta parses sandbox-controlled packets, so it should not stay root. Only when the unprivileged run fails
+        // (and no uid was configured) do we fall back to root, loudly, rather than losing the namespace.
+        if (this.pastaUid === 0 || this.options.pastaUid !== undefined || process.env.FLOQ_NETNS_PASTA_UID) throw error;
+        log.warn("netns.pasta_unprivileged_failed", { uid: this.pastaUid, error: String(error).slice(0, 160), message: "falling back to running pasta as root" });
+        this.pastaUid = 0;
+        await probePasta();
       }
       log.info("netns.ready", { dir: this.dir });
     } catch (error) {
@@ -410,7 +432,11 @@ export class NetnsManager {
   private startPasta(path: string, pidFile: string, entry: Active): void {
     entry.timer = null;
     const bin = this.options.pastaBin ?? (process.env.FLOQ_PASTA_BIN?.trim() || PASTA_BIN);
-    const child = spawn(bin, pastaArgv({ path, pidFile, runas: this.options.pastaUid }), { stdio: ["ignore", "ignore", "pipe"] });
+    if (this.pastaUid !== 0) {
+      // pasta writes its pid file after dropping to this uid: hand it the (root-created) file first.
+      try { writeFileSync(pidFile, "", { mode: 0o644 }); chownSync(pidFile, this.pastaUid, this.pastaUid); } catch (error) { log.warn("netns.pidfile_chown_failed", { error: String(error).slice(0, 120) }); }
+    }
+    const child = spawn(bin, pastaArgv({ path, pidFile, runas: this.pastaUid }), { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr?.on("data", (c: Buffer) => { if (err.length < 400) err += c.toString(); });
     entry.pasta = child;

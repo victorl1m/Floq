@@ -355,6 +355,23 @@ export class CanvasNotes {
     return { note, sessionIds };
   }
 
+  /**
+   * Agents may write or delete a shared note by name only when it is new, has no canvas card, or has a card in the
+   * caller's own project (or is linked to the caller). Another project's notes are not theirs to overwrite.
+   */
+  async requireAgentNoteAccess(userId: string, sessionId: string, name: unknown): Promise<void> {
+    if (typeof name !== "string" || !AGENT_NOTE_NAME.test(name)) return; // the callers validate the name themselves
+    const s = await this.sessionInfo(userId, sessionId);
+    const cards = await this.pool.query(
+      `SELECT n.project_id, EXISTS (SELECT 1 FROM canvas_note_links k WHERE k.note_id = n.id AND k.session_id = $3) AS linked
+       FROM canvas_notes n WHERE n.user_id = $1 AND n.agent_note_name = $2`,
+      [userId, name, sessionId],
+    );
+    if (!cards.rows.length) return;
+    const mine = cards.rows.some((r: { project_id: string | null; linked: boolean }) => r.linked || (r.project_id ?? null) === (s.project_id ?? null));
+    if (!mine) throw new HttpError(403, "note_other_project", "This shared note belongs to another project; ask the user to wire it to you");
+  }
+
   /** `floq note delete NAME`: removes the shared agent note and every canvas card mirroring it. Returns the sessions the cards were wired to. */
   async agentNoteDelete(userId: string, name: unknown): Promise<{ sessionIds: string[] }> {
     if (typeof name !== "string" || !AGENT_NOTE_NAME.test(name)) throw badRequest("note name must be 1-80 chars of letters, digits, space, . _ -", "invalid_note");
@@ -370,6 +387,8 @@ export class CanvasNotes {
   async agentCreate(userId: string, sessionId: string, body: unknown): Promise<CanvasNote> {
     const s = await this.sessionInfo(userId, sessionId);
     const input = (body && typeof body === "object" && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
+    // `system` notes are the user's rules for every agent in every project: agents can never mint them.
+    if (input.kind === "system") throw new HttpError(403, "system_note_readonly", "System notes are the user's rules for all agents: only the user can create them. Use kind memory or a regular note");
     const anchor = (await this.agentList(userId, sessionId)).filter((n) => n.projectId === (s.project_id ?? null)).pop();
     const note = await this.create(userId, s.project_id ?? "none", { w: 240, h: 160, ...input, x: input.x ?? (anchor ? anchor.x + anchor.w + 30 : 0), y: input.y ?? (anchor ? anchor.y : 0) }, s.title || "agent");
     return note.kind === "note" ? this.link(userId, note.id, sessionId) : note;

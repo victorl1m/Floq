@@ -96,3 +96,10 @@ test("role presets: orchestrator is a valid preset; unknown role rejected (PATCH
   assert.throws(() => parseRoleId(5), HttpError);
   assert.match(getAgentRole("orchestrator")!.prompt, /only the orchestrator can recruit/i);
 });
+
+test("keychain redact fails closed when the lookup errors (RA-06)", async () => {
+  const { Keychains } = await import("../dist/keychains.js");
+  const kc = new Keychains({ query: async () => { throw new Error("db down"); } } as never, { encryptionKey: Buffer.alloc(32) } as never);
+  const out = await kc.redact("u", ["s"], "token=sk-live-SECRET123");
+  assert.ok(!out.includes("sk-live-SECRET123"));
+});

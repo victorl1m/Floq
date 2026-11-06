@@ -115,7 +115,7 @@ export default function AppWindowTab({ client, session, active }: { client: Runt
         <Button type="button" variant="ghost" size="xs" disabled={stopping} onClick={() => void stop()} title="Stop the display and the apps on it"><IconPlayerStop />Stop</Button>
       </div>
       {isForwarded && active ? (
-        <iframe key={url} title="App window" src={url} referrerPolicy="no-referrer" className="min-h-0 w-full flex-1 border-0 bg-black" allow="clipboard-read; clipboard-write; fullscreen" />
+        <iframe key={url} title="App window" src={url} referrerPolicy="no-referrer" className="min-h-0 w-full flex-1 border-0 bg-black" sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock" allow="clipboard-write; fullscreen" />
       ) : (
         <PanelEmpty icon={<IconAppWindow />} title="Connecting…" />
       )}

@@ -17,6 +17,25 @@ export function validAnswers(questions: {id:string; options:{id:string}[]; multi
   }) && new Set(answers.map(a => a.questionId)).size === answers.length && answers.reduce((n,a) => n+a.text.length,0) <= 8000;
 }
 
+export const MAX_ACTION_CHARS = 240;
+export const MAX_DETAIL_CHARS = 1200;
+
+/** Cap agent-written text: keep the start and the tail (the end of a long command is where it hides), with an ellipsis between. */
+export function capText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const tail = Math.floor(max / 3);
+  return `${text.slice(0, max - tail - 1)}…${text.slice(text.length - tail)}`;
+}
+
+/** The island shows agent-written approval text in a topmost overlay: bound its length (start and tail kept) so it cannot push the real command out of view. */
+export function capAttention<T extends { kind: string }>(items: T[]): T[] {
+  return items.map((item) => {
+    const approval = (item as unknown as { approval?: ApprovalRequest }).approval;
+    if (item.kind !== 'approval' || !approval) return item;
+    return { ...item, approval: { ...approval, action: capText(approval.action, MAX_ACTION_CHARS), detail: capText(approval.detail, MAX_DETAIL_CHARS) } };
+  });
+}
+
 export function sameSnapshotContent(a: IslandSnapshot, b: IslandSnapshot): boolean {
   return JSON.stringify({ ...a, revision: 0 }) === JSON.stringify({ ...b, revision: 0 });
 }
