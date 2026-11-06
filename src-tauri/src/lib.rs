@@ -839,7 +839,8 @@ pub fn run() {
                 // no native material, so no backdrop rectangle shows around the rounded corners.
                 match island::create_window(app.handle(), true) {
                     Ok(_island) => {
-                        island::start_hover_monitor(app.handle().clone());
+                        // Hover is handled by the island's own DOM events; toggling click-through
+                        // on a transparent WebView2 window made the island vanish on hover.
                     }
                     Err(error) => eprintln!("Failed to create the approval island: {error}"),
                 }
