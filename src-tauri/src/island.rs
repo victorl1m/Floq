@@ -11,6 +11,7 @@ const TOP_GAP: f64 = 12.0;
 const HIDE_DELAY_MS: u64 = 320;
 
 struct IslandState {
+    visibility_generation: u64,
     active: bool,
     expanded: bool,
     pinned: bool,
@@ -22,6 +23,7 @@ struct IslandState {
 impl Default for IslandState {
     fn default() -> Self {
         Self {
+            visibility_generation: 0,
             active: false,
             expanded: false,
             pinned: false,
@@ -86,6 +88,7 @@ fn active_snapshot(snapshot: &Value) -> bool {
 }
 
 fn update_snapshot_state(state: &mut IslandState, snapshot: Value, island_enabled: bool) -> bool {
+    state.visibility_generation = state.visibility_generation.wrapping_add(1);
     let queue_active = active_snapshot(&snapshot);
     state.last_non_empty_snapshot = queue_active.then_some(snapshot);
     state.outside_since = None;
@@ -99,6 +102,7 @@ fn update_snapshot_state(state: &mut IslandState, snapshot: Value, island_enable
 }
 
 fn set_island_enabled(state: &mut IslandState, enabled: bool) -> Option<Value> {
+    state.visibility_generation = state.visibility_generation.wrapping_add(1);
     if !enabled {
         state.active = false;
         state.expanded = false;
@@ -112,6 +116,43 @@ fn set_island_enabled(state: &mut IslandState, enabled: bool) -> Option<Value> {
     state.active = active_snapshot(&snapshot);
     state.outside_since = None;
     state.active.then_some(snapshot)
+}
+
+fn hide_is_current(state: &IslandState, generation: u64) -> bool {
+    !state.active && state.visibility_generation == generation
+}
+
+// Intentionally log counts and state only: request text and answers may be sensitive.
+fn diagnostic(app: &tauri::AppHandle, event: &str) {
+    use std::io::Write;
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
+    let Ok(directory) = app.path().app_data_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&directory);
+    let path = directory.join("island.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= 256 * 1024) {
+        let _ = std::fs::rename(&path, directory.join("island.log.1"));
+        // Windows rename cannot replace an existing rotated file.
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() >= 256 * 1024) {
+            let _ = std::fs::remove_file(directory.join("island.log.1"));
+            let _ = std::fs::rename(&path, directory.join("island.log.1"));
+        }
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let _ = writeln!(file, "{time} {event}");
+    }
 }
 
 fn physical_rect(window: &WebviewWindow) -> Option<(i32, i32, i32, i32)> {
@@ -249,6 +290,7 @@ fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(
 
 #[cfg(windows)]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
     use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow};
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
     unsafe {
@@ -265,8 +307,11 @@ fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Resu
 #[cfg(windows)]
 pub fn keep_on_top(window: &WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
     };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
             let _ = SetWindowPos(
@@ -276,7 +321,7 @@ pub fn keep_on_top(window: &WebviewWindow) {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
     }
@@ -287,6 +332,7 @@ pub fn keep_on_top(_: &WebviewWindow) {}
 
 #[cfg(not(windows))]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+    diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
     if visible {
         window.show()
     } else {
@@ -401,12 +447,22 @@ pub fn island_publish(
         .lock()
         .map_err(|_| "Preferences unavailable")?
         .island_enabled;
-    let (active, expanded, height, was_active) = {
+    let (active, expanded, height, was_active, visibility_generation) = {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
         let was_active = state.active;
         let active = update_snapshot_state(&mut state, snapshot.clone(), enabled);
-        (active, state.expanded, state.height, was_active)
+        (
+            active,
+            state.expanded,
+            state.height,
+            was_active,
+            state.visibility_generation,
+        )
     };
+    diagnostic(
+        &app,
+        &format!("publish active={active} expanded={expanded} generation={visibility_generation}"),
+    );
     let island = app
         .get_webview_window("island")
         .ok_or("Island window is unavailable")?;
@@ -420,7 +476,9 @@ pub fn island_publish(
         if !was_active {
             apply_bounds(&island, expanded, height)?;
         }
-        set_visible_without_activation(&island, true)?;
+        if !was_active || !island.is_visible().unwrap_or(false) {
+            set_visible_without_activation(&island, true)?;
+        }
     } else {
         cancel_animation(&runtime.1);
         let _ = island.set_ignore_cursor_events(true);
@@ -428,16 +486,24 @@ pub fn island_publish(
         let handle = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(HIDE_DELAY_MS));
-            let runtime = handle.state::<IslandRuntime>();
-            let still_inactive = runtime.0.lock().map(|state| !state.active).unwrap_or(false);
-            if !still_inactive {
-                return;
-            }
-            if let Some(window) = handle.get_webview_window("island") {
-                let _ = handle.run_on_main_thread(move || {
-                    let _ = set_visible_without_activation(&window, false);
-                });
-            }
+            let main_handle = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                // Re-check after dispatch: a new publish may have arrived while this
+                // callback waited in the Windows event queue. No window call under lock.
+                let current = main_handle
+                    .state::<IslandRuntime>()
+                    .0
+                    .lock()
+                    .map(|state| hide_is_current(&state, visibility_generation))
+                    .unwrap_or(false);
+                if current {
+                    if let Some(window) = main_handle.get_webview_window("island") {
+                        let _ = set_visible_without_activation(&window, false);
+                    }
+                } else {
+                    diagnostic(&main_handle, "hide cancelled");
+                }
+            });
         });
     }
     Ok(())
@@ -448,6 +514,7 @@ pub fn set_enabled(
     runtime: &IslandRuntime,
     enabled: bool,
 ) -> Result<(), String> {
+    diagnostic(app, &format!("enabled={enabled}"));
     let (snapshot, expanded, height) = {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
         let snapshot = set_island_enabled(&mut state, enabled);
@@ -496,6 +563,9 @@ pub fn island_set_layout(
     let height = clamped_height(height);
     let from_expanded = {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
+        if !state.active {
+            return Ok(());
+        }
         let previous = state.expanded;
         state.expanded = expanded;
         state.pinned = pinned;
@@ -506,7 +576,18 @@ pub fn island_set_layout(
     window
         .set_ignore_cursor_events(!expanded)
         .map_err(|error| error.to_string())?;
-    animate_bounds(window, runtime.1.clone(), expanded, height, from_expanded);
+    diagnostic(
+        window.app_handle(),
+        &format!("layout expanded={expanded} height={height} pinned={pinned}"),
+    );
+    // Grow immediately so newly laid out content is never squeezed into an old frame.
+    // Animate collapse only; animating growth also repeatedly reflows wrapped text.
+    if expanded {
+        cancel_animation(&runtime.1);
+        apply_bounds(&window, expanded, height)?;
+    } else {
+        animate_bounds(window, runtime.1.clone(), expanded, height, from_expanded);
+    }
     Ok(())
 }
 
@@ -659,6 +740,7 @@ fn hover_tick(app: &tauri::AppHandle) {
         None
     };
     if let Some((now_expanded, since)) = next {
+        diagnostic(app, &format!("hover expanded={now_expanded}"));
         if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
             state.expanded = now_expanded;
             state.outside_since = since;
@@ -685,6 +767,19 @@ mod tests {
         set_island_enabled, update_snapshot_state,
     };
     use serde_json::json;
+
+    #[test]
+    fn stale_hide_cannot_hide_a_new_active_or_empty_generation() {
+        let mut state = IslandState::default();
+        update_snapshot_state(&mut state, json!({"items": []}), true);
+        let stale = state.visibility_generation;
+        assert!(super::hide_is_current(&state, stale));
+        update_snapshot_state(&mut state, json!({"items": [{"id": "a"}]}), true);
+        assert!(!super::hide_is_current(&state, stale));
+        update_snapshot_state(&mut state, json!({"items": []}), true);
+        assert!(!super::hide_is_current(&state, stale));
+        assert!(super::hide_is_current(&state, state.visibility_generation));
+    }
 
     #[test]
     fn easing_clamps_and_reaches_target_smoothly() {

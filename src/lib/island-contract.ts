@@ -20,3 +20,10 @@ export function validAnswers(questions: {id:string; options:{id:string}[]; multi
 export function sameSnapshotContent(a: IslandSnapshot, b: IslandSnapshot): boolean {
   return JSON.stringify({ ...a, revision: 0 }) === JSON.stringify({ ...b, revision: 0 });
 }
+
+/** Keep the last queue through brief sync/client teardown gaps. */
+export function deferEmptySnapshot(previous: IslandSnapshot | null, next: IslandSnapshot, emptySince: number | null, now: number): { snapshot: IslandSnapshot; emptySince: number | null } {
+  if (next.items.length || !previous?.items.length) return { snapshot: next, emptySince: null };
+  const since = emptySince ?? now;
+  return { snapshot: now - since < 1500 ? { ...next, items: previous.items } : next, emptySince: since };
+}
