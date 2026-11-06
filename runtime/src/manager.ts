@@ -979,7 +979,7 @@ export class SessionManager {
       }
       if (current.currentBranch !== branch) {
         // Live agents are deliberately NOT a blocker: their terminals keep running (files change under them, like any
-        // checkout). Data safety is covered by the clean-tree, branch-in-use and git index-lock checks in switchProjectBranch.
+        // checkout). Local changes travel with the switch; git itself refuses (atomically) when they would be overwritten.
         await switchProjectBranch(run, branch);
       }
       const branchName = workspace.cwd === workspace.projectCwd ? "Main" : "Worktree";

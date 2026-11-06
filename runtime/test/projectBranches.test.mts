@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn as spawnChild } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch } from "../dist/projectBranches.js";
@@ -49,7 +49,7 @@ async function makeRepo(t) {
       });
       return { stdout, exitCode: 0 };
     } catch (error) {
-      return { stdout: error.stdout ?? "", exitCode: error.code ?? 1 };
+      return { stdout: `${error.stdout ?? ""}${error.stderr ?? ""}`, exitCode: error.code ?? 1 };
     }
   };
   return { root, repo, run };
@@ -62,15 +62,44 @@ test("lists only local branches and switches clean worktrees", async (t) => {
   assert.deepEqual(await listProjectBranches(run), { currentBranch: "feature", branches: ["feature", "main"] });
 });
 
-test("refuses invalid branches and preserves tracked and untracked dirty work", async (t) => {
-  const { repo, run } = await makeRepo(t);
+test("refuses invalid branches", async (t) => {
+  const { run } = await makeRepo(t);
   await assert.rejects(switchProjectBranch(run, "missing"), { code: "invalid_branch" });
+});
+
+test("a dirty tree switches and the changes travel with the user", async (t) => {
+  const { repo, run } = await makeRepo(t);
   writeFileSync(join(repo, "tracked.txt"), "changed\n");
-  await assert.rejects(switchProjectBranch(run, "feature"), { code: "project_worktree_dirty" });
-  writeFileSync(join(repo, "tracked.txt"), "clean\n");
   writeFileSync(join(repo, "untracked.txt"), "keep me\n");
-  await assert.rejects(switchProjectBranch(run, "feature"), { code: "project_worktree_dirty" });
+  assert.equal(await switchProjectBranch(run, "feature"), "feature");
+  assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "feature");
+  assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "changed\n");
+  assert.equal(readFileSync(join(repo, "untracked.txt"), "utf8"), "keep me\n");
+});
+
+test("a conflicting change is refused by git with file names and leaves the tree untouched", async (t) => {
+  const { repo, run } = await makeRepo(t);
+  await git(repo, ["switch", "feature"]);
+  writeFileSync(join(repo, "tracked.txt"), "feature version\n");
+  await git(repo, ["commit", "-am", "feature change"]);
+  await git(repo, ["switch", "main"]);
+  writeFileSync(join(repo, "tracked.txt"), "local work\n");
+  await assert.rejects(switchProjectBranch(run, "feature"), (error) => error.code === "project_branch_switch_conflict" && /tracked\.txt/.test(error.message));
   assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
+  assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "local work\n");
+});
+
+test("an untracked file that would be overwritten is refused by git and kept", async (t) => {
+  const { repo, run } = await makeRepo(t);
+  await git(repo, ["switch", "feature"]);
+  writeFileSync(join(repo, "new.txt"), "from feature\n");
+  await git(repo, ["add", "new.txt"]);
+  await git(repo, ["commit", "-m", "add new"]);
+  await git(repo, ["switch", "main"]);
+  writeFileSync(join(repo, "new.txt"), "mine\n");
+  await assert.rejects(switchProjectBranch(run, "feature"), (error) => error.code === "project_branch_switch_conflict" && /new\.txt/.test(error.message));
+  assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
+  assert.equal(readFileSync(join(repo, "new.txt"), "utf8"), "mine\n");
 });
 
 test("refuses a branch checked out by a second worktree", async (t) => {
@@ -155,7 +184,7 @@ test("manager switches with live agents without touching sessions", async (t) =>
   assert.ok(!queries.some((sql) => sql.includes("agent_sessions")), "must not consult or modify sessions");
 });
 
-test("refused switch (dirty/invalid) is rejected by the dry-run pre-flight and changes nothing", async (t) => {
+test("dry-run pre-flight only checks what is knowable and changes nothing", async (t) => {
   const { root, repo } = await makeRepo(t);
   const queries = [];
   const manager = managerFor(root, queries);
@@ -163,8 +192,7 @@ test("refused switch (dirty/invalid) is rejected by the dry-run pre-flight and c
   assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
   await assert.rejects(manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "missing"), { code: "invalid_branch" });
   writeFileSync(join(repo, "tracked.txt"), "changed\n");
-  await assert.rejects(manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "feature"), { code: "project_worktree_dirty" });
-  await assert.rejects(manager.switchProjectBranch("user-a", "project-a", "workspace-a", "feature"), { code: "project_worktree_dirty" });
+  assert.deepEqual(await manager.checkProjectBranchSwitch("user-a", "project-a", "workspace-a", "feature"), { ok: true, needsSwitch: true });
   assert.equal((await git(repo, ["branch", "--show-current"])).trim(), "main");
   assert.ok(!queries.some((sql) => sql.includes("agent_sessions") || sql.includes("UPDATE")), "no session or workspace writes");
   assert.deepEqual(await checkProjectBranchSwitch(async (args) => ({ stdout: args[0] === "for-each-ref" ? "main\n" : "main\n", exitCode: 0 }), "main"), { branch: "main", needsSwitch: false });

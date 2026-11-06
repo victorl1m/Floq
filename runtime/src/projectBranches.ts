@@ -35,8 +35,8 @@ export async function listProjectBranches(run: GitCommand): Promise<ProjectBranc
 }
 
 /**
- * Side-effect-free pre-flight: throws the same error `switchProjectBranch` would (invalid branch, dirty tree, branch held
- * by another worktree) without touching the checkout. Returns whether a checkout is needed (false = already on it).
+ * Side-effect-free pre-flight: throws the same error `switchProjectBranch` would for what is knowable without side effects
+ * (invalid branch, branch held by another worktree) without touching the checkout. Local-change conflicts are left to git. Returns whether a checkout is needed (false = already on it).
  */
 export async function checkProjectBranchSwitch(run: GitCommand, branch: unknown): Promise<{ branch: string; needsSwitch: boolean }> {
   if (typeof branch !== "string" || !branch.trim() || branch.length > 250 || /[\u0000-\u001f\u007f]/.test(branch)) {
@@ -46,9 +46,8 @@ export async function checkProjectBranchSwitch(run: GitCommand, branch: unknown)
   if (!branches.includes(branch)) throw badRequest("That local branch is no longer available.", "invalid_branch");
   if (branch === currentBranch) return { branch, needsSwitch: false };
 
-  const status = requireSuccess(await run(["status", "--porcelain=v1", "--untracked-files=all"]), "check the working tree");
-  if (status.length > 0) throw conflict("Commit or move your uncommitted and untracked changes before switching branches.", "project_worktree_dirty");
-
+  // No clean-tree requirement: uncommitted and untracked changes travel with the user, exactly like plain `git switch`.
+  // A real conflict is detected by git itself when the switch runs (atomic: a refused switch changes nothing).
   const worktrees = requireSuccess(await run(["worktree", "list", "--porcelain"]), "check other worktrees");
   const occupiedRef = `branch refs/heads/${branch}`;
   if (worktrees.split(/\r?\n/).some((line) => line.trim() === occupiedRef)) {
@@ -58,12 +57,25 @@ export async function checkProjectBranchSwitch(run: GitCommand, branch: unknown)
   return { branch, needsSwitch: true };
 }
 
+/** File names git lists (tab-indented) when it refuses a switch because local files would be overwritten. */
+export function conflictingFiles(output: string, cap = 8): { files: string[]; more: number } {
+  const all = output.split(/\r?\n/).filter((line) => /^\t\S/.test(line)).map((line) => line.trim().replace(/[\u0000-\u001f\u007f]/g, ""));
+  const unique = [...new Set(all)];
+  return { files: unique.slice(0, cap), more: Math.max(0, unique.length - cap) };
+}
+
 export async function switchProjectBranch(run: GitCommand, branch: unknown): Promise<string> {
   const checked = await checkProjectBranchSwitch(run, branch);
   if (!checked.needsSwitch) return checked.branch;
+  // Never --force / --discard-changes / stash: git refuses atomically if local work would be lost.
   const switched = await run(["switch", "--quiet", "--no-recurse-submodules", "--", checked.branch]);
   if (switched.exitCode !== 0) {
-    throw conflict("Git could not switch branches. The working tree may have changed; review it and try again.", "project_branch_switch_failed");
+    const { files, more } = conflictingFiles(switched.stdout);
+    if (files.length > 0) {
+      const list = files.join(", ") + (more > 0 ? ` and ${more} more` : "");
+      throw conflict(`Git refused to switch to ${checked.branch} because it would overwrite your local changes in: ${list}. Commit or stash those files, then try again. Nothing was changed.`, "project_branch_switch_conflict");
+    }
+    throw conflict("Git could not switch branches. Nothing was changed; review the working tree and try again.", "project_branch_switch_failed");
   }
   return checked.branch;
 }

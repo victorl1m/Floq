@@ -57,6 +57,7 @@ import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
+import { followBranchChange } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
@@ -728,6 +729,19 @@ function AgentCanvas() {
     });
   }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags, writeBranchTags]);
 
+  // Branch creation (or any checkout) done outside the switcher, e.g. an agent running `git checkout -b`/`git switch -c`:
+  // the runtime reports a new current branch for the ground workspace, so its sessions move to that branch's floor by retagging.
+  // Switcher-driven switches set switchingRef and write their own tags, so they are skipped here.
+  const lastBranchRef = useRef<{ workspaceId: string; branch: string } | null>(null);
+  useEffect(() => {
+    if (!activeProjectId || !groundWorkspace || !currentBranch) return;
+    const last = lastBranchRef.current;
+    lastBranchRef.current = { workspaceId: groundWorkspace.id, branch: currentBranch };
+    if (!last || last.workspaceId !== groundWorkspace.id || last.branch === currentBranch || switchingRef.current) return;
+    const ids = sessionsForWorkspace(activeProjectId, groundWorkspace, sessionsRef.current.filter((session) => session.projectId === activeProjectId)).map((session) => session.id);
+    writeBranchTags(activeProjectId, (tags) => followBranchChange(tags, ids, last.branch, currentBranch));
+  }, [activeProjectId, groundWorkspace, currentBranch, writeBranchTags]);
+
   // Branches held by other worktrees cannot be checked out in the main checkout.
   const inWorktreeBranches = useMemo(
     () => new Set(orderedWorkspaces.filter((workspace) => workspace.id !== groundWorkspaceId && workspace.branch).map((workspace) => workspace.branch as string)),
@@ -751,7 +765,7 @@ function AgentCanvas() {
       catch (error) { toast.error(`Could not wake ${session.title}`, { description: errorMessage(error) }); return false; }
     };
     try {
-      // a. Pre-flight with no side effects: a refused switch (dirty tree, branch in use, unknown branch) leaves every session untouched.
+      // a. Pre-flight with no side effects: a refused switch (branch in use, unknown branch; local-change conflicts are caught by git in step c) leaves every session untouched.
       await client.checkProjectBranchSwitch(projectId, groundWorkspace.id, target);
       // b. Remember which branch each visible ground agent belongs to. Live agents are NOT slept: they keep running
       // (the idle check handles resource use), so no resume flag is needed for them.
