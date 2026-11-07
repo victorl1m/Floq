@@ -6,6 +6,24 @@ import { join } from "node:path";
 import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } from "../dist/claudeSettings.js";
 import { managedTrustDirectories } from "../dist/codexTrust.js";
 
+test("Claude startup supplies compaction defaults for new and existing settings", () => {
+  const original = { env: { PROJECT_FLAG: "keep" }, theme: "dark" };
+  const settings = claudeStartupSettings(original, false);
+  assert.equal(settings.autoCompactEnabled, true);
+  assert.equal(settings.idleCompaction, true);
+  assert.deepEqual(settings.env, { PROJECT_FLAG: "keep", CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "150000" });
+  assert.deepEqual(original.env, { PROJECT_FLAG: "keep" });
+  assert.deepEqual(claudeStartupSettings(settings, false), settings);
+});
+
+test("Claude compaction defaults preserve explicit user overrides", () => {
+  const original = { autoCompactEnabled: false, idleCompaction: false, env: { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "250000", DISABLE_AUTO_COMPACT: "1" } };
+  const settings = claudeStartupSettings(original, true);
+  assert.equal(settings.autoCompactEnabled, false);
+  assert.equal(settings.idleCompaction, false);
+  assert.deepEqual(settings.env, original.env);
+});
+
 test("Claude startup fills the terminal and follows explicit auto-approve without replacing permissions", () => {
   const original = { permissions: { deny: ["Read(.env)"] }, theme: "dark", tui: "default" };
   const enabled = claudeStartupSettings(original, true);

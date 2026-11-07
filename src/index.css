@@ -277,6 +277,15 @@
 
 /* Canvas toolbar in the titlebar. Collapse is driven by the toolbar's own width (the sidebar is resizable). */
 .canvas-titlebar-toolbar { container: canvas-titlebar / inline-size; }
+/* Equal side tracks centre the tools in the whole slot, even with asymmetric identity/actions.
+   Narrow slots use natural action width so direct actions never overlap the centre control. */
+.canvas-titlebar-layout { grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr); }
+.canvas-titlebar-identity { grid-column: 1; grid-row: 1; }
+.canvas-titlebar-tools, .canvas-titlebar-overflow { grid-column: 2; grid-row: 1; justify-self: center; }
+.canvas-titlebar-actions { grid-column: 3; grid-row: 1; justify-self: end; }
+@container canvas-titlebar (max-width: 600px) {
+  .canvas-titlebar-layout { grid-template-columns: minmax(0, 1fr) max-content max-content; }
+}
 /* Setting overflow-x alone makes overflow-y compute to auto, so a focus ring or 1px rounding produced a vertical scrollbar.
    Vertical overflow is clipped instead; the block padding (cancelled by the negative margin) keeps focus rings inside the clip box. */
 .canvas-titlebar-tools {
@@ -289,8 +298,8 @@
 }
 .canvas-titlebar-tools::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .canvas-titlebar-overflow { display: none; }
-@container canvas-titlebar (max-width: 639px) { .canvas-titlebar-name { display: none; } }
-@container canvas-titlebar (max-width: 600px) {
+@container canvas-titlebar (max-width: 900px) { .canvas-titlebar-name { display: none; } }
+@container canvas-titlebar (max-width: 800px) {
   .canvas-titlebar-tools { display: none; }
   .canvas-titlebar-overflow { display: inline-flex; }
 }

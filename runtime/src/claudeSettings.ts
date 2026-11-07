@@ -2,7 +2,15 @@ import { constants, fstatSync, lstatSync, openSync, readSync, closeSync } from "
 
 /** Keep startup consent aligned with the user's explicit Floq auto-approve choice. */
 export function claudeStartupSettings(settings: Record<string, unknown>, autoApprove: boolean): Record<string, unknown> {
-  return { ...settings, tui: "fullscreen", skipDangerousModePermissionPrompt: autoApprove };
+  const env = settings.env && typeof settings.env === "object" && !Array.isArray(settings.env) ? settings.env as Record<string, unknown> : {};
+  return {
+    autoCompactEnabled: true,
+    idleCompaction: true,
+    ...settings,
+    env: { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "150000", ...env },
+    tui: "fullscreen",
+    skipDangerousModePermissionPrompt: autoApprove,
+  };
 }
 
 const MAX_CLAUDE_CONFIG_BYTES = 8 * 1024 * 1024;

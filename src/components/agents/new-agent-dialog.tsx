@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE } from "@/lib/runtime/orchestrator";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
@@ -52,7 +54,10 @@ export default function NewAgentDialog() {
     }
 
     useEffect(() => {
-        if (newAgentOpen) setIsolated(false);
+        if (newAgentOpen) {
+            setIsolated(false);
+            setRole("");
+        }
     }, [newAgentOpen]);
 
     useEffect(() => {
@@ -61,6 +66,7 @@ export default function NewAgentDialog() {
     }, [newAgentOpen, client, roles.length]);
 
     function reset() {
+        setRole("");
         setTitle("");
         setError(null);
     }
@@ -186,6 +192,23 @@ export default function NewAgentDialog() {
                             value={model}
                             disabled={busy}
                             onChange={(value) => setModelByProvider({ ...modelByProvider, [provider]: value })}
+                        />
+                    </div>
+                )}
+
+                {!loading && usable.length > 0 && roles.some((item) => item.id === ORCHESTRATOR_ROLE) && (
+                    <div className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
+                        <div className="grid min-w-0 flex-1 gap-1">
+                            <Label htmlFor="agent-orchestrator" className="cursor-pointer text-sm font-medium">Create as orchestrator</Label>
+                            <p id="agent-orchestrator-hint" className="text-xs text-muted-foreground">{ORCHESTRATOR_HINT}</p>
+                        </div>
+                        <Switch
+                            id="agent-orchestrator"
+                            aria-describedby="agent-orchestrator-hint"
+                            checked={role === ORCHESTRATOR_ROLE}
+                            onCheckedChange={(checked) => setRole(checked ? ORCHESTRATOR_ROLE : "")}
+                            disabled={busy}
+                            className="mt-0.5"
                         />
                     </div>
                 )}
