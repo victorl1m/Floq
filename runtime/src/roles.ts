@@ -42,7 +42,7 @@ const CAPABILITY_ADVICE: Record<RoleCapability, string> = {
 
 export const ORCHESTRATOR_ROLE_ID = "orchestrator";
 
-const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), open questions, and the recommended next role.";
+const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), the decision ids you asked (not the question text), and the recommended next role. Ask the user any question only they can answer with `floq decision request --question \"...\" --options-json '[{\"id\":\"a\",\"label\":\"...\"}]'` (no --wait, one decision per question, 2-4 options) instead of listing it in the terminal; if you have a parent agent, send it to the parent with `floq ask-parent`.";
 
 export const AGENT_ROLES: readonly AgentRole[] = [
   {
@@ -56,12 +56,12 @@ export const AGENT_ROLES: readonly AgentRole[] = [
     whenToUse: "A feature or change is vague; you need requirements, user stories and acceptance criteria before building.",
     whenNotToUse: "The spec already exists, or the task is a small, well-defined fix.",
     inputs: "A rough idea, user request, or existing docs/issues.",
-    outputs: "specs/<feature>/spec.md: problem, users, user stories, functional requirements, acceptance criteria, out of scope, open questions.",
+    outputs: "specs/<feature>/spec.md: problem, users, user stories, functional requirements, acceptance criteria, out of scope, unresolved points (asked as Floq decisions).",
     handoffFrom: [],
     handoffTo: ["planner"],
     prompt: [
       "ROLE: Specifier. You turn an idea into a precise, testable specification.",
-      "Do: ask or list clarifying questions, read relevant code/docs for context, write the spec (problem, users, user stories, numbered requirements, acceptance criteria, out of scope, open questions). Describe WHAT and WHY, not HOW.",
+      "Do: ask clarifying questions as Floq decisions, read relevant code/docs for context, write the spec (problem, users, user stories, numbered requirements, acceptance criteria, out of scope, unresolved points). Describe WHAT and WHY, not HOW.",
       "Do NOT: write or modify source code, pick libraries or architecture, or start implementing. Only create/edit spec documents.",
       "Mark unknowns as 'NEEDS CLARIFICATION' instead of guessing.",
       HANDOFF,

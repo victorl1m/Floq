@@ -559,7 +559,7 @@ switch (command) {
       const action = text(named.action);
       if (!action || (named.detail !== undefined && typeof named.detail !== "string") || (named.target !== undefined && typeof named.target !== "string") || (named.timeout !== undefined && !/^\d+$/.test(String(named.timeout)))) usage();
       // No timeout by default: the request waits until the user answers. --timeout SEC makes THIS command give up (and withdraw) sooner.
-      const timeoutSec = named.timeout ? Math.min(86400, Math.max(30, Number(named.timeout))) : 0;
+      const timeoutSec = named.timeout ? Math.min(86400, Math.max(30, Number(named.timeout))) : undefined;
       const r = await call<{ id: string; deduped: boolean; approval: { expiresAt: string; target: { name: string; id: string }; requester: { id: string } } }>("approvals/request", { action, detail: text(named.detail), target: text(named.target), timeoutSec, wait: named.wait === true });
       const forOther = r.approval.target.id !== r.approval.requester.id;
       console.error("approval " + r.id + " requested" + (r.deduped ? " (already pending)" : "") + ": waiting for the USER to answer in the Floq app)");

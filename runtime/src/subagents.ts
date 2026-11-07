@@ -108,7 +108,7 @@ export function buildSubagentInstruction(options: { enabled: boolean; depth: num
   }
   if (options.crossProject !== false) lines.push(...CROSS_PROJECT_LINES);
   lines.push(...WORKFLOW_LINES, ...APPROVAL_LINES);
-  if (depth > 0) lines.push(`You are a subagent (depth ${depth}). Do the task you were given, report concisely (result, files changed, open questions), and never exceed it.`);
+  if (depth > 0) lines.push(`You are a subagent (depth ${depth}). Do the task you were given, never exceed it, and report concisely (result, files changed, decision ids asked). Send questions to your parent with floq ask-parent, not the user.`);
   lines.push(
     "Delegate by default: when work splits into independent parts (separate modules or files, research vs. implementation, implementation vs. review or tests, parallel investigations), recruit Floq subagents and run them in parallel instead of doing everything alone. Do small or tightly coupled work yourself.",
     "Use Floq subagents only. Provider-native subagents (Claude Code's Agent/Task tool, background agents, Codex multi_agent) are DISABLED in Floq and will be refused: do not try them, do not retry them. Recruit instead with `floq subagent recruit \"Name\" --task \"...\"`.",
@@ -200,7 +200,7 @@ export function assertNoEscalation(parentRole: string | null, childRole: string 
 /** First message for a subagent: who recruited it, then the task. The role preset header is added by the manager. */
 export function buildSubagentBrief(parentName: string, depth: number, task: string): string {
   return [
-    `[Floq subagent] You were recruited by "${oneLine(parentName, 60)}" (subagent depth ${depth}). Do only the task below, report concisely (result, files changed, open questions), and do not wait for further input once it is done.`,
+    `[Floq subagent] You were recruited by "${oneLine(parentName, 60)}" (subagent depth ${depth}). Do only the task below, report concisely (result, files changed, decision ids asked). Send questions to your parent with floq ask-parent, not the user, and do not wait for further input once it is done.`,
     "",
     "Task:",
     task,

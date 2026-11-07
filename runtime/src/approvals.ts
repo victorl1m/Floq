@@ -249,7 +249,8 @@ export class Approvals {
 
     // The user decides when to answer: nothing expires while pending. ttlMs is only how long a GRANT stays usable.
     const ttlMs = APPROVAL_DEFAULT_TTL_MS;
-    if (input.ttlSec !== undefined && input.ttlSec !== null && input.ttlSec !== "") {
+    // 0 = "no timeout" (what the CLI sends when --timeout is omitted).
+    if (input.ttlSec !== undefined && input.ttlSec !== null && input.ttlSec !== "" && input.ttlSec !== 0) {
       const sec = Number(input.ttlSec);
       if (!Number.isFinite(sec) || sec <= 0) throw badRequest("timeout must be a positive number of seconds", "invalid_timeout");
       // accepted for older agents, but no longer limits how long the request waits
