@@ -11,7 +11,7 @@ const quiet = () => undefined;
 const mk = async (plugins: any[], storage?: "schema" | "prefix") => {
   const f = await fakePool();
   await f.addUser("admin");
-  return { ...f, host: new PluginHost(f.pool as never, { plugins, vault: vault as never, storage, sink: quiet, retryDelaysMs: [0, 0] }) };
+  return { ...f, host: new PluginHost(f.pool as never, { plugins, encryptionKey: Buffer.alloc(32, 9), storage, sink: quiet, retryDelaysMs: [0, 0] }) };
 };
 const rows = async (db: any, sql: string) => (await db.query(sql)).rows;
 
@@ -101,7 +101,7 @@ test("a failing plugin does not stop others on load; enabled plugins restart on 
   const f = await fakePool();
   await f.addUser("admin");
   const a = makeEcho();
-  const first = new PluginHost(f.pool as never, { plugins: [a.plugin], vault: vault as never, sink: quiet });
+  const first = new PluginHost(f.pool as never, { plugins: [a.plugin], encryptionKey: Buffer.alloc(32, 9), sink: quiet });
   await first.load();
   await first.enable("echo", "admin");
   const probe2 = { starts: 0, stops: 0, failStarts: 99 };
@@ -109,7 +109,7 @@ test("a failing plugin does not stop others on load; enabled plugins restart on 
   const good = makeEcho(undefined, { id: "good" });
   await f.db.exec(`UPDATE floq_plugins SET enabled = true WHERE id = 'echo'`);
   await f.db.exec(`INSERT INTO floq_plugins (id, enabled) VALUES ('flaky', true), ('good', true)`);
-  const second = new PluginHost(f.pool as never, { plugins: [flaky.plugin, good.plugin, makeEcho().plugin], vault: vault as never, sink: quiet, retryDelaysMs: [0, 0] });
+  const second = new PluginHost(f.pool as never, { plugins: [flaky.plugin, good.plugin, makeEcho().plugin], encryptionKey: Buffer.alloc(32, 9), sink: quiet, retryDelaysMs: [0, 0] });
   await second.load();
   assert.equal(second.statusOf("flaky"), "failed");
   // a boot-time failure keeps enabled=true so the next boot retries; it is not switched off for good
@@ -132,7 +132,7 @@ test("retries wait between attempts (backoff) and a later successful start clear
   const f = await fakePool(); await f.addUser("admin");
   const stamps: number[] = [];
   const timed = { ...plugin, start(ctx: any) { stamps.push(Date.now()); return plugin.start!(ctx); } };
-  const host = new PluginHost(f.pool as never, { plugins: [timed], vault: vault as never, sink: quiet, retryDelaysMs: [40, 80] });
+  const host = new PluginHost(f.pool as never, { plugins: [timed], encryptionKey: Buffer.alloc(32, 9), sink: quiet, retryDelaysMs: [40, 80] });
   await host.load();
   await host.enable("echo", "admin");
   assert.ok(stamps[1] - stamps[0] >= 35 && stamps[2] - stamps[1] >= 75, JSON.stringify(stamps));

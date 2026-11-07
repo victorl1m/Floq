@@ -35,8 +35,9 @@ test('kit components render every state with semantic token classes only', async
     assert.match(err, /role="alert"/); assert.match(err, /Retry/);
     assert.doesNotMatch(state({ state: 'error' }), /Retry/);
     const nc = state({ state: 'not-configured', missingSecrets: ['MOVIDESK_TOKEN'], missingSettings: ['baseUrl'] });
-    assert.match(nc, /MOVIDESK_TOKEN/); assert.match(nc, /baseUrl/); assert.match(nc, /Open Secrets/); assert.match(nc, /Plugin settings/);
-    assert.doesNotMatch(state({ state: 'not-configured', missingSettings: ['baseUrl'] }), /Open Secrets/);
+    assert.match(nc, /MOVIDESK_TOKEN/); assert.match(nc, /baseUrl/); assert.match(nc, /Open plugin settings/); assert.doesNotMatch(nc, /Open Secrets/);
+    assert.doesNotMatch(state({ state: 'not-configured', missingSettings: ['baseUrl'] }), /Open plugin settings/);
+    assert.match(state({ state: 'not-configured', missingSettings: ['baseUrl'] }), /Plugin settings/);
     assert.match(state({ state: 'disabled' }), /turned off/);
     const task = { sourceId: 'p/s', externalId: 'T-1042', title: 'Fix login', status: 'Open', statusCategory: 'doing', url: 'https://x.test/1', updatedAt: '2026-01-01T00:00:00.000Z', fields: [], assignee: 'Ann' };
     const row = renderToStaticMarkup(h(kit.ExternalTaskRow, { task, sourceLabel: 'Movidesk' }));

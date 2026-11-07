@@ -108,7 +108,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   });
   void approvals.init();
   plugins?.setApprovals(approvals);
-  const decisions = new Decisions({ pool, scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
+  const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text), scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
   const decisionsReady = decisions.init();
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.
@@ -736,7 +736,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
     if (plugins && (url.pathname === "/v1/plugins" || url.pathname.startsWith("/v1/plugins/") || url.pathname === "/v1/task-sources" || url.pathname.startsWith("/v1/task-sources/"))) {
       const result = await plugins.handle({
         userId, method, pathname: url.pathname, query: url.searchParams,
-        readBody: () => (method === "POST" || method === "PUT" ? readJson<unknown>(req) : Promise.resolve(undefined)),
+        readBody: (limit?: number) => (method === "POST" || method === "PUT" ? readJson<unknown>(req, limit) : Promise.resolve(undefined)),
         requireAdmin: () => requireAdmin(pool, config.bootstrapAdminEmail, userId),
       });
       if (result?.raw) {
@@ -744,6 +744,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
         res.end(result.raw.text);
         return;
       }
+      if (result?.status === 204) { res.writeHead(204, { "Cache-Control": "no-store" }); res.end(); return; }
       if (result) return send(res, result.status, result.body);
     }
 

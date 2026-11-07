@@ -54,6 +54,8 @@ import type {
   IncomingOrganizationInvitation,
   TaskBoard,
   PluginInfo,
+  PluginSecretMigration,
+  PluginSecretStatus,
   PluginSettingValues,
   TaskSourceInfo,
   ExternalTask,
@@ -510,6 +512,27 @@ export class RuntimeClient {
 
   async savePluginSettings(id: string, settings: PluginSettingValues): Promise<PluginSettingValues> {
     return (await this.call<{ settings: PluginSettingValues }>("PUT", `/v1/plugins/${encodeURIComponent(id)}/settings`, { settings })).settings;
+  }
+
+  async getPluginSecrets(id: string): Promise<PluginSecretStatus[]> {
+    return (await this.call<{ secrets: PluginSecretStatus[] }>("GET", `/v1/plugins/${encodeURIComponent(id)}/secrets`)).secrets;
+  }
+
+  /** Write-only: the value is sent once and never stored by the app. */
+  async setPluginSecret(id: string, name: string, value: string): Promise<void> {
+    await this.call<void>("PUT", `/v1/plugins/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`, { value });
+  }
+
+  async deletePluginSecret(id: string, name: string): Promise<void> {
+    await this.call<void>("DELETE", `/v1/plugins/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`);
+  }
+
+  async getPluginSecretMigrations(): Promise<PluginSecretMigration[]> {
+    return (await this.call<{ items: PluginSecretMigration[] }>("GET", "/v1/plugins/secret-migrations")).items;
+  }
+
+  async dismissPluginSecretMigrations(): Promise<void> {
+    await this.call<void>("POST", "/v1/plugins/secret-migrations/dismiss");
   }
 
   /** Call a route the plugin registered under `/v1/plugins/<id>/api/`. `path` starts with `/`. */

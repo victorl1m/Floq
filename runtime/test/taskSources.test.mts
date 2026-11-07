@@ -23,7 +23,7 @@ async function setup(opts: { provider?: any; manifest?: any } = {}) {
   };
   let now = 1_000_000;
   const plugin = definePlugin({ manifest: manifest(opts.manifest), start(ctx) { ctx.taskSources.register({ id: "all", provider }); } });
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: { async reveal() { return {}; } } as never, sink: () => undefined, now: () => now });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined, now: () => now });
   await host.load();
   await host.enable("tix", "u1");
   const get = (userId: string, path: string) => host.handle({ userId, method: "GET", pathname: new URL("http://x" + path).pathname, query: new URL("http://x" + path).searchParams, readBody: async () => undefined, requireAdmin: async () => undefined });
@@ -114,7 +114,7 @@ test("an undeclared source cannot be registered; disabling removes sources", asy
   const f = await fakePool(); await f.addUser("u1");
   let err = "";
   const plugin = definePlugin({ manifest: manifest(), start(ctx) { try { ctx.taskSources.register({ id: "nope", provider: {} as never }); } catch (e) { err = String(e); } ctx.taskSources.register({ id: "all", provider: { async list() { return { items: [] }; }, async get() { return null; } } }); } });
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: { async reveal() { return {}; } } as never, sink: () => undefined });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
   await host.load(); await host.enable("tix", "u1");
   assert.match(err, /not declared/);
   assert.ok(host.taskSources.has("tix", "all"));
@@ -127,7 +127,6 @@ test("an undeclared source cannot be registered; disabling removes sources", asy
 const TOK = "tix/Secret+value \"q\" 77";
 async function leaky(mode: "throw" | "field" | "url" | "http") {
   const f = await fakePool(); await f.addUser("u1");
-  await f.db.exec(`INSERT INTO vault_secrets (user_id, name, value_enc) VALUES ('u1', 'TIX_TOKEN', 'enc')`);
   const logs: unknown[] = [];
   let pluginCtx: any;
   const plugin = definePlugin({
@@ -148,9 +147,9 @@ async function leaky(mode: "throw" | "field" | "url" | "http") {
       } });
     },
   });
-  const vault = { async reveal(_u: string, names: string[]) { return Object.fromEntries(names.map((n) => [n, TOK])); } };
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: vault as never, sink: (...a: unknown[]) => logs.push(a) });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: (...a: unknown[]) => logs.push(a) });
   await host.load(); await host.enable("tix", "u1");
+  await host.secrets.set("tix", "u1", "TIX_TOKEN", TOK, "u1");
   const call = (method: string, path: string, body?: unknown) => host.handle({ userId: "u1", method, pathname: new URL("http://x" + path).pathname, query: new URL("http://x" + path).searchParams, readBody: async () => body, requireAdmin: async () => undefined }) as Promise<any>;
   await call("PUT", "/v1/plugins/tix/user", { enabled: true });
   return { host, call, logs, ctx: () => pluginCtx };
@@ -194,8 +193,8 @@ test("H-1d: a failing stop() is logged scrubbed", async () => {
   const f = await fakePool(); await f.addUser("u1");
   const logs: unknown[] = [];
   const plugin = definePlugin({ manifest: manifest({ secrets: [{ name: "TIX_TOKEN" }] }), async start(ctx) { await ctx.secrets.get("u1", "TIX_TOKEN"); }, stop() { throw new Error("stop failed for " + TOK); } });
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: { async reveal(_u: string, n: string[]) { return Object.fromEntries(n.map((x) => [x, TOK])); } } as never, sink: (...a: unknown[]) => logs.push(a) });
-  await host.load(); await host.enable("tix", "u1"); await host.disable("tix");
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: (...a: unknown[]) => logs.push(a) });
+  await host.load(); await host.secrets.set("tix", "u1", "TIX_TOKEN", TOK, "u1"); await host.enable("tix", "u1"); await host.disable("tix");
   assert.ok(logs.some((l: any) => l[1] === "plugin.stop_failed"));
   clean(JSON.stringify(logs));
 });

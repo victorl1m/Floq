@@ -31,7 +31,7 @@ const COPY: Record<Exclude<PluginStateKind, "loading">, { title: string; descrip
 
 /** One component for loading, empty, error, not-configured and disabled, so every plugin reads the same. */
 export function PluginState({ state, title, description, onRetry, missingSecrets = [], missingSettings = [], label = "content", children }: PluginStateProps) {
-  const { openSecrets, openSettings } = usePlugins();
+  const { openSettings } = usePlugins();
   if (state === "loading") {
     return (
       <div role="status" aria-label={`Loading ${label}`} data-slot="plugin-state" data-state="loading" className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30">
@@ -56,14 +56,15 @@ export function PluginState({ state, title, description, onRetry, missingSecrets
       </EmptyHeader>
       {state === "not-configured" && (missingSecrets.length > 0 || missingSettings.length > 0) && (
         <ul className="max-w-sm space-y-1 text-left text-xs text-muted-foreground">
-          {missingSecrets.map((n) => <li key={"s" + n}>Secret <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">{n}</code></li>)}
+          {missingSecrets.map((n) => <li key={"s" + n}>Credential <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">{n}</code></li>)}
           {missingSettings.map((n) => <li key={"t" + n}>Setting <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">{n}</code></li>)}
         </ul>
       )}
       <EmptyContent className="flex-row flex-wrap justify-center gap-2">
         {state === "error" && onRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
-        {state === "not-configured" && missingSecrets.length > 0 && <Button size="sm" onClick={openSecrets}><IconKey /> Open Secrets</Button>}
-        {(state === "not-configured" || state === "disabled") && <Button variant="outline" size="sm" onClick={openSettings}><IconSettings /> Plugin settings</Button>}
+        {state === "not-configured" && missingSecrets.length > 0 && <Button size="sm" onClick={openSettings}><IconKey /> Open plugin settings</Button>}
+        {state === "disabled" && <Button variant="outline" size="sm" onClick={openSettings}><IconSettings /> Plugin settings</Button>}
+        {state === "not-configured" && missingSecrets.length === 0 && <Button variant="outline" size="sm" onClick={openSettings}><IconSettings /> Plugin settings</Button>}
         {children}
       </EmptyContent>
     </Empty>

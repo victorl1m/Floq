@@ -196,6 +196,7 @@
    theme in agent-canvas-page.tsx) drives React Flow's colorMode and these tokens. Dark keeps the OLED remap
    below; light inherits the app's light tokens and only adds canvas-specific surfaces. */
 .canvas-chrome {
+  /* Canvas overlay collisions respond to the canvas width, independently of titlebar collapse. */
   container-type: inline-size;
   container-name: canvas-stage;
 }
@@ -253,40 +254,6 @@
   /* No backdrop-filter: a live blur over the pannable canvas re-blurs every frame. */
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 12px 32px -26px rgb(0 0 0 / 0.72);
 }
-/* The tools row never shows a scrollbar. Setting overflow-x alone makes overflow-y compute to auto, so a focus ring,
-   a pressed-scale or a 1px rounding on click produced a vertical scrollbar. Vertical overflow is clipped instead;
-   the block padding (cancelled by the negative margin) keeps focus rings inside the clip box. Where the row really
-   is too narrow it scrolls sideways with hidden scrollbars. */
-.canvas-topbar-tools {
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 4px 2px;
-  margin: -4px -2px;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.canvas-topbar-tools::-webkit-scrollbar { display: none; width: 0; height: 0; }
-@container canvas-stage (min-width: 620px) {
-  .canvas-topbar-layout { display: flex; min-width: 0; align-items: center; gap: 0.5rem; }
-  .canvas-topbar-identity { order: 1; flex: 1 1 0%; }
-  .canvas-topbar-tools { order: 2; flex: 0 1 auto; min-width: 0; max-width: 58%; justify-content: center; overflow-x: auto; }
-  .canvas-topbar-actions { order: 3; flex: 1 1 0%; justify-content: flex-end; }
-}
-@container canvas-stage (max-width: 619px) {
-  .canvas-topbar-layout {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "identity actions" "tools tools";
-  }
-  .canvas-topbar-identity { grid-area: identity; }
-  .canvas-topbar-actions { grid-area: actions; justify-self: end; }
-  .canvas-topbar-tools {
-    grid-area: tools; justify-content: flex-start; overscroll-behavior-x: contain;
-    padding-inline: 8px; margin-inline: -6px; width: calc(100% + 12px);
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
-    mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
-  }
-  .canvas-link-mode-panel { margin-top: 5.5rem !important; }
-}
 :root[data-material="solid"] .canvas-topbar {
   background-color: #1c1c1e;
   background-image: none;
@@ -301,6 +268,35 @@
 }
 @media (forced-colors: active) {
   .canvas-topbar { color: CanvasText; border-color: CanvasText; background: Canvas; background-image: none; }
+}
+
+/* Keep the link hint centred at wide widths; reserve the left half for it when foreign wires share a narrow canvas. */
+@container canvas-stage (max-width: 700px) {
+  .canvas-link-hint-with-wires { left: 25% !important; max-width: calc(50% - 24px) !important; }
+}
+
+/* Canvas toolbar in the titlebar. Collapse is driven by the toolbar's own width (the sidebar is resizable). */
+.canvas-titlebar-toolbar { container: canvas-titlebar / inline-size; }
+/* Setting overflow-x alone makes overflow-y compute to auto, so a focus ring or 1px rounding produced a vertical scrollbar.
+   Vertical overflow is clipped instead; the block padding (cancelled by the negative margin) keeps focus rings inside the clip box. */
+.canvas-titlebar-tools {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 2px;
+  margin: -4px -2px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.canvas-titlebar-tools::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.canvas-titlebar-overflow { display: none; }
+@container canvas-titlebar (max-width: 639px) { .canvas-titlebar-name { display: none; } }
+@container canvas-titlebar (max-width: 600px) {
+  .canvas-titlebar-tools { display: none; }
+  .canvas-titlebar-overflow { display: inline-flex; }
+}
+@container canvas-titlebar (max-width: 299px) { .canvas-titlebar-new-label { display: none; } }
+@media (forced-colors: active) {
+  .canvas-titlebar-toolbar [aria-pressed="true"] { outline: 1px solid CanvasText; outline-offset: -1px; }
 }
 
 @utility material-content {

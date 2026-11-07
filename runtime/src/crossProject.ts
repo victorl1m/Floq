@@ -30,7 +30,7 @@ export function buildProvenance(from: CrossParty, hop: number): string {
 export function buildReplyHint(from: CrossParty, waiting: boolean): string {
   return waiting
     ? ` (Reply path: ${clean(from.title, 60) || "the sender"} is waiting for your final answer in this turn, just reply normally. You can also send later with: floq ask ${from.id} "...")`
-    : ` (Reply path: floq ask ${from.id} "your reply")`;
+    : ` (Reply path: floq ask ${from.id} "your reply" --no-wait)`;
 }
 
 export class CrossProjectGuard {

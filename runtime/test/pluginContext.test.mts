@@ -11,22 +11,23 @@ const SECRET = "tok_supersecretvalue_12345";
 async function setup(over: { fetchImpl?: any } = {}) {
   const f = await fakePool();
   await f.addUser("u1");
-  const reveals: unknown[][] = [];
-  const vault = { async reveal(...args: unknown[]) { reveals.push(args); return { ECHO_TOKEN: SECRET }; } };
   const logs: { level: string; event: string; fields: Record<string, unknown> }[] = [];
-  const { plugin, probe } = makeEcho();
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: vault as never, fetchImpl: over.fetchImpl, sink: (level, event, fields) => logs.push({ level, event, fields }) });
+  const { plugin, probe } = makeEcho(undefined, { scope: "user" });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), fetchImpl: over.fetchImpl, sink: (level, event, fields) => logs.push({ level, event, fields }) });
   await host.load();
   await host.enable("echo", "u1");
-  return { ...f, host, ctx: probe.ctx, reveals, logs };
+  await host.secrets.set("echo", "u1", "ECHO_TOKEN", SECRET, "u1");
+  return { ...f, host, ctx: probe.ctx, logs };
 }
 
-test("secrets: undeclared names throw, declared go through the vault audited as plugin:<id>", async () => {
-  const { ctx, reveals } = await setup();
+test("secrets: undeclared names throw, declared come from the plugin store only (a vault row of the same name is ignored), audited", async () => {
+  const { ctx, db } = await setup();
+  await db.exec(`INSERT INTO vault_secrets (user_id, name, value_enc) VALUES ('u1', 'ECHO_TOKEN', 'not-a-real-ciphertext'), ('u1', 'OTHER_SECRET', 'x')`);
   await assert.rejects(ctx.secrets.get("u1", "OTHER_SECRET"), /not declared/);
-  assert.equal(reveals.length, 0);
   assert.equal(await ctx.secrets.get("u1", "ECHO_TOKEN"), SECRET);
-  assert.deepEqual(reveals[0], ["u1", ["ECHO_TOKEN"], null, "plugin:echo"]);
+  assert.equal(await ctx.secrets.get("nobody", "ECHO_TOKEN"), undefined);
+  const audit = (await db.query("SELECT plugin_id, owner_id, name, action FROM plugin_secret_audit WHERE action = 'resolve'")).rows;
+  assert.deepEqual(audit[0], { plugin_id: "echo", owner_id: "u1", name: "ECHO_TOKEN", action: "resolve" });
 });
 
 test("fetch: disallowed hosts and non-https are refused before any request", async () => {
@@ -121,25 +122,26 @@ test("route matching and host allow-list helpers", () => {
   for (const bad of ["a%2Fb", "a%5Cb", "%2E%2E", "%2e", "a%00b"]) assert.equal(matchRoute(e, "GET", "/items/" + bad), null, bad);
 });
 
-test("routes need contributes.routes; getInstall reads the enabling admin's vault and is install-scope only", async () => {
+test("routes need contributes.routes; getInstall reads the install-scope store and is install-scope only", async () => {
   const f = await fakePool(); await f.addUser("admin"); await f.addUser("member");
-  const reveals: unknown[][] = [];
-  const vault = { async reveal(...a: unknown[]) { reveals.push(a); return { ECHO_TOKEN: SECRET }; } };
   const mk = async (manifest: Record<string, unknown>, id: string) => {
     const { plugin, probe } = makeEcho(undefined, { id, ...manifest });
-    const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: vault as never, sink: () => undefined });
+    const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
     await host.load(); return { host, probe, plugin };
   };
   // routes flag
   const nr = makeEcho(undefined, { id: "nr", contributes: { routes: false, migrations: false } });
-  const h1 = new PluginHost(f.pool as never, { plugins: [nr.plugin], vault: vault as never, sink: () => undefined, retryDelaysMs: [0, 0] });
+  const h1 = new PluginHost(f.pool as never, { plugins: [nr.plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined, retryDelaysMs: [0, 0] });
   await h1.load();
   await assert.rejects(h1.enable("nr", "admin"), (e: any) => e.code === "plugin_start_failed");
   // install scope
   const inst = await mk({ scope: "install", contributes: { routes: true, migrations: false } }, "inst");
   await inst.host.enable("inst", "admin");
+  await f.db.exec(`INSERT INTO vault_secrets (user_id, name, value_enc) VALUES ('admin', 'ECHO_TOKEN', 'not-a-real-ciphertext')`);
+  assert.equal(await inst.probe.ctx.secrets.getInstall("ECHO_TOKEN"), undefined); // the admin's vault row is never consulted
+  await inst.host.secrets.set("inst", "*install*", "ECHO_TOKEN", SECRET, "admin");
   assert.equal(await inst.probe.ctx.secrets.getInstall("ECHO_TOKEN"), SECRET);
-  assert.deepEqual(reveals.at(-1), ["admin", ["ECHO_TOKEN"], null, "plugin:inst"]);
+  await assert.rejects(inst.probe.ctx.secrets.get("admin", "ECHO_TOKEN"), /user-scoped/);
   await assert.rejects(inst.probe.ctx.secrets.getInstall("NOPE"), /not declared/);
   // user scope refuses
   const usr = await mk({ scope: "user", contributes: { routes: true, migrations: false } }, "usr");
@@ -162,7 +164,7 @@ test("fetchUserUrl reaches only the origin of a saved url setting (self-hosted s
   const seen: string[] = [];
   const mk = async (manifest: Record<string, unknown>, id: string) => {
     const { plugin, probe } = makeEcho(undefined, { id, contributes: { routes: true, migrations: false }, ...manifest });
-    const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: { async reveal() { return {}; } } as never, fetchImpl: (async (u: URL) => { seen.push(String(u)); return new Response("ok"); }) as never, sink: () => undefined });
+    const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), fetchImpl: (async (u: URL) => { seen.push(String(u)); return new Response("ok"); }) as never, sink: () => undefined });
     await host.load(); await host.enable(id, "admin");
     return { host, ctx: probe.ctx };
   };

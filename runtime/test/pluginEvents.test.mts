@@ -31,7 +31,7 @@ test("/v1/events delivers plugin frames to the target user's socket only", async
   const f = await fakePool(); await f.addUser("u1"); await f.addUser("u2");
   const vault = new Vault(f.pool as never, { encryptionKey: Buffer.alloc(32, 3) } as never);
   const { plugin, probe } = makeEcho();
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: vault as never, sink: () => undefined });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
   await host.load(); await host.enable("echo", "u1");
   const tokens: Record<string, string> = { t1: "u1", t2: "u2" };
   const auth = { handler() {}, api: { getSession: async ({ headers }: any) => { const u = tokens[(headers.get("authorization") ?? "").replace("Bearer ", "")]; return u ? { user: { id: u } } : null; } } };

@@ -27,7 +27,7 @@ Manifests are plain objects (the example keeps its manifest inline in `index.ts`
 | `tier` | Must be `"core"`. |
 | `scope` | `"user"`: each user switches it on and configures it. `"install"`: one admin-wide configuration (for example WAHA). |
 | `icon` | A Tabler icon name registered in `src/plugins/icons.ts` (add one there if needed; unknown names fall back to a plug). |
-| `secrets[]` | `{ name, description?, required? }`. `name` must match the vault format `^[A-Z][A-Z0-9_]{0,63}$`. A plugin can only read secrets it declares. |
+| `secrets[]` | `{ name, description?, required? }`. `name` must match `^[A-Z][A-Z0-9_]{0,63}$`. A plugin can only read secrets it declares. They live in the plugin credential store, never in the user's vault (see [Credentials](#credentials-plugin-secrets)). |
 | `network.allow[]` | Hosts `ctx.fetch` may reach: exact (`api.example.com`) or `*.suffix` with at least two labels after `*.`. No IP addresses. HTTPS only. |
 | `settings[]` | `{ key, type, label, description?, required?, options? }`. Types: `text`, `url`, `number`, `boolean`, `select` (needs `options`), `secretRef`. Rendered by the host in Settings > Plugins and validated on save. |
 | `contributes.views[]` | `{ id, label, icon? }`. Appear in the main navigation below Terminal, after a separator. |
@@ -36,7 +36,7 @@ Manifests are plain objects (the example keeps its manifest inline in `index.ts`
 | `contributes.routes` | `true` lets the plugin register `/v1/plugins/<id>/api/*` routes. |
 | `contributes.internalRoutes` | `true` lets agents call the plugin (`floq plugin call`). |
 | `contributes.webhooks[]` | Hook names exposed unauthenticated at `/v1/plugins/<id>/hooks/<name>/<installToken>`. |
-| `contributes.mcpServers[]` | `{ name, type, command/args/env \| url/headers, envSecrets, headerSecrets }`. Installed per user as `plugin-<id>-<name>`; secrets are `floq-vault` references only. |
+| `contributes.mcpServers[]` | `{ name, type, command/args/env \| url/headers }`. Installed per user as `plugin-<id>-<name>`. **A server that carries a secret (`envSecrets`, `headerSecrets`) is rejected** with "plugin secrets cannot be passed into the agent sandbox": an MCP server runs inside the agent's sandbox, so a value handed to it is a value the agent can read. A runtime MCP gateway that keeps the value server-side is a planned follow-up. |
 | `contributes.skills[]` | Folder names under `<plugin dir>/skills/<name>/` (a `SKILL.md` plus text files). They are listed read-only in the bundled scope with a `plugin:<id>` origin, and **copied into the agent home** (global scope, Claude and Codex) of each user the plugin is on for, so agents can load them. Disabling removes the copies. `runtime/scripts/copy-plugin-assets.mjs` (part of `npm run build`) copies the folders next to the compiled plugin. |
 | `contributes.migrations` | `true` if the plugin owns a database schema. |
 | `contributes.settingsPanel` | `true` if the UI half supplies a custom panel below the generic form. |
@@ -57,8 +57,8 @@ Migrations are an ordered array `{ id, sql }` applied in one transaction togethe
 | `routes.get/post/put/delete(pattern, handler)` | `/v1/plugins/<id>/api/<pattern>`. Runs as the calling user. `handler({ userId, params, query, body })`; the return value is the JSON body. Throw `HttpError` for other statuses. Decoded params never contain `/`, `\`, NUL or dot segments. |
 | `internalRoutes.call(pattern, handler)` | Agent-callable (`floq plugin call <id> <path> [--json BODY]`). Always POST on the wire; the handler also receives `sessionId`. Output is sanitized before the agent sees it. |
 | `webhooks.on(name, handler, { verify? })` | Unauthenticated hook. The host checks the install token (constant time), caps the body at 256 KiB, rate-limits, then runs `verify` (for example an HMAC) and the handler. There is no calling user; use `secrets.getInstall`. |
-| `secrets.get(userId, name)` | The user's own secret, declared names only. Audited as session `plugin:<id>`. |
-| `secrets.getInstall(name)` | `scope:"install"` only: the secret of the admin who enabled the plugin. |
+| `secrets.get(userId, name)` | `scope:"user"` only: that user's own credential, declared names only; **throws for an install-scope plugin**. Reads are audited, sampled to at most one row per secret per minute. |
+| `secrets.getInstall(name)` | `scope:"install"` only: the installation's credential (owner `'*install*'`, set by any administrator and kept when that admin leaves). Throws for a user-scope plugin. |
 | `settings.get(userId)` | The validated settings values (install config for `scope:"install"`). |
 | `fetch(url, init)` | HTTPS only, allow-listed hosts, no redirects, 15 s timeout, 5 MiB cap. Returns `{ status, ok, headers, bytes, text(), json() }`. |
 | `db.query(sql, params)` / `db.forUser(userId)` | Runs in a transaction scoped to the plugin schema. `forUser` makes `$1` the user id. |
@@ -83,7 +83,20 @@ Plugin UI imports **only** from `react`, `@tabler/icons-react`, `@/plugins/kit`,
 - Use `PluginPage` for the view shell and `PluginState` for `loading | empty | error | not-configured | disabled`. Error states keep what the user typed and offer Retry.
 - Use semantic tokens only (`bg-card`, `text-muted-foreground`, `border-border`, …; the list is `src/plugins/tokens.ts`). No hex or `rgb()` colors, no palette utilities like `bg-red-500`, no `backdrop-filter`, no keyframes or ambient motion. Theme, material, reduced motion and forced colors come from the host.
 - Icons are Tabler only, by name in the manifest. Plugin views follow the same density as core pages: 13-14 px rows, 28-32 px headings.
-- Credentials are vault secrets referenced by name. Never ask for a token in a plugin settings field.
+- Credentials are declared in `secrets[]` and entered by the user in **Settings > Plugins > Configure > Credentials** (write-only). Never ask for a token in a plugin settings field, and never link users to the Secrets page for them.
+
+## Credentials (plugin secrets)
+
+Plugin credentials are **not vault secrets.** They have their own table (`plugin_secrets`), their own encryption key and their own API; the vault (`floq vault`, the Secrets page, `/internal/vault/*`, session env injection) never sees them.
+
+- **Where users enter them:** Settings > Plugins > Configure > **Credentials**: one row per declared secret with a Present/Missing badge, Set/Replace (a password input, cleared after every save) and Remove (with a confirmation). Values are write-only: no screen and no API returns one. For an `install`-scope plugin only administrators edit; members see "Configured by an administrator". The not-configured state of a task source links to Settings > Plugins.
+- **API** (user token only, never an agent token): `GET /v1/plugins/:id/secrets` (presence only), `PUT|DELETE /v1/plugins/:id/secrets/:name`. `GET /v1/plugins` keeps `secrets[].present`.
+- **Encryption:** AES-256-GCM with a subkey derived from the runtime key (HKDF, info `plugin-secrets/v1`) and AAD `plugin-secret:v1:<plugin>:<owner>:<name>`, so a ciphertext copied to another plugin, owner, name or to the vault does not decrypt. `user` scope is owned by the user, `install` scope by `'*install*'`.
+- **Reading them:** only host code, through `ctx.secrets.get(userId, name)` (user scope) or `ctx.secrets.getInstall(name)` (install scope). A plugin cannot read another plugin's credentials.
+- **They never enter the agent sandbox.** An agent's CLI, its MCP servers and every process in its sandbox run as the same user with the same session token, so anything placed there is readable by the agent. That is why plugin MCP servers that need a secret are rejected (see `contributes.mcpServers[]`), and why agents use a plugin through server-side routes (`floq plugin call`), which return results, never credentials. Results and errors are scrubbed of the secrets the plugin revealed (raw, URL-encoded, JSON-escaped).
+- **Audit:** `set` and `remove` are always recorded; reads are sampled to one row per secret per minute. Rows older than 90 days are deleted, and a plugin keeps at most 5000 rows (the oldest go first). Audit rows hold plugin, owner, name, action and actor, never a value.
+- **Migration from the vault:** older installs kept plugin credentials in the vault. The runtime copies them into the plugin store and deletes the vault copy, once per (plugin, owner, name). It keeps the vault copy while it cannot read the user's MCP configs or while one of the user's own MCP entries still references `${vault:NAME}`, and retries when that user lists plugins, opens the secrets list or enables a plugin (and at boot), so the copy goes as soon as it is safe. The user sees a one-time notice on Settings > Plugins and the Secrets page; notices name secrets only.
+- **Trust:** a plugin runs inside the runtime process and could read `plugin_secrets` directly. The store protects credentials from agents and from the vault surface, not from malicious installed code (see the trust model above).
 
 ## 7. Security checklist
 
@@ -102,7 +115,7 @@ Plugin UI imports **only** from `react`, `@tabler/icons-react`, `@/plugins/kit`,
 Runtime (see `runtime/test/pluginHost.test.mts`, `pluginContext.test.mts`, `pluginsServer.test.mts`):
 
 1. Build with `cd runtime && npx tsc -p tsconfig.json` (the plain `npm run build` also runs `prisma generate`, which needs `DATABASE_URL`).
-2. Use `fakePool()` from `runtime/test/fixtures/plugins/pgPool.mts` (PGlite behind a `pg.Pool`-shaped object) and construct a `PluginHost` with your definition, a stub vault and a `sink` to capture logs.
+2. Use `fakePool()` from `runtime/test/fixtures/plugins/pgPool.mts` (PGlite behind a `pg.Pool`-shaped object) and construct a `PluginHost` with your definition, an `encryptionKey` (any 32-byte buffer) and a `sink` to capture logs. Seed a credential with `host.secrets.set(pluginId, ownerId, name, value, actor)` (`ownerId` is the user id, or `'*install*'` for an install-scope plugin).
 3. Call `host.enable(id, "admin")`, then drive routes with `host.handle({...})` or through `createRuntimeServer` like `pluginsServer.test.mts`. Mock `fetchImpl` for upstream calls and assert the token never appears in errors or logs.
 4. Run: `node --import ./node_modules/.ptystub/register.mjs --import tsx --test test/<file>.test.mts`.
 
@@ -110,7 +123,7 @@ Frontend: `npx tsc --noEmit`, then `node --test scripts/test-plugin-host.mjs scr
 
 ## 9. Installable plugins (floq-plugins)
 
-Besides the plugins compiled into Floq, an **administrator** can install, update and uninstall plugins from **Settings > Plugins > Browse plugins**. Packages come from the `victorl1m/floq-plugins` repository; neither the Tauri app nor the runtime image needs a rebuild. Installed plugins use the same machinery as the ones in this guide (same manifest, `PluginContext`, kit), so everything above applies.
+Floq ships no plugins compiled in (apart from the dev-only example); an **administrator** can install, update and uninstall plugins from **Settings > Plugins > Browse plugins**. Packages come from the `victorl1m/floq-plugins` repository; neither the Tauri app nor the runtime image needs a rebuild. Installed plugins use the same machinery as the ones in this guide (same manifest, `PluginContext`, kit), so everything above applies.
 
 ### Trust
 
@@ -139,7 +152,7 @@ Verify everything first (sha256, JSON shape, `parseManifest`, id and version equ
 
 - **Update**: only to a strictly newer catalog version (equal is "up to date", older is refused). The new package is verified and loaded as a new file; the old version is stopped and, if the plugin was on, the new one starts (running new migrations). If it cannot start, the previous version is restored and keeps running. Node cannot unload the old module, so it stays in memory until the next restart.
 - **Uninstall**: turns the plugin off (removing its MCP servers and skill copies), then deletes the package row and cache folder. **Data is kept** (schema `plugin_<id>`, settings, kv), so installing it again picks it up. **Delete data** is a separate admin action with a typed confirmation; it drops the schema and the settings rows and is refused while the plugin is running.
-- Built-in plugins are listed in the catalog but can be neither installed over nor uninstalled. The compiled-in copies of Movidesk, Azure DevOps and WAHA stay until the packages have passed an end-to-end check.
+- Built-in plugins (compiled into the runtime; today only the dev-only `example`) can be neither installed over nor uninstalled. Movidesk, Azure DevOps and WAHA are no longer built in: each lives in its own repository (`victorl1m/floq-plugin-<id>`) and is installed from Settings > Plugins > Browse plugins.
 
 ### Installing from a GitHub repository (any owner)
 In Browse plugins an administrator can paste `https://github.com/<owner>/<repo>`: a Floq plugin, or one of their own. Floq asks the GitHub release API for the repository's **newest published release** and takes its single `*.floqpkg.json` asset, which must be a release download of that same repository (never a branch or a file in the tree). The same limits apply as for catalog packages: https, `github.com`, redirects only to the pinned CDN hosts, 30 s, 5 MiB, manifest validation, no built-in id, skill path rules.

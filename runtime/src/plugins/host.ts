@@ -5,6 +5,8 @@ import type pg from "pg";
 import { HttpError, badRequest, conflict, notFound } from "../errors.js";
 import { log } from "../logger.js";
 import { VAULT_NAME } from "../mcpConfig.js";
+import { INSTALL_OWNER, PluginSecrets } from "./secrets.js";
+import { migrateVaultSecrets, type VaultReferences } from "./secretMigration.js";
 import { PluginEvents } from "./events.js";
 import { TaskSourceRegistry } from "./taskSources.js";
 import { buildContext, expandSql, matchRoute, type BuiltContext, type ContextDeps } from "./context.js";
@@ -26,6 +28,8 @@ type Pool = Pick<pg.Pool, "query" | "connect">;
 export interface PluginMcpPort {
   install(userId: string, body: Record<string, unknown>): Promise<unknown>;
   remove(userId: string, name: string, provider: "claude" | "codex"): Promise<unknown>;
+  /** Names of the user's global MCP entries (not plugin-installed) that reference `${vault:NAME}` secrets, or null when the configs cannot be read now. Used by the one-time secret migration. */
+  vaultReferences?(userId: string): Promise<{ entry: string; secretNames: string[] }[] | null>;
 }
 /**
  * `setPluginSkills` lists the folders read-only in the bundled scope. `installSkill` / `removeSkill` put them into (and take them out of)
@@ -62,32 +66,28 @@ export function readSkillFolder(dir: string, name: string): Record<string, strin
 export const mcpEntryName = (pluginId: string, name: string) => `plugin-${pluginId}-${name}`;
 
 /**
- * Body for `installMcp`: secrets are `${vault:NAME}` references only, so the written config holds `floq-vault` wrappers and never a value.
- * An HTTP server with secret headers is Claude-only (Codex cannot resolve them), like any manual install.
+ * Body for `installMcp`. Plugin MCP servers carry no secrets (the manifest validator rejects envSecrets/headerSecrets), so nothing here is a
+ * secret reference. Follow-up: a runtime-side plugin MCP gateway will serve secret-bearing capability without values entering the sandbox.
  */
 export function mcpInstallBody(pluginId: string, decl: PluginMcpServerDecl): Record<string, unknown> {
-  const ref = (n: string) => "${vault:" + n + "}";
   const server: Record<string, unknown> = { type: decl.type };
-  if (decl.type === "stdio") {
-    server.command = decl.command; server.args = decl.args ?? [];
-    server.env = { ...(decl.env ?? {}), ...Object.fromEntries(Object.entries(decl.envSecrets ?? {}).map(([k, secret]) => [k, ref(secret)])) };
-  } else {
-    server.url = decl.url;
-    server.headers = { ...(decl.headers ?? {}), ...Object.fromEntries(Object.entries(decl.headerSecrets ?? {}).map(([k, tpl]) => [k, tpl.replace(/\{\{([^{}]*)\}\}/g, (_m, n: string) => ref(n))])) };
-  }
-  const claudeOnly = decl.type === "http" && Object.keys(decl.headerSecrets ?? {}).length > 0;
-  return { scope: "global", providers: claudeOnly ? "claude" : "both", name: mcpEntryName(pluginId, decl.name), server };
+  if (decl.type === "stdio") { server.command = decl.command; server.args = decl.args ?? []; server.env = { ...(decl.env ?? {}) }; }
+  else { server.url = decl.url; server.headers = { ...(decl.headers ?? {}) }; }
+  return { scope: "global", providers: "both", name: mcpEntryName(pluginId, decl.name), server };
 }
 
 export interface PluginHostOptions {
   plugins: PluginDefinition[];
-  vault: ContextDeps["vault"];
+  /** The runtime master key (config.encryptionKey). The plugin store derives its own subkey; the vault is never touched except by the one-time migration. */
+  encryptionKey: Buffer;
   /** "schema": each plugin gets schema plugin_<id>. "prefix": tables in the default schema prefixed plugin_<id>__ (when CREATE SCHEMA is not allowed). */
   storage?: "schema" | "prefix";
   fetchImpl?: ContextDeps["fetchImpl"];
   now?: () => number;
   /** Waits between start attempts (default 1 s, 5 s). Tests pass [0, 0]. */
   retryDelaysMs?: number[];
+  /** Minimum time between lazy credential-migration attempts for one user (default 60 s). Tests pass 0. */
+  lazyMigrationIntervalMs?: number;
   sink?: ContextDeps["sink"];
 }
 
@@ -133,7 +133,8 @@ export interface HandleInput {
   method: string;
   pathname: string;
   query: URLSearchParams;
-  readBody: () => Promise<unknown>;
+  /** `limit` caps the body in bytes (default: the server's limit). */
+  readBody: (limit?: number) => Promise<unknown>;
   requireAdmin: () => Promise<void>;
 }
 export interface HandleResult { status: number; body: unknown; /** A non-JSON response (the UI bundle). */ raw?: { contentType: string; text: string; headers?: Record<string, string> } }
@@ -157,11 +158,39 @@ export class PluginHost {
   readonly taskSources: TaskSourceRegistry;
   readonly events = new PluginEvents();
   private readonly hits = new Map<string, { count: number; resetAt: number }>();
+  readonly secrets: PluginSecrets;
   private mcp?: PluginMcpPort;
   private skills?: PluginSkillsPort;
 
   setMcp(port: PluginMcpPort): void { this.mcp = port; }
   setSkills(port: PluginSkillsPort): void { this.skills = port; }
+  private migrationPort?: Pick<PluginMcpPort, "remove" | "vaultReferences">;
+  /** The secret migration runs inside `load()`, before the server (and its `setMcp`) exists: boot code passes this narrower port first. */
+  setSecretMigrationPort(port: NonNullable<PluginHost["migrationPort"]>): void { this.migrationPort = port; }
+  private readonly lazyRuns = new Map<string, Promise<void>>();
+  private readonly lazyLast = new Map<string, number>();
+  private readonly lazySettled = new Set<string>();
+
+  /**
+   * Retry the credential migration for ONE user when something that needs it happens (listing plugins, the secrets list, enabling a plugin),
+   * not only at boot: at boot the user's MCP configs are often unreadable (their workspace is asleep), which leaves the vault copy in place.
+   * Single-flight and throttled per user; once nothing is pending the user is skipped until `force` (enabling a plugin can create new work).
+   * Never throws and callers never wait on it for correctness (`void host.lazyMigrate(...)`).
+   */
+  async lazyMigrate(userId: string, force = false): Promise<void> {
+    if (!this.migrationPort && !this.mcp) return;
+    if (!force && this.lazySettled.has(userId)) return;
+    const running = this.lazyRuns.get(userId);
+    if (running) return running;
+    const now = (this.opts.now ?? Date.now)();
+    const last = this.lazyLast.get(userId);
+    if (!force && last !== undefined && now - last < (this.opts.lazyMigrationIntervalMs ?? 60_000)) return;
+    if (this.lazyLast.size > 10_000) this.lazyLast.clear();
+    this.lazyLast.set(userId, now);
+    const run = this.migrateSecrets(userId).then((pending) => { if (pending) this.lazySettled.delete(userId); else this.lazySettled.add(userId); }, () => undefined).finally(() => { this.lazyRuns.delete(userId); });
+    this.lazyRuns.set(userId, run);
+    return run;
+  }
   private approvals?: ContextDeps["approvals"] extends (() => infer R) | undefined ? R : never;
 
   /** Called by the server once it has built Approvals. */
@@ -169,6 +198,7 @@ export class PluginHost {
 
   constructor(private readonly pool: Pool, private readonly opts: PluginHostOptions) {
     this.storage = opts.storage ?? "schema";
+    this.secrets = new PluginSecrets(pool, opts.encryptionKey, (pluginId) => this.entries.get(pluginId)?.manifest?.secrets.map((x) => x.name) ?? [], { now: opts.now });
     this.taskSources = new TaskSourceRegistry(opts.now);
     for (const def of opts.plugins) this.register(def, "builtin");
   }
@@ -206,6 +236,29 @@ export class PluginHost {
     const rows = await this.pool.query("SELECT id, enabled FROM floq_plugins");
     const enabled = new Set((rows.rows as { id: string; enabled: boolean }[]).filter((r) => r.enabled).map((r) => r.id));
     for (const e of this.entries.values()) await this.loadEntry(e, enabled);
+    await this.migrateSecrets();
+    await this.secrets.pruneAudit().catch((error) => this.log("error", "plugin.secret_audit_prune_failed", { error: msg(error).slice(0, 200) }));
+  }
+
+  /**
+   * Move existing plugin credentials out of the vault (everyone at boot, or one user lazily). Never throws: a failure leaves the vault rows and is
+   * retried on the next boot or lazy attempt. Resolves true while something is still pending.
+   */
+  private async migrateSecrets(onlyUser?: string): Promise<boolean> {
+    try {
+      const plugins = [...this.entries.values()].filter((e) => e.manifest && e.manifest.secrets.length).map((e) => ({ id: e.id, scope: e.manifest!.scope, secrets: e.manifest!.secrets.map((s) => s.name) }));
+      if (!plugins.length) return false;
+      const port = this.migrationPort ?? this.mcp;
+      return await migrateVaultSecrets({
+        pool: this.pool, secrets: this.secrets, masterKey: this.opts.encryptionKey, plugins, onlyUser,
+        references: async (userId) => (await port?.vaultReferences?.(userId)) ?? null,
+        removeMcp: async (userId, entry) => { for (const provider of ["claude", "codex"] as const) await port?.remove(userId, entry, provider).catch(() => undefined); },
+        log: (event, fields) => this.log("error", event, fields),
+      });
+    } catch (error) {
+      this.log("error", "plugin.secret_migration_failed", { error: msg(error).slice(0, 200) });
+      return true;
+    }
   }
 
   private async loadEntry(e: Entry, enabled: Set<string>): Promise<void> {
@@ -285,6 +338,9 @@ export class PluginHost {
         const tables = await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE $1", [prefix.replace(/_/g, "\\_") + "%"]);
         for (const t of tables.rows as { table_name: string }[]) if (t.table_name.startsWith(prefix) && /^[a-z0-9_]+$/.test(t.table_name)) await client.query(`DROP TABLE IF EXISTS "${t.table_name}" CASCADE`);
       }
+      await client.query("DELETE FROM plugin_secrets WHERE plugin_id = $1", [id]);
+      await client.query("DELETE FROM plugin_secret_audit WHERE plugin_id = $1", [id]);
+      await client.query("DELETE FROM plugin_secret_migrations WHERE plugin_id = $1", [id]);
       await client.query("DELETE FROM floq_plugin_user_settings WHERE plugin_id = $1", [id]);
       await client.query("DELETE FROM floq_plugin_migrations WHERE plugin_id = $1", [id]);
       await client.query("DELETE FROM floq_plugins WHERE id = $1", [id]);
@@ -421,7 +477,7 @@ export class PluginHost {
   }
 
   private contextDeps(e: Entry): ContextDeps {
-    return { pool: this.pool, vault: this.opts.vault, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals };
+    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals };
   }
 
   /** Pending migrations and their ledger rows commit or roll back together. */
@@ -470,6 +526,7 @@ export class PluginHost {
   // ---- public views ----
 
   async list(userId: string): Promise<PublicPlugin[]> {
+    void this.lazyMigrate(userId);
     const rows = (await this.pool.query("SELECT id, enabled, config_owner FROM floq_plugins")).rows as { id: string; enabled: boolean; config_owner: string | null }[];
     const state = new Map(rows.map((r) => [r.id, r]));
     const userRows = (await this.pool.query("SELECT plugin_id, enabled FROM floq_plugin_user_settings WHERE user_id = $1", [userId])).rows as { plugin_id: string; enabled: boolean }[];
@@ -479,10 +536,9 @@ export class PluginHost {
       const m = e.manifest;
       if (!m) { out.push({ id: e.id, name: e.id, version: "", description: "", scope: "user", status: "invalid", enabled: false, userEnabled: false, error: e.error, source: e.source, ui: null, secrets: [], settings: [], contributes: { views: [], taskSources: [], rightSidebarTabs: [], settingsPanel: false } }); continue; }
       const on = e.status === "enabled";
-      const owner = m.scope === "install" ? state.get(e.id)?.config_owner ?? userId : userId;
       const present = new Set<string>();
       if (m.secrets.length) {
-        const r = await this.pool.query("SELECT name FROM vault_secrets WHERE user_id = $1 AND name = ANY($2)", [owner, m.secrets.map((s) => s.name)]);
+        const r = await this.pool.query("SELECT name FROM plugin_secrets WHERE plugin_id = $1 AND owner_id = $2 AND name = ANY($3)", [e.id, m.scope === "install" ? INSTALL_OWNER : userId, m.secrets.map((s) => s.name)]);
         for (const row of r.rows as { name: string }[]) present.add(row.name);
       }
       out.push({
@@ -672,6 +728,21 @@ export class PluginHost {
     // From a GitHub repository address (any owner): preview first (nothing stored), then install with the sha256 that was reviewed.
     if (id === "sources" && rest.length === 1 && method === "GET") { await i.requireAdmin(); return { status: 200, body: { sources: await installer().sources() } }; }
     if (id === "updates" && rest.length === 1 && method === "GET") { await i.requireAdmin(); return { status: 200, body: await installer().updates() }; }
+    // One-time notices about credentials moved out of the vault: names only, never values. Install-wide items go to administrators.
+    if (id === "secret-migrations" && (rest.length === 1 || (rest.length === 2 && sub === "dismiss"))) {
+      const admin = await i.requireAdmin().then(() => true, () => false);
+      const owners = admin ? [i.userId, INSTALL_OWNER] : [i.userId];
+      if (rest.length === 1 && method === "GET") {
+        const r = await this.pool.query("SELECT plugin_id, name, moved_at, kept_in_vault FROM plugin_secret_migrations WHERE owner_id = ANY($1) AND dismissed_at IS NULL ORDER BY moved_at, plugin_id, name", [owners]);
+        return { status: 200, body: { items: (r.rows as { plugin_id: string; name: string; moved_at: string | Date; kept_in_vault: boolean }[]).map((x) => ({
+          pluginId: x.plugin_id, pluginName: this.entries.get(x.plugin_id)?.manifest?.name ?? x.plugin_id, name: x.name, movedAt: new Date(x.moved_at).toISOString(), keptInVault: x.kept_in_vault })) } };
+      }
+      if (rest.length === 2 && method === "POST") {
+        await this.pool.query("UPDATE plugin_secret_migrations SET dismissed_at = now() WHERE owner_id = ANY($1) AND dismissed_at IS NULL", [owners]);
+        return { status: 204, body: null };
+      }
+      throw new HttpError(405, "method_not_allowed", "Method not allowed");
+    }
     if (id === "inspect-url" && rest.length === 1 && method === "POST") {
       await i.requireAdmin();
       return { status: 200, body: { preview: await installer().inspectRepo(((await i.readBody()) as { url?: unknown } | undefined)?.url) } };
@@ -719,7 +790,7 @@ export class PluginHost {
     }
     if ((sub === "enable" || sub === "disable") && rest.length === 2 && method === "POST") {
       await i.requireAdmin();
-      if (sub === "enable") await this.enable(id, i.userId); else await this.disable(id);
+      if (sub === "enable") { await this.enable(id, i.userId); void this.lazyMigrate(i.userId, true); } else await this.disable(id);
       return { status: 200, body: { plugin: await this.one(id, i.userId) } };
     }
     if (sub === "webhook-token" && rest.length === 2 && (method === "POST" || method === "GET")) {
@@ -739,6 +810,7 @@ export class PluginHost {
         `INSERT INTO floq_plugin_user_settings (plugin_id, user_id, enabled) VALUES ($1,$2,$3)
          ON CONFLICT (plugin_id, user_id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`, [id, i.userId, body.enabled]);
       this.taskSources.invalidate(id, i.userId);
+      if (body.enabled) void this.lazyMigrate(i.userId, true); // the user just became a migration source for this plugin
       const mcpProblems = [...(await this.syncMcp(e, i.userId, body.enabled)), ...(await this.syncSkills(e, i.userId, body.enabled))];
       return { status: 200, body: { plugin: await this.one(id, i.userId), ...(mcpProblems.length ? { mcpProblems } : {}) } };
     }
@@ -750,6 +822,33 @@ export class PluginHost {
       const values = validateSettings(e.manifest!.settings, ((await i.readBody()) as { settings?: unknown })?.settings);
       await this.writeSettings(e, i.userId, values);
       return { status: 200, body: { settings: values } };
+    }
+    // ---- credentials: write-only. No route returns a value; bodies are small and never logged. ----
+    if (sub === "secrets" && (rest.length === 2 || rest.length === 3)) {
+      const e = this.valid(id);
+      const install = e.manifest!.scope === "install";
+      const owner = install ? INSTALL_OWNER : i.userId;
+      if (rest.length === 2) {
+        if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Method not allowed");
+        void this.lazyMigrate(i.userId);
+        const editable = !install || (await i.requireAdmin().then(() => true, () => false));
+        const status = new Map((await this.secrets.status(id, owner)).map((x) => [x.name, x]));
+        return { status: 200, body: { secrets: e.manifest!.secrets.map((d) => ({
+          name: d.name, description: d.description ?? "", required: d.required ?? false, present: status.get(d.name)?.present ?? false,
+          updatedAt: status.get(d.name)?.updatedAt ?? null, scope: e.manifest!.scope, editable })) } };
+      }
+      if (method !== "PUT" && method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Method not allowed");
+      let name: string;
+      try { name = decodeURIComponent(rest[2]); } catch { throw badRequest("Invalid secret name", "invalid_secret"); }
+      if (!e.manifest!.secrets.some((d) => d.name === name)) throw new HttpError(404, "unknown_secret", "The plugin does not declare a secret named " + JSON.stringify(name.slice(0, 64)) + ".");
+      if (install) await i.requireAdmin();
+      if (method === "DELETE") await this.secrets.remove(id, owner, name, i.userId);
+      else {
+        const body = (await i.readBody(16 * 1024)) as { value?: unknown } | undefined;
+        await this.secrets.set(id, owner, name, PluginSecrets.validateValue(body?.value) , i.userId);
+      }
+      this.taskSources.invalidate(id, install ? undefined : i.userId);
+      return { status: 204, body: null };
     }
     if (sub === "api") {
       const e = this.valid(id);

@@ -169,7 +169,7 @@ export const AGENT_ROLES: readonly AgentRole[] = [
     handoffFrom: [],
     handoffTo: ["specifier", "planner", "implementer", "reviewer", "tester"],
     prompt: [
-      "ROLE: Orchestrator. You coordinate this project: break the goal into tasks, recruit agents with `floq recruit` (use `floq roles` and `floq models` to choose), delegate with `floq ask`, and read results with `floq wait` / `floq check`.",
+      "ROLE: Orchestrator. You coordinate this project: break the goal into tasks, recruit agents with `floq recruit` (use `floq roles` and `floq models` to choose), delegate with `floq ask --no-wait`, and act on replies when they arrive (`floq check` only when needed).",
       "Do NOT do implementation yourself unless it is trivial; delegate it. Other agents cannot recruit: when one messages you asking for a new agent, recruit it for them and tell them its name.",
       "REMINDER: only the orchestrator can recruit agents; everyone else asks the orchestrator.",
       HANDOFF,

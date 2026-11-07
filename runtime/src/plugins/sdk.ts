@@ -31,10 +31,7 @@ export interface PluginMcpServerDecl {
   url?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
-  /** env var name -> declared secret name */
-  envSecrets?: Record<string, string>;
-  /** header name -> template with {{SECRET}} placeholders of declared secrets */
-  headerSecrets?: Record<string, string>;
+  // No secret env or headers: plugin secrets never enter the agent sandbox (the manifest validator rejects envSecrets/headerSecrets).
 }
 
 export interface PluginContributes {
@@ -156,7 +153,7 @@ export interface PluginApprovals {
 export interface PluginContext {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
-  /** Install-scoped plugins only: the administrator who enabled the plugin (whose vault and settings it uses), or null. */
+  /** Install-scoped plugins only: the administrator who enabled the plugin (who owns the install's settings and any owner-only views), or null. */
   installOwner(): Promise<string | null>;
   /** Builds the host's `HttpError` (status, code, message) so a bundled plugin needs no host imports. Throw it from a route or provider. */
   httpError(status: number, code: string, message: string): Error;
@@ -164,9 +161,9 @@ export interface PluginContext {
   internalRoutes: PluginInternalRoutes;
   webhooks: PluginWebhooks;
   secrets: {
-    /** User-scoped plugins: the calling user's own secret. Only names declared in the manifest; throws otherwise. */
+    /** User-scoped plugins only: the calling user's own secret from the plugin secret store (never the vault). Declared names only; throws for install scope. */
     get(userId: string, name: string): Promise<string | undefined>;
-    /** Install-scoped plugins only: the secret of the admin who enabled the plugin (`floq_plugins.config_owner`). Throws for user-scoped plugins. */
+    /** Install-scoped plugins only: the installation's secret from the plugin secret store (never the vault). Throws for user-scoped plugins. */
     getInstall(name: string): Promise<string | undefined>;
   };
   fetch(url: string, init?: PluginFetchInit): Promise<PluginFetchResponse>;

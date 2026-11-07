@@ -20,6 +20,9 @@ import { spawnPty } from "../src/pty.ts";
 const noSleep = async () => undefined;
 const U = "u1";
 const S1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // sender, project p1
+// Same-project header and reply hint typed around every message body.
+const SAME_HEAD = "[Message from agent Sender (session " + S1 + ")] ";
+const SAME_HINT = " (Reply path: floq ask " + S1 + ' "your reply" --no-wait)';
 const S2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"; // receiver, project p1
 const S3 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; // third agent, project p1
 const S4 = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; // receiver in another project p2
@@ -165,13 +168,13 @@ for (const [kind, make] of Object.entries(CONTENT)) {
       const delivery = (r as { delivery: { mode: string; chars: number; sha256: string; inboxId?: string } }).delivery;
       if (flatten(body).length <= INLINE_MAX_CHARS) {
         assert.equal(delivery.mode, "full");
-        assert.equal(got.text, "[Message from agent Sender] " + sanitizeForTerminal(flatten(body)), "exact body, head to tail");
-        assert.equal(got.bracketed, flatten(body).length + 28 > PLAIN_WRITE_MAX);
+        assert.equal(got.text, SAME_HEAD + sanitizeForTerminal(flatten(body)) + SAME_HINT, "exact body, head to tail");
+        assert.equal(got.bracketed, SAME_HEAD.length + flatten(body).length + SAME_HINT.length > PLAIN_WRITE_MAX);
       } else {
         assert.equal(delivery.mode, "inbox");
         assert.ok(got.bracketed);
         assert.ok(got.text.length < 800, "typed text stays short: " + got.text.length);
-        assert.ok(got.text.startsWith("[Message from agent Sender] " + sanitizeForTerminal(body.replace(/\s+/g, " ").trim()).slice(0, 50)), "starts with the HEAD of the message");
+        assert.ok(got.text.startsWith(SAME_HEAD + sanitizeForTerminal(body.replace(/\s+/g, " ").trim()).slice(0, 50)), "starts with the HEAD of the message");
         assert.match(got.text, new RegExp("floq inbox read " + delivery.inboxId));
         const full = await inbox.read(U, S2, delivery.inboxId);
         assert.equal(full.body, body, "inbox holds the EXACT message including newlines, quotes and trailing spaces");
@@ -191,7 +194,7 @@ test("cross-project ask keeps the provenance header at the HEAD and the reply hi
   assert.equal(got.bracketed, true);
   assert.ok(got.text.startsWith("[Message from agent Sender (project p1, session " + S1 + ", hop 1)] word word"));
   assert.ok(got.text.includes(body.trim()));
-  assert.ok(got.text.endsWith('"your reply")'));
+  assert.ok(got.text.endsWith('"your reply" --no-wait)'));
 });
 
 test("cross-project long ask is stored whole in the inbox and typed as header + preview + pointer", async (t) => {
@@ -213,7 +216,7 @@ test("a body is never delivered tail-first: the typed message always begins with
   await orchestrator.ask(U, S1, S2, CONTENT.plain(3_000), 10, false);
   const raw = writes.get(S2)!;
   assert.equal(raw[0], PASTE_START);
-  assert.ok(raw[1].startsWith("[Message from agent Sender]"));
+  assert.ok(raw[1].startsWith("[Message from agent Sender (session "));
 });
 
 test("concurrent asks to one receiver do not interleave their writes", async (t) => {

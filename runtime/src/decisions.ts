@@ -1,22 +1,45 @@
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { badRequest, conflict, notFound, HttpError } from './errors.js';
+import { neutralizeApprovalMarker, foldLookalikes } from './approvalText.js';
 
 type Option = { id: string; label: string; description?: string };
 type Question = { id: string; question: string; header?: string; options: Option[]; multiSelect: boolean; allowText: boolean };
 type Answer = { questionId: string; optionIds: string[]; text: string };
 type Status = 'pending' | 'answered' | 'cancelled' | 'expired';
 export type DecisionView = { id: string; source: 'cli' | 'native'; sessionId: string; projectId: string | null; sessionName: string; provider: 'claude' | 'codex' | null; questions: Question[]; status: Status; createdAt: string; expiresAt: string; answerMode: 'direction' | 'hook' | 'terminal'; response?: {answers: Answer[]}; deliveryStatus?: 'pending' | 'delivered' | 'failed' };
-type RecordEntry = { userId: string; view: DecisionView; waiter: boolean; polled: number; providerRequestId?: string };
+type RecordEntry = { userId: string; view: DecisionView; waiter: boolean; polled: number; providerRequestId?: string; notified?: boolean };
 type Frame = {type:'decision-request'|'decision-updated'; decision:DecisionView} | {type:'decision-resolved'; id:string; sessionId:string; status:Exclude<Status,'pending'>; response?:{answers:Answer[]}; deliveryStatus?:DecisionView['deliveryStatus']};
 type Input = {sessionId:string; projectId:string|null; sessionName:string; questions:unknown; ttlMs?:unknown; wait?:boolean; source?:'cli'|'native'; provider?:'claude'|'codex'|null; providerRequestId?:string; answerMode?:DecisionView['answerMode']};
+
+const WAITER_GONE_MS = 75000;
+/** One short line: no control characters or line breaks, no brackets (cannot forge a marker), no approval look-alikes. */
+export function cleanDecisionText(text: string, max: number): string {
+  const one = neutralizeApprovalMarker(foldLookalikes(text)).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/[\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  return one.length > max ? one.slice(0, Math.max(0, max - 1)).trimEnd() + '\u2026' : one;
+}
+/** The line the runtime types into the requesting agent's terminal once its CLI decision was answered or withdrawn. */
+export function formatDecisionLine(view: DecisionView, status: 'answered' | 'cancelled' | 'expired'): string {
+  const head = `[FLOQ DECISION ${view.id} ${status.toUpperCase()}]`;
+  const q = cleanDecisionText(view.questions[0]?.question ?? '', 100);
+  if (status !== 'answered') return `${head} ${q} -> no answer. Check with: floq decision status ${view.id}`;
+  const parts: string[] = [];
+  for (const a of view.response?.answers ?? []) {
+    const question = view.questions.find(x => x.id === a.questionId);
+    const labels = a.optionIds.map(id => question?.options.find(o => o.id === id)?.label ?? id);
+    if (a.text.trim()) labels.push(a.text);
+    parts.push(labels.join(' + '));
+  }
+  const answer = cleanDecisionText(parts.join(' | '), 240);
+  return `${head} ${q} -> ${answer || '(empty)'} (full text: floq decision status ${view.id})`;
+}
 export class Decisions {
   private records = new Map<string,RecordEntry>();
   private subs = new Set<{userId:string; fn:(frame:Frame)=>void}>();
   private changes = new Set<()=>void>();
   private requests = new Map<string,number[]>();
   private nativeRequests = new Map<string,Promise<{id:string;decision:DecisionView;deduped:boolean}>>();
-  constructor(private options: {pool?:Pick<pg.Pool,'query'>; now?:()=>number; scrub?:(userId:string, ids:string[], text:string)=>Promise<string>} = {}) {}
+  constructor(private options: {pool?:Pick<pg.Pool,'query'>; now?:()=>number; scrub?:(userId:string, ids:string[], text:string)=>Promise<string>; deliver?:(userId:string, sessionId:string, text:string)=>Promise<boolean>} = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
   async init() { await this.options.pool?.query("UPDATE agent_decisions SET status='expired', decided_at=now() WHERE status='pending'"); }
   subscribe(userId:string, fn:(frame:Frame)=>void) { const sub={userId,fn}; this.subs.add(sub); return ()=>{this.subs.delete(sub);}; }
@@ -53,17 +76,25 @@ export class Decisions {
     await this.options.pool?.query(`INSERT INTO agent_decisions (id,user_id,requester_session_id,requester_project_id,source,provider,provider_request_id,questions,status,created_at,expires_at,meta) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'pending',$9,$10,$11::jsonb)`,[view.id,userId,input.sessionId,input.projectId,view.source,view.provider,input.providerRequestId??null,JSON.stringify(questions),view.createdAt,view.expiresAt,JSON.stringify({sessionName:input.sessionName,answerMode:view.answerMode,waiter:entry.waiter})]);
     this.records.set(view.id,entry); const timer = setInterval(() => { this.sweep(); if (entry.view.status !== "pending") clearInterval(timer); }, 1000); timer.unref(); recent.push(now); this.requests.set(userId,recent); this.emit(userId,{type:'decision-request',decision:view}); return {id:view.id,decision:view,deduped:false};
   }
-  private async settle(e:RecordEntry,status:Exclude<Status,'pending'>,response?:{answers:Answer[]}) {
+  /** Types one line into the requester's terminal (CLI decisions only, once, never while a --wait is still attached). */
+  private announce(e:RecordEntry, silent=false) {
+    const deliver=this.options.deliver; const status=e.view.status;
+    if(!deliver||silent||e.notified||e.view.source!=='cli'||status==='pending') return;
+    if(e.waiter&&this.now()-e.polled<WAITER_GONE_MS) return;
+    e.notified=true;
+    void Promise.resolve().then(()=>deliver(e.userId,e.view.sessionId,formatDecisionLine(e.view,status))).catch(()=>{});
+  }
+  private async settle(e:RecordEntry,status:Exclude<Status,'pending'>,response?:{answers:Answer[]},silent=false) {
     if(e.view.status!=='pending') throw conflict('Decision already resolved');
     if(this.options.pool) { const result=await this.options.pool.query("UPDATE agent_decisions SET status=$3,response=$4::jsonb,decided_at=now() WHERE id=$1 AND user_id=$2 AND status='pending' AND expires_at>now() RETURNING id",[e.view.id,e.userId,status,response?JSON.stringify(response):null]); if(!result.rowCount) throw conflict('Decision already resolved or expired'); }
     if(e.view.status!=='pending') throw conflict('Decision already resolved');
-    e.view={...e.view,status,...(response?{response}:{})}; this.emit(e.userId,{type:'decision-resolved',id:e.view.id,sessionId:e.view.sessionId,status,...(response?{response}:{})}); return e.view;
+    e.view={...e.view,status,...(response?{response}:{})}; this.announce(e,silent); this.emit(e.userId,{type:'decision-resolved',id:e.view.id,sessionId:e.view.sessionId,status,...(response?{response}:{})}); return e.view;
   }
-  sweep() { const now=this.now(); for(const e of this.records.values()) if(e.view.status==='pending'&&e.waiter&&now-e.polled>=75000) { const status='cancelled' as const; e.view={...e.view,status}; void this.options.pool?.query("UPDATE agent_decisions SET status=$2,decided_at=now() WHERE id=$1 AND status='pending'",[e.view.id,status]).catch(()=>{}); this.emit(e.userId,{type:'decision-resolved',id:e.view.id,sessionId:e.view.sessionId,status}); } }
+  sweep() { const now=this.now(); for(const e of this.records.values()) if(e.view.status==='pending'&&e.waiter&&now-e.polled>=75000) { const status='cancelled' as const; e.view={...e.view,status}; this.announce(e); void this.options.pool?.query("UPDATE agent_decisions SET status=$2,decided_at=now() WHERE id=$1 AND status='pending'",[e.view.id,status]).catch(()=>{}); this.emit(e.userId,{type:'decision-resolved',id:e.view.id,sessionId:e.view.sessionId,status}); } }
   list(userId:string) { this.sweep(); return [...this.records.values()].filter(e=>e.userId===userId&&e.view.status==='pending').map(e=>e.view); }
   private get(userId:string,id:string) { this.sweep(); const e=this.records.get(id); if(!e||e.userId!==userId) throw notFound('Decision not found'); return e; }
   async status(userId:string,sessionId:string,id:unknown,waitMs:number) { const e=this.get(userId,String(id)); if(e.view.sessionId!==sessionId) throw notFound('Decision not found'); e.polled=this.now(); if(e.view.status==='pending'&&waitMs>0) await new Promise<void>(resolve=>{const timer=setTimeout(done,Math.min(55000,waitMs)); const changes=this.changes; function done(){clearTimeout(timer);changes.delete(done);resolve();} changes.add(done);}); this.sweep(); return e.view; }
-  async cancel(userId:string,sessionId:string,id:unknown) {const e=this.get(userId,String(id)); if(e.view.sessionId!==sessionId) throw notFound('Decision not found'); return this.settle(e,'cancelled');}
+  async cancel(userId:string,sessionId:string,id:unknown) {const e=this.get(userId,String(id)); if(e.view.sessionId!==sessionId) throw notFound('Decision not found'); return this.settle(e,'cancelled',undefined,true);}
   async terminal(userId:string,id:string) { const e=this.get(userId,id); if(e.view.source!=='native') throw badRequest('Native decision required'); return this.settle(e,'cancelled'); }
   async resolve(userId:string,id:string,raw:unknown) {const e=this.get(userId,id); if(e.view.status!=='pending') throw conflict('Decision already resolved'); if(!Array.isArray(raw)||raw.length<1||raw.length>4) throw badRequest('answers required'); let total=0; const seen=new Set<string>(); const answers:Answer[]=[]; for(const a of raw) { if(!a||typeof a.questionId!=='string'||seen.has(a.questionId)||!Array.isArray(a.optionIds)||typeof a.text!=='string') throw badRequest('invalid answer'); const q=e.view.questions.find(q=>q.id===a.questionId); if(!q||a.optionIds.some((id:unknown)=>typeof id!=='string'||!q.options.some(o=>o.id===id))||new Set(a.optionIds).size!==a.optionIds.length||(!q.multiSelect&&a.optionIds.length>1)||(!q.allowText&&a.text)||(!a.optionIds.length&&!a.text.trim())) throw badRequest('invalid answer'); total+=a.text.length; if(total>8000) throw badRequest('answer too long'); seen.add(a.questionId); answers.push({questionId:a.questionId,optionIds:a.optionIds,text:a.text}); } return this.settle(e,'answered',{answers}); }
 }

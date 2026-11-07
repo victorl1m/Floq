@@ -61,6 +61,8 @@ Before building the image, sync the bundled orchestration skill (PowerShell, fro
 
 Host requirements (`/dev/fuse`, AppArmor on Ubuntu 25.04+, the seccomp profile, `FLOQ_MOUNT_ROOT`), the HTTP API, sleep and resume, the vault and administration are documented in [`runtime/README.md`](runtime/README.md).
 
+Inside a Floq session, `floq setup --dry-run --agents` previews exporting the agent workflow to the repository's instruction files. Run `floq setup --agents` to write it to `CLAUDE.md` and `AGENTS.md`; without `--agents`, `AGENTS.md` is updated only when it already exists. The command targets the Git root, or the current directory for a project without Git, and prints that location. Existing content is preserved, and files with Floq guidance are left untouched. This export is optional: Floq already injects its workflow when sessions start or resume. Review the resulting diff before committing it.
+
 ## Downloading files and "Open in Explorer"
 
 In the right sidebar's **Files** tab, right-click a file or folder to **Download** it (a folder is streamed as a zip; `.git` and `node_modules` are left out). Downloads use a signed link that is valid for 60 seconds and works once.

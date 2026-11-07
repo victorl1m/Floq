@@ -400,5 +400,32 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (plugin_id, migration_id)
     );
+    CREATE TABLE IF NOT EXISTS plugin_secrets (
+      plugin_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value_enc TEXT NOT NULL,
+      updated_by TEXT REFERENCES "user"(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (plugin_id, owner_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS plugin_secret_audit (
+      id BIGSERIAL PRIMARY KEY,
+      plugin_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      actor TEXT,
+      at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS plugin_secret_migrations (
+      plugin_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      moved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      kept_in_vault BOOLEAN NOT NULL DEFAULT FALSE,
+      dismissed_at TIMESTAMPTZ,
+      PRIMARY KEY (plugin_id, owner_id, name)
+    );
   `);
 }

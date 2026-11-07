@@ -90,10 +90,10 @@ test("ask across projects types a provenance header, the body and a reply path",
   assert.equal(cross.toProject, "Globex Console");
 });
 
-test("same-project messages keep the old format", async () => {
+test("same-project messages carry the sender UUID and a non-blocking reply path", async () => {
   const { orchestrator, typed } = harness();
   await orchestrator.ask("u1", A, A2, "hello", 10, false);
-  assert.equal(typed[0], "[Message from agent Acme API] hello");
+  assert.equal(typed[0], "[Message from agent Acme API (session " + A + ")] hello (Reply path: floq ask " + A + ' "your reply" --no-wait)');
 });
 
 test("setting off blocks cross-project reach but not the own project", async () => {

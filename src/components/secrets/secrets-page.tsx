@@ -21,7 +21,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
 import { errorMessage, useClient } from "@/lib/runtime/store";
-import type { Exposure, SecretInfo } from "@/lib/runtime/types";
+import type { Exposure, PluginSecretMigration, SecretInfo } from "@/lib/runtime/types";
+import { MovedSecretsNotice } from "../settings/plugin-credentials";
 import { SettingsGroup } from "../settings/ui";
 
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -39,6 +40,7 @@ export default function SecretsPage() {
     const [saveError, setSaveError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [deleting, setDeleting] = useState<string | null>(null);
+    const [moved, setMoved] = useState<PluginSecretMigration[]>([]);
     const nameInputRef = useRef<HTMLInputElement>(null);
     const addButtonRef = useRef<HTMLButtonElement>(null);
     const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -50,6 +52,12 @@ export default function SecretsPage() {
         } catch (e) {
             setLoadError(errorMessage(e));
         }
+    }, [client]);
+
+    useEffect(() => {
+        let live = true;
+        client.getPluginSecretMigrations().then((items) => { if (live) setMoved(items); }, () => undefined);
+        return () => { live = false; };
     }, [client]);
 
     useEffect(() => {
@@ -142,6 +150,7 @@ export default function SecretsPage() {
                 <div className="min-w-0"><h1 className="page-heading font-semibold tracking-tight">Secrets</h1><p className="mt-1 text-sm text-muted-foreground">Manage values agents can use without exposing them in terminal output.</p></div>
                 <Button ref={addButtonRef} shimmer onClick={beginAdd} disabled={busy || formOpen}><IconPlus />Add secret</Button>
             </header>
+            <MovedSecretsNotice items={moved} onDismiss={() => { setMoved([]); void client.dismissPluginSecretMigrations().catch(() => undefined); }} />
             <SettingsGroup className="overflow-hidden">
             <FloqReveal className="block" loading={secrets === null && !loadError} revealOnMount={false}>
             {secrets === null && !loadError ? (

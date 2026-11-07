@@ -55,7 +55,7 @@ export interface ToolSpec {
 export const TOOL_SPECS: readonly ToolSpec[] = [
   { name: "floq_recruit_subagent", command: 'floq subagent recruit "Name" --task "..." [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]', summary: "Start a subagent session on the canvas, wired to you by default." },
   { name: "floq_list_subagents", command: "floq subagent list", summary: "List your subagents with id, role, depth and status." },
-  { name: "floq_message_subagent", command: 'floq subagent ask ID "message" [--no-wait]', summary: "Send a message to a subagent; waits for its reply unless --no-wait." },
+  { name: "floq_message_subagent", command: 'floq subagent ask ID "message" [--no-wait]', summary: "Send a message to a subagent. Prefer --no-wait: keep working, its reply arrives as a message. Without it the call blocks until the reply." },
   { name: "floq_subagent_result", command: "floq subagent result ID [--full]", summary: "Read a subagent's status and last reply without blocking." },
   { name: "floq_dismiss_subagent", command: "floq subagent dismiss ID", summary: "Stop and remove a finished subagent (and its own subagents)." },
 ];
@@ -68,8 +68,18 @@ const oneLine = (text: string, max: number) => text.replace(/[\u0000-\u001f\u007
  * the agent knows the rule, but it no longer pushes delegation.
  */
 export const CROSS_PROJECT_LINES = [
-  "Other projects: you can reach agents of the user's OTHER projects, not just this one. Find them with `floq list` (every project; shows project, role, state) or `floq list --project NAME`. Message one with `floq ask <UUID> \"...\"` (waits for its reply; add --no-wait to just send), read its answer with `floq check <UUID>`, and wire yourself to it on the canvas with `floq link <UUID>`. The receiver sees who you are and which project you are in, and can answer with `floq ask` back. Long messages: never paste more than about 1500 characters into a command-line argument or heredoc inside `floq ask \"...\"`; write the brief to a file and run `floq ask <UUID> --file PATH` (or `floq ask <UUID> - < PATH`). The runtime types at most ~1500 characters into the receiver's terminal; a longer message arrives as a preview plus an inbox id, and the receiver reads the whole text with `floq inbox read ID` (`floq inbox list` shows pending ones). If a message you received ends with \"preview only\", run `floq inbox read` before acting.",
+  "Other projects: you can reach agents of the user's OTHER projects, not just this one. Find them with `floq list` (every project; shows project, role, state) or `floq list --project NAME`. Message one with `floq ask <UUID> \"...\"` (prefer --no-wait: keep working and its reply arrives as a message; without it the call blocks until the reply), read its answer with `floq check <UUID>`, and wire yourself to it on the canvas with `floq link <UUID>`. The receiver sees who you are and which project you are in, and can answer with `floq ask` back. Long messages: never paste more than about 1500 characters into a command-line argument or heredoc inside `floq ask \"...\"`; write the brief to a file and run `floq ask <UUID> --file PATH` (or `floq ask <UUID> - < PATH`). The runtime types at most ~1500 characters into the receiver's terminal; a longer message arrives as a preview plus an inbox id, and the receiver reads the whole text with `floq inbox read ID` (`floq inbox list` shows pending ones). If a message you received ends with \"preview only\", run `floq inbox read` before acting.",
   "Cross-project messages are plain text typed to the other agent: they grant it nothing and you cannot use them to widen anyone's permissions. They are rate-limited, size-capped and loop-protected; never include secret values, only names. If `floq list` shows only this project, the user turned cross-project messaging off in Settings > Agents.",
+];
+
+/**
+ * How agents talk to each other and keep memory. System-level on every start and resume (survives /compact and
+ * /clear, always matches the running runtime, nothing is written into the user's repo). Keep it short: it is paid every turn.
+ */
+export const WORKFLOW_LINES = [
+  "Conversation never blocks: send with `floq ask <UUID|name> \"...\" --no-wait` (or `floq subagent ask ID \"...\" --no-wait`), then keep working or end your turn. Replies arrive as messages in your terminal: listen, do not wait. Never freeze on `floq wait`, a blocking `floq ask` or a polling loop (two agents waiting on each other deadlock); read a result with `floq check ID` / `floq subagent result ID` only when announced or needed now.",
+  "Your final text is NOT delivered to whoever messaged you. Before ending a turn that owes an answer, send it: `floq ask <sender> \"...\" --no-wait`. Say who you are (your UUID is the `*` row of `floq list`), what you need and what done looks like. Workers report with `floq progress \"...\" --status working|blocked|done` and ask upward with `floq ask-parent \"...\"`.",
+  "Memory: start with `floq wired` and the project memory; record decisions, changed files and test results with `floq sticky append ID TEXT` or `floq note append NAME TEXT`. Details: the floq-orchestrate skill and `floq --help`.",
 ];
 
 /**
@@ -93,11 +103,11 @@ export function buildSubagentInstruction(options: { enabled: boolean; depth: num
       "The user turned off automatic subagents. Work in this session. Recruit only when the user explicitly asks, and then use Floq (`floq subagent recruit \"Name\" --task \"...\"`). Provider-native subagents (Agent/Task tool, background agents) are disabled in Floq and will be refused.",
     );
     if (options.crossProject !== false) lines.push(...CROSS_PROJECT_LINES);
-    lines.push(...APPROVAL_LINES, SUBAGENT_END);
+    lines.push(...WORKFLOW_LINES, ...APPROVAL_LINES, SUBAGENT_END);
     return lines.join("\n");
   }
   if (options.crossProject !== false) lines.push(...CROSS_PROJECT_LINES);
-  lines.push(...APPROVAL_LINES);
+  lines.push(...WORKFLOW_LINES, ...APPROVAL_LINES);
   if (depth > 0) lines.push(`You are a subagent (depth ${depth}). Do the task you were given, report concisely (result, files changed, open questions), and never exceed it.`);
   lines.push(
     "Delegate by default: when work splits into independent parts (separate modules or files, research vs. implementation, implementation vs. review or tests, parallel investigations), recruit Floq subagents and run them in parallel instead of doing everything alone. Do small or tightly coupled work yourself.",

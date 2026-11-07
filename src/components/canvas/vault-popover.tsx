@@ -13,7 +13,7 @@ export const VAULT_CHANGED_EVENT = "floq:vault-changed";
  * Canvas topbar chip for the global vault. Global secrets reach every agent without wires; this lists
  * them by name only (values are write-only and never fetched) and refreshes when the Secrets page changes them.
  */
-export default function VaultPopover() {
+export default function VaultPopover({ size = "default" }: { size?: "default" | "sm" } = {}) {
   const { client, navigate } = useRuntime();
   const [secrets, setSecrets] = useState<SecretInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,10 +41,10 @@ export default function VaultPopover() {
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="shrink-0 gap-1.5 pr-1.5 text-foreground dark:bg-transparent dark:hover:bg-transparent" aria-label={label}>
+            <Button type="button" variant="outline" size={size} className="shrink-0 gap-1.5 pr-1.5 text-foreground dark:bg-transparent dark:hover:bg-transparent" aria-label={label}>
               <IconKey size={15} className="text-amber-600 dark:text-amber-400" aria-hidden="true" />
               Vault
-              {secrets !== null && <span className="min-w-5 rounded-full border border-foreground/15 bg-foreground/10 px-1.5 text-center text-[11px] leading-[18px] font-medium text-foreground tabular-nums">{count}</span>}
+              {secrets !== null && <span className={`min-w-5 rounded-full border border-foreground/15 bg-foreground/10 px-1.5 text-center text-[11px] ${size === "sm" ? "leading-4" : "leading-[18px]"} font-medium text-foreground tabular-nums`}>{count}</span>}
               {error && secrets === null && <IconAlertTriangle size={14} className="text-destructive" />}
             </Button>
           </PopoverTrigger>

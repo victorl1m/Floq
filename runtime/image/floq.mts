@@ -5,6 +5,7 @@
 //   floq top [--project NAME] [--here] [--interval SECONDS] [--once]   live agent monitor (state, pending approvals, subagent tree)
 //   floq link <UUID|Name>                   wire yourself to an agent of any project (shown on the canvas)
 //   floq project create --name NAME [--git-url URL]   create a named project, optionally cloning a repository
+//   floq setup [--dry-run] [--agents]                  write Floq's workflow into this project's CLAUDE.md (skips files that already have it)
 //   floq session restart                    restart this agent after replying to reload its configuration
 //   floq ask <UUID|Name> "prompt" [--timeout S] [--no-wait] [--chars N|--full]   message another agent, wait until it finishes, print its full reply
 //   floq ask <UUID|Name> - | --file PATH   long message from stdin or a file (anything over 4000 chars must use one of these)
@@ -26,6 +27,7 @@
 //   floq secrets list|add                        list vault secret names; add a new secret to a keychain (add: lead only)
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { runSetup, SETUP_BLOCK } from "./floq-setup.mjs";
 import { abstractSocketProblems, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
 import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, renderTop, formatAgentReply, formatDelivery, messageSource, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, parseSecretsAdd, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
@@ -41,6 +43,7 @@ Commands:
   floq top [--project NAME] [--here] [--interval SECONDS] [--once]   live monitor of agents (waiting-for-user first, subagents indented under their recruiter, pending approvals/decisions); redraws every 2s, q or Ctrl-C quits; prints once when not a TTY or with --once; NO_COLOR respected
   floq link <UUID|Name>                  wire yourself to an agent of any project of this user (appears on the canvas; listed in both agents' wired context)
   floq project create --name NAME [--git-url URL]   create an empty named project or import a Git repository
+  floq setup [--dry-run] [--agents]                              add Floq's workflow to this project's CLAUDE.md (no-op when already present)
   floq session restart                   restart this agent to reload its current configuration
   floq models [--provider claude|codex]
   floq roles                             one line per agent role preset (compare, then pick)
@@ -73,6 +76,7 @@ Commands:
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
   floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
+  (without --wait, Floq types "[FLOQ DECISION <id> ANSWERED] question -> answer" into your terminal when the user answers; full text via status)
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. It never times out by default: the user answers yes or no whenever they like; --timeout SEC makes this command give up and withdraw after SEC seconds
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
@@ -256,7 +260,7 @@ const allowedOptions: Record<string, string[]> = {
   session: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
-  project: ["name", "git-url"],
+  project: ["name", "git-url"], setup: ["dry-run", "agents"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose", "keychain"],
   secret: ["keychain"],
@@ -705,6 +709,18 @@ switch (command) {
     if (positional.length < 1) usage();
     await call("agents/dismiss", { name: positional[0] });
     console.log("dismissed");
+    break;
+  }
+  case "setup": {
+    if (positional.length) usage();
+    const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+    const dir = top.status === 0 ? top.stdout.trim() : process.cwd();
+    const dryRun = named["dry-run"] === true;
+    const results = runSetup(dir, dryRun, named["agents"] === true);
+    console.log("Setup directory: " + dir);
+    for (const r of results) console.log(r.file + ": " + (r.action === "already" ? "already set up (left untouched)" : dryRun ? "would " + (r.action === "created" ? "create" : "append") : r.action));
+    // Claude reads CLAUDE.md only at startup: print the block so the current session has the rules now.
+    if (!dryRun && results.some((r) => r.action !== "already")) console.log("\nApply these rules now:\n" + SETUP_BLOCK);
     break;
   }
   case "project": {

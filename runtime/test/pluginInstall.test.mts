@@ -47,7 +47,7 @@ async function setup(initial: ReturnType<typeof build>[] = [build({ version: "1.
   const fetchImpl = async (url: string) => { requests.push(url); if (url === CATALOG) return new Response(JSON.stringify({ format: 1, plugins: catalogEntries })); const b = served.get(url); return b ? new Response(b) : new Response("nope", { status: 404 }); };
   const logs: unknown[] = [];
   const builtin = definePlugin({ manifest: echoManifest({ id: "builtin-one", name: "Built-in" }) });
-  const mkHost = () => new PluginHost(f.pool as never, { plugins: [builtin], vault: { async reveal() { return {}; } } as never, sink: (...a: unknown[]) => logs.push(a), retryDelaysMs: [0, 0] });
+  const mkHost = () => new PluginHost(f.pool as never, { plugins: [builtin], encryptionKey: Buffer.alloc(32, 9), sink: (...a: unknown[]) => logs.push(a), retryDelaysMs: [0, 0] });
   const host = mkHost();
   await host.load();
   const installer = new PluginInstaller({ pool: f.pool as never, host, catalog: new CatalogClient({ catalogUrl: CATALOG, fetchImpl: fetchImpl as never }), pluginDir });

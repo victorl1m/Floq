@@ -10,7 +10,7 @@ export function CrossProjectWires({ links, titleOf }: { links: AgentLink[]; titl
   const foreign = links.filter((link) => link.foreign);
   if (!foreign.length) return null;
   return (
-    <Panel position="top-right" className="m-2! mt-14! flex max-w-64 flex-col items-end gap-1" aria-label="Cross-project wires">
+    <Panel position="top-right" className="m-2! flex max-w-[min(16rem,calc(50%-12px))] flex-col items-end gap-1" aria-label="Cross-project wires">
       {foreign.map((link) => {
         const f = link.foreign!;
         const local = titleOf(f.direction === "out" ? link.fromSessionId : link.toSessionId);

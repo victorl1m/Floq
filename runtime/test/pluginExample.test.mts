@@ -13,7 +13,7 @@ test("the example is only registered with FLOQ_DEV_PLUGINS=1", () => {
 
 test("the example shows a view, a setting, a route and an event", async () => {
   const f = await fakePool(); await f.addUser("u1");
-  const host = new PluginHost(f.pool as never, { plugins: [example], vault: { async reveal() { return {}; } } as never, sink: () => undefined });
+  const host = new PluginHost(f.pool as never, { plugins: [example], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
   await host.load(); await host.enable("example", "u1");
   const call = (method: string, path: string, body?: unknown) => host.handle({ userId: "u1", method, pathname: "/v1/plugins/example/" + path, query: new URLSearchParams(), readBody: async () => body, requireAdmin: async () => undefined }) as Promise<any>;
   const list = (await call("GET", "").catch(() => null)) ?? (await host.handle({ userId: "u1", method: "GET", pathname: "/v1/plugins", query: new URLSearchParams(), readBody: async () => undefined, requireAdmin: async () => undefined }) as any);

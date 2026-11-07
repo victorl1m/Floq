@@ -5,6 +5,7 @@ import { HttpError } from "../errors.js";
 import type { Approvals } from "../approvals.js";
 import type { PluginEvents } from "./events.js";
 import type { TaskSourceRegistry } from "./taskSources.js";
+import { INSTALL_OWNER, type PluginSecrets } from "./secrets.js";
 import type { WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
 
 export const FETCH_TIMEOUT_MS = 15_000;
@@ -14,7 +15,8 @@ export interface RouteEntry { method: PluginRouteMethod; segments: string[]; han
 
 export interface ContextDeps {
   pool: Pick<pg.Pool, "query" | "connect">;
-  vault: { reveal(userId: string, names: string[] | null, only: null, sessionId: string | null): Promise<Record<string, string>> };
+  /** The plugin-only secret store. Plugin code never gets the vault. */
+  secrets: Pick<PluginSecrets, "resolve">;
   /** Schema mode: schema name. Prefix mode: null and `tablePrefix` is used. */
   schema: string | null;
   tablePrefix: string;
@@ -167,16 +169,14 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
       async getInstall(name) {
         if (manifest.scope !== "install") throw new Error("getInstall is only available to install-scoped plugins; use get(userId, name)");
         if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
-        const owner = (await deps.pool.query("SELECT config_owner FROM floq_plugins WHERE id = $1", [id])).rows[0]?.config_owner as string | null | undefined;
-        if (!owner) return undefined;
-        const value = (await deps.vault.reveal(owner, [name], null, "plugin:" + id))[name];
-        if (value !== undefined) revealed.set(name + "\0" + owner, value);
+        const value = await deps.secrets.resolve(id, INSTALL_OWNER, name);
+        if (value !== undefined) revealed.set(name + "\0" + INSTALL_OWNER, value);
         return value;
       },
       async get(userId, name) {
+        if (manifest.scope === "install") throw new Error("get(userId, name) is only available to user-scoped plugins; use getInstall(name)");
         if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
-        const out = await deps.vault.reveal(userId, [name], null, "plugin:" + id);
-        const value = out[name];
+        const value = await deps.secrets.resolve(id, userId, name);
         if (value !== undefined) revealed.set(name + "\0" + userId, value);
         return value;
       },

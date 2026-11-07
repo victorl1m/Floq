@@ -26,7 +26,7 @@ const hookPlugin = (manifestOver: Record<string, unknown> = {}, seen: any[] = []
 async function harness(t: any, plugins: any[]) {
   const f = await fakePool(); await f.addUser("admin"); await f.addUser("member");
   const vault = new Vault(f.pool as never, { encryptionKey: Buffer.alloc(32, 5) } as never);
-  const host = new PluginHost(f.pool as never, { plugins, vault: vault as never, sink: () => undefined });
+  const host = new PluginHost(f.pool as never, { plugins, encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
   await host.load();
   const tokens: Record<string, string> = { "admin-token": "admin", "member-token": "member" };
   const auth = { handler() {}, api: { getSession: async ({ headers }: any) => { const u = tokens[(headers.get("authorization") ?? "").replace("Bearer ", "")]; return u ? { user: { id: u } } : null; } } };

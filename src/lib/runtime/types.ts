@@ -596,6 +596,27 @@ export interface PluginInfo {
 }
 export type PluginSettingValues = Record<string, string | number | boolean>;
 
+/** `GET /v1/plugins/:id/secrets` row. Values are write-only: the runtime never returns one. */
+export interface PluginSecretStatus {
+  name: string;
+  description: string;
+  required: boolean;
+  present: boolean;
+  updatedAt: string | null;
+  scope: "user" | "install";
+  /** Install scope: true only for an administrator. */
+  editable: boolean;
+}
+/** `GET /v1/plugins/secret-migrations` item: names only. */
+export interface PluginSecretMigration {
+  pluginId: string;
+  pluginName: string;
+  name: string;
+  movedAt: string;
+  /** The vault copy was kept because another tool still references it. */
+  keptInVault: boolean;
+}
+
 // ---- Task sources (mirrors runtime/src/plugins/taskSources.ts) ----
 
 export type TaskStatusCategory = "todo" | "doing" | "done";

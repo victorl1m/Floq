@@ -20,31 +20,34 @@ const mcpManifest = (over: Record<string, unknown> = {}) => echoManifest({
   contributes: {
     migrations: false, skills: ["hello"],
     mcpServers: [
-      { name: "api", type: "stdio", command: "tix-mcp", args: ["--stdio"], env: { REGION: "eu" }, envSecrets: { TIX_API_TOKEN: "TIX_TOKEN" } },
-      { name: "web", type: "http", url: "https://mcp.tix.test/mcp", headers: { "X-Client": "floq" }, headerSecrets: { Authorization: "Bearer {{TIX_TOKEN}}" } },
+      { name: "api", type: "stdio", command: "tix-mcp", args: ["--stdio"], env: { REGION: "eu" } },
+      { name: "web", type: "http", url: "https://mcp.tix.test/mcp", headers: { "X-Client": "floq" } },
     ],
   }, ...over,
 });
 
-test("install bodies hold only vault references; the written config has floq-vault wrappers and no values", () => {
+test("install bodies carry no secret references; servers without secrets are allowed", () => {
   const m = parseManifest(mcpManifest());
   const [stdio, http] = m.contributes.mcpServers;
   const body = mcpInstallBody("tix", stdio) as any;
   assert.equal(body.name, "plugin-tix-api");
-  assert.deepEqual(body.server.env, { REGION: "eu", TIX_API_TOKEN: "${vault:TIX_TOKEN}" });
+  assert.deepEqual(body.server.env, { REGION: "eu" });
   assert.equal(body.providers, "both");
   const spec = normalizeMcpInput(body.server, body.name);
-  assert.deepEqual(spec.envSecrets, { TIX_API_TOKEN: "TIX_TOKEN" });
+  assert.deepEqual(spec.envSecrets, {});
   for (const text of [addToJsonConfig(null, spec, "t"), addToTomlConfig(null, spec, "t")]) {
-    assert.ok(text.includes("floq-vault"), text);
-    assert.ok(!text.includes(SECRET_VALUE));
+    assert.ok(!text.includes("floq-vault") && !text.includes("${vault:") && !text.includes(SECRET_VALUE), text);
     assert.ok(text.includes("plugin-tix-api"));
   }
   const hbody = mcpInstallBody("tix", http) as any;
-  assert.equal(hbody.providers, "claude"); // Codex cannot resolve secret headers
-  assert.equal(hbody.server.headers.Authorization, "Bearer ${vault:TIX_TOKEN}");
-  const hspec = normalizeMcpInput(hbody.server, hbody.name);
-  assert.deepEqual(hspec.headerSecrets, { Authorization: "Bearer {{TIX_TOKEN}}" });
+  assert.equal(hbody.providers, "both");
+  assert.deepEqual(hbody.server.headers, { "X-Client": "floq" });
+});
+
+test("manifest rejects MCP servers that carry secret env or headers", () => {
+  const stdio = { name: "api", type: "stdio", command: "x", envSecrets: { T: "TIX_TOKEN" } };
+  const http = { name: "web", type: "http", url: "https://mcp.tix.test/mcp", headerSecrets: { Authorization: "Bearer {{TIX_TOKEN}}" } };
+  for (const server of [stdio, http]) assert.throws(() => parseManifest(mcpManifest({ contributes: { mcpServers: [server] } })), /plugin secrets cannot be passed into the agent sandbox/);
 });
 
 test("manifest refuses an MCP name that would exceed the installed-name limit", () => {
@@ -67,7 +70,7 @@ async function setup(skillsPort?: any) {
   mkdirSync(join(dir, "skills", "hello"), { recursive: true });
   writeFileSync(join(dir, "skills", "hello", "SKILL.md"), "---\nname: hello\ndescription: Says hello via the plugin\n---\n# Hello\n");
   const plugin = definePlugin({ manifest: mcpManifest(), dir });
-  const host = new PluginHost(f.pool as never, { plugins: [plugin], vault: { async reveal() { return {}; } } as never, sink: () => undefined });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined });
   const h = mcpHarness();
   host.setMcp(h.port as never);
   if (skillsPort) host.setSkills(skillsPort);
@@ -179,12 +182,14 @@ test("plugin skills are copied into each user's agent home on enable and removed
   assert.deepEqual(calls.map((c) => [c.op, c.userId, c.name]), [["install", "u2", "hello"]]);
 });
 
-test("a failing skill install is reported without failing the toggle; the shipped waha skill folder is readable", async () => {
+test("a failing skill install is reported without failing the toggle; a plugin skill folder is readable", async () => {
   const { readSkillFolder } = await import("../dist/plugins/host.js");
-  const { default: waha } = await import("../dist/plugins/waha/index.js");
-  const files = readSkillFolder(waha.dir!, "waha");
+  const pluginDir = mkdtempSync(join(tmpdir(), "floq-skill-folder-"));
+  mkdirSync(join(pluginDir, "skills", "demo"), { recursive: true });
+  writeFileSync(join(pluginDir, "skills", "demo", "SKILL.md"), "---\nname: demo\n---\nRun `floq plugin call demo send`.\n");
+  const files = readSkillFolder(pluginDir, "demo");
   assert.deepEqual(Object.keys(files), ["SKILL.md"]);
-  assert.match(files["SKILL.md"], /floq plugin call waha send/);
+  assert.match(files["SKILL.md"], /floq plugin call demo send/);
   const port = { setPluginSkills() {}, async installSkill() { throw badRequest("Skill package SKILL.md metadata is invalid", "invalid_skill_package"); } };
   const { toggle, host } = await setup(port);
   const r = await toggle("u2", true);

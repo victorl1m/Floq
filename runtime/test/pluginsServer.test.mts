@@ -19,7 +19,7 @@ async function harness(t: any, plugins: any[], logs: any[] = []) {
   await f.addUser("admin"); // earliest user becomes the bootstrap admin
   await f.addUser("member");
   const vault = new Vault(f.pool as never, { encryptionKey: key } as never);
-  const host = new PluginHost(f.pool as never, { plugins, vault: vault as never, sink: (level: string, event: string, fields: unknown) => logs.push({ level, event, fields }) });
+  const host = new PluginHost(f.pool as never, { plugins, encryptionKey: Buffer.alloc(32, 9), sink: (level: string, event: string, fields: unknown) => logs.push({ level, event, fields }) });
   await host.load();
   const tokens: Record<string, string> = { "admin-token": "admin", "member-token": "member" };
   const auth = { handler() {}, api: { getSession: async ({ headers }: any) => { const u = tokens[(headers.get("authorization") ?? "").replace("Bearer ", "")]; return u ? { user: { id: u } } : null; } } };
@@ -45,8 +45,8 @@ test("unauthenticated requests get 401", async (t) => {
 });
 
 test("GET /v1/plugins returns the public subset with secret-present booleans and never values", async (t) => {
-  const { call, vault } = await harness(t, [makeEcho().plugin]);
-  await vault.create("admin", null, { name: "ECHO_TOKEN", value: "tok_server_secret_999" });
+  const { call, host } = await harness(t, [makeEcho().plugin]);
+  await host.secrets.set("echo", "*install*", "ECHO_TOKEN", "tok_server_secret_999", "admin");
   const r = await call("admin-token", "GET", "/v1/plugins");
   assert.equal(r.status, 200);
   const p = r.json.plugins[0];
@@ -56,7 +56,7 @@ test("GET /v1/plugins returns the public subset with secret-present booleans and
   assert.ok(!r.text.includes("tok_server_secret_999"));
   assert.ok(!("network" in p) && !("mcpServers" in p.contributes));
   const m = await call("member-token", "GET", "/v1/plugins");
-  assert.equal(m.json.plugins[0].secrets[0].present, false);
+  assert.equal(m.json.plugins[0].secrets[0].present, true); // install scope: one shared credential
 });
 
 test("enable and disable require admin (403 for members) and change state", async (t) => {
@@ -120,9 +120,10 @@ test("user-scoped plugins also need the per-user toggle", async (t) => {
 test("secret values never escape through logs, error messages or route responses (raw, URL-encoded, JSON-escaped)", async (t) => {
   const TOKEN = 'tok/Secret+value "q" 9@x';
   const logs: any[] = [];
-  const { call, vault } = await harness(t, [makeEcho().plugin], logs);
-  await vault.create("member", null, { name: "ECHO_TOKEN", value: TOKEN });
+  const { call, host } = await harness(t, [makeEcho(undefined, { scope: "user" }).plugin], logs);
+  await host.secrets.set("echo", "member", "ECHO_TOKEN", TOKEN, "member");
   await call("admin-token", "POST", "/v1/plugins/echo/enable");
+  await call("member-token", "PUT", "/v1/plugins/echo/user", { enabled: true });
   const forms = [TOKEN, encodeURIComponent(TOKEN), JSON.stringify(TOKEN).slice(1, -1)];
   const clean = (text: string) => { for (const f of forms) assert.ok(!text.includes(f), "leaked form: " + f + " in " + text); };
   const thrown = await call("member-token", "GET", "/v1/plugins/echo/api/leak?mode=throw");
@@ -138,4 +139,67 @@ test("secret values never escape through logs, error messages or route responses
   assert.equal(http.json.error.code, "teapot");
   assert.match(http.json.error.message, /REDACTED/);
   clean(http.text);
+});
+
+// ---- credentials routes (plugin secret store) ----
+const VAL = "tok/Route+secret \"v\" 4242";
+const B64 = Buffer.from(VAL).toString("base64");
+const noValue = (text: string) => { for (const f of [VAL, encodeURIComponent(VAL), JSON.stringify(VAL).slice(1, -1), B64]) assert.ok(!text.includes(f), "a response contained a secret form"); };
+
+test("credentials routes: user scope is per caller; values are write-only; delete is idempotent", async (t) => {
+  const logs: any[] = [];
+  const { call, host, db } = await harness(t, [makeEcho(undefined, { scope: "user" }).plugin], logs);
+  const put = await call("member-token", "PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: VAL });
+  assert.equal(put.status, 204); assert.equal(put.text, "");
+  const list = await call("member-token", "GET", "/v1/plugins/echo/secrets");
+  assert.equal(list.status, 200); noValue(list.text);
+  assert.equal(list.json.secrets[0].name, "ECHO_TOKEN");
+  assert.equal(list.json.secrets[0].present, true);
+  assert.equal(list.json.secrets[0].scope, "user");
+  assert.equal(list.json.secrets[0].editable, true);
+  assert.equal((await call("admin-token", "GET", "/v1/plugins/echo/secrets")).json.secrets[0].present, false);
+  noValue((await call("member-token", "GET", "/v1/plugins")).text);
+  assert.equal((await host.secrets.resolve("echo", "member", "ECHO_TOKEN")), VAL);
+  noValue(JSON.stringify(logs));
+  assert.equal((await call("member-token", "PUT", "/v1/plugins/echo/secrets/NOPE", { value: "x" })).json.error.code, "unknown_secret");
+  for (const bad of ["", "a\u0000b", "x".repeat(8193), 5]) { const r = await call("member-token", "PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: bad }); assert.equal(r.status, 400); }
+  assert.equal((await call("member-token", "PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: "x".repeat(20000) })).status, 413);
+  assert.equal((await call("member-token", "DELETE", "/v1/plugins/echo/secrets/ECHO_TOKEN")).status, 204);
+  assert.equal((await call("member-token", "DELETE", "/v1/plugins/echo/secrets/ECHO_TOKEN")).status, 204);
+  assert.equal((await host.secrets.resolve("echo", "member", "ECHO_TOKEN")), undefined);
+  const audit = JSON.stringify((await db.query("SELECT * FROM plugin_secret_audit")).rows);
+  noValue(audit); assert.ok(audit.includes("set") && audit.includes("remove"));
+});
+
+test("credentials routes: install scope is admin-only to write; members see presence and editable=false", async (t) => {
+  const { call, host } = await harness(t, [makeEcho().plugin]);
+  assert.equal((await call("member-token", "PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: VAL })).status, 403);
+  assert.equal((await call("member-token", "DELETE", "/v1/plugins/echo/secrets/ECHO_TOKEN")).status, 403);
+  assert.equal((await call("admin-token", "PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: VAL })).status, 204);
+  assert.equal(await host.secrets.resolve("echo", "*install*", "ECHO_TOKEN"), VAL);
+  const m = await call("member-token", "GET", "/v1/plugins/echo/secrets");
+  noValue(m.text);
+  assert.deepEqual([m.json.secrets[0].present, m.json.secrets[0].editable, m.json.secrets[0].scope], [true, false, "install"]);
+  assert.equal((await call("admin-token", "GET", "/v1/plugins/echo/secrets")).json.secrets[0].editable, true);
+  assert.equal((await call("admin-token", "DELETE", "/v1/plugins/echo/secrets/ECHO_TOKEN")).status, 204);
+  assert.equal((await call("admin-token", "GET", "/v1/plugins/echo/secrets")).json.secrets[0].present, false);
+});
+
+test("secret-migrations routes: names only, per caller, dismissible; the word is not a plugin id", async (t) => {
+  const { call, db } = await harness(t, [makeEcho(undefined, { scope: "user" }).plugin]);
+  await db.exec(`INSERT INTO plugin_secret_migrations (plugin_id, owner_id, name, kept_in_vault) VALUES ('echo','member','ECHO_TOKEN', true), ('echo','admin','ECHO_TOKEN', false)`);
+  const r = await call("member-token", "GET", "/v1/plugins/secret-migrations");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.items.map((x: any) => [x.pluginId, x.pluginName, x.name, x.keptInVault]), [["echo", "Echo", "ECHO_TOKEN", true]]);
+  assert.equal((await call("member-token", "POST", "/v1/plugins/secret-migrations/dismiss")).status, 204);
+  assert.equal((await call("member-token", "GET", "/v1/plugins/secret-migrations")).json.items.length, 0);
+  assert.equal((await call("admin-token", "GET", "/v1/plugins/secret-migrations")).json.items.length, 1);
+});
+
+test("an agent session token never reaches the credentials routes", async (t) => {
+  const { call, vault } = await harness(t, [makeEcho().plugin]);
+  const agent = vault.issueToken("admin", "sess-1");
+  for (const [m, p, b] of [["GET", "/v1/plugins/echo/secrets"], ["PUT", "/v1/plugins/echo/secrets/ECHO_TOKEN", { value: "x" }], ["DELETE", "/v1/plugins/echo/secrets/ECHO_TOKEN"], ["GET", "/v1/plugins/secret-migrations"]] as const) {
+    assert.equal((await call(agent, m, p, b)).status, 401, m + " " + p);
+  }
 });

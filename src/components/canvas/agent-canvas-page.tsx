@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import {
   Background,
   BackgroundVariant,
@@ -22,17 +24,14 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import {
-  IconActivity, IconArrowsMaximize, IconHandStop, IconNote, IconNotes, IconKey, IconLayoutDistributeHorizontal, IconLink, IconFocus2, IconMinus, IconPlayerPlay, IconPlus, IconPointer, IconX, IconTopologyStar3,
-} from "@tabler/icons-react";
+import { IconLink, IconFocus2, IconMinus, IconPlus, IconX, IconTopologyStar3 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { CrossProjectWires } from "./cross-project-wires";
 import { cn } from "cn";
-import { ProjectMark } from "@/components/projects/project-identity";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -42,9 +41,9 @@ import { recruitCounts, setOrchestrator } from "@/lib/runtime/orchestrator";
 import type { SessionSummary } from "@/lib/runtime/types";
 import AgentNodeCard, { HEADER_HEIGHT, MAX_SIZE, MIN_SIZE, type AgentNode } from "./agent-node";
 import ActivityPanel from "./activity-panel";
-import { Keys } from "./canvas-kbd";
+import { CanvasTitlebarToolbar } from "./canvas-titlebar-toolbar";
+import { ShortcutTip } from "./shortcut-tip";
 import KeychainDialog from "./keychain-dialog";
-import VaultPopover from "./vault-popover";
 import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
 import { stackKeychains, stackNotes } from "./note-placement";
 import { NOTE_DEFAULT, NOTE_PREFIX, NOTE_TEAL, NoteProvider, NoteWireCtx, isNoteId, isNoteLinkId, noteEdgeTypes, noteLinkId, noteNodeTypes, useCanvasNotes, type NoteWireEdge } from "./canvas-notes";
@@ -110,15 +109,6 @@ const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: 
   large: { width: 860, height: 540 },
 };
 
-function ShortcutTip({ label, keys, children }: { label: string; keys?: string; children: React.ReactElement }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="bottom">{label}{keys && <Keys keys={keys} className="ml-2 pl-0" />}</TooltipContent>
-    </Tooltip>
-  );
-}
-
 /** Replaces React Flow's <Controls>: zoom out, live percentage (click = 100%), zoom in, fit view. */
 function CanvasControls() {
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
@@ -158,10 +148,11 @@ function AgentCanvas() {
     client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects, info: runtimeInfo,
   } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
-  // Fit options: with floors, leave room above the top band's label for the floating toolbar. Updated once the floors are known.
+  // Fit options: with floors, leave room above the top band's label. Updated once the floors are known.
   const fitOptsRef = useRef<FitViewOptions>({});
   // The canvas is always bound to the project it was opened for, never to a possibly-null active project.
   const activeProjectId = canvasProjectId;
+  const titlebarSlot = useTitlebarSlot();
   const project = projects.find((item) => item.id === activeProjectId);
   const projectName = project ? project.displayName?.trim() || project.name : "Project";
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -901,7 +892,7 @@ function AgentCanvas() {
     return used.length > 1 ? used : [];
   }, [orderedWorkspaces, projectSessions, floorOf]);
   const fitViewOptions = useMemo<FitViewOptions>(
-    () => floors.length > 1 ? { padding: { top: "150px", right: "70px", bottom: "70px", left: "70px" } } : {},
+    () => floors.length > 1 ? { padding: { top: "100px", right: "70px", bottom: "70px", left: "70px" } } : {},
     [floors.length],
   );
   fitOptsRef.current = fitViewOptions;
@@ -1136,9 +1127,10 @@ function AgentCanvas() {
     <BranchSwitcher currentBranch={currentBranch} inWorktree={inWorktreeBranches} busy={switching} load={loadBranches} onSwitch={(branch) => void switchBranch(branch)} />
   ) : null;
 
-  const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
-    <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
-  );
+  const showAllNotes = () => {
+    if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 });
+    else toast.info("No notes on this canvas yet", { description: "Add one from the canvas toolbar." });
+  };
 
   return (
     <CanvasCtx.Provider value={ctx}>
@@ -1205,60 +1197,15 @@ function AgentCanvas() {
               <CanvasControls />
               {branchSwitcher && <Panel position="bottom-right" className="m-0!">{branchSwitcher}</Panel>}
 
-              <Panel position="top-left" className="m-2! w-[calc(100%-1rem)]">
-                <div className="canvas-topbar w-full rounded-2xl border border-border/70 p-1.5 shadow-sm">
-                  <div className="canvas-topbar-layout grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5">
-                    <div className="canvas-topbar-identity order-1 flex min-w-0 items-center gap-2 pl-1">
-                      <span aria-hidden className="flex size-[18px] shrink-0 items-center justify-center">
-                        <ProjectMark key={project?.id ?? "none"} project={project ?? NO_PROJECT_MARK} className="size-[18px] text-muted-foreground" />
-                      </span>
-                      <span className="min-w-0 truncate text-sm font-medium" title={project?.cwd}>{projectName}</span>
-                    </div>
-
-                    <div className="canvas-topbar-actions order-2 flex shrink-0 items-center gap-1">
-                      <ShortcutTip label={sleepingCount ? `Wake all sleeping agents (${sleepingCount})` : "No sleeping agents"}>
-                        <span tabIndex={sleepingCount === 0 ? 0 : undefined} className="inline-flex">
-                          <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label="Wake all sleeping agents" disabled={sleepingCount === 0} onClick={() => void wakeAll()}>
-                            <IconPlayerPlay size={16} />
-                            {sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{sleepingCount}</span>}
-                          </Button>
-                        </span>
-                      </ShortcutTip>
-                      <VaultPopover />
-                      <Button type="button" className="shrink-0" disabled={!activeProjectId} onClick={openNewAgent}>
-                        <IconPlus size={15} />
-                        New agent
-                      </Button>
-                    </div>
-
-                    <div role="group" aria-label="Canvas tools" className="canvas-topbar-tools order-3 col-span-2 row-start-2 flex min-w-0 items-center justify-center gap-1">
-                      <div role="group" aria-label="Canvas modes" className="flex shrink-0 items-center gap-0.5">
-                        <ShortcutTip label="Select (drag to box-select)">{toolButton(tool === "select", "Select (drag to box-select)", () => setTool("select"), <IconPointer size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Pan (drag to move canvas)">{toolButton(tool === "pan", "Pan (drag to move canvas)", () => setTool("pan"), <IconHandStop size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Link mode" keys="L">{toolButton(linkMode !== null, "Link mode (L)", () => setLinkMode((mode) => mode ? null : { from: null }), <IconLink size={16} />)}</ShortcutTip>
-                      </div>
-                      <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
-                      <div role="group" aria-label="Add to canvas" className="flex shrink-0 items-center gap-0.5">
-                        <ShortcutTip label="Add note" keys="N">{toolButton(false, "Add note (N)", addNoteCenter, <IconNote size={16} />, "add-note")}</ShortcutTip>
-                        <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", addKeychainCenter, <IconKey size={16} />, "add-keychain")}</ShortcutTip>
-                      </div>
-                      <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />
-                      <div role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">
-                        <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", relayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", () => { if (notes.nodes.length) void fitView({ nodes: notes.nodes.map((node) => ({ id: node.id })), duration: 300, padding: 0.3, maxZoom: 1 }); else toast.info("No notes on this canvas yet", { description: "Add one from the canvas toolbar." }); }, <IconNotes size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", () => void fitView({ duration: 200, ...fitOptsRef.current }), <IconArrowsMaximize size={16} />)}</ShortcutTip>
-                        <ShortcutTip label="Activity">{toolButton(showActivity, "Activity", () => { setActivityFilter(null); setShowActivity((value) => !value); }, <IconActivity size={16} />)}</ShortcutTip>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Panel>
-
               {linkMode && (
-                <Panel position="top-center" className="canvas-link-mode-panel mt-12! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm">
-                  <IconLink size={12} className="text-violet-500" />
-                  <span className="max-w-72 truncate">{linkMode.from ? `Link ${titleOf(linkMode.from)} to…` : "Pick the agent to link from"}</span>
-                  <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label="Cancel link mode (Esc)" title="Cancel (Esc)" onClick={() => setLinkMode(null)}><IconX size={11} /></Button>
+                <Panel
+                  position="top-center"
+                  style={{ maxWidth: "calc(100% - 32px)" }}
+                  className={cn("m-2! flex items-center gap-1.5 rounded-full border border-violet-500/60 bg-card/90 py-0.5 pr-1 pl-2 text-[11px] shadow-sm", runtimeLinks.some((link) => link.foreign) && "canvas-link-hint-with-wires")}
+                >
+                  <IconLink size={12} className="shrink-0 text-violet-500" />
+                  <span className="min-w-0 max-w-72 truncate">{linkMode.from ? `Link ${titleOf(linkMode.from)} to…` : "Pick the agent to link from"}</span>
+                  <Button type="button" variant="ghost" size="icon-xs" className="size-5 shrink-0 rounded-full" aria-label="Cancel link mode (Esc)" title="Cancel (Esc)" onClick={() => setLinkMode(null)}><IconX size={11} /></Button>
                 </Panel>
               )}
 
@@ -1290,6 +1237,31 @@ function AgentCanvas() {
         </ContextMenuTrigger>
         <CanvasMenuContent target={menuTarget} api={menuApi} />
       </ContextMenu>
+      {titlebarSlot && activeProjectId && createPortal(
+        <CanvasTitlebarToolbar
+          project={project ?? NO_PROJECT_MARK}
+          projectKey={project?.id ?? "none"}
+          name={projectName}
+          cwd={project?.cwd}
+          sleepingCount={sleepingCount}
+          onWakeAll={() => void wakeAll()}
+          canCreate={!!activeProjectId}
+          onNewAgent={openNewAgent}
+          tool={tool}
+          onTool={setTool}
+          linkActive={linkMode !== null}
+          onToggleLink={() => setLinkMode((mode) => mode ? null : { from: null })}
+          onAddNote={addNoteCenter}
+          onAddKeychain={addKeychainCenter}
+          onRelayout={relayout}
+          onShowNotes={showAllNotes}
+          onFit={() => void fitView({ duration: 200, ...fitOptsRef.current })}
+          activityOpen={showActivity}
+          onToggleActivity={() => { setActivityFilter(null); setShowActivity((value) => !value); }}
+          onKeyDown={onKeyDown}
+        />,
+        titlebarSlot,
+      )}
       </TooltipProvider>
 
       <TerminalDialog

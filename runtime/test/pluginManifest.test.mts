@@ -11,7 +11,7 @@ const valid = () => ({
   contributes: {
     views: [{ id: "inbox", label: "Inbox", icon: "IconInbox" }],
     taskSources: [{ id: "tickets", label: "Movidesk", view: "generic" }],
-    mcpServers: [{ name: "md", type: "stdio", command: "md-mcp", envSecrets: { MD_TOKEN: "MOVIDESK_TOKEN" } }],
+    mcpServers: [{ name: "md", type: "stdio", command: "md-mcp" }],
     routes: true, migrations: true,
   },
 });
@@ -35,14 +35,13 @@ test("rejects unknown keys at every level", () => {
   rejects({ ...valid(), contributes: { ...valid().contributes, nope: 1 } }, /unknown key/);
   rejects({ ...valid(), secrets: [{ name: "A_B", extra: 1 }] }, /unknown key/);
 });
-test("rejects an undeclared envSecrets reference", () => {
-  const m = valid(); m.contributes.mcpServers[0].envSecrets = { X: "OTHER_SECRET" };
-  rejects(m, /undeclared secret/);
+test("rejects MCP servers with secret env or headers (secrets never enter the sandbox)", () => {
+  const m: any = valid(); m.contributes.mcpServers[0].envSecrets = { X: "MOVIDESK_TOKEN" };
+  rejects(m, /plugin secrets cannot be passed into the agent sandbox/);
+  const h: any = valid(); h.contributes.mcpServers = [{ name: "h", type: "http", url: "https://x.test", headerSecrets: { Authorization: "Bearer {{MOVIDESK_TOKEN}}" } }];
+  rejects(h, /plugin secrets cannot be passed into the agent sandbox/);
 });
-test("rejects an undeclared headerSecrets placeholder", () => {
-  const m: any = valid(); m.contributes.mcpServers = [{ name: "h", type: "http", url: "https://x.test", headerSecrets: { Authorization: "Bearer {{NOPE}}" } }];
-  rejects(m, /undeclared secret/);
-});
+test("secret-migrations is a reserved id", () => rejects({ ...valid(), id: "secret-migrations" }, /reserved/));
 test("rejects a secret name failing VAULT_NAME", () => {
   for (const name of ["lower", "1ABC", "A-B", "A".repeat(65)]) rejects({ ...valid(), secrets: [{ name }] }, /secret name/);
 });

@@ -56,7 +56,7 @@ test("a message to an asleep agent is queued, then typed once when the agent is 
   state.live = live;
   const d1 = await orch.deliverPending(U, B);
   assert.equal(d1.delivered.length, 1);
-  assert.ok(writes.join("").includes("[Message from agent Alpha] please build X"));
+  assert.ok(/\[Message from agent Alpha \(session [0-9a-f-]+\)\] please build X/.test(writes.join("")));
   const before = writes.length;
   const d2 = await orch.deliverPending(U, B);
   assert.equal(d2.delivered.length, 0);

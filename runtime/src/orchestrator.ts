@@ -466,7 +466,7 @@ export class Orchestrator {
     }
     const typed = await this.scrub(userId, [other.id, me.id], cross
       ? buildProvenance(from, hop) + " " + typedBody + buildReplyHint(from, wait)
-      : "[Message from agent " + me.title + "] " + typedBody);
+      : "[Message from agent " + me.title + " (session " + me.id + ")] " + typedBody + buildReplyHint(from, wait));
     const outboxId = await this.outbox.enqueue(userId, other.id, "message", typed);
     const queued = () => ({ id: other.id, name: other.title, status: "queued", source: "none", output: "", truncated: 0, delivery });
 
