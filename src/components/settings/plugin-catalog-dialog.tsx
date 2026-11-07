@@ -1,47 +1,89 @@
-import { useCallback, useEffect, useState } from "react";
-import { IconAlertTriangle, IconDownload, IconRefresh } from "@tabler/icons-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { IconAlertTriangle, IconDownload, IconRefresh, IconSearch } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AppDialog } from "@/components/ui/app-dialog";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginCatalogItem, PluginRepoPreview } from "@/lib/runtime/types";
-import { ACTION_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, confirmMatches, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
+import { ACTION_LABEL, FILTER_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, avatarUrl, categoryOf, confirmMatches, filterCatalog, matchesFilter, repoOf, type CatalogFilter, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { usePlugins } from "@/plugins/host";
+import { cn } from "cn";
 
 const STATUS_BADGE = { builtin: "Built in", available: "", installed: "Installed", update: "Update available" } as const;
 
-/** One compact catalog row. Presentational: the dialog owns the actions. */
+/** Repo avatar tile: the catalog icon when it names a known Tabler icon, else the GitHub owner avatar, else the first letter. */
+export function PluginMark({ item, className }: { item: PluginCatalogItem; className?: string }) {
+    const url = avatarUrl(item);
+    const Icon = resolvePluginIcon(item.icon);
+    // An icon name this client does not know (newer catalog) falls back to the repo avatar, not the generic plug.
+    const knownIcon = !!item.icon && Icon !== resolvePluginIcon(undefined);
+    return (
+        <Avatar data-slot="plugin-mark" className={cn("size-12 rounded-xl after:rounded-xl", className)}>
+            {url && !knownIcon && <AvatarImage src={url} alt="" referrerPolicy="no-referrer" className="rounded-xl" />}
+            <AvatarFallback className="rounded-xl bg-muted text-base font-semibold text-muted-foreground">
+                {knownIcon ? <Icon className="size-6" /> : (item.name[0] ?? "?").toUpperCase()}
+            </AvatarFallback>
+        </Avatar>
+    );
+}
+
+/** One grid card of the explorer. A button, so Enter/Space select it. */
+export function CatalogCard({ item, selected, onSelect }: { item: PluginCatalogItem; selected: boolean; onSelect: (id: string) => void }) {
+    const state = rowState(item);
+    return (
+        <li>
+            <button type="button" data-plugin-card={item.id} data-state={state.status} aria-pressed={selected} onClick={() => onSelect(item.id)}
+                className={cn("flex h-full w-full flex-col gap-3 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border")}>
+                <div className="flex items-start gap-3">
+                    <PluginMark item={item} />
+                    <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{item.name}</p>
+                        <p className="truncate font-mono text-xs text-muted-foreground">v{item.version}{repoOf(item) ? ` · ${repoOf(item)}` : ""}</p>
+                    </div>
+                </div>
+                <p className="line-clamp-2 min-h-8 text-xs leading-relaxed text-muted-foreground">{item.description || "No description."}</p>
+                <div className="mt-auto flex flex-wrap items-center gap-1.5">
+                    <Badge variant="outline">{categoryOf(item)}</Badge>
+                    {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
+                </div>
+            </button>
+        </li>
+    );
+}
+
+/** The detail pane of the selected plugin (kept as `CatalogRow`). Presentational: the dialog owns the actions. */
 export function CatalogRow({ item, busy, onAction }: { item: PluginCatalogItem; busy: boolean; onAction: (item: PluginCatalogItem, action: CatalogAction) => void }) {
     const state = rowState(item);
-    const Icon = resolvePluginIcon(item.icon);
     return (
-        <li data-plugin-catalog={item.id} data-state={state.status} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-start sm:justify-between">
+        <div data-plugin-catalog={item.id} data-state={state.status} className="flex flex-col gap-4">
             <div className="flex min-w-0 flex-1 gap-3">
-                <Icon className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+                <PluginMark item={item} className="size-14" />
                 <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{item.name}</span>
+                        <h3 className="text-base font-semibold">{item.name}</h3>
                         <Badge variant="outline" className="font-mono">v{item.version}</Badge>
                         {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
                         {state.status === "update" && <span className="text-xs text-muted-foreground">you have v{item.installedVersion}</span>}
                     </div>
-                    {item.description && <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">{item.description}</p>}
+                    {repoOf(item) && <p className="font-mono text-xs text-muted-foreground">{repoOf(item)}</p>}
+                    {item.description && <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{item.description}</p>}
                     <ul className="space-y-0.5 text-xs text-muted-foreground">{summarize(item).map((line) => <li key={line}>{line}</li>)}</ul>
                 </div>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
                 {state.actions.map((action) => (
                     <Button key={action} size="sm" variant={action === "install" || action === "update" ? "default" : action === "uninstall" ? "outline" : "ghost"} disabled={busy} onClick={() => onAction(item, action)}>
                         {action === "install" ? <IconDownload /> : action === "update" ? <IconRefresh /> : null}{ACTION_LABEL[action]}
                     </Button>
                 ))}
             </div>
-        </li>
+        </div>
     );
 }
 
@@ -100,6 +142,14 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const [sources, setSources] = useState<Record<string, string>>({});
     const [repoPending, setRepoPending] = useState<{ url: string; preview: PluginRepoPreview; mode: "install" | "update" } | null>(null);
     const { all: plugins } = usePlugins();
+    const [query, setQuery] = useState("");
+    const [filter, setFilter] = useState<CatalogFilter>("all");
+    const [category, setCategory] = useState<string | null>(null);
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const visible = useMemo(() => filterCatalog(items ?? [], query, filter, category), [items, query, filter, category]);
+    const categories = useMemo(() => [...new Set((items ?? []).map(categoryOf))].sort(), [items]);
+    const selected = visible.find((i) => i.id === selectedId) ?? visible[0] ?? null;
+    const countOf = (f: CatalogFilter) => (items ?? []).filter((i) => matchesFilter(i, f)).length;
 
     const load = useCallback(async () => {
         if (!client) return;
@@ -158,13 +208,45 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const ok = pending ? (pending.action === "update" || confirmMatches(typed, pending.item.id)) : false;
     return (
         <>
-            <AppDialog open={open && !pending && !repoPending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." size="lg"
+            <AppDialog open={open && !pending && !repoPending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." size="lg" className="sm:max-w-4xl"
                 footer={<Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>}>
                 {error ? (
                     <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{error}</p><Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button></div>
                 ) : items === null ? <p role="status" className="text-sm text-muted-foreground">Loading the catalog…</p>
                 : items.length === 0 ? <p className="text-sm text-muted-foreground">The catalog is empty.</p>
-                : <ul aria-label="Plugin catalog" className="max-h-[50dvh] divide-y divide-border overflow-y-auto rounded-xl border border-border">{items.map((item) => <CatalogRow key={item.id} item={item} busy={busy} onAction={ask} />)}</ul>}
+                : (
+                    <div data-slot="plugin-explorer" className="grid gap-4 md:grid-cols-[11rem_minmax(0,1fr)]">
+                        <nav aria-label="Filter plugins" className="flex gap-4 overflow-x-auto md:flex-col md:gap-5 md:overflow-visible">
+                            <ul className="flex gap-1 md:flex-col">
+                                {(Object.keys(FILTER_LABEL) as CatalogFilter[]).map((f) => (
+                                    <li key={f}><button type="button" aria-pressed={filter === f} onClick={() => setFilter(f)} className={cn("flex w-full items-center justify-between gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === f && "bg-muted font-medium")}>{FILTER_LABEL[f]}<span className="text-xs text-muted-foreground">{countOf(f)}</span></button></li>
+                                ))}
+                            </ul>
+                            {categories.length > 1 && (
+                                <div className="md:space-y-1">
+                                    <p className="hidden px-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground md:block">Categories</p>
+                                    <ul className="flex gap-1 md:flex-col">
+                                        {categories.map((c) => (
+                                            <li key={c}><button type="button" aria-pressed={category === c} onClick={() => setCategory(category === c ? null : c)} className={cn("w-full whitespace-nowrap rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", category === c && "bg-muted font-medium")}>{c}</button></li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </nav>
+                        <div className="min-w-0 space-y-3">
+                            <div className="relative">
+                                <IconSearch aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                                <Input type="search" aria-label="Search plugins" placeholder="Search plugins" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" className="pl-8" />
+                            </div>
+                            {visible.length === 0 ? <p role="status" className="py-8 text-center text-sm text-muted-foreground">No plugins match.</p> : (
+                                <ul aria-label="Plugin catalog" className="grid max-h-[34dvh] grid-cols-1 gap-2 overflow-y-auto p-0.5 sm:grid-cols-2 lg:grid-cols-3">
+                                    {visible.map((item) => <CatalogCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelectedId} />)}
+                                </ul>
+                            )}
+                            {selected && <section aria-label={`${selected.name} details`} className="rounded-xl border border-border p-4"><CatalogRow item={selected} busy={busy} onAction={ask} /></section>}
+                        </div>
+                    </div>
+                )}
                 <section aria-label="Install from GitHub" className="mt-4 space-y-3" data-slot="plugin-repo-install">
                     <div className="space-y-1">
                         <Label htmlFor="plugin-repo-url">Install from a GitHub repository</Label>

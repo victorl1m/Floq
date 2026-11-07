@@ -51,3 +51,35 @@ export function updateToast(updates: Pick<PluginUpdateNotice, "name" | "installe
   const more = updates.length > 3 ? ` and ${updates.length - 3} more` : "";
   return { title: updates.length === 1 ? "A plugin update is available" : `${updates.length} plugin updates are available`, description: `${list}${more}. Update them in Settings > Plugins.` };
 }
+
+/** Explorer filters. "all" shows everything; the rest narrow by install state. */
+export type CatalogFilter = "all" | "installed" | "updates" | "available";
+export const FILTER_LABEL: Record<CatalogFilter, string> = { all: "All plugins", installed: "Installed", updates: "Updates", available: "Not installed" };
+
+/** The grouping label of an entry: the catalog's own `category`, else the first thing it adds, else "Other". */
+export function categoryOf(item: Pick<PluginCatalogItem, "category" | "contributes">): string {
+  const c = item.category?.trim();
+  if (c) return c[0].toUpperCase() + c.slice(1);
+  const first = item.contributes[0];
+  return first ? (WORDS[first] ?? first).replace(/^./, (m) => m.toUpperCase()) : "Other";
+}
+
+/** `owner/repo` the package is released from, when the runtime told us. */
+const REPO_SHAPE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/;
+export const repoOf = (item: Pick<PluginCatalogItem, "repo">): string | null => (item.repo && REPO_SHAPE.test(item.repo) ? item.repo : null);
+
+/** GitHub avatar of the repository owner (rendered with a letter fallback). Null when the repository is unknown. */
+export function avatarUrl(item: Pick<PluginCatalogItem, "repo">): string | null {
+  const repo = repoOf(item);
+  return repo ? `https://github.com/${repo.split("/")[0]}.png?size=96` : null;
+}
+
+export const matchesFilter = (item: Pick<PluginCatalogItem, "installedVersion" | "updateAvailable" | "builtin">, f: CatalogFilter): boolean =>
+  f === "all" ? true : f === "updates" ? item.updateAvailable : f === "installed" ? item.installedVersion !== null || item.builtin : item.installedVersion === null && !item.builtin;
+
+/** Search (name, id, description, category) + state filter + category. Keeps catalog order. */
+export function filterCatalog<T extends PluginCatalogItem>(items: T[], query: string, filter: CatalogFilter, category: string | null): T[] {
+  const q = query.trim().toLowerCase();
+  return items.filter((i) => matchesFilter(i, filter) && (!category || categoryOf(i) === category)
+    && (!q || `${i.name} ${i.id} ${i.description} ${categoryOf(i)}`.toLowerCase().includes(q)));
+}

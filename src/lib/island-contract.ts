@@ -41,8 +41,11 @@ export function sameSnapshotContent(a: IslandSnapshot, b: IslandSnapshot): boole
 }
 
 /** Keep the last queue through brief sync/client teardown gaps. */
-export function deferEmptySnapshot(previous: IslandSnapshot | null, next: IslandSnapshot, emptySince: number | null, now: number): { snapshot: IslandSnapshot; emptySince: number | null } {
+export const EMPTY_DEFER_MS = 1500;
+/** The island's colored result stays on screen (hold + fade) about 3s; keep the OS window alive a little longer than that after an in-island answer. */
+export const EMPTY_DEFER_AFTER_ANSWER_MS = 3300;
+export function deferEmptySnapshot(previous: IslandSnapshot | null, next: IslandSnapshot, emptySince: number | null, now: number, holdMs = EMPTY_DEFER_MS): { snapshot: IslandSnapshot; emptySince: number | null } {
   if (next.items.length || !previous?.items.length) return { snapshot: next, emptySince: null };
   const since = emptySince ?? now;
-  return { snapshot: now - since < 1500 ? { ...next, items: previous.items } : next, emptySince: since };
+  return { snapshot: now - since < holdMs ? { ...next, items: previous.items } : next, emptySince: since };
 }

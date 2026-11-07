@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useRuntime } from '@/lib/runtime/store';
 import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/approvals';
 import { useAttentionState } from '@/lib/attention';
-import { capAttention, deferEmptySnapshot, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { capAttention, deferEmptySnapshot, EMPTY_DEFER_AFTER_ANSWER_MS, EMPTY_DEFER_MS, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
@@ -19,6 +19,8 @@ export function useIslandBridge() {
   const revision = useRef(0);
   const latest = useRef<IslandSnapshot>(null!);
   const emptySince = useRef<number | null>(null);
+  /** How long an emptied queue is replayed: longer after an in-island answer so the result animation can finish. */
+  const emptyHoldMs = useRef(EMPTY_DEFER_MS);
   const queue: AttentionItem[] = orderAttention([
     ...approvals.filter(a => a.state === 'pending').map(a => ({kind:'approval' as const, id:a.approval.id, createdAt:a.approval.createdAt, approval:a.approval})),
     ...decisions.map(d => ({kind:'decision' as const, id:d.id, createdAt:d.createdAt, decision:d})),
@@ -35,6 +37,7 @@ export function useIslandBridge() {
     if (!item || (intent.type === 'approval' && item.kind !== 'approval') || (intent.type !== 'approval' && item.kind !== 'decision')) return;
     if (intent.type === 'decision' && (item.kind !== 'decision' || item.decision.answerMode === 'terminal' || !validAnswers(item.decision.questions, intent.answers))) return;
     if (intent.type === 'terminal' && (item.kind !== 'decision' || item.decision.source !== 'native')) return;
+    if (intent.type !== 'terminal') emptyHoldMs.current = EMPTY_DEFER_AFTER_ANSWER_MS;
     inflight.current.add(intent.id); setBusy([...inflight.current]); setError(undefined);
     const action = intent.type === 'approval' ? client.resolveApproval(intent.id, intent.decision) : intent.type === 'decision' ? client.resolveDecision(intent.id, intent.answers) : client.decisionTerminal(intent.id);
     void action.then(() => { if (intent.type === 'approval') markApprovalOutcome(intent.id, intent.decision === 'allow' ? 'allowed' : 'denied'); }).catch(e => {
@@ -59,14 +62,15 @@ export function useIslandBridge() {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const update = () => {
-      const deferred = deferEmptySnapshot(latest.current, candidate, emptySince.current, Date.now());
+      if (candidate.items.length) emptyHoldMs.current = EMPTY_DEFER_MS;
+      const deferred = deferEmptySnapshot(latest.current, candidate, emptySince.current, Date.now(), emptyHoldMs.current);
       emptySince.current = deferred.emptySince;
       if (!latest.current || !sameSnapshotContent(latest.current, deferred.snapshot)) {
         latest.current = { ...deferred.snapshot, revision: ++revision.current };
         if (ready) void publishRef.current().catch(() => setReady(false));
       }
       if (!candidate.items.length && deferred.snapshot.items.length) {
-        timer = setTimeout(update, Math.max(1, 1500 - (Date.now() - emptySince.current!)));
+        timer = setTimeout(update, Math.max(1, emptyHoldMs.current - (Date.now() - emptySince.current!)));
       }
     };
     update();

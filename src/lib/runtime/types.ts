@@ -647,6 +647,8 @@ export interface PluginUpdateNotice { id: string; name: string; installedVersion
 export interface PluginCatalogItem {
   id: string; name: string; version: string; apiVersion: number; description: string; icon?: string; scope: PluginScope;
   secrets: string[]; network: string[]; contributes: string[]; minFloq?: string;
+  /** Optional grouping label from the catalog, and the `owner/repo` the package is released from (for the avatar). */
+  category?: string; repo?: string;
   /** Built into this runtime: listed, but cannot be installed or removed. */
   builtin: boolean;
   installedVersion: string | null;

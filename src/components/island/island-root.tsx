@@ -10,8 +10,9 @@ const send = (intent: IslandIntent) => invoke('island_intent', { intent });
 /** What the user just answered: shown as a short colored result state instead of falling back to the stale "N waiting" pill. */
 type Outcome = { id: string; kind: 'accepted' | 'refused' | 'sent'; title: string };
 const OUTCOME_LABEL: Record<Outcome['kind'], string> = { accepted: 'Accepted', refused: 'Refused', sent: 'Sent' };
-/** The result stays on screen this long. It must stay under the main window's 1.5s empty-queue deferral so the OS window is still there. */
-const OUTCOME_HOLD_MS = 1200;
+/** The result is held this long (independent of hover), then fades out over OUTCOME_FADE_MS. Hold + fade must stay under EMPTY_DEFER_AFTER_ANSWER_MS so the OS window is still there. */
+const OUTCOME_HOLD_MS = 2600;
+const OUTCOME_FADE_MS = 400;
 function OutcomeMark({ kind }: { kind: Outcome['kind'] }) {
   return <svg className="island-result-svg" viewBox="0 0 48 48" aria-hidden="true"><circle className="island-result-ring" cx="24" cy="24" r="20"/>{kind === 'refused' ? <path className="island-result-glyph" d="M17 17 L31 31 M31 17 L17 31"/> : <path className="island-result-glyph" d="M15 25 L21.5 31.5 L33 18"/>}</svg>;
 }
@@ -38,6 +39,9 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const [submission, setSubmission] = useState<'busy' | 'success' | null>(null);
   const previous = useRef<IslandSnapshot | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(initialOutcome);
+  const [leaving, setLeaving] = useState(false);
+  const outcomeRef = useRef<Outcome | null>(initialOutcome);
+  outcomeRef.current = outcome;
   const pendingOutcome = useRef<Outcome | null>(null);
   /** Requests answered in this window: never counted or shown again, even while the main window still replays them (empty-queue deferral). */
   const answeredIds = useRef(new Set<string>());
@@ -75,7 +79,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
           }
         });
         if (disposed) { snapshotListener(); return; } unlisteners.push(snapshotListener);
-        const hoverListener = await listen<{expanded:boolean}>('island:hover', ({payload}) => setExpanded(payload.expanded));
+        const hoverListener = await listen<{expanded:boolean}>('island:hover', ({payload}) => { if (payload.expanded || !outcomeRef.current) setExpanded(payload.expanded); });
         if (disposed) { hoverListener(); return; } unlisteners.push(hoverListener);
         await send({type:'ready'});
         retry = setInterval(() => { if (!previous.current) void send({type:'ready'}).catch(() => undefined); }, 1000);
@@ -114,7 +118,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     if (snapshot.error) { submitting.current = null; sawBusy.current = false; pendingOutcome.current = null; setSubmission(null); return; }
     if (sawBusy.current || !snapshot.items.some(item => item.id === id)) {
       submitting.current = null; sawBusy.current = false;
-      if (pendingOutcome.current?.id === id) { answeredIds.current.add(id); setOutcome(pendingOutcome.current); }
+      if (pendingOutcome.current?.id === id) { answeredIds.current.add(id); setLeaving(false); setExpanded(true); setOutcome(pendingOutcome.current); }
       pendingOutcome.current = null;
       setSubmission('success');
 
@@ -122,15 +126,19 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   }, [snapshot]);
   useEffect(() => {
     if (submission !== 'success') return;
-    const timer = setTimeout(() => {
-      setSubmission(null); setPinned(false); setExpanded(false); setOutcome(null);
-      // Nothing else is waiting: play the normal exit now (the empty snapshot may still be deferred by the main window).
+    const finish = () => {
+      setSubmission(null); setPinned(false); setExpanded(false); setOutcome(null); setLeaving(false);
+      // Nothing else is waiting: the result already faded out, so drop the island without replaying the slide-out over it.
       if (outcome && !displayed.current?.items.some(item => !answeredIds.current.has(item.id))) {
-        clearTimeout(motionTimer.current); setMotion('exit');
-        motionTimer.current = setTimeout(() => { displayed.current = null; setDisplaySnapshot(null); setMotion('idle'); }, 260);
-      }
+        clearTimeout(motionTimer.current); displayed.current = null; setDisplaySnapshot(null); setMotion('idle');
+      } else if (outcome) { clearTimeout(motionTimer.current); setMotion('enter'); motionTimer.current = setTimeout(() => setMotion('idle'), 420); }
+    };
+    let fade: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      if (!outcome) { finish(); return; }
+      setLeaving(true); fade = setTimeout(finish, OUTCOME_FADE_MS);
     }, outcome ? OUTCOME_HOLD_MS : 700);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); clearTimeout(fade); };
   }, [submission]);
   const disabled = !snapshot?.connected || !!submission || (!!current && snapshot.busy.includes(current.id));
   const act = (intent: IslandIntent) => {
@@ -149,7 +157,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   if ((!displaySnapshot || !items.length) && !outcome) return null;
   // An exit triggered by the emptied queue must not fade the result away while it is still being shown.
   const shownMotion = outcome && motion === 'exit' ? 'idle' : motion;
-  return <div className={'island island-' + shownMotion + ' ' + (expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind : '')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+  return <div className={'island island-' + shownMotion + ' ' + (expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
     {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!expanded} inert={!expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>

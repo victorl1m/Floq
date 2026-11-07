@@ -16,6 +16,15 @@ export class CatalogError extends Error {
 export interface CatalogEntry {
   id: string; name: string; version: string; apiVersion: number; description: string; icon?: string; scope: "user" | "install";
   secrets: string[]; network: string[]; contributes: string[]; minFloq?: string; package: string; sha256: string;
+  /** Optional, from the catalog: a short grouping label for the explorer filter. */
+  category?: string;
+  /** `owner/repo` of the GitHub release the package comes from (derived from `package`, never trusted from the catalog). Used for the repo avatar. */
+  repo?: string;
+}
+
+/** `owner/repo` of a package release URL, or undefined. */
+export function repoOfPackage(raw: string): string | undefined {
+  try { const m = /^\/([^/]+)\/([^/]+)\/releases\/download\//.exec(new URL(raw).pathname); return m ? `${m[1]}/${m[2]}` : undefined; } catch { return undefined; }
 }
 
 type FetchLike = (url: string, init: { redirect: "manual"; signal: AbortSignal; headers?: Record<string, string> }) => Promise<Response>;
@@ -90,7 +99,8 @@ export function parseCatalog(bytes: Buffer): CatalogEntry[] {
     if (!ID.test(id) || seen.has(id) || !SEMVER.test(version) || !/^[0-9a-f]{64}$/.test(sha) || !packageUrlAllowed(pkg) || p.apiVersion !== 1) continue;
     seen.add(id);
     out.push({ id, name: str(p.name, 80) || id, version, apiVersion: 1, description: str(p.description, 500), icon: str(p.icon, 64) || undefined, scope: p.scope === "install" ? "install" : "user",
-      secrets: strs(p.secrets, 32, 64), network: strs(p.network, 32, 253), contributes: strs(p.contributes, 16, 32), minFloq: str(p.minFloq, 32) || undefined, package: pkg, sha256: sha });
+      secrets: strs(p.secrets, 32, 64), network: strs(p.network, 32, 253), contributes: strs(p.contributes, 16, 32), minFloq: str(p.minFloq, 32) || undefined, package: pkg, sha256: sha,
+      category: str(p.category, 32).trim() || undefined, repo: repoOfPackage(pkg) });
   }
   return out;
 }
