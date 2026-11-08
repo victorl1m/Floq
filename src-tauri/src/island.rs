@@ -158,6 +158,13 @@ struct IslandState {
     height: f64,
     outside_since: Option<std::time::Instant>,
     last_non_empty_snapshot: Option<Value>,
+    /// When the OS window was last shown for this visibility period; `None` while hidden.
+    shown_at: Option<std::time::Instant>,
+    /// True once the island webview reported a layout since the last show or recovery.
+    layout_acked: bool,
+    /// Recovery attempts since the last ack (0 = none yet).
+    recoveries: u32,
+    last_recovery: Option<std::time::Instant>,
 }
 
 impl Default for IslandState {
@@ -170,6 +177,120 @@ impl Default for IslandState {
             height: COLLAPSED_HEIGHT,
             outside_since: None,
             last_non_empty_snapshot: None,
+            shown_at: None,
+            layout_acked: false,
+            recoveries: 0,
+            last_recovery: None,
+        }
+    }
+}
+
+/// How long a shown island may stay silent before the watchdog steps in.
+const ACK_TIMEOUT_MS: u128 = 1500;
+/// Never recover more often than this.
+const RECOVERY_COOLDOWN_MS: u128 = 10_000;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum WatchdogAction {
+    None,
+    Reload,
+    Recreate,
+}
+
+/// Pure decision for the island watchdog. `since_shown_ms` is None while the window is hidden.
+fn watchdog_action(
+    since_shown_ms: Option<u128>,
+    acked: bool,
+    recoveries: u32,
+    since_recovery_ms: Option<u128>,
+) -> WatchdogAction {
+    let Some(shown) = since_shown_ms else {
+        return WatchdogAction::None;
+    };
+    if acked || shown < ACK_TIMEOUT_MS {
+        return WatchdogAction::None;
+    }
+    if since_recovery_ms.is_some_and(|elapsed| elapsed < RECOVERY_COOLDOWN_MS) {
+        return WatchdogAction::None;
+    }
+    if recoveries == 0 {
+        WatchdogAction::Reload
+    } else {
+        WatchdogAction::Recreate
+    }
+}
+
+fn mark_shown(app: &tauri::AppHandle, visible: bool) {
+    if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+        if visible {
+            // Keep the timer of an already-running show; only a fresh show restarts it.
+            if state.shown_at.is_none() {
+                state.shown_at = Some(std::time::Instant::now());
+                state.layout_acked = false;
+                state.recoveries = 0;
+            }
+        } else {
+            state.shown_at = None;
+            state.layout_acked = false;
+            state.recoveries = 0;
+        }
+    }
+}
+
+fn watchdog_tick(app: &tauri::AppHandle) {
+    let action = {
+        let Ok(mut state) = app.state::<IslandRuntime>().0.lock() else {
+            return;
+        };
+        if !state.active {
+            return;
+        }
+        let action = watchdog_action(
+            state.shown_at.map(|t| t.elapsed().as_millis()),
+            state.layout_acked,
+            state.recoveries,
+            state.last_recovery.map(|t| t.elapsed().as_millis()),
+        );
+        if action != WatchdogAction::None {
+            state.recoveries += 1;
+            state.last_recovery = Some(std::time::Instant::now());
+            state.shown_at = Some(std::time::Instant::now());
+            state.layout_acked = false;
+        }
+        action
+    };
+    match action {
+        WatchdogAction::None => {}
+        WatchdogAction::Reload => {
+            diagnostic(app, "show without layout ack: reloading");
+            if let Some(window) = app.get_webview_window("island") {
+                if let Err(error) = window.eval("location.reload()") {
+                    diagnostic(app, &format!("reload failed: {error}"));
+                }
+            } else {
+                diagnostic(app, "reload skipped: no island window");
+            }
+        }
+        WatchdogAction::Recreate => {
+            diagnostic(app, "still no layout ack: recreating island window");
+            if let Some(window) = app.get_webview_window("island") {
+                let _ = window.destroy();
+            }
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                // Give the runtime time to release the "island" label.
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let inner = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    match create_window(&inner, true) {
+                        Ok(window) => {
+                            diagnostic(&inner, "island window recreated");
+                            let _ = set_visible_without_activation(&window, true);
+                        }
+                        Err(error) => diagnostic(&inner, &format!("recreate failed: {error}")),
+                    }
+                });
+            });
         }
     }
 }
@@ -443,6 +564,7 @@ fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Resu
         return Ok(());
     }
     diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
+    mark_shown(window.app_handle(), visible);
     use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow};
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
     unsafe {
@@ -489,6 +611,7 @@ fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Resu
         return Ok(());
     }
     diagnostic(window.app_handle(), if visible { "show" } else { "hide" });
+    mark_shown(window.app_handle(), visible);
     if visible {
         window.show()
     } else {
@@ -730,6 +853,8 @@ pub fn island_set_layout(
         state.pinned = pinned;
         state.height = height;
         state.outside_since = None;
+        state.layout_acked = true;
+        state.recoveries = 0;
     }
     window
         .set_ignore_cursor_events(false)
@@ -768,6 +893,8 @@ pub fn create_window(
     .focused(false)
     .visible(false)
     .shadow(false)
+    // A hidden island webview must keep running: WebView2 otherwise suspends it after hours hidden.
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
     .background_color(tauri::window::Color(245, 246, 248, 255));
     #[cfg(any(windows, target_os = "macos"))]
     let builder = if has_native_material {
@@ -788,6 +915,12 @@ pub fn create_window(
 pub fn start_hover_monitor(app: tauri::AppHandle) {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
+        let watch_app = app.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let tick_app = watch_app.clone();
+            let _ = watch_app.run_on_main_thread(move || watchdog_tick(&tick_app));
+        });
         std::thread::spawn(move || {
             let pending = Arc::new(AtomicBool::new(false));
             loop {
@@ -965,6 +1098,22 @@ mod tests {
         update_snapshot_state(&mut state, json!({"items": []}), true);
         assert!(!super::hide_is_current(&state, stale));
         assert!(super::hide_is_current(&state, state.visibility_generation));
+    }
+
+    #[test]
+    fn watchdog_waits_for_ack_then_reloads_then_recreates() {
+        assert_eq!(watchdog_action(None, false, 0, None), WatchdogAction::None);
+        assert_eq!(watchdog_action(Some(500), false, 0, None), WatchdogAction::None);
+        assert_eq!(watchdog_action(Some(5000), true, 0, None), WatchdogAction::None);
+        assert_eq!(watchdog_action(Some(1600), false, 0, None), WatchdogAction::Reload);
+        assert_eq!(watchdog_action(Some(1600), false, 1, Some(11_000)), WatchdogAction::Recreate);
+    }
+
+    #[test]
+    fn watchdog_never_recovers_faster_than_the_cooldown() {
+        assert_eq!(watchdog_action(Some(3000), false, 1, Some(3000)), WatchdogAction::None);
+        assert_eq!(watchdog_action(Some(3000), false, 0, Some(9_999)), WatchdogAction::None);
+        assert_eq!(watchdog_action(Some(3000), false, 0, Some(10_000)), WatchdogAction::Reload);
     }
 
     #[test]
