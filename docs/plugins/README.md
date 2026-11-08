@@ -38,6 +38,7 @@ Manifests are plain objects (the example keeps its manifest inline in `index.ts`
 | `contributes.webhooks[]` | Hook names exposed unauthenticated at `/v1/plugins/<id>/hooks/<name>/<installToken>`. |
 | `contributes.mcpServers[]` | `{ name, type, command/args/env \| url/headers }`. Installed per user as `plugin-<id>-<name>`. **A server that carries a secret (`envSecrets`, `headerSecrets`) is rejected** with "plugin secrets cannot be passed into the agent sandbox": an MCP server runs inside the agent's sandbox, so a value handed to it is a value the agent can read. A runtime MCP gateway that keeps the value server-side is a planned follow-up. |
 | `contributes.skills[]` | Folder names under `<plugin dir>/skills/<name>/` (a `SKILL.md` plus text files). They are listed read-only in the bundled scope with a `plugin:<id>` origin, and **copied into the agent home** (global scope, Claude and Codex) of each user the plugin is on for, so agents can load them. Disabling removes the copies. `runtime/scripts/copy-plugin-assets.mjs` (part of `npm run build`) copies the folders next to the compiled plugin. |
+| `contributes.attention` | `true` unlocks `ctx.attention` (install-scoped plugins only): see pending decisions and approvals of the install owner and answer them. See [Attention](#attention-ctxattention). |
 | `contributes.migrations` | `true` if the plugin owns a database schema. |
 | `contributes.settingsPanel` | `true` if the UI half supplies a custom panel below the generic form. |
 | `contributes.canvasNodes` | Reserved. Rejected in v1. |
@@ -66,6 +67,7 @@ Migrations are an ordered array `{ id, sql }` applied in one transaction togethe
 | `taskSources.register({ id, provider })` | `provider.list(userId, { query, cursor })` and `provider.get(userId, externalId)`. Items are normalized to `ExternalTask`: `{ sourceId, externalId, title, status, statusCategory: "todo"\|"doing"\|"done", assignee?, priority?, url, updatedAt, fields[] }`. Listings are cached 60 s per user. |
 | `events.publish(userId, name, data)` | Frame to that user's open apps only. JSON, at most 64 KiB (throws otherwise). The UI listens with `usePluginEvent`. |
 | `approvals.request({ userId, action, detail })` | Asks the user and resolves `"approved"` (single use) / `"denied"` / `"expired"`. Shown as "Plugin: <name>". It waits at most 10 minutes, then withdraws the request and resolves `"expired"`; it is also withdrawn when the plugin stops. The request is stored (audit trail, survives a restart). **Do not await it inline in a `routes` handler**: the client gives up after 90 s. Use it from `internalRoutes` (the agent CLI waits) or return `202` and act from the resolved promise. |
+| `attention.onPending(fn)` / `onResolved(fn)` / `resolveDecision(id, answers)` / `resolveApproval(id, decision)` | Needs `contributes.attention`. See [Attention](#attention-ctxattention). |
 | `log.debug/info/warn/error` | Tagged with the plugin id; revealed secret values are redacted (raw, URL-encoded and JSON-escaped). |
 | `schedule(intervalMs, fn)` | Runs never overlap; the minimum interval is 1 s; cleared on stop. |
 
@@ -97,6 +99,16 @@ Plugin credentials are **not vault secrets.** They have their own table (`plugin
 - **Audit:** `set` and `remove` are always recorded; reads are sampled to one row per secret per minute. Rows older than 90 days are deleted, and a plugin keeps at most 5000 rows (the oldest go first). Audit rows hold plugin, owner, name, action and actor, never a value.
 - **Migration from the vault:** older installs kept plugin credentials in the vault. The runtime copies them into the plugin store and deletes the vault copy, once per (plugin, owner, name). It keeps the vault copy while it cannot read the user's MCP configs or while one of the user's own MCP entries still references `${vault:NAME}`, and retries when that user lists plugins, opens the secrets list or enables a plugin (and at boot), so the copy goes as soon as it is safe. The user sees a one-time notice on Settings > Plugins and the Secrets page; notices name secrets only.
 - **Trust:** a plugin runs inside the runtime process and could read `plugin_secrets` directly. The store protects credentials from agents and from the vault surface, not from malicious installed code (see the trust model above).
+
+### Attention (`ctx.attention`)
+
+For plugins that relay the owner's questions to another channel (WhatsApp, a pager). Requires `contributes.attention: true` and `scope: "install"`; the user is always the install owner (`installOwner()`), never an argument.
+
+- `onPending(fn) -> off`: `fn(item)` for every pending item of the owner, replayed when you subscribe and live afterwards. `item` is `{ kind: "decision", id, userId, sessionName, sessionId, projectId, questions[{id, question, options[{id,label}], multiSelect, allowText}], allowText, irreversible: false, createdAt }` or `{ kind: "approval", id, userId, sessionName, sessionId, projectId, action, detail, options, allowText: false, irreversible, createdAt }`. Approvals the plugin itself requested are never delivered. The owner is read at subscribe time (re-subscribe after an owner change). Pending items do not expire on their own: keep your own timers (`ctx.schedule`).
+- `onResolved(fn) -> off`: `fn({ kind, id, status, by: "app" | "plugin" })`, once per item that ends (answered, denied, cancelled, expired).
+- `resolveDecision(id, [{ questionId, optionIds, text }])`: answers a decision as the owner. Same validation as the app. Rejects with `err.status === 409` when it is already answered.
+- `resolveApproval(id, "allow" | "deny")`: **Allow is refused (403 `irreversible_requires_app`) for irreversible actions** (push, deploy, delete...), and a plugin can never answer an approval a plugin requested. Deny is always allowed. 409 when already answered. Both resolve methods are audited: the stored row's `meta.resolvedVia` is `plugin:<id>`.
+- Inbound text from the other channel is untrusted: authenticate the sender, parse strictly, and treat the answer like any user input.
 
 ## 7. Security checklist
 

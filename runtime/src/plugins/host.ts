@@ -196,6 +196,10 @@ export class PluginHost {
   /** Called by the server once it has built Approvals. */
   setApprovals(approvals: NonNullable<typeof this.approvals>): void { this.approvals = approvals; }
 
+  private attention?: ReturnType<NonNullable<ContextDeps["attention"]>>;
+  /** Called by the server once it has built Approvals and Decisions (backs `ctx.attention`). */
+  setAttention(attention: NonNullable<typeof this.attention>): void { this.attention = attention; }
+
   constructor(private readonly pool: Pool, private readonly opts: PluginHostOptions) {
     this.storage = opts.storage ?? "schema";
     this.secrets = new PluginSecrets(pool, opts.encryptionKey, (pluginId) => this.entries.get(pluginId)?.manifest?.secrets.map((x) => x.name) ?? [], { now: opts.now });
@@ -477,7 +481,7 @@ export class PluginHost {
   }
 
   private contextDeps(e: Entry): ContextDeps {
-    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals };
+    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals, attention: () => this.attention };
   }
 
   /** Pending migrations and their ledger rows commit or roll back together. */

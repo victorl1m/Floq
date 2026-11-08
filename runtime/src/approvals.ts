@@ -71,6 +71,8 @@ export interface ApprovalRecord {
   ttlMs: number;
   /** Requested with --wait: withdrawn when the waiter stops polling (see WAITER_GONE_MS). */
   waiter?: boolean;
+  /** Audit: set when a plugin (not the user's app session) answered, e.g. "plugin:waha". */
+  resolvedVia?: string;
 }
 
 /** What the user's app shows. */
@@ -89,7 +91,7 @@ export interface ApprovalView {
 
 export type ApprovalFrame =
   | { type: "approval-request"; approval: ApprovalView }
-  | { type: "approval-resolved"; id: string; status: ApprovalStatus; requesterSessionId: string; targetSessionId: string };
+  | { type: "approval-resolved"; id: string; status: ApprovalStatus; requesterSessionId: string; targetSessionId: string; via?: string };
 
 export type VerifyStatus = "GRANTED" | "DENIED" | "EXPIRED" | "CONSUMED" | "PENDING" | "CANCELLED" | "UNKNOWN" | "ACTION_MISMATCH";
 export interface VerifyResult {
@@ -174,11 +176,11 @@ export class Approvals {
   private persist(a: ApprovalRecord): void {
     const pool = this.options.pool;
     if (!pool) return;
-    const meta = JSON.stringify({ requester: a.requester, target: a.target, irreversible: a.irreversible, ttlMs: a.ttlMs });
+    const meta = JSON.stringify({ requester: a.requester, target: a.target, irreversible: a.irreversible, ttlMs: a.ttlMs, ...(a.resolvedVia ? { resolvedVia: a.resolvedVia } : {}) });
     void Promise.resolve(pool.query(
       `INSERT INTO agent_approvals (id,user_id,requester_session_id,target_session_id,requester_project_id,target_project_id,action,action_hash,detail,status,meta,created_at,expires_at,valid_until,decided_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,to_timestamp($12/1000.0),to_timestamp($13/1000.0),to_timestamp($14/1000.0),to_timestamp($15/1000.0))
-       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, valid_until=EXCLUDED.valid_until, decided_at=EXCLUDED.decided_at`,
+       ON CONFLICT (id) DO UPDATE SET meta=EXCLUDED.meta, status=EXCLUDED.status, valid_until=EXCLUDED.valid_until, decided_at=EXCLUDED.decided_at`,
       [a.id, a.userId, persistedPartyId(a.requester), persistedPartyId(a.target), a.requester.projectId, a.target.projectId, a.action, a.actionHash, a.detail, a.status, meta, a.createdAt, a.expiresAt, a.validUntil, a.decidedAt],
     )).catch((error) => log.warn("approval.persist_failed", { approvalId: a.id, error: String(error).slice(0, 120) }));
   }
@@ -187,18 +189,29 @@ export class Approvals {
   private async load(id: string): Promise<ApprovalRecord | undefined> {
     let a = this.records.get(id);
     if (!a && this.options.pool && APPROVAL_ID.test(id)) {
-      try {
-        const r = await this.options.pool.query("SELECT id,user_id,action,action_hash,detail,status,meta,(extract(epoch from created_at)*1000)::float8 AS created_ms,(extract(epoch from expires_at)*1000)::float8 AS expires_ms,(extract(epoch from valid_until)*1000)::float8 AS valid_ms,(extract(epoch from decided_at)*1000)::float8 AS decided_ms FROM agent_approvals WHERE id=$1", [id]);
-        const row = r.rows[0];
-        if (row) {
-          const meta = row.meta as { requester: ApprovalAgent; target: ApprovalAgent; irreversible: boolean; ttlMs: number };
-          a = { id: row.id, userId: row.user_id, requester: meta.requester, target: meta.target, action: row.action, actionHash: row.action_hash, detail: row.detail, irreversible: meta.irreversible, status: row.status, createdAt: Number(row.created_ms), expiresAt: Number(row.expires_ms), validUntil: row.valid_ms == null ? null : Number(row.valid_ms), decidedAt: row.decided_ms == null ? null : Number(row.decided_ms), ttlMs: meta.ttlMs };
-          this.records.set(id, a);
-        }
-      } catch { /* treated as unknown */ }
+      // Concurrent loads of the same id share one fetch, so two answers can never settle two separate copies of one row.
+      let p = this.loading.get(id);
+      if (!p) { p = this.fetchRecord(id).finally(() => this.loading.delete(id)); this.loading.set(id, p); }
+      a = await p;
     }
     if (a) this.refresh(a);
     return a;
+  }
+
+  private readonly loading = new Map<string, Promise<ApprovalRecord | undefined>>();
+
+  private async fetchRecord(id: string): Promise<ApprovalRecord | undefined> {
+    const known = this.records.get(id);
+    if (known) return known;
+    try {
+      const r = await this.options.pool!.query("SELECT id,user_id,action,action_hash,detail,status,meta,(extract(epoch from created_at)*1000)::float8 AS created_ms,(extract(epoch from expires_at)*1000)::float8 AS expires_ms,(extract(epoch from valid_until)*1000)::float8 AS valid_ms,(extract(epoch from decided_at)*1000)::float8 AS decided_ms FROM agent_approvals WHERE id=$1", [id]);
+      const row = r.rows[0];
+      if (!row) return undefined;
+      const meta = row.meta as { requester: ApprovalAgent; target: ApprovalAgent; irreversible: boolean; ttlMs: number };
+      const a: ApprovalRecord = { id: row.id, userId: row.user_id, requester: meta.requester, target: meta.target, action: row.action, actionHash: row.action_hash, detail: row.detail, irreversible: meta.irreversible, status: row.status, createdAt: Number(row.created_ms), expiresAt: Number(row.expires_ms), validUntil: row.valid_ms == null ? null : Number(row.valid_ms), decidedAt: row.decided_ms == null ? null : Number(row.decided_ms), ttlMs: meta.ttlMs };
+      this.records.set(id, a);
+      return a;
+    } catch { return undefined; /* treated as unknown */ }
   }
 
   /** Server-side expiry: independent of any client, timer or clock in the app. */
@@ -219,7 +232,7 @@ export class Approvals {
     if (timers && status !== "granted") { clearTimeout(timers.expiry); clearInterval(timers.liveness); this.timers.delete(a.id); }
     this.persist(a);
     log.info("agent.approval_" + (status === "granted" ? "granted" : status === "denied" ? "denied" : status === "consumed" ? "consumed" : status === "cancelled" ? "cancelled" : "expired"), this.ids(a));
-    if (wasPending || status === "expired" || status === "cancelled") this.emit(a.userId, { type: "approval-resolved", id: a.id, status, requesterSessionId: a.requester.id, targetSessionId: a.target.id });
+    if (wasPending || status === "expired" || status === "cancelled") this.emit(a.userId, { type: "approval-resolved", id: a.id, status, requesterSessionId: a.requester.id, targetSessionId: a.target.id, ...(wasPending && a.resolvedVia ? { via: a.resolvedVia } : {}) });
     for (const fn of [...this.changes]) fn();
   }
 
@@ -298,11 +311,18 @@ export class Approvals {
    * USER side only. The caller (HTTP layer) must have authenticated `userId` with the user's app session.
    * Throws 404 when the id is unknown to this user, 409 when it is no longer pending.
    */
-  async resolve(userId: string, id: string, decision: unknown): Promise<{ status: ApprovalStatus }> {
+  async resolve(userId: string, id: string, decision: unknown, opts: { via?: string } = {}): Promise<{ status: ApprovalStatus }> {
     if (decision !== "allow" && decision !== "deny") throw badRequest("decision must be allow or deny", "invalid_decision");
     const a = typeof id === "string" ? await this.load(id) : undefined;
     if (!a || a.userId !== userId) throw notFound("That approval request is no longer pending (it may have expired)");
     if (a.status !== "pending") throw new HttpError(409, "not_pending", "That approval request is no longer pending (it may have expired)");
+    if (opts.via) {
+      // A plugin answering on the user's behalf: never its own requests, and never an Allow for an irreversible action (the app is required).
+      if (a.requester.kind === "plugin") throw new HttpError(403, "plugin_approval", "A plugin cannot answer plugin approval requests");
+      if (decision === "allow" && a.irreversible) throw new HttpError(403, "irreversible_requires_app", "This action is irreversible: open Floq to approve it");
+      a.resolvedVia = opts.via;
+      log.info("agent.approval_resolved_via", { ...this.ids(a), via: opts.via, decision });
+    }
     const t = this.now();
     a.decidedAt = t;
     if (decision === "allow") {

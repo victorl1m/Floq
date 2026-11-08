@@ -2,11 +2,12 @@ import type pg from "pg";
 import { log as coreLog } from "../logger.js";
 import { scrubSecrets } from "../vault.js";
 import { HttpError } from "../errors.js";
-import type { Approvals } from "../approvals.js";
+import type { Approvals, ApprovalFrame, ApprovalView } from "../approvals.js";
+import type { Decisions } from "../decisions.js";
 import type { PluginEvents } from "./events.js";
 import type { TaskSourceRegistry } from "./taskSources.js";
 import { INSTALL_OWNER, type PluginSecrets } from "./secrets.js";
-import type { WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
+import type { AttentionPending, AttentionResolved, WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
 
 export const FETCH_TIMEOUT_MS = 15_000;
 export const FETCH_MAX_BYTES = 5 * 1024 * 1024;
@@ -25,6 +26,8 @@ export interface ContextDeps {
   events?: PluginEvents;
   /** Lazy: the server (and its Approvals) is created after plugins are loaded. */
   approvals?: () => Pick<Approvals, "askAsPlugin"> | undefined;
+  /** Lazy, like approvals. Backs `ctx.attention`. */
+  attention?: () => { approvals: Pick<Approvals, "subscribe" | "list" | "resolve">; decisions: Pick<Decisions, "subscribe" | "list" | "resolve"> } | undefined;
   sink?: (level: "debug" | "info" | "warn" | "error", event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -144,6 +147,63 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
 
   const checkKey = (key: string) => { if (typeof key !== "string" || !key || key.length > 128) throw new Error("kv key must be 1-128 characters"); };
 
+  // ---- ctx.attention ----
+  const attentionBackend = () => {
+    if (!manifest.contributes.attention) throw new Error("plugin did not declare contributes.attention");
+    if (manifest.scope !== "install") throw new Error("attention is only available to install-scoped plugins");
+    const b = deps.attention?.();
+    if (!b) throw new Error("attention is not available");
+    return b;
+  };
+  const attentionOwner = async () => {
+    const backend = attentionBackend();
+    const owner = await ctx.installOwner();
+    if (!owner) throw new HttpError(403, "no_owner", "The plugin has no install owner");
+    return { backend, owner };
+  };
+  const decisionPending = (userId: string, v: ReturnType<Decisions["list"]>[number]): AttentionPending => ({
+    kind: "decision", id: v.id, userId, sessionName: v.sessionName, sessionId: v.sessionId, projectId: v.projectId, questions: v.questions,
+    allowText: v.questions.some((q) => q.allowText), irreversible: false, createdAt: v.createdAt,
+  });
+  const approvalPending = (userId: string, v: ApprovalView): AttentionPending => ({
+    kind: "approval", id: v.id, userId, sessionName: v.requester.name, sessionId: v.requester.id, projectId: v.requester.projectId, action: v.action, detail: v.detail,
+    options: [{ id: "allow", label: "Allow" }, { id: "deny", label: "Deny" }], allowText: false, irreversible: v.irreversible, createdAt: v.createdAt,
+  });
+  // One shared event wiring per ctx; each onPending/onResolved subscriber gets its own subscription so it can be cancelled alone.
+  const attach = (which: "pending" | "resolved", fn: (e: never) => void): (() => void) => {
+    const backend = attentionBackend();
+    let off: (() => void)[] = [];
+    let stopped = false;
+    const cancel = () => { stopped = true; for (const o of off) o(); off = []; cancels.delete(cancel); };
+    cancels.add(cancel);
+    const safe = <T,>(e: T) => { try { (fn as (e: T) => void)(e); } catch (err) { logger.error("attention handler failed", { error: err instanceof Error ? err.message : String(err) }); } };
+    void ctx.installOwner().then((owner) => {
+      if (stopped || !owner) return;
+      const delivered = new Set<string>();
+      const ended = new Set<string>();
+      const once = (e: AttentionResolved) => { if (ended.has(e.id)) return; ended.add(e.id); safe(e); };
+      // Who answered comes from the settle itself (its `via`), so an app answer that lands while a plugin call is in flight is still "app".
+      const resolvedBy = (via: string | undefined): AttentionResolved["by"] => (via?.startsWith("plugin:") ? "plugin" : "app");
+      off.push(backend.decisions.subscribe(owner, (frame) => {
+        if (which === "pending" && frame.type === "decision-request") { if (!delivered.has(frame.decision.id)) { delivered.add(frame.decision.id); safe(decisionPending(owner, frame.decision)); } }
+        if (which === "resolved" && frame.type === "decision-resolved") once({ kind: "decision", id: frame.id, status: frame.status, by: resolvedBy(frame.via) });
+      }));
+      off.push(backend.approvals.subscribe(owner, (frame: ApprovalFrame) => {
+        if (which === "pending" && frame.type === "approval-request") {
+          if (frame.approval.requester.kind === "plugin" || delivered.has(frame.approval.id)) return;
+          delivered.add(frame.approval.id); safe(approvalPending(owner, frame.approval));
+        }
+        if (which === "resolved" && frame.type === "approval-resolved" && !frame.requesterSessionId.startsWith("plugin:")) once({ kind: "approval", id: frame.id, status: frame.status, by: resolvedBy(frame.via) });
+      }));
+      if (which === "pending") {
+        // Replay what is already waiting (subscribed first, so nothing is missed; `delivered` removes duplicates).
+        for (const d of backend.decisions.list(owner)) if (!delivered.has(d.id)) { delivered.add(d.id); safe(decisionPending(owner, d)); }
+        for (const a of backend.approvals.list(owner)) if (a.requester.kind !== "plugin" && !delivered.has(a.id)) { delivered.add(a.id); safe(approvalPending(owner, a)); }
+      }
+    }).catch((err) => logger.error("attention subscribe failed", { error: err instanceof Error ? err.message : String(err) }));
+    return cancel;
+  };
+
   const ctx: PluginContext = {
     pluginId: id,
     manifest,
@@ -261,6 +321,18 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
         const both = signal ? AbortSignal.any([abort.signal, signal]) : abort.signal;
         const wait = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? Math.min(Math.max(timeoutMs, 1_000), 10 * 60_000) : undefined;
         return approvals.askAsPlugin(userId, { id, name: manifest.name }, { action, detail }, both, wait);
+      },
+    },
+    attention: {
+      onPending(fn) { return attach("pending", fn); },
+      onResolved(fn) { return attach("resolved", fn); },
+      async resolveDecision(decisionId, answers) {
+        const { backend, owner } = await attentionOwner();
+        await backend.decisions.resolve(owner, decisionId, answers, { via: "plugin:" + id });
+      },
+      async resolveApproval(approvalId, decision) {
+        const { backend, owner } = await attentionOwner();
+        await backend.approvals.resolve(owner, approvalId, decision, { via: "plugin:" + id });
       },
     },
     log: logger,

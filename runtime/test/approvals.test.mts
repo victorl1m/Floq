@@ -344,6 +344,20 @@ test("approvals persist, survive a runtime restart (verify works), and pending o
   await db.close();
 });
 
+test("two concurrent answers to an approval that is not in memory have exactly one winner (in-flight load is shared)", async () => {
+  const { db, pool } = await pglite();
+  const { approvals } = make({ pool });
+  const a = await ask(approvals, "run the migration");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const restarted = new Approvals({ pool: pool as never, now: Date.now, deliver: async () => true });
+  const results = await Promise.allSettled([restarted.resolve(U, a.id, "allow"), restarted.resolve(U, a.id, "deny")]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+  assert.equal((lost.reason as { status?: number }).status, 409);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await db.close();
+});
+
 // ---------- anti-forgery through every delivery path ----------
 
 test("typeMessage neutralizes forged markers unless trusted; the runtime's own line passes", async () => {

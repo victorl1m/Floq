@@ -45,6 +45,8 @@ export interface PluginContributes {
   mcpServers: PluginMcpServerDecl[];
   skills: string[];
   migrations: boolean;
+  /** Lets the plugin see the install owner's pending decisions/approvals and answer them (`ctx.attention`). Install-scoped plugins only. */
+  attention: boolean;
 }
 
 export interface PluginManifest {
@@ -150,6 +152,25 @@ export interface PluginApprovals {
   request(input: { userId: string; action: string; detail?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<"approved" | "denied" | "expired">;
 }
 
+export interface AttentionQuestion { id: string; question: string; header?: string; options: { id: string; label: string; description?: string }[]; multiSelect: boolean; allowText: boolean }
+export type AttentionPending =
+  | { kind: "decision"; id: string; userId: string; sessionName: string; sessionId: string; projectId: string | null; questions: AttentionQuestion[]; allowText: boolean; irreversible: false; createdAt: string }
+  | { kind: "approval"; id: string; userId: string; sessionName: string; sessionId: string; projectId: string | null; action: string; detail: string; options: { id: "allow" | "deny"; label: string }[]; allowText: false; irreversible: boolean; createdAt: string };
+export interface AttentionResolved { kind: "decision" | "approval"; id: string; status: string; by: "app" | "plugin" }
+export interface PluginAttention {
+  /**
+   * Requires `contributes.attention` and an install-scoped plugin. Calls `fn` for every pending item of the install owner (replayed on subscribe,
+   * then live). Plugin-originated approvals are never delivered. Returns an unsubscribe function. The owner is read when you subscribe.
+   */
+  onPending(fn: (item: AttentionPending) => void): () => void;
+  /** Called once for each item previously delivered to `onPending` when it ends (answered, cancelled, expired). `by` is "plugin" when this plugin answered it. */
+  onResolved(fn: (event: AttentionResolved) => void): () => void;
+  /** Answers as the install owner (the host binds the user; it is never a parameter). Rejects with `status` 409 when already answered. */
+  resolveDecision(id: string, answers: { questionId: string; optionIds: string[]; text: string }[]): Promise<void>;
+  /** Answers as the install owner. "allow" is refused (403) for irreversible actions and for plugin-originated approvals. Audited as `resolvedVia: "plugin:<id>"`. 409 when already answered. */
+  resolveApproval(id: string, decision: "allow" | "deny"): Promise<void>;
+}
+
 export interface PluginContext {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
@@ -183,6 +204,7 @@ export interface PluginContext {
   taskSources: PluginTaskSources;
   events: PluginEvents;
   approvals: PluginApprovals;
+  attention: PluginAttention;
   log: PluginLog;
   /** Serialized: a run is skipped while the previous one is still in flight. Returns a cancel function. Cleared on stop. */
   schedule(intervalMs: number, fn: () => void | Promise<void>): () => void;

@@ -114,6 +114,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   plugins?.setApprovals(approvals);
   const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text), scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
   const decisionsReady = decisions.init();
+  plugins?.setAttention({ approvals, decisions });
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.
   manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
