@@ -909,6 +909,9 @@ pub fn run() {
         .manage(desktop::DesktopState::default())
         .on_window_event(|window, event| {
             if window.label() == "main" {
+                if let tauri::WindowEvent::Focused(true) = event {
+                    island::on_main_window_focus(window.app_handle());
+                }
                 if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                     record_dropped_paths(window.app_handle(), paths);
                 }

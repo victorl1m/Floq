@@ -34,19 +34,23 @@ fn fullscreen_app_active_now() -> bool {
         GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     };
     unsafe {
+        // Our own window in front (the user opened Floq) never suppresses the island, even while a video
+        // plays full screen on another monitor and the shell still reports "busy".
+        let hwnd = GetForegroundWindow();
+        let mut pid = 0u32;
+        if !hwnd.0.is_null() {
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == std::process::id() {
+                return false;
+            }
+        }
         if let Ok(state) = SHQueryUserNotificationState() {
             if quns_is_busy(state.0) {
                 return true;
             }
         }
         // Fallback for borderless full-screen windows the shell does not flag.
-        let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
-            return false;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == std::process::id() {
             return false;
         }
         let mut class = [0u16; 64];
@@ -89,9 +93,8 @@ fn fullscreen_app_active_now() -> bool {
 /// Whether a full-screen app (a game, a video, a presentation) is in front, so the island must stay out of the way.
 /// Cached for a moment: the hover monitor asks every tick.
 fn fullscreen_suppressed() -> bool {
-    static CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
     let now = std::time::Instant::now();
-    if let Ok(mut cache) = CACHE.lock() {
+    if let Ok(mut cache) = SUPPRESS_CACHE.lock() {
         if let Some((at, value)) = *cache {
             if now.duration_since(at) < std::time::Duration::from_millis(400) {
                 return value;
@@ -102,6 +105,49 @@ fn fullscreen_suppressed() -> bool {
         return value;
     }
     false
+}
+
+static SUPPRESS_CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+
+/// The main Floq window gained focus or was shown/restored: reshow a pending island right away,
+/// bypassing the suppression cache. Safe to call from any window event.
+pub fn on_main_window_focus(app: &tauri::AppHandle) {
+    if let Ok(mut cache) = SUPPRESS_CACHE.lock() {
+        *cache = None;
+    }
+    if !FULLSCREEN_HIDDEN.load(Ordering::SeqCst) {
+        return;
+    }
+    let active = app
+        .state::<IslandRuntime>()
+        .0
+        .lock()
+        .map(|state| state.active)
+        .unwrap_or(false);
+    if !active {
+        return;
+    }
+    let Some(window) = app.get_webview_window("island") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        FULLSCREEN_HIDDEN.store(false, Ordering::SeqCst);
+        return;
+    }
+    if fullscreen_suppressed() {
+        return;
+    }
+    FULLSCREEN_HIDDEN.store(false, Ordering::SeqCst);
+    diagnostic(app, "show (main window focused)");
+    let _ = set_visible_without_activation(&window, true);
+}
+
+/// Fallback while the island is suppressed by a full-screen app: flash the main window's taskbar button
+/// (no focus steal, nothing drawn over the full-screen app).
+fn flash_main_for_pending(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
 }
 
 struct IslandState {
@@ -588,6 +634,10 @@ pub fn island_publish(
         }
         if !was_active || !island.is_visible().unwrap_or(false) {
             set_visible_without_activation(&island, true)?;
+            if !was_active && FULLSCREEN_HIDDEN.load(Ordering::SeqCst) && !island.is_visible().unwrap_or(false) {
+                // A new request arrived while a full-screen app hides the island: make it noticeable anyway.
+                flash_main_for_pending(&app);
+            }
         }
     } else {
         cancel_animation(&runtime.1);
