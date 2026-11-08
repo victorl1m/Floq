@@ -53,3 +53,10 @@ test("model selection falls back deterministically and never invents ids", () =>
   assert.equal(pickModelForCapability("reasoning-heavy", [{ id: "default", label: "Default" }, { id: "gpt-6-astra", label: "A" }]), null);
   assert.equal(pickModelForCapability("code-heavy", []), null);
 });
+
+test("orchestrator acts on the next step instead of recommending a next role", () => {
+  const prompt = getAgentRole("orchestrator")!.prompt;
+  assert.ok(prompt.includes("Handoff"));
+  assert.ok(prompt.includes("do it right away"));
+  assert.ok(!prompt.includes("recommended next role"));
+});

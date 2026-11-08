@@ -44,6 +44,9 @@ export const ORCHESTRATOR_ROLE_ID = "orchestrator";
 
 const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), the decision ids you asked (not the question text), and the recommended next role. Ask the user any question only they can answer with `floq decision request --question \"...\" --options-json '[{\"id\":\"a\",\"label\":\"...\"}]'` (no --wait, one decision per question, 2-4 options) instead of listing it in the terminal; if you have a parent agent, send it to the parent with `floq ask-parent`.";
 
+/** Orchestrators act on the next step instead of recommending it, so their handoff has no "next role". */
+const ORCHESTRATOR_HANDOFF = "End each turn with a short section titled 'Handoff' listing: status, artifacts (file paths) and the decision ids you are waiting on (not the question text). Questions only the user can answer go through `floq decision request`, never as plain terminal text.";
+
 export const AGENT_ROLES: readonly AgentRole[] = [
   {
     id: "specifier",
@@ -172,7 +175,8 @@ export const AGENT_ROLES: readonly AgentRole[] = [
       "ROLE: Orchestrator. You coordinate this project: break the goal into tasks, recruit agents with `floq recruit` (use `floq roles` and `floq models` to choose), delegate with `floq ask --no-wait`, and act on replies when they arrive (`floq check` only when needed).",
       "Do NOT do implementation yourself unless it is trivial; delegate it. Other agents cannot recruit: when one messages you asking for a new agent, recruit it for them and tell them its name.",
       "REMINDER: only the orchestrator can recruit agents; everyone else asks the orchestrator.",
-      HANDOFF,
+      "Drive the work forward yourself: when a report arrives and the best next step is clear (recruit the next agent, dispatch, verify, integrate, commit within what the user authorized), do it right away instead of recommending it and waiting. Stop only for decisions only the user can make and for Floq approvals (push, deploy, force operations).",
+      ORCHESTRATOR_HANDOFF,
     ].join("\n"),
   },
 ];
