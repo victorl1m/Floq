@@ -260,38 +260,12 @@ fn watchdog_tick(app: &tauri::AppHandle) {
         }
         action
     };
+    // Log only. Reloading or recreating the island from here misfired on a healthy island (the page does not
+    // always report a layout after a show), blanking it and leaving an invisible window over the top of the screen.
     match action {
         WatchdogAction::None => {}
-        WatchdogAction::Reload => {
-            diagnostic(app, "show without layout ack: reloading");
-            if let Some(window) = app.get_webview_window("island") {
-                if let Err(error) = window.eval("location.reload()") {
-                    diagnostic(app, &format!("reload failed: {error}"));
-                }
-            } else {
-                diagnostic(app, "reload skipped: no island window");
-            }
-        }
-        WatchdogAction::Recreate => {
-            diagnostic(app, "still no layout ack: recreating island window");
-            if let Some(window) = app.get_webview_window("island") {
-                let _ = window.destroy();
-            }
-            let handle = app.clone();
-            std::thread::spawn(move || {
-                // Give the runtime time to release the "island" label.
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                let inner = handle.clone();
-                let _ = handle.run_on_main_thread(move || {
-                    match create_window(&inner, true) {
-                        Ok(window) => {
-                            diagnostic(&inner, "island window recreated");
-                            let _ = set_visible_without_activation(&window, true);
-                        }
-                        Err(error) => diagnostic(&inner, &format!("recreate failed: {error}")),
-                    }
-                });
-            });
+        WatchdogAction::Reload | WatchdogAction::Recreate => {
+            diagnostic(app, "show without layout ack (no recovery action)");
         }
     }
 }
