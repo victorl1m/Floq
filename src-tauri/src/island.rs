@@ -238,8 +238,9 @@ fn mark_shown(app: &tauri::AppHandle, visible: bool) {
 }
 
 fn watchdog_tick(app: &tauri::AppHandle) {
+    let runtime = app.state::<IslandRuntime>();
     let action = {
-        let Ok(mut state) = app.state::<IslandRuntime>().0.lock() else {
+        let Ok(mut state) = runtime.0.lock() else {
             return;
         };
         if !state.active {
