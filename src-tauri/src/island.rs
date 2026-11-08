@@ -130,6 +130,12 @@ impl Default for IslandState {
 
 pub struct IslandRuntime(Mutex<IslandState>, Arc<AnimationState>);
 
+#[derive(serde::Serialize)]
+pub struct IslandViewport {
+    width: f64,
+    height: f64,
+}
+
 #[derive(Default)]
 struct AnimationState {
     generation: AtomicU64,
@@ -662,21 +668,19 @@ pub fn island_set_layout(
     expanded: bool,
     height: f64,
     pinned: bool,
-) -> Result<(), String> {
+) -> Result<Option<IslandViewport>, String> {
     allowed_caller(&window, "island")?;
     let height = clamped_height(height);
-    let from_expanded = {
+    {
         let mut state = runtime.0.lock().map_err(|_| "Island state unavailable")?;
         if !state.active {
-            return Ok(());
+            return Ok(None);
         }
-        let previous = state.expanded;
         state.expanded = expanded;
         state.pinned = pinned;
         state.height = height;
         state.outside_since = None;
-        previous
-    };
+    }
     window
         .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
@@ -684,15 +688,16 @@ pub fn island_set_layout(
         window.app_handle(),
         &format!("layout expanded={expanded} height={height} pinned={pinned}"),
     );
-    // Grow immediately so newly laid out content is never squeezed into an old frame.
-    // Animate collapse only; animating growth also repeatedly reflows wrapped text.
-    if expanded {
-        cancel_animation(&runtime.1);
-        apply_bounds(&window, expanded, height)?;
-    } else {
-        animate_bounds(window, runtime.1.clone(), expanded, height, from_expanded);
-    }
-    Ok(())
+    // The frontend owns the capsule morph and delays shrinking until it finishes.
+    // A second native resize animation clips/reflows content and fights rapid reopen.
+    cancel_animation(&runtime.1);
+    apply_bounds(&window, expanded, height)?;
+    let size = window.inner_size().map_err(|error| error.to_string())?;
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    Ok(Some(IslandViewport {
+        width: size.width as f64 / scale,
+        height: size.height as f64 / scale,
+    }))
 }
 
 pub fn create_window(
@@ -839,11 +844,11 @@ fn hover_tick(app: &tauri::AppHandle) {
         .and_then(|rect| *rect)
         .is_some_and(|rect| contains(rect, cursor.x, cursor.y));
     let next = if inside && !expanded {
-        Some((true, None))
+        Some(true)
     } else if expanded && !inside {
         let since = outside_since.unwrap_or_else(std::time::Instant::now);
         if since.elapsed() >= std::time::Duration::from_millis(300) {
-            Some((false, None))
+            Some(false)
         } else {
             if outside_since.is_none() {
                 if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
@@ -860,20 +865,14 @@ fn hover_tick(app: &tauri::AppHandle) {
         }
         None
     };
-    if let Some((now_expanded, since)) = next {
+    if let Some(now_expanded) = next {
         diagnostic(app, &format!("hover expanded={now_expanded}"));
         if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-            state.expanded = now_expanded;
-            state.outside_since = since;
+            // Keep applied geometry intact until the frontend finishes its morph.
+            // Updating expanded here would let the next tick shrink it too early.
+            state.outside_since = (!now_expanded).then(std::time::Instant::now);
         }
         let _ = window.set_ignore_cursor_events(false);
-        animate_bounds(
-            window.clone(),
-            app.state::<IslandRuntime>().1.clone(),
-            now_expanded,
-            height,
-            expanded,
-        );
         let _ = window.emit(
             "island:hover",
             serde_json::json!({"expanded": now_expanded}),

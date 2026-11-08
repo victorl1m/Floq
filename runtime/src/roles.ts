@@ -42,10 +42,10 @@ const CAPABILITY_ADVICE: Record<RoleCapability, string> = {
 
 export const ORCHESTRATOR_ROLE_ID = "orchestrator";
 
-const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), the decision ids you asked (not the question text), and the recommended next role. Ask the user any question only they can answer with `floq decision request --question \"...\" --options-json '[{\"id\":\"a\",\"label\":\"...\"}]'` (no --wait, one decision per question, 2-4 options) instead of listing it in the terminal; if you have a parent agent, send it to the parent with `floq ask-parent`.";
+const HANDOFF = "End with a section titled 'Handoff' listing: status, artifacts (file paths), the decision ids you asked (not the question text), and the recommended next role. Follow the communication rule in your Floq system prompt for questions and reports (a question only the user can answer is a `floq decision request`).";
 
 /** Orchestrators act on the next step instead of recommending it, so their handoff has no "next role". */
-const ORCHESTRATOR_HANDOFF = "End each turn with a short section titled 'Handoff' listing: status, artifacts (file paths) and the decision ids you are waiting on (not the question text). Questions only the user can answer go through `floq decision request`, never as plain terminal text.";
+const ORCHESTRATOR_HANDOFF = "End each turn with a short section titled 'Handoff' listing: status, artifacts (file paths) and the decision ids you are waiting on (not the question text). Follow the communication rule in your Floq system prompt: questions only the user can answer go through `floq decision request`.";
 
 export const AGENT_ROLES: readonly AgentRole[] = [
   {

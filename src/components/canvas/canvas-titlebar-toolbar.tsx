@@ -1,6 +1,6 @@
 import {
   IconActivity, IconArrowsMaximize, IconDots, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
-  IconNote, IconNotes, IconPlayerPlay, IconPlus, IconPointer,
+  IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,6 @@ import {
   DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ShortcutTip } from "./shortcut-tip";
-import VaultPopover from "./vault-popover";
 
 type ToolbarProject = Parameters<typeof ProjectMark>[0]["project"];
 
@@ -21,8 +20,6 @@ export interface CanvasTitlebarToolbarProps {
   cwd?: string;
   sleepingCount: number;
   onWakeAll: () => void;
-  canCreate: boolean;
-  onNewAgent: () => void;
   tool: "select" | "pan";
   onTool: (tool: "select" | "pan") => void;
   linkActive: boolean;
@@ -40,7 +37,7 @@ export interface CanvasTitlebarToolbarProps {
 /**
  * The project canvas toolbar, rendered into the app titlebar slot. Presentational: all state and handlers come from AgentCanvas.
  * Width collapse is CSS-only (container queries in index.css): name hides, then the tool groups fold into the "Canvas tools" menu,
- * then the New agent label hides. Vault and New agent always stay visible.
+ * and Wake all moves into that menu too. Wake all sits in the middle of the tools, in a rounded pill.
  */
 export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
   const wakeLabel = p.sleepingCount ? `Wake all sleeping agents (${p.sleepingCount})` : "No sleeping agents";
@@ -72,6 +69,17 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", p.onAddKeychain, <IconKey size={16} />, "add-keychain")}</ShortcutTip>
           </div>
           {separator}
+          <div data-tauri-drag-region role="group" aria-label="Agents" className="flex shrink-0 items-center rounded-full border border-border/80 p-0.5">
+            <ShortcutTip label={wakeLabel}>
+              <span tabIndex={p.sleepingCount === 0 ? 0 : undefined} className="inline-flex">
+                <Button type="button" variant="ghost" size="icon-sm" className="relative rounded-full" aria-label={wakeLabel} disabled={p.sleepingCount === 0} onClick={p.onWakeAll}>
+                  <IconPlayerPlay size={16} />
+                  {p.sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{p.sleepingCount}</span>}
+                </Button>
+              </span>
+            </ShortcutTip>
+          </div>
+          {separator}
           <div data-tauri-drag-region role="group" aria-label="Canvas view" className="flex shrink-0 items-center gap-0.5">
             <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", p.onRelayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
             <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", p.onShowNotes, <IconNotes size={16} />)}</ShortcutTip>
@@ -94,6 +102,8 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuItem onSelect={p.onAddNote}><IconNote size={16} />Add note (N)</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onAddKeychain}><IconKey size={16} />Add keychain (K)</DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={p.sleepingCount === 0} onSelect={p.onWakeAll}><IconPlayerPlay size={16} />{wakeLabel}</DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={p.onRelayout}><IconLayoutDistributeHorizontal size={16} />Re-layout</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onShowNotes}><IconNotes size={16} />Show all notes</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onFit}><IconArrowsMaximize size={16} />Fit view (F)</DropdownMenuItem>
@@ -101,21 +111,6 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <div data-tauri-drag-region className="canvas-titlebar-actions flex shrink-0 items-center gap-1">
-          <ShortcutTip label={wakeLabel}>
-            <span tabIndex={p.sleepingCount === 0 ? 0 : undefined} className="inline-flex">
-              <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label={wakeLabel} disabled={p.sleepingCount === 0} onClick={p.onWakeAll}>
-                <IconPlayerPlay size={16} />
-                {p.sleepingCount > 0 && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{p.sleepingCount}</span>}
-              </Button>
-            </span>
-          </ShortcutTip>
-          <VaultPopover size="sm" />
-          <Button type="button" size="sm" className="shrink-0" aria-label="New agent" disabled={!p.canCreate} onClick={p.onNewAgent}>
-            <IconPlus size={15} />
-            <span className="canvas-titlebar-new-label">New agent</span>
-          </Button>
-        </div>
       </div>
     </div>
   );

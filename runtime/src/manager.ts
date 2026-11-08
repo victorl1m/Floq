@@ -24,7 +24,7 @@ import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js"
 import { createWorktree } from "./worktree.js";
 import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
 import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } from "./claudeSettings.js";
-import { isAllowedProjectImage } from "./projectImage.js";
+import { isAllowedProjectIconColor, isAllowedProjectIconName, isAllowedProjectImage } from "./projectImage.js";
 import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { pruneProjectFromFolders } from "./projectFolders.js";
@@ -764,7 +764,7 @@ export class SessionManager {
     }
     return projects.rows.map((row: Record<string, unknown>) => ({
       id: String(row.id), name: String(row.name), displayName: row.display_name ? String(row.display_name) : null,
-      imageUrl: row.image_url ? String(row.image_url) : null, gitUrl: row.git_url ? String(row.git_url) : null,
+      imageUrl: row.image_url ? String(row.image_url) : null, iconName: row.icon_name ? String(row.icon_name) : null, iconColor: row.icon_color ? String(row.icon_color) : null, gitUrl: row.git_url ? String(row.git_url) : null,
       cwd: String(row.cwd), createdAt: new Date(String(row.created_at)).toISOString(), workspaces: byProject.get(String(row.id)) ?? [],
     }));
   }
@@ -793,7 +793,7 @@ export class SessionManager {
     return { navExpanded: expanded };
   }
 
-  async updateProject(userId: string, id: string, patch: { displayName?: unknown; imageUrl?: unknown }): Promise<RuntimeProject> {
+  async updateProject(userId: string, id: string, patch: { displayName?: unknown; imageUrl?: unknown; iconName?: unknown; iconColor?: unknown }): Promise<RuntimeProject> {
     if (patch.displayName !== undefined && patch.displayName !== null && (typeof patch.displayName !== "string" || patch.displayName.length > 120)) throw badRequest("displayName must be at most 120 characters", "invalid_project");
     if (patch.imageUrl !== undefined && patch.imageUrl !== null) {
       if (typeof patch.imageUrl !== "string" || !isAllowedProjectImage(patch.imageUrl)) throw badRequest("imageUrl must be an HTTP(S) URL or a small WebP project image", "invalid_project");
@@ -802,10 +802,14 @@ export class SessionManager {
         if (!(["http:", "https:"].includes(parsed.protocol)) || parsed.username || parsed.password) throw new Error("invalid image URL");
       } catch { throw badRequest("imageUrl must be a valid HTTP(S) URL without credentials", "invalid_project"); }
     }
+    if (patch.iconName !== undefined && patch.iconName !== null && !isAllowedProjectIconName(patch.iconName)) throw badRequest("iconName must be a lowercase catalog icon name", "invalid_project");
+    if (patch.iconColor !== undefined && patch.iconColor !== null && !isAllowedProjectIconColor(patch.iconColor)) throw badRequest("iconColor must be a #rrggbb color", "invalid_project");
     const fields: string[] = [];
     const values: unknown[] = [id, userId];
     if (patch.displayName !== undefined) { values.push(patch.displayName); fields.push(`display_name=$${values.length}`); }
     if (patch.imageUrl !== undefined) { values.push(patch.imageUrl); fields.push(`image_url=$${values.length}`); }
+    if (patch.iconName !== undefined) { values.push(patch.iconName); fields.push(`icon_name=$${values.length}::text`); }
+    if (patch.iconColor !== undefined) { values.push(patch.iconColor); fields.push(`icon_color=$${values.length}::text`); }
     if (!fields.length) throw badRequest("No project fields supplied", "invalid_project");
     const result = await this.pool.query(`UPDATE floq_projects SET ${fields.join(",")} WHERE id=$1 AND user_id=$2 RETURNING id`, values);
     if (!result.rows[0]) throw notFound("Project not found");

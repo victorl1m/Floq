@@ -15,6 +15,8 @@ export interface ProjectChoice {
   name: string;
   displayName?: string | null;
   imageUrl: string | null;
+  iconName?: string | null;
+  iconColor?: string | null;
   gitUrl: string | null;
   workspaces?: Array<{ id: string; name: string; branch?: string | null; isWorktree?: boolean }>;
 }

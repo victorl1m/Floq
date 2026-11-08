@@ -386,7 +386,7 @@ export class RuntimeClient {
     return (await this.call<{ project: RuntimeProject }>("POST", "/v1/projects", input, { timeoutMs: 5 * 60_000 })).project;
   }
 
-  async updateProject(id: string, patch: { displayName?: string | null; imageUrl?: string | null }): Promise<RuntimeProject> {
+  async updateProject(id: string, patch: { displayName?: string | null; imageUrl?: string | null; iconName?: string | null; iconColor?: string | null }): Promise<RuntimeProject> {
     return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, patch)).project;
   }
 

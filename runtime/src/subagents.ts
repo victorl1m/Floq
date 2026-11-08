@@ -78,7 +78,7 @@ export const CROSS_PROJECT_LINES = [
  */
 export const WORKFLOW_LINES = [
   "Conversation never blocks: send with `floq ask <UUID|name> \"...\" --no-wait` (or `floq subagent ask ID \"...\" --no-wait`), then keep working or end your turn. Replies arrive as messages in your terminal: listen, do not wait. Never freeze on `floq wait`, a blocking `floq ask` or a polling loop (two agents waiting on each other deadlock); read a result with `floq check ID` / `floq subagent result ID` only when announced or needed now.",
-  "Your final text is NOT delivered to whoever messaged you. Before ending a turn that owes an answer, send it: `floq ask <sender> \"...\" --no-wait`. Say who you are (your UUID is the `*` row of `floq list`), what you need and what done looks like. Workers report with `floq progress \"...\" --status working|blocked|done` and ask upward with `floq ask-parent \"...\"`.",
+  "Communication rule. A question only the user can answer, from ANY session: `floq decision request --question \"...\" --options-json '[{\"id\":\"a\",\"label\":\"...\"}]'` (no --wait, one per question, 2-4 options), never plain terminal text. A top-level session otherwise talks to the user in the terminal. A subagent's final text is NOT delivered to anyone: it asks its parent with `floq ask-parent \"...\"` and sends its final report with `floq progress --status done \"<summary>\"` (updates: `--status working|blocked`). A reply owed to another agent is never delivered by your final text either: send `floq ask <sender> \"...\" --no-wait` (say who you are, your UUID is the `*` row of `floq list`, what you need and what done looks like). Long text: pass it with `--file PATH` (never paste it into the message or point at a path in the text); over 1500 chars the receiver gets a preview plus `floq inbox read ID`, over 20000 chars is rejected, never cut. When a subagent's QUESTION arrives, answer it with `floq ask <id> \"...\" --no-wait` before dismissing that agent.",
   "Memory: start with `floq wired` and the project memory; record decisions, changed files and test results with `floq sticky append ID TEXT` or `floq note append NAME TEXT`. Details: the floq-orchestrate skill and `floq --help`.",
 ];
 
@@ -108,7 +108,7 @@ export function buildSubagentInstruction(options: { enabled: boolean; depth: num
   }
   if (options.crossProject !== false) lines.push(...CROSS_PROJECT_LINES);
   lines.push(...WORKFLOW_LINES, ...APPROVAL_LINES);
-  if (depth > 0) lines.push(`You are a subagent (depth ${depth}). Do the task you were given, never exceed it, and report concisely (result, files changed, decision ids asked). Send questions to your parent with floq ask-parent, not the user.`);
+  if (depth > 0) lines.push(`You are a subagent (depth ${depth}). Do the task you were given, never exceed it, and report concisely (result, files changed, decision ids asked), following the communication rule above.`);
   lines.push(
     "Delegate by default: when work splits into independent parts (separate modules or files, research vs. implementation, implementation vs. review or tests, parallel investigations), recruit Floq subagents and run them in parallel instead of doing everything alone. Do small or tightly coupled work yourself.",
     "Use Floq subagents only. Provider-native subagents (Claude Code's Agent/Task tool, background agents, Codex multi_agent) are DISABLED in Floq and will be refused: do not try them, do not retry them. Recruit instead with `floq subagent recruit \"Name\" --task \"...\"`.",
@@ -200,7 +200,7 @@ export function assertNoEscalation(parentRole: string | null, childRole: string 
 /** First message for a subagent: who recruited it, then the task. The role preset header is added by the manager. */
 export function buildSubagentBrief(parentName: string, depth: number, task: string): string {
   return [
-    `[Floq subagent] You were recruited by "${oneLine(parentName, 60)}" (subagent depth ${depth}). Do only the task below, report concisely (result, files changed, decision ids asked). Send questions to your parent with floq ask-parent, not the user, and do not wait for further input once it is done.`,
+    `[Floq subagent] You were recruited by "${oneLine(parentName, 60)}" (subagent depth ${depth}). Do only the task below, report concisely (result, files changed, decision ids asked), following the communication rule in your Floq system prompt. Do not wait for further input once it is done.`,
     "",
     "Task:",
     task,

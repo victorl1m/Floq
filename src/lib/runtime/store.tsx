@@ -101,7 +101,7 @@ interface RuntimeContextValue {
   setWorkspaceNavExpanded: (projectId: string, workspaceId: string, expanded: boolean) => Promise<void>;
   /** Collapse or expand every workspace of a project (one request). */
   setProjectNavExpanded: (projectId: string, expanded: boolean) => Promise<void>;
-  updateProject: (id: string, patch: { displayName?: string | null; imageUrl?: string | null }) => Promise<RuntimeProject>;
+  updateProject: (id: string, patch: { displayName?: string | null; imageUrl?: string | null; iconName?: string | null; iconColor?: string | null }) => Promise<RuntimeProject>;
   /** Irreversibly delete a project (server removes its sessions, canvas data and Floq-managed checkouts) and drop it from every local list, tab, selection and preference. */
   deleteProject: (id: string) => Promise<ProjectDeleteResult>;
   selectProject: (id: string | null, workspaceId?: string | null) => void;
@@ -426,7 +426,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     return project;
   }, [client]);
 
-  const updateProject = useCallback(async (id: string, patch: { displayName?: string | null; imageUrl?: string | null }) => {
+  const updateProject = useCallback(async (id: string, patch: { displayName?: string | null; imageUrl?: string | null; iconName?: string | null; iconColor?: string | null }) => {
     if (!client) throw new Error("Not signed in");
     const project = await client.updateProject(id, patch);
     projectsRefresh.current.markMutation();

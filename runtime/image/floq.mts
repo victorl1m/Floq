@@ -25,7 +25,7 @@
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secret list|get NAME                    secrets available to this agent (linked keychains + global env vault); list prints names only; never print or commit values
 //   floq secrets list|add                        list vault secret names; add a new secret to a keychain (add: lead only)
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { runSetup, SETUP_BLOCK } from "./floq-setup.mjs";
 import { abstractSocketProblems, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
@@ -53,9 +53,9 @@ Commands:
   floq inbox list | read ID              full text of messages sent to you that were too long to type into your terminal (you only see a preview and an inbox id)
   floq wait <UUID|Name> [--timeout SECONDS] [--chars N | --full]
   floq check <UUID|Name> [--chars N | --full]
-  floq progress "message" [--percent N] [--status working|blocked|done]   (for subagents) report structured progress to the agent that recruited you; blocked/done are pushed as one line into its terminal. Max 30 updates/min
-  floq ask-parent "question"            (for subagents) ask the agent that recruited you; it gets a one-line notification and answers with "floq ask <your UUID> ..."
-  floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time
+  floq progress "message" [--file PATH] [--percent N] [--status working|blocked|done]   (for subagents) report structured progress to the agent that recruited you; use --status done for your final report. blocked/done are pushed into its terminal (long text as a preview plus "floq inbox read ID"). Max 20000 chars, never cut: longer is rejected. Max 30 updates/min
+  floq ask-parent "question" [--file PATH]   (for subagents) ask the agent that recruited you; it gets a notification (long text as a preview plus "floq inbox read ID") and answers with "floq ask <your UUID> ..."
+  floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time; messages are printed in full
   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only; other agents ask the orchestrator with "floq ask")
   floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
   floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
@@ -255,7 +255,7 @@ const usage = (): never => {
 };
 
 const allowedOptions: Record<string, string[]> = {
-  top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status"], "ask-parent": [], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
+  top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status", "file"], "ask-parent": ["file"], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
   session: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
@@ -400,9 +400,21 @@ switch (command) {
   case "progress":
   case "ask-parent": {
     const question = command === "ask-parent";
-    if (!positional.length) usage();
-    const r = await call<{ seq: number; status: string; pushed: boolean; parent: { id: string; name: string } | null }>("agents/progress", { message: positional.join(" "), question, percent: typeof named.percent === "string" ? named.percent : undefined, status: typeof named.status === "string" ? named.status : undefined });
-    console.log((question ? "question" : "progress") + " #" + r.seq + " recorded (" + r.status + ")" + (r.pushed && r.parent ? "; " + r.parent.name + " was notified" : "") + (question ? "; the answer arrives in your terminal as a message from your parent" : ""));
+    if (!positional.length && named.file === undefined) usage();
+    if (named.file !== undefined && (typeof named.file !== "string" || positional.length)) { console.error("floq: use either the message text or --file PATH, not both"); process.exit(2); }
+    let text = positional.join(" ");
+    if (typeof named.file === "string") {
+      try {
+        const size = statSync(named.file).size;
+        // Cheap local guard (raw bytes; the server re-checks the cleaned text): never load a huge file into memory.
+        if (size > 4 * 20_000) { console.error("floq: " + named.file + " is " + size + " bytes; a progress text is at most 20000 characters, never cut. Shorten it."); process.exit(2); }
+        text = readFileSync(named.file, "utf8");
+      } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
+    }
+    const r = await call<{ seq: number; status: string; pushed: boolean; parent: { id: string; name: string } | null }>("agents/progress", { message: text, question, percent: typeof named.percent === "string" ? named.percent : undefined, status: typeof named.status === "string" ? named.status : undefined });
+    const notified = r.pushed && r.parent ? r.parent.name + " was notified" : !r.parent ? "no parent to notify" : "not pushed to the parent (duplicate or rate limited); it reads it with floq watch";
+    const wait = question && r.pushed ? "; the answer arrives in your terminal as a message from your parent" : "";
+    console.log((question ? "question" : "progress") + " #" + r.seq + " recorded (" + r.status + ")" + (r.status === "working" && !question ? "" : "; " + notified) + wait);
     break;
   }
   case "watch": {

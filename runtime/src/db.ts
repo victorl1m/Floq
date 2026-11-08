@@ -77,6 +77,9 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (user_id, cwd)
     );
+    -- Catalog icon chosen as the project mark; takes precedence over image_url when icon_name is set.
+    ALTER TABLE floq_projects ADD COLUMN IF NOT EXISTS icon_name TEXT;
+    ALTER TABLE floq_projects ADD COLUMN IF NOT EXISTS icon_color TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS floq_projects_user_git_url_idx
       ON floq_projects(user_id, normalized_git_url) WHERE normalized_git_url IS NOT NULL;
     CREATE TABLE IF NOT EXISTS floq_project_workspaces (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   IconCheck,
   IconAlertTriangleFilled,
@@ -11,6 +11,7 @@ import {
   IconLayoutKanban,
   IconX,
   IconFolder,
+  IconBoxMultiple,
   IconFolderPlus,
   IconGitBranch,
   IconPencil,
@@ -24,7 +25,6 @@ import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -36,7 +36,7 @@ import { ProviderIcon } from "@/components/agents/provider";
 import { advanceMemory, countByProject, projectStatus, type ProjectMemory, type ProjectStatus } from "@/lib/project-status";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
-import { projectFaviconUrl, normalizeProjectImageUrl } from "@/lib/runtime/project-appearance";
+import type { ProjectImageChoice } from "@/components/projects/project-image-chooser";
 import { copyText } from "@/lib/clipboard";
 import { isTauri } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -50,44 +50,10 @@ import DeleteProjectDialog from "@/components/sidebar/delete-project-dialog";
 import { setFolderExpanded as cacheFolderExpanded, useFolderExpanded } from "@/lib/project-folders-cache";
 import { useProjectFoldersSync } from "@/lib/use-project-folders-sync";
 
+const ProjectImageChooser = lazy(() => import("@/components/projects/project-image-chooser").then((module) => ({ default: module.ProjectImageChooser })));
 const CTX = "w-56";
 const ROW_OPEN = "rounded-md data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground";
 const MENU = "w-48 min-w-[192px] whitespace-nowrap";
-const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_THUMBNAIL_BYTES = 32 * 1024;
-const SOURCE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-
-async function projectImageThumbnail(file: File): Promise<string> {
-  if (!SOURCE_IMAGE_TYPES.has(file.type)) throw new Error("Choose a PNG, JPEG, WebP, or GIF image.");
-  if (file.size > MAX_SOURCE_IMAGE_BYTES) throw new Error("Choose an image smaller than 10 MiB.");
-  let bitmap: ImageBitmap;
-  try { bitmap = await createImageBitmap(file); }
-  catch { throw new Error("This image could not be opened. Choose another file."); }
-  try {
-    if (bitmap.width * bitmap.height > 25_000_000) throw new Error("Choose an image with 25 megapixels or less.");
-    const scale = Math.min(128 / bitmap.width, 128 / bitmap.height, 1);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("The browser could not prepare this image.");
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    for (const quality of [0.85, 0.7, 0.55, 0.4]) {
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", quality));
-      if (!blob || blob.type !== "image/webp") throw new Error("This browser cannot prepare WebP images.");
-      if (blob.size <= MAX_THUMBNAIL_BYTES) {
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        let binary = "";
-        for (const byte of bytes) binary += String.fromCharCode(byte);
-        return `data:image/webp;base64,${btoa(binary)}`;
-      }
-    }
-    throw new Error("This image is too detailed to fit the 32 KiB project image limit.");
-  } finally {
-    bitmap.close();
-  }
-}
-
 type EditState = { kind: "project"; project: RuntimeProject } | null;
 
 function ProjectStatusSlot({ status }: { status: ProjectStatus | null }) {
@@ -113,11 +79,8 @@ export default function CanonicalProjectList() {
   const migrationAttempt = useRef<string | null>(null);
   const [edit, setEdit] = useState<EditState>(null);
   const [name, setName] = useState("");
-  const [image, setImage] = useState("");
-  const [imageKind, setImageKind] = useState<"direct" | "favicon" | "file">("direct");
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [imageFileName, setImageFileName] = useState("");
-  const [imageValidating, setImageValidating] = useState(false);
+  const [imageChoice, setImageChoice] = useState<ProjectImageChoice>({ imageUrl: null, iconName: null, iconColor: null, error: null, busy: false });
+  const imageValidating = imageChoice.busy;
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
@@ -258,11 +221,7 @@ export default function CanonicalProjectList() {
   function openProjectEdit(project: RuntimeProject) {
     setEdit({ kind: "project", project });
     setName(project.displayName ?? project.name);
-    const embeddedImage = project.imageUrl?.startsWith("data:image/webp;base64,") ? project.imageUrl : null;
-    setImage(embeddedImage ? "" : project.imageUrl ?? "");
-    setImageKind(embeddedImage ? "file" : "direct");
-    setImageData(embeddedImage);
-    setImageFileName(embeddedImage ? "Current project image" : "");
+    setImageChoice({ imageUrl: project.imageUrl, iconName: project.iconName, iconColor: project.iconColor, error: null, busy: false });
     setEditError(null);
   }
 
@@ -271,39 +230,16 @@ export default function CanonicalProjectList() {
     const trimmed = name.trim();
     if (!trimmed || trimmed.length > 60) return setEditError("Enter a name between 1 and 60 characters.");
     if (!edit) return;
-    let imageUrl: string | null = null;
-    if (imageKind === "file") {
-      imageUrl = imageData;
-    } else if (image.trim()) {
-      imageUrl = imageKind === "favicon" ? projectFaviconUrl(image) : normalizeProjectImageUrl(image);
-      if (!imageUrl) return setEditError("Enter a valid HTTP or HTTPS image or website URL without credentials.");
-    }
+    if (imageChoice.error) return setEditError(imageChoice.error);
+    const { imageUrl, iconName, iconColor } = imageChoice;
     setSaving(true);
     try {
-      await updateProject(edit.project.id, { displayName: trimmed === edit.project.name ? null : trimmed, imageUrl });
+      await updateProject(edit.project.id, { displayName: trimmed === edit.project.name ? null : trimmed, imageUrl, iconName, iconColor });
       setEdit(null);
     } catch (error) {
       setEditError(errorMessage(error));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = "";
-    if (!file) return;
-    setImageValidating(true);
-    try {
-      const thumbnail = await projectImageThumbnail(file);
-      setImageData(thumbnail);
-      setImageFileName(file.name);
-      setImage("");
-      setEditError(null);
-    } catch (error) {
-      setEditError(errorMessage(error));
-    } finally {
-      setImageValidating(false);
     }
   }
 
@@ -402,7 +338,7 @@ export default function CanonicalProjectList() {
               <DropdownMenu><DropdownMenuTrigger asChild><RowAction slot="second" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`Actions for ${folder.name}`}><IconDots /></RowAction></DropdownMenuTrigger>
                 <DropdownMenuContent side="right" align="start" className={MENU}><DropdownMenuItem onClick={() => startNewProject(folder.id)}><IconPlus />New project here…</DropdownMenuItem><DropdownMenuItem onClick={() => startImportRepo(folder.id)}><IconGitBranch />Import repository here…</DropdownMenuItem><DropdownMenuItem onClick={() => createFolder(undefined, folder.id)}><IconFolderPlus />New subfolder</DropdownMenuItem><DropdownMenuItem onSelect={menu.rename}><IconPencil />Rename folder</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={menu.remove}><IconTrash />Delete folder</DropdownMenuItem></DropdownMenuContent>
               </DropdownMenu>
-              <RowAction slot="third" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`New project in ${folder.name}`} title="New project in this folder" onClick={(event) => { event.stopPropagation(); startNewProject(folder.id); }}><IconPlus /></RowAction>
+              <RowAction slot="third" reveal="md:group-hover/folder-row:opacity-100 md:group-focus-within/folder-row:opacity-100" aria-label={`New subfolder in ${folder.name}`} title="New subfolder" onClick={(event) => { event.stopPropagation(); createFolder(undefined, folder.id); }}><IconFolderPlus /></RowAction>
               <CollapsibleTrigger asChild><RowAction slot="chevron" aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.name}`}><IconChevronRight className="transition-transform motion-reduce:transition-none group-data-[state=open]/folder:rotate-90" /></RowAction></CollapsibleTrigger>
             </>}
         </DndRow></ContextMenuTrigger>
@@ -444,7 +380,7 @@ export default function CanonicalProjectList() {
       <DropdownMenu><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="Add to projects"><IconPlus className="size-3.5" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>Add to projects</TooltipContent></Tooltip>
         <DropdownMenuContent align="start" side="right" className={MENU}>
           <DropdownMenuItem onClick={() => setNewAgentOpen(true)}><IconPlus />New agent</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => startNewProject(null)}><IconFolderPlus />New project…</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => startNewProject(null)}><IconBoxMultiple />New project…</DropdownMenuItem>
           <DropdownMenuItem onClick={() => createFolder()}><IconFolderPlus />New folder</DropdownMenuItem>
           <DropdownMenuItem onClick={() => startImportRepo(null)}><IconGitBranch />Import repository</DropdownMenuItem>
         </DropdownMenuContent>
@@ -471,7 +407,7 @@ export default function CanonicalProjectList() {
     </SidebarGroup>
 
     <CloneDialog open={repoOpen} onOpenChange={setRepoOpen} onClone={async (repo) => { const project = await createProject({ gitUrl: repo.url, name: repo.label }); placeNewProject(project); await refreshProjects(); }} />
-    <AppDialog open={newProject} onOpenChange={(open) => { if (!newProjectBusy) setNewProject(open); }} icon={<IconFolderPlus />} title="New project" description={createTarget ? `It will be created inside “${foldersById.get(createTarget)?.name ?? "the folder"}”.` : "An empty project you can add agents to."}
+    <AppDialog open={newProject} onOpenChange={(open) => { if (!newProjectBusy) setNewProject(open); }} icon={<IconBoxMultiple />} title="New project" description={createTarget ? `It will be created inside “${foldersById.get(createTarget)?.name ?? "the folder"}”.` : "An empty project you can add agents to."}
       footer={<><Button variant="outline" disabled={newProjectBusy} onClick={() => setNewProject(false)}>Cancel</Button><Button type="submit" form="new-project-form" disabled={newProjectBusy || !newProjectName.trim()}>{newProjectBusy ? "Creating…" : "Create project"}</Button></>}>
       <form id="new-project-form" noValidate onSubmit={(event) => { event.preventDefault(); void submitNewProject(); }} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2"><Label htmlFor="new-project-name">Project name</Label><Input id="new-project-name" autoFocus maxLength={60} value={newProjectName} placeholder="My project" onChange={(event) => { setNewProjectName(event.target.value); setNewProjectError(null); }} /></div>
@@ -479,33 +415,13 @@ export default function CanonicalProjectList() {
         <button type="button" className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => { setNewProject(false); startImportRepo(createTarget); }}>Import a Git repository instead</button>
       </form>
     </AppDialog>
-    <AppDialog open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={<IconPencil />} title="Project settings" description="These details are shared with your other Floq sessions. Image URLs load directly in your browser." footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
+    <AppDialog size="lg" open={edit !== null} onOpenChange={(open) => !open && setEdit(null)} icon={<IconPencil />} title="Project settings" description="These details are shared with your other Floq sessions. Pick an icon or image for the sidebar, picker and canvas." footer={<><Button variant="outline" disabled={saving || imageValidating} onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" form="canonical-project-edit" disabled={saving || imageValidating}>{imageValidating ? "Preparing image…" : saving ? "Saving…" : "Save"}</Button></>}>
       <form id="canonical-project-edit" noValidate onSubmit={(event) => void saveEdit(event)} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2"><Label htmlFor="canonical-project-name">Project name</Label><Input id="canonical-project-name" autoFocus maxLength={60} value={name} onChange={(event) => { setName(event.target.value); setEditError(null); }} /></div>
         {edit?.kind === "project" && <>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="project-image-kind">Project image</Label>
-            <Select value={imageKind} onValueChange={(value) => {
-              setImageKind(value as "direct" | "favicon" | "file");
-              setImage("");
-              setImageData(null);
-              setImageFileName("");
-              setEditError(null);
-            }}>
-              <SelectTrigger id="project-image-kind" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="direct">Direct image URL</SelectItem>
-                <SelectItem value="favicon">Website favicon</SelectItem>
-                <SelectItem value="file">Choose image file</SelectItem>
-              </SelectContent>
-            </Select>
-            {imageKind === "file" ? <>
-              <Label htmlFor="project-image-file">Choose an image</Label>
-              <Input id="project-image-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" aria-describedby="project-image-help" disabled={imageValidating || saving} onChange={(event) => void chooseImage(event)} />
-              {imageFileName && <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span className="min-w-0 truncate" title={imageFileName}>{imageFileName}</span>{imageData && <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2" disabled={imageValidating || saving} onClick={() => { setImageData(null); setImageFileName(""); setEditError(null); }}>Remove image</Button>}</div>}
-            </> : <Input aria-label={imageKind === "direct" ? "Image URL" : "Website URL"} placeholder={imageKind === "direct" ? "https://example.com/project.png" : "https://example.com"} value={image} onChange={(event) => { setImage(event.target.value); setEditError(null); }} />}
-            {((imageKind === "file" && imageData) || (imageKind !== "file" && image.trim())) && <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground"><span>Preview</span><img key={`${imageKind}:${imageData ?? image}`} src={imageKind === "file" ? imageData ?? undefined : imageKind === "favicon" ? projectFaviconUrl(image) ?? undefined : normalizeProjectImageUrl(image) ?? undefined} alt="" referrerPolicy="no-referrer" className="size-6 rounded object-cover" onError={(event) => { event.currentTarget.style.visibility = "hidden"; }} /></div>}
-            <p id="project-image-help" className="text-xs text-muted-foreground">Leave blank to clear. Files are reduced to 128 × 128 WebP thumbnails (32 KiB max). URL images must use HTTP or HTTPS.</p>
+            <Label id="project-image-label">Project image</Label>
+            <Suspense fallback={<Skeleton className="h-64 w-full" />}><ProjectImageChooser labelledBy="project-image-label" key={edit.project.id} initial={{ imageUrl: edit.project.imageUrl, iconName: edit.project.iconName, iconColor: edit.project.iconColor }} projectName={name.trim() || edit.project.name} disabled={saving} onChange={(choice) => { setImageChoice(choice); setEditError(null); }} /></Suspense>
           </div>
         </>}
         {editError && <ErrorBanner>{editError}</ErrorBanner>}

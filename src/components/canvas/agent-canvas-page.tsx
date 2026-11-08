@@ -1245,8 +1245,6 @@ function AgentCanvas() {
           cwd={project?.cwd}
           sleepingCount={sleepingCount}
           onWakeAll={() => void wakeAll()}
-          canCreate={!!activeProjectId}
-          onNewAgent={openNewAgent}
           tool={tool}
           onTool={setTool}
           linkActive={linkMode !== null}

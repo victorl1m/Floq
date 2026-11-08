@@ -282,7 +282,6 @@
 .canvas-titlebar-layout { grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr); }
 .canvas-titlebar-identity { grid-column: 1; grid-row: 1; }
 .canvas-titlebar-tools, .canvas-titlebar-overflow { grid-column: 2; grid-row: 1; justify-self: center; }
-.canvas-titlebar-actions { grid-column: 3; grid-row: 1; justify-self: end; }
 @container canvas-titlebar (max-width: 600px) {
   .canvas-titlebar-layout { grid-template-columns: minmax(0, 1fr) max-content max-content; }
 }
@@ -303,7 +302,6 @@
   .canvas-titlebar-tools { display: none; }
   .canvas-titlebar-overflow { display: inline-flex; }
 }
-@container canvas-titlebar (max-width: 299px) { .canvas-titlebar-new-label { display: none; } }
 @media (forced-colors: active) {
   .canvas-titlebar-toolbar [aria-pressed="true"] { outline: 1px solid CanvasText; outline-offset: -1px; }
 }

@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { acceptSnapshot, validAnswers, type AttentionItem, type DecisionAnswer, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRight, IconCheck, IconLoader2, IconX } from '@tabler/icons-react';
 import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
+import { useIslandLayout } from './use-island-layout';
 
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
 /** What the user just answered: shown as a short colored result state instead of falling back to the stale "N waiting" pill. */
@@ -29,11 +30,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   pinnedRef.current = pinned;
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [selected, setSelected] = useState<string>();
-  const [answers, setAnswers] = useState<DecisionAnswer[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, DecisionAnswer[]>>({});
   const [localError, setLocalError] = useState<string>();
   const body = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
-  const layoutSent = useRef('');
   const submitting = useRef<string | null>(null);
   const sawBusy = useRef(false);
   const [submission, setSubmission] = useState<'busy' | 'success' | null>(null);
@@ -92,25 +92,15 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const active = items.find(i => i.id === selected) ?? items[0];
   if (active && !submission) lastCurrent.current = active;
   const current = submission && lastCurrent.current ? lastCurrent.current : active;
-  useEffect(() => { setAnswers([]); setLocalError(undefined); }, [current?.id]);
-  useLayoutEffect(() => {
-    // A hidden native window rejects layout commands; resend after activation even
-    // when the next card happens to have exactly the same dimensions.
-    if (!snapshot?.items.length) { layoutSent.current = ''; return; }
-    let frame = 0;
-    const update = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const layout = { expanded, height: expanded ? Math.min(560, Math.ceil(content.current?.scrollHeight ?? 160) + 2) : 40, pinned: pinned || !!submission || (!!current && !!snapshot?.busy.includes(current.id)) };
-        const key = JSON.stringify(layout);
-        if (layoutSent.current === key) return;
-        layoutSent.current = key;
-        void invoke('island_set_layout', layout).catch(() => { if (layoutSent.current === key) layoutSent.current = ''; });
-      });
-    };
-    update(); const observer = new ResizeObserver(update); if (body.current) observer.observe(body.current); if (content.current) observer.observe(content.current);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [expanded, pinned, current?.id, snapshot?.error, snapshot?.busy, submission, displaySnapshot, snapshot?.items.length]);
+  const answers = current ? drafts[current.id] ?? [] : [];
+  useEffect(() => { setLocalError(undefined); }, [current?.id]);
+  const shellLayout = useIslandLayout({
+    active: !!snapshot?.items.length && (!!displaySnapshot || !!outcome),
+    expanded,
+    pinned: pinned || !!submission || (!!current && !!snapshot?.busy.includes(current.id)),
+    requestKey: outcome ? `result:${outcome.id}` : current?.id,
+    content,
+  });
   useEffect(() => {
     const id = submitting.current;
     if (!id || !snapshot) return;
@@ -118,12 +108,35 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     if (snapshot.error) { submitting.current = null; sawBusy.current = false; pendingOutcome.current = null; setSubmission(null); return; }
     if (sawBusy.current || !snapshot.items.some(item => item.id === id)) {
       submitting.current = null; sawBusy.current = false;
-      if (pendingOutcome.current?.id === id) { answeredIds.current.add(id); setLeaving(false); setExpanded(true); setOutcome(pendingOutcome.current); }
+      const completed = pendingOutcome.current;
       pendingOutcome.current = null;
-      setSubmission('success');
-
+      if (completed?.id === id) {
+        // The API acknowledgement, not the native dispatch promise, completes this request.
+        answeredIds.current.add(id);
+        setDrafts(old => { const next = { ...old }; delete next[id]; return next; });
+        const remaining = (displayed.current?.items ?? []).filter(item => !answeredIds.current.has(item.id));
+        clearTimeout(leaveTimer.current);
+        setLeaving(false); setExpanded(true);
+        if (remaining.length) {
+          const index = Math.max(0, items.findIndex(item => item.id === id));
+          setSelected(remaining[index % remaining.length].id);
+          setOutcome(null); setSubmission(null);
+        } else {
+          setOutcome(completed); setSubmission('success');
+        }
+      } else {
+        // Opening a native terminal keeps its existing short completion behaviour.
+        setSubmission('success');
+      }
     }
   }, [snapshot]);
+  // New work takes priority over a final confirmation that is still fading out.
+  useEffect(() => {
+    if (!outcome || submission !== 'success' || !items.length) return;
+    clearTimeout(leaveTimer.current);
+    setOutcome(null); setLeaving(false); setSubmission(null); setExpanded(true);
+    setSelected(items[0].id);
+  }, [items.length, outcome, submission]);
   useEffect(() => {
     if (submission !== 'success') return;
     const finish = () => {
@@ -141,6 +154,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     return () => { clearTimeout(timer); clearTimeout(fade); };
   }, [submission]);
   const disabled = !snapshot?.connected || !!submission || (!!current && snapshot.busy.includes(current.id));
+  const cycleDisabled = !!submission || (!!current && !!snapshot?.busy.includes(current.id));
   const act = (intent: IslandIntent) => {
     if (intent.type === 'ready' || submitting.current || disabled) return;
     setLocalError(undefined); submitting.current = intent.id; sawBusy.current = false; setSubmission('busy');
@@ -152,29 +166,33 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         : null;
     void send(intent).catch(e => { submitting.current = null; pendingOutcome.current = null; setSubmission(null); setLocalError(String(e)); });
   };
-  const cycle = (delta: number) => { const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
-  const answer = (questionId: string, optionIds: string[], text: string) => setAnswers(old => [...old.filter(a => a.questionId !== questionId), {questionId, optionIds, text}]);
+  const cycle = (delta: number) => { if (submitting.current || cycleDisabled || !items.length) return; const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
+  const answer = (questionId: string, optionIds: string[], text: string) => {
+    if (!current || disabled) return;
+    const id = current.id;
+    setDrafts(old => ({ ...old, [id]: [...(old[id] ?? []).filter(a => a.questionId !== questionId), { questionId, optionIds, text }] }));
+  };
   if ((!displaySnapshot || !items.length) && !outcome) return null;
   // While the result is shown, queue motion (an exit from the emptied queue, or an enter from a new request) must not replay over it.
   const shownMotion = outcome ? 'idle' : motion;
-  return <div className={'island island-' + shownMotion + ' ' + (expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
-    <div className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
-    {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!expanded} inert={!expanded}>
+  return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+    <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
+    {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
       <strong className="island-result-label">{OUTCOME_LABEL[outcome.kind]}</strong>
       {outcome.title && <span className="island-result-sub">{outcome.title}</span>}
-    </div> : current && <div className="island-content" ref={content} aria-hidden={!expanded} inert={!expanded}>
+    </div> : current && <div key={current.id} className="island-content" ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
         <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${actorLabel(current.approval.requester)}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>
         {current.kind === 'approval' && <div className="island-header-actions"><button className="island-circle" aria-label="Decline" disabled={disabled} onClick={() => act({type:'approval', id:current.id, decision:'deny'})}><IconX size={18}/></button><button className="primary" disabled={disabled} onClick={() => act({type:'approval', id:current.id, decision:'allow'})}><IconCheck size={16}/> Accept</button></div>}
       </div>
       {current.kind === 'approval' ? <><div className="island-detail"><div><span className="island-risk">{RISK_LABEL[riskLevel(current.approval.action, current.approval.detail, current.approval.irreversible)]}</span>{current.approval.detail && <p>{current.approval.detail}</p>}<p className="island-meta">From {actorLabel(current.approval.requester)} · Target {actorLabel(current.approval.target)}</p></div></div></> : <DecisionCard decision={current.decision} answers={answers} answer={answer} disabled={disabled} act={act} submission={submission}/>}
-      {items.length > 1 && <div className="island-cycle"><button onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Request ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
+      {items.length > 1 && <div className="island-cycle"><button disabled={cycleDisabled} onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Request ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button disabled={cycleDisabled} onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
       {!snapshot?.connected && <p role="status">Disconnected. Reconnecting…</p>}{(snapshot?.error || localError) && <p role="alert" className="island-error">{snapshot?.error || localError}</p>}
     </div>}
   </div>;
 }
 function DecisionCard({decision, answers, answer, disabled, act, submission}: {decision: DecisionView; answers: DecisionAnswer[]; answer:(id:string, options:string[], text:string)=>void; disabled:boolean; act:(intent:IslandIntent)=>void; submission:'busy' | 'success' | null}) {
-  return <>{decision.questions.map((q, index) => { const value = answers.find(a => a.questionId === q.id) ?? {questionId:q.id, optionIds:[], text:''}; return <div key={q.id}>{(q.header || index > 0) && <p>{q.header && index > 0 && <strong>{q.header}: </strong>}{q.question}</p>}{decision.answerMode !== 'terminal' && <><div className="island-options">{q.options.map(o => <label key={o.id}><input type={q.multiSelect ? 'checkbox' : 'radio'} name={q.id} checked={value.optionIds.includes(o.id)} onChange={e => answer(q.id, q.multiSelect ? e.target.checked ? [...value.optionIds,o.id] : value.optionIds.filter(id => id !== o.id) : [o.id], value.text)}/><span>{o.label}{o.description && <small>{o.description}</small>}</span></label>)}</div>{q.allowText && <label className="island-direction">Direction<textarea placeholder="Add direction…" value={value.text} onChange={e => answer(q.id,value.optionIds,e.target.value)} /></label>}</>}</div>; })}<div className="island-actions">{decision.source === 'native' && <button disabled={disabled} onClick={() => act({type:'terminal', id:decision.id})}>Open terminal</button>}{decision.answerMode !== 'terminal' && <button className="primary" disabled={disabled || !validAnswers(decision.questions, answers)} onClick={() => act({type:'decision', id:decision.id, answers})}>{submission === 'busy' ? <><IconLoader2 className="island-spinner" size={15}/> Sending</> : submission === 'success' ? <><IconCheck size={15}/> Sent</> : 'Send'}</button>}</div></>;
+  return <>{decision.questions.map((q, index) => { const value = answers.find(a => a.questionId === q.id) ?? {questionId:q.id, optionIds:[], text:''}; return <div key={q.id}>{(q.header || index > 0) && <p>{q.header && index > 0 && <strong>{q.header}: </strong>}{q.question}</p>}{decision.answerMode !== 'terminal' && <><div className="island-options">{q.options.map(o => <label key={o.id}><input disabled={disabled} type={q.multiSelect ? 'checkbox' : 'radio'} name={q.id} checked={value.optionIds.includes(o.id)} onChange={e => answer(q.id, q.multiSelect ? e.target.checked ? [...value.optionIds,o.id] : value.optionIds.filter(id => id !== o.id) : [o.id], value.text)}/><span>{o.label}{o.description && <small>{o.description}</small>}</span></label>)}</div>{q.allowText && <label className="island-direction">Direction<textarea disabled={disabled} placeholder="Add direction…" value={value.text} onChange={e => answer(q.id,value.optionIds,e.target.value)} /></label>}</>}</div>; })}<div className="island-actions">{decision.source === 'native' && <button disabled={disabled} onClick={() => act({type:'terminal', id:decision.id})}>Open terminal</button>}{decision.answerMode !== 'terminal' && <button className="primary" disabled={disabled || !validAnswers(decision.questions, answers)} onClick={() => act({type:'decision', id:decision.id, answers})}>{submission === 'busy' ? <><IconLoader2 className="island-spinner" size={15}/> Sending</> : submission === 'success' ? <><IconCheck size={15}/> Sent</> : 'Send'}</button>}</div></>;
 }

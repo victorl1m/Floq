@@ -221,6 +221,67 @@ fn inspect_dropped_file(window: WebviewWindow, dropped: tauri::State<'_, Dropped
     inspect_file(path)
 }
 
+/// Largest image the project chooser accepts from a native drop.
+const MAX_DROPPED_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// True when `head` starts with a PNG, JPEG, GIF or WebP signature.
+fn is_supported_image(head: &[u8]) -> bool {
+    head.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+        || head.starts_with(&[0xFF, 0xD8, 0xFF])
+        || head.starts_with(b"GIF87a")
+        || head.starts_with(b"GIF89a")
+        || (head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"WEBP")
+}
+
+/// Read a natively dropped png/jpeg/webp/gif (at most 10 MiB) and return its raw bytes.
+#[tauri::command]
+async fn read_dropped_image(window: WebviewWindow, dropped: tauri::State<'_, DroppedPaths>, path: String) -> Result<tauri::ipc::Response, String> {
+    use std::io::Read;
+
+    require_main(&window)?;
+    require_dropped(&dropped, &path)?;
+    let file_path = Path::new(&path);
+    let link = std::fs::symlink_metadata(file_path).map_err(|_| "Could not read this file".to_string())?;
+    if link.file_type().is_symlink() {
+        return Err("Symbolic links can't be used as images".into());
+    }
+    let file = std::fs::File::open(file_path).map_err(|_| "Could not read this file".to_string())?;
+    // Check the opened handle, not the path, so the file can't be swapped after validation.
+    let metadata = file.metadata().map_err(|_| "Could not read this file".to_string())?;
+    // Re-check the path after opening: it must still be the same non-link file the handle points to.
+    let after = std::fs::symlink_metadata(file_path).map_err(|_| "Could not read this file".to_string())?;
+    if after.file_type().is_symlink() {
+        return Err("Symbolic links can't be used as images".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if after.dev() != metadata.dev() || after.ino() != metadata.ino() {
+            return Err("The file changed while it was being read".into());
+        }
+    }
+    if !metadata.is_file() {
+        return Err("Only regular image files can be used (not folders)".into());
+    }
+    if metadata.len() == 0 {
+        return Err("This file is empty".into());
+    }
+    if metadata.len() > MAX_DROPPED_IMAGE_BYTES {
+        return Err("This image is larger than the 10 MiB limit".into());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_DROPPED_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read this file".to_string())?;
+    if bytes.len() as u64 > MAX_DROPPED_IMAGE_BYTES {
+        return Err("This image is larger than the 10 MiB limit".into());
+    }
+    if !is_supported_image(&bytes) {
+        return Err("Only PNG, JPEG, WebP or GIF images are supported".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// Stream a dropped file from disk to the runtime's attachment endpoint (PUT, raw body) without
 /// loading it into memory, emitting `floq-upload-progress` events. Returns the response body.
 #[tauri::command]
@@ -865,6 +926,7 @@ pub fn run() {
             set_runtime_origin,
             get_memory_details,
             inspect_dropped_file,
+            read_dropped_image,
             upload_dropped_file,
             cancel_dropped_upload,
             download_to_downloads,

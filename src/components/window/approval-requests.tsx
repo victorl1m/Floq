@@ -38,7 +38,7 @@ function useSecondsLeft(deadline: number, active: boolean): number {
 }
 
 
-function AgentChip({ agent, projectLookup }: { agent: ApprovalAgentRef; projectLookup: (id: string | null) => { imageUrl: string | null; gitUrl: string | null } }) {
+function AgentChip({ agent, projectLookup }: { agent: ApprovalAgentRef; projectLookup: (id: string | null) => { imageUrl: string | null; iconName?: string | null; iconColor?: string | null; gitUrl: string | null } }) {
   const project = projectLookup(agent.projectId);
   return (
     <span {...providerThemeProps(agent.provider)} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-(--provider-rim,var(--border)) bg-(--provider-tint,var(--muted)) px-2 py-1 text-xs">

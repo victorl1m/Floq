@@ -59,6 +59,9 @@ export interface RuntimeProject {
   name: string;
   displayName: string | null;
   imageUrl: string | null;
+  /** Catalog icon (kebab-case Tabler name) and #rrggbb tint; when iconName is set it wins over imageUrl. */
+  iconName: string | null;
+  iconColor: string | null;
   gitUrl: string | null;
   cwd: string;
   createdAt: string;

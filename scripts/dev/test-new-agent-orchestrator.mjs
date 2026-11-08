@@ -58,6 +58,9 @@ async function dialog({ roles = metadata, fail = false, usable = ['codex'], mode
     if (name.endsWith('/runtime/orchestrator')) return { ORCHESTRATOR_ROLE, ORCHESTRATOR_HINT: 'Coordinates agents.' };
     if (name.endsWith('/prefs')) return { loadComposerPrefs: () => ({ provider: 'codex', models: { codex: model } }) };
     if (name === './use-usable-providers') return { useUsableProviders: () => ({ loading: false, usable }) };
+    // One-time auto-approve confirmation: this harness covers the create request, so the answer is always "keep".
+    // Without this stub the Proxy default returns undefined, which the dialog reads as "cancelled" and never sends.
+    if (name === './auto-approve-confirm') return { confirmAutoApprove: async () => true };
     if (name === './model-select') return { default: component('ModelSelect'), normalizeModels: () => model ? [{ value: model }] : [] };
     return new Proxy({}, { get: (_, key) => component(String(key)) });
   };

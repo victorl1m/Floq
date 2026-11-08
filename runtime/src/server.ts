@@ -1090,7 +1090,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     }
     const projectMatch = /^\/v1\/projects\/([\w-]+)$/.exec(url.pathname);
     if (projectMatch && method === "PATCH") {
-      const body = await readJson<{ displayName?: unknown; imageUrl?: unknown }>(req);
+      const body = await readJson<{ displayName?: unknown; imageUrl?: unknown; iconName?: unknown; iconColor?: unknown }>(req);
       return send(res, 200, { project: await manager.updateProject(userId, projectMatch[1], body) });
     }
     if (projectMatch && method === "DELETE") return send(res, 200, await manager.deleteProject(userId, projectMatch[1]));

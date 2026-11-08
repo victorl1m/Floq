@@ -1,3 +1,11 @@
+/** Catalog icon name (kebab-case, resolved client-side) and its optional tint. */
+export function isAllowedProjectIconName(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 40 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
+}
+export function isAllowedProjectIconColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
 export const MAX_PROJECT_IMAGE_BYTES = 32 * 1024;
 const PROJECT_IMAGE_DATA_URL = /^data:image\/webp;base64,([A-Za-z0-9+/]+={0,2})$/;
 

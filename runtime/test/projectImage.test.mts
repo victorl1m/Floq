@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isAllowedProjectImage, MAX_PROJECT_IMAGE_BYTES } from "../dist/projectImage.js";
+import { isAllowedProjectIconColor, isAllowedProjectIconName, isAllowedProjectImage, MAX_PROJECT_IMAGE_BYTES } from "../dist/projectImage.js";
 
 test("project images accept safe direct URLs and bounded normalized WebP thumbnails", () => {
   assert.equal(isAllowedProjectImage("https://example.test/icon.png"), true);
@@ -23,4 +23,12 @@ test("embedded project thumbnails are strictly capped and canonical base64", () 
   oversized.write("WEBP", 8, "ascii");
   assert.equal(isAllowedProjectImage(`data:image/webp;base64,${oversized.toString("base64")}`), false);
   assert.equal(isAllowedProjectImage("data:image/webp;base64,AAAA!"), false);
+});
+
+test("catalog icon fields are strictly shaped", () => {
+  assert.equal(isAllowedProjectIconName("rocket"), true);
+  assert.equal(isAllowedProjectIconName("terminal-2"), true);
+  for (const bad of ["Rocket", "ro cket", "", "-a", "a--b", "x".repeat(41), 5, null]) assert.equal(isAllowedProjectIconName(bad), false);
+  assert.equal(isAllowedProjectIconColor("#3B82f6"), true);
+  for (const bad of ["red", "#fff", "3b82f6", "#3b82f6;", null]) assert.equal(isAllowedProjectIconColor(bad), false);
 });

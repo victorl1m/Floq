@@ -517,7 +517,9 @@ export class Orchestrator {
     const { event, push } = await this.progressLog.add(userId, me.id, { kind: question ? "question" : "progress", status, percent: cleanPercent(input.percent), message });
     let pushed = false;
     if (push && parent) {
-      await this.outbox.enqueue(userId, parent.id, "message", pushLine({ id: me.id, title: me.title }, event));
+      // Long texts go to the parent's inbox like a long `floq ask`; the terminal only gets a preview and the read command.
+      const stored = needsInbox(event.message) ? await this.inbox.store(userId, { id: me.id, title: me.title }, parent.id, await this.scrub(userId, [parent.id, me.id], event.message)) : undefined;
+      await this.outbox.enqueue(userId, parent.id, "message", await this.scrub(userId, [parent.id, me.id], pushLine({ id: me.id, title: me.title }, event, stored)));
       void this.deliverPending(userId, parent.id).catch(() => undefined);
       pushed = true;
     }

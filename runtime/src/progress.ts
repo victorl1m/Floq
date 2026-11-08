@@ -1,7 +1,7 @@
 import type pg from "pg";
 import { badRequest } from "./errors.js";
 import { neutralizeApprovalMarker } from "./approvalText.js";
-import { clip, sanitizeForTerminal } from "./messageDelivery.js";
+import { clip, inboxPointer, sanitizeForTerminal } from "./messageDelivery.js";
 
 /**
  * Structured progress channel between a subagent and whoever watches it (`floq progress`, `floq ask-parent`,
@@ -11,7 +11,8 @@ import { clip, sanitizeForTerminal } from "./messageDelivery.js";
 export const PROGRESS_STATUSES = ["working", "blocked", "done"] as const;
 export type ProgressStatus = (typeof PROGRESS_STATUSES)[number];
 export type ProgressKind = "progress" | "question";
-export const PROGRESS_MESSAGE_MAX = 2_000;
+/** Same cap as `floq ask` (and under the request body limit): a progress text is stored whole or rejected, never cut. */
+export const PROGRESS_MESSAGE_MAX = 20_000;
 /** Max events one session may write per minute (spam guard), and max pushes typed into the parent per minute. */
 export const PROGRESS_RATE_PER_MIN = 30;
 export const PUSH_RATE_PER_MIN = 6;
@@ -22,7 +23,9 @@ export interface ProgressEvent { seq: number; kind: ProgressKind; status: Progre
 
 export function cleanProgressMessage(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw badRequest("message required");
-  return neutralizeApprovalMarker(sanitizeForTerminal(value)).replace(/\s+/g, " ").trim().slice(0, PROGRESS_MESSAGE_MAX);
+  const clean = neutralizeApprovalMarker(sanitizeForTerminal(value)).replace(/\s+/g, " ").trim();
+  if (clean.length > PROGRESS_MESSAGE_MAX) throw badRequest(`message too long (${clean.length} chars, max ${PROGRESS_MESSAGE_MAX}): put the text in a file and send it with --file PATH`);
+  return clean;
 }
 
 export function cleanPercent(value: unknown): number | null {
@@ -38,12 +41,16 @@ export function cleanStatus(value: unknown, fallback: ProgressStatus = "working"
   throw badRequest("status must be working, blocked or done");
 }
 
-/** One-line push typed into the parent terminal; the full text is in `floq watch`. */
-export function pushLine(child: { id: string; title: string }, event: Pick<ProgressEvent, "kind" | "status" | "percent" | "message">): string {
+/**
+ * One-line push typed into the parent terminal. A short message is typed whole; a long one (needsInbox) is passed as
+ * `inbox` (already stored for the parent) and typed as a preview plus `floq inbox read ID`, never cut silently.
+ */
+export function pushLine(child: { id: string; title: string }, event: Pick<ProgressEvent, "kind" | "status" | "percent" | "message">, inbox?: { id: string; chars: number }): string {
   const what = event.kind === "question" ? "QUESTION" : event.status.toUpperCase();
   const pct = event.percent === null ? "" : ` ${event.percent}%`;
-  const tail = event.kind === "question" ? `answer with: floq ask ${child.id} "..."` : `details: floq watch ${child.id}`;
-  return `[Floq ${what}${pct} from subagent ${clip(child.title, 60)} (${child.id})] ${clip(event.message, 300)} -- ${tail}`;
+  const body = inbox ? inboxPointer(event.message, inbox.id, inbox.chars) : event.message;
+  const tail = event.kind === "question" ? `answer with: floq ask ${child.id} "..." --no-wait` : `details: floq watch ${child.id}`;
+  return `[Floq ${what}${pct} from subagent ${clip(child.title, 60)} (${child.id})] ${body} -- ${tail}`;
 }
 
 export class AgentProgress {
