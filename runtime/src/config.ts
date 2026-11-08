@@ -1,3 +1,4 @@
+import { parseEmbeddingsMode } from "./embeddings.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -83,6 +84,10 @@ export interface Config {
   /** Where decrypted homes are mounted. Must be under /mnt (see LinuxShardDriver). */
   mountRoot: string;
   shardDriver: "auto" | "linux" | "local";
+  /** Agent memory (Redis). Null = feature off. The URL may carry a password: never log it, use redactRedisUrl(). */
+  redisUrl: string | null;
+  /** local (default) | openai | off: how memories are embedded for vector search. */
+  embeddings: "local" | "openai" | "off";
   /** Preinstalled skills/MCP skeleton copied into each new user home. */
   skelDir: string;
   /** Seed and list third-party bundled skills (PREINSTALL_SKILLS). Floq's own skills are always kept. */
@@ -189,6 +194,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? env.FLOQ_SHARD_DRIVER
       : "auto") as Config["shardDriver"],
     preinstallSkills: readBool(env.PREINSTALL_SKILLS, false),
+    redisUrl: env.FLOQ_REDIS_URL?.trim() || null,
+    embeddings: parseEmbeddingsMode(env.FLOQ_EMBEDDINGS),
     skelDir: resolve(env.FLOQ_SKEL_DIR?.trim() || "/usr/local/share/floq/skel"),
     shardLockDelayMs: readInt(env.FLOQ_SHARD_LOCK_DELAY_MS, 30_000, 0),
     workspaceRoot: resolveWorkspaceRoot(env.FLOQ_WORKSPACE_ROOT?.trim() || DEFAULTS.workspaceRoot),

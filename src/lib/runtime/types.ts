@@ -660,3 +660,39 @@ export interface PluginCatalogItem {
   installedVersion: string | null;
   updateAvailable: boolean;
 }
+
+// --- agent memory (runtime/src/memories.ts) ---
+export type MemoryType = "fact" | "decision" | "procedure" | "episode";
+export type MemoryScope = "project" | "user";
+export interface Memory {
+  id: string;
+  projectId: string | null;
+  scope: MemoryScope;
+  type: MemoryType;
+  title: string;
+  text: string;
+  pinned: boolean;
+  author: string | null;
+  authorSession: string | null;
+  createdAt: string;
+  updatedAt: string;
+  invalidatedAt: string | null;
+  supersededBy: string | null;
+  invalidReason: string | null;
+  /** Only on search results. */
+  score?: number;
+}
+export type MemorySearchMode = "hybrid" | "fulltext";
+export interface MemoryInput { text?: string; title?: string; type?: MemoryType; pinned?: boolean; scope?: MemoryScope }
+export interface MemoryPatch { text?: string; title?: string; type?: MemoryType; pinned?: boolean; invalidated?: boolean }
+export interface MemoryEvent {
+  id: number | string;
+  memoryId: string;
+  sessionId: string | null;
+  actor: "agent" | "user" | "system";
+  action: "add" | "update" | "invalidate" | "pin" | "unpin" | "delete";
+  before: Partial<Memory> | null;
+  after: Partial<Memory> | null;
+  createdAt: string;
+}
+export interface MemoryStatus { /** FLOQ_REDIS_URL is set (stable); redis = reachable now */ enabled?: boolean; redis: boolean; backend?: "redis" | "dragonfly" | null; embeddings: "local" | "openai" | "off"; model: string; ready: boolean; migration?: { done: boolean; notes: number; added: number; pinned: number; at: string | null } | null }

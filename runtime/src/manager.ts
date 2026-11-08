@@ -38,7 +38,7 @@ import { MANAGED_FILE, promoteUserPlugins } from "./claudeManagedPlugins.js";
 /** The image's Claude Code managed settings (native-subagent deny): the base of every user's own copy. */
 const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
-import { composeSystemBlocks } from "./subagents.js";
+import { buildMemoryPolicy, composeSystemBlocks } from "./subagents.js";
 import { NETNS_GATEWAY } from "./netns.js";
 import { mkdirOwned, mkdirOwnedSegment, ownTree, safeRelative, writeFileOwned, type ShardHandle } from "./shard.js";
 import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
@@ -312,6 +312,8 @@ export class SessionManager {
   keychains?: Keychains;
   /** Notes, keychains and agents wired to each agent, persisted so every start and resume re-injects them (set at startup). */
   wired?: WiredContext;
+  /** Set when agent memory is enabled (FLOQ_REDIS_URL): the [FLOQ MEMORY v1] policy is composed in only when it is configured. */
+  memories?: { enabled(): boolean };
   /** Fixed always-recruit-subagents policy block, injected for every agent start and resume (set at startup). */
   subagents?: { blockFor(userId: string, sessionId: string): Promise<string> };
   private readonly logins = new Map<string, LoginState>();
@@ -1384,7 +1386,7 @@ export class SessionManager {
     const wiredBlock0 = this.wired && row.provider !== "shell" ? await this.wired.blockFor(row.user_id, row.id) : "";
     // The fixed Floq subagent policy rides in the same system-level text (one flag: a second --append-system-prompt would not combine), first and always present for agents.
     const skillsBlock = row.provider === "shell" ? "" : buildRecruitSkillsBlock(storedRecruitSkills(row.recruit_skills), row.provider);
-    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", skillsBlock, wiredBlock0);
+    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, wiredBlock0);
     if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);

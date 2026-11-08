@@ -33,6 +33,8 @@ interface AppDialogProps {
   /** false: no close button, Esc and outside clicks do nothing. */
   closable?: boolean
   className?: string
+  /** Overrides the body wrapper (default: padded and scrolling), e.g. for a fixed-size layout that scrolls inside. */
+  bodyClassName?: string
 }
 
 /** Shared dialog shell: icon tile + title header, padded body, footer band. */
@@ -48,6 +50,7 @@ function AppDialog({
   footerStart,
   closable = true,
   className,
+  bodyClassName,
 }: AppDialogProps) {
   const block = (event: Event) => {
     if (!closable) event.preventDefault()
@@ -76,7 +79,7 @@ function AppDialog({
             )}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto px-6 py-6", bodyClassName)}>
           {children}
         </div>
         {(footer || footerStart) && (

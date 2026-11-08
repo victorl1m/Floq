@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { IconAlertTriangle, IconDownload, IconRefresh, IconSearch } from "@tabler/icons-react";
+import { IconAlertTriangle, IconArrowLeft, IconBrandGithub, IconDownload, IconPlugConnected, IconRefresh, IconSearch } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AppDialog } from "@/components/ui/app-dialog";
@@ -8,12 +8,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginCatalogItem, PluginRepoPreview } from "@/lib/runtime/types";
 import { ACTION_LABEL, FILTER_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, avatarUrl, categoryOf, confirmMatches, filterCatalog, matchesFilter, repoOf, type CatalogFilter, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { usePlugins } from "@/plugins/host";
 import { cn } from "cn";
+
+const NAV_ITEM = "flex min-h-8 shrink-0 items-center justify-between gap-2 whitespace-nowrap rounded-[10px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:w-full";
+
+/** Centered message that fills its pane: loading failures, empty catalog, no search results. Keeps the pane the same size as a populated one. */
+function PaneState({ icon, title, text, action, role, compact }: { icon?: React.ReactNode; title: string; text: string; action?: React.ReactNode; role?: "alert"; compact?: boolean }) {
+    return (
+        <div role={role ?? "status"} className={cn("flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center", compact ? "" : "h-full")}>
+            {icon && <div className="text-muted-foreground [&_svg]:size-6">{icon}</div>}
+            <p className="text-sm font-medium">{title}</p>
+            <p className="max-w-xs break-words text-xs text-muted-foreground">{text}</p>
+            {action}
+        </div>
+    );
+}
 
 const STATUS_BADGE = { builtin: "Built in", available: "", installed: "Installed", update: "Update available" } as const;
 
@@ -33,56 +48,61 @@ export function PluginMark({ item, className }: { item: PluginCatalogItem; class
     );
 }
 
-/** One grid card of the explorer. A button, so Enter/Space select it. */
-export function CatalogCard({ item, selected, onSelect }: { item: PluginCatalogItem; selected: boolean; onSelect: (id: string) => void }) {
+/** One grid card of the explorer. A button, so Enter/Space select it. Fixed height so the grid never jumps. */
+export function CatalogCard({ item, selected, enabled = false, onSelect }: { item: PluginCatalogItem; selected: boolean; enabled?: boolean; onSelect: (id: string) => void }) {
     const state = rowState(item);
     return (
         <li className="min-w-0">
             <button type="button" data-plugin-card={item.id} data-state={state.status} aria-pressed={selected} onClick={() => onSelect(item.id)}
-                className={cn("flex h-full w-full min-w-0 flex-col gap-3 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border")}>
+                className={cn("flex h-[8.5rem] w-full min-w-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border")}>
                 <div className="flex min-w-0 items-start gap-3">
-                    <PluginMark item={item} />
+                    <PluginMark item={item} className="size-10" />
                     <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{item.name}</p>
                         <p className="truncate font-mono text-xs text-muted-foreground">v{item.version}{repoOf(item) ? ` · ${repoOf(item)}` : ""}</p>
                     </div>
                 </div>
-                <p className="line-clamp-2 min-h-8 text-xs leading-relaxed text-muted-foreground">{item.description || "No description."}</p>
-                <div className="mt-auto flex flex-wrap items-center gap-1.5">
-                    <Badge variant="outline">{categoryOf(item)}</Badge>
-                    {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
+                <p className="line-clamp-2 min-h-8 text-xs leading-4 text-muted-foreground">{item.description || "No description."}</p>
+                <div className="mt-auto flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    <Badge variant="outline" className="max-w-24 shrink truncate">{categoryOf(item)}</Badge>
+                    {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"} className="shrink-0">{STATUS_BADGE[state.status]}</Badge>}
+                    {enabled && <Badge variant="secondary" className="shrink-0">On</Badge>}
                 </div>
             </button>
         </li>
     );
 }
 
-/** The detail pane of the selected plugin (kept as `CatalogRow`). Presentational: the dialog owns the actions. */
+/** The detail pane of the selected plugin (kept as `CatalogRow`). Presentational: the dialog owns the actions. Actions sit in a footer that never scrolls away. */
 export function CatalogRow({ item, busy, onAction }: { item: PluginCatalogItem; busy: boolean; onAction: (item: PluginCatalogItem, action: CatalogAction) => void }) {
     const state = rowState(item);
     return (
-        <div data-plugin-catalog={item.id} data-state={state.status} className="flex flex-col gap-4">
-            <div className="flex min-w-0 flex-1 gap-3">
-                <PluginMark item={item} className="size-14" />
-                <div className="min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-base font-semibold">{item.name}</h3>
-                        <Badge variant="outline" className="font-mono">v{item.version}</Badge>
-                        {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
-                        {state.status === "update" && <span className="text-xs text-muted-foreground">you have v{item.installedVersion}</span>}
+        <div data-plugin-catalog={item.id} data-state={state.status} className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+                <div className="flex min-w-0 gap-3">
+                    <PluginMark item={item} className="size-12" />
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="break-words text-base font-semibold leading-tight">{item.name}</h3>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant="outline" className="font-mono">v{item.version}</Badge>
+                            {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
+                        </div>
+                        {state.status === "update" && <p className="text-xs text-muted-foreground">you have v{item.installedVersion}</p>}
                     </div>
-                    {repoOf(item) && <p className="font-mono text-xs text-muted-foreground">{repoOf(item)}</p>}
-                    {item.description && <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{item.description}</p>}
-                    <ul className="space-y-0.5 text-xs text-muted-foreground">{summarize(item).map((line) => <li key={line}>{line}</li>)}</ul>
                 </div>
+                {repoOf(item) && <p className="break-all font-mono text-xs text-muted-foreground">{repoOf(item)}</p>}
+                {item.description && <p className="text-sm leading-relaxed text-muted-foreground">{item.description}</p>}
+                <ul className="space-y-1 break-words text-xs text-muted-foreground">{summarize(item).map((line) => <li key={line}>{line}</li>)}</ul>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {state.actions.map((action) => (
-                    <Button key={action} size="sm" variant={action === "install" || action === "update" ? "default" : action === "uninstall" ? "outline" : "ghost"} disabled={busy} onClick={() => onAction(item, action)}>
-                        {action === "install" ? <IconDownload /> : action === "update" ? <IconRefresh /> : null}{ACTION_LABEL[action]}
-                    </Button>
-                ))}
-            </div>
+            {state.actions.length > 0 && (
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border p-3">
+                    {state.actions.map((action) => (
+                        <Button key={action} size="sm" variant={action === "install" || action === "update" ? "default" : action === "uninstall" ? "outline" : "ghost"} disabled={busy} onClick={() => onAction(item, action)}>
+                            {action === "install" ? <IconDownload /> : action === "update" ? <IconRefresh /> : null}{ACTION_LABEL[action]}
+                        </Button>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -146,9 +166,13 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const [filter, setFilter] = useState<CatalogFilter>("all");
     const [category, setCategory] = useState<string | null>(null);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    // "github" swaps the explorer for the install-from-repository form; detailOpen is the narrow-width list/detail switch.
+    const [view, setView] = useState<"catalog" | "github">("catalog");
+    const [detailOpen, setDetailOpen] = useState(false);
     const visible = useMemo(() => filterCatalog(items ?? [], query, filter, category), [items, query, filter, category]);
     const categories = useMemo(() => [...new Set((items ?? []).map(categoryOf))].sort(), [items]);
     const selected = visible.find((i) => i.id === selectedId) ?? visible[0] ?? null;
+    const enabledIds = useMemo(() => new Set(plugins.filter((p) => p.enabled).map((p) => p.id)), [plugins]);
     const countOf = (f: CatalogFilter) => (items ?? []).filter((i) => matchesFilter(i, f)).length;
 
     const load = useCallback(async () => {
@@ -157,7 +181,7 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
         try { setItems(await client.pluginCatalog()); } catch (e) { setItems(null); setError(errorMessage(e)); }
         try { setSources(await client.pluginSources()); } catch { setSources({}); }
     }, [client]);
-    useEffect(() => { if (open) { setItems(null); void load(); } }, [open, load]);
+    useEffect(() => { if (open) { setItems(null); setView("catalog"); setDetailOpen(false); void load(); } }, [open, load]);
 
     function ask(item: PluginCatalogItem, action: CatalogAction) { setTyped(""); setPending({ item, action }); }
 
@@ -208,68 +232,86 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const ok = pending ? (pending.action === "update" || confirmMatches(typed, pending.item.id)) : false;
     return (
         <>
-            <AppDialog open={open && !pending && !repoPending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." size="lg" className="sm:max-w-4xl"
+            <AppDialog open={open && !pending && !repoPending} onOpenChange={onOpenChange} icon={<IconDownload />} title="Browse plugins" description="Plugins published in floq-plugins. Only administrators can install them." className="h-[min(640px,calc(100dvh-4rem))] w-[min(960px,calc(100vw-2rem))] sm:max-w-none" bodyClassName="overflow-hidden p-0"
                 footer={<Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>}>
-                {error ? (
-                    <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{error}</p><Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button></div>
-                ) : items === null ? <p role="status" className="text-sm text-muted-foreground">Loading the catalog…</p>
-                : items.length === 0 ? <p className="text-sm text-muted-foreground">The catalog is empty.</p>
-                : (
-                    <div data-slot="plugin-explorer" className="grid gap-4 md:grid-cols-[11rem_minmax(0,1fr)]">
-                        <nav aria-label="Filter plugins" className="flex gap-4 overflow-x-auto md:flex-col md:gap-5 md:overflow-visible">
-                            <ul className="flex gap-1 md:flex-col">
-                                {(Object.keys(FILTER_LABEL) as CatalogFilter[]).map((f) => (
-                                    <li key={f}><button type="button" aria-pressed={filter === f} onClick={() => setFilter(f)} className={cn("flex w-full items-center justify-between gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === f && "bg-muted font-medium")}>{FILTER_LABEL[f]}<span className="text-xs text-muted-foreground">{countOf(f)}</span></button></li>
-                                ))}
-                            </ul>
-                            {categories.length > 1 && (
-                                <div className="md:space-y-1">
-                                    <p className="hidden px-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground md:block">Categories</p>
-                                    <ul className="flex gap-1 md:flex-col">
-                                        {categories.map((c) => (
-                                            <li key={c}><button type="button" aria-pressed={category === c} onClick={() => setCategory(category === c ? null : c)} className={cn("w-full whitespace-nowrap rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", category === c && "bg-muted font-medium")}>{c}</button></li>
-                                        ))}
-                                    </ul>
-                                </div>
-                            )}
-                        </nav>
-                        <div className="min-w-0 space-y-3">
-                            <div className="relative">
-                                <IconSearch aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                                <Input type="search" aria-label="Search plugins" placeholder="Search plugins" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" className="pl-8" />
+                <div data-slot="plugin-explorer" className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] md:grid-cols-[12rem_minmax(0,1fr)] md:grid-rows-1">
+                    <nav aria-label="Filter plugins" className="flex min-w-0 gap-1 overflow-x-auto border-b border-border p-2 md:flex-col md:overflow-y-auto md:overflow-x-hidden md:border-b-0 md:border-r md:p-3">
+                        {(Object.keys(FILTER_LABEL) as CatalogFilter[]).map((f) => (
+                            <button key={f} type="button" aria-pressed={view === "catalog" && filter === f} onClick={() => { setView("catalog"); setFilter(f); setDetailOpen(false); }} className={cn(NAV_ITEM, view === "catalog" && filter === f && "bg-muted font-medium")}>
+                                <span className="truncate">{FILTER_LABEL[f]}</span><span className="text-xs text-muted-foreground">{countOf(f)}</span>
+                            </button>
+                        ))}
+                        {categories.length > 1 && <p className="mt-3 hidden px-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground md:block">Categories</p>}
+                        {categories.length > 1 && categories.map((c) => (
+                            <button key={c} type="button" aria-pressed={view === "catalog" && category === c} onClick={() => { setView("catalog"); setCategory(category === c ? null : c); setDetailOpen(false); }} className={cn(NAV_ITEM, view === "catalog" && category === c && "bg-muted font-medium")}>
+                                <span className="truncate">{c}</span>
+                            </button>
+                        ))}
+                        <div className="mx-1 hidden border-t border-border md:my-2 md:block" />
+                        <button type="button" aria-pressed={view === "github"} onClick={() => setView("github")} className={cn(NAV_ITEM, "md:mt-auto", view === "github" && "bg-muted font-medium")}>
+                            <span className="flex min-w-0 items-center gap-2"><IconBrandGithub className="size-4 shrink-0" /><span className="truncate">From GitHub</span></span>
+                        </button>
+                    </nav>
+                    {view === "github" ? (
+                        <section aria-label="Install from GitHub" data-slot="plugin-repo-install" className="min-h-0 min-w-0 space-y-4 overflow-y-auto p-4">
+                            <div className="space-y-1">
+                                <Label htmlFor="plugin-repo-url">Install from a GitHub repository</Label>
+                                <p className="text-xs text-muted-foreground">Any owner. Floq reads the repository's newest release and shows you what it contains before anything is installed. Updates are manual.</p>
                             </div>
-                            {visible.length === 0 ? <p role="status" className="py-8 text-center text-sm text-muted-foreground">No plugins match.</p> : (
-                                <ul aria-label="Plugin catalog" className="grid max-h-[34dvh] grid-cols-1 gap-2 overflow-y-auto p-0.5 sm:grid-cols-2 lg:grid-cols-3">
-                                    {visible.map((item) => <CatalogCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelectedId} />)}
+                            <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (repoUrl.trim()) void review(repoUrl.trim(), "install"); }}>
+                                <Input id="plugin-repo-url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="https://github.com/owner/repo" autoComplete="off" spellCheck={false} className="min-w-0 font-mono" />
+                                <Button type="submit" variant="outline" disabled={busy || !repoUrl.trim()}>Review</Button>
+                            </form>
+                            {repoItems.length > 0 && (
+                                <ul aria-label="Installed from GitHub" className="divide-y divide-border rounded-xl border border-border">
+                                    {repoItems.map((p) => (
+                                        <li key={p.id} data-plugin-repo={p.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                                            <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><span className="truncate text-sm font-medium">{p.name}</span><Badge variant="outline" className="shrink-0 font-mono">v{p.version}</Badge></div><p className="truncate font-mono text-xs text-muted-foreground">{sources[p.id]}</p></div>
+                                            <div className="flex shrink-0 gap-2">
+                                                <Button size="sm" variant="default" disabled={busy} onClick={() => void review(`https://github.com/${sources[p.id]}`, "update")}><IconRefresh />Check for update</Button>
+                                                <Button size="sm" variant="outline" disabled={busy} onClick={() => ask({ id: p.id, name: p.name, version: p.version, apiVersion: 1, description: p.description, scope: p.scope, secrets: [], network: [], contributes: [], builtin: false, installedVersion: p.version, updateAvailable: false }, "uninstall")}>Uninstall</Button>
+                                            </div>
+                                        </li>
+                                    ))}
                                 </ul>
                             )}
-                            {selected && <section aria-label={`${selected.name} details`} className="rounded-xl border border-border p-4"><CatalogRow item={selected} busy={busy} onAction={ask} /></section>}
+                        </section>
+                    ) : error ? (
+                        <PaneState role="alert" icon={<IconAlertTriangle />} title="Could not load the catalog" text={error} action={<Button variant="outline" size="sm" onClick={() => { setItems(null); void load(); }}><IconRefresh />Retry</Button>} />
+                    ) : items === null ? (
+                        <div role="status" aria-label="Loading the catalog" className="grid min-h-0 content-start gap-2 overflow-hidden p-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-[8.5rem] rounded-xl" />)}
                         </div>
-                    </div>
-                )}
-                <section aria-label="Install from GitHub" className="mt-4 space-y-3" data-slot="plugin-repo-install">
-                    <div className="space-y-1">
-                        <Label htmlFor="plugin-repo-url">Install from a GitHub repository</Label>
-                        <p className="text-xs text-muted-foreground">Any owner. Floq reads the repository's newest release and shows you what it contains before anything is installed. Updates are manual.</p>
-                    </div>
-                    <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (repoUrl.trim()) void review(repoUrl.trim(), "install"); }}>
-                        <Input id="plugin-repo-url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="https://github.com/owner/repo" autoComplete="off" spellCheck={false} className="font-mono" />
-                        <Button type="submit" variant="outline" disabled={busy || !repoUrl.trim()}>Review</Button>
-                    </form>
-                    {repoItems.length > 0 && (
-                        <ul aria-label="Installed from GitHub" className="divide-y divide-border rounded-xl border border-border">
-                            {repoItems.map((p) => (
-                                <li key={p.id} data-plugin-repo={p.id} className="flex items-center justify-between gap-2 p-3">
-                                    <div className="min-w-0"><span className="text-sm font-medium">{p.name}</span> <Badge variant="outline" className="font-mono">v{p.version}</Badge><p className="truncate font-mono text-xs text-muted-foreground">{sources[p.id]}</p></div>
-                                    <div className="flex shrink-0 gap-2">
-                                        <Button size="sm" variant="default" disabled={busy} onClick={() => void review(`https://github.com/${sources[p.id]}`, "update")}><IconRefresh />Check for update</Button>
-                                        <Button size="sm" variant="outline" disabled={busy} onClick={() => ask({ id: p.id, name: p.name, version: p.version, apiVersion: 1, description: p.description, scope: p.scope, secrets: [], network: [], contributes: [], builtin: false, installedVersion: p.version, updateAvailable: false }, "uninstall")}>Uninstall</Button>
+                    ) : items.length === 0 ? (
+                        <PaneState icon={<IconPlugConnected />} title="The catalog is empty" text="Nothing is published in floq-plugins yet. You can still install from a GitHub repository." action={<Button variant="outline" size="sm" onClick={() => setView("github")}><IconBrandGithub />From GitHub</Button>} />
+                    ) : (
+                        <div className="grid min-h-0 min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_18rem]">
+                            <div className={cn("min-h-0 min-w-0 flex-col", detailOpen ? "hidden lg:flex" : "flex")}>
+                                <div className="shrink-0 p-3 pb-2">
+                                    <div className="relative">
+                                        <IconSearch aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                                        <Input type="search" aria-label="Search plugins" placeholder="Search plugins" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" className="pl-8" />
                                     </div>
-                                </li>
-                            ))}
-                        </ul>
+                                </div>
+                                {visible.length === 0 ? (
+                                    <PaneState compact title="No plugins match" text="Try another search, or pick a different filter." action={(query || filter !== "all" || category) ? <Button variant="outline" size="sm" onClick={() => { setQuery(""); setFilter("all"); setCategory(null); }}>Clear filters</Button> : undefined} />
+                                ) : (
+                                    <ul aria-label="Plugin catalog" className="grid min-h-0 flex-1 grid-cols-1 content-start gap-2 overflow-y-auto p-3 pt-1 sm:grid-cols-2 xl:grid-cols-2">
+                                        {visible.map((item) => <CatalogCard key={item.id} item={item} selected={selected?.id === item.id} enabled={enabledIds.has(item.id)} onSelect={(id) => { setSelectedId(id); setDetailOpen(true); }} />)}
+                                    </ul>
+                                )}
+                            </div>
+                            <section aria-label={selected ? `${selected.name} details` : "Plugin details"} className={cn("min-h-0 min-w-0 flex-col border-border lg:flex lg:border-l", detailOpen ? "flex" : "hidden")}>
+                                <div className="shrink-0 border-b border-border p-2 lg:hidden">
+                                    <Button variant="ghost" size="sm" onClick={() => setDetailOpen(false)}><IconArrowLeft />All plugins</Button>
+                                </div>
+                                <div className="min-h-0 flex-1">
+                                    {selected ? <CatalogRow item={selected} busy={busy} onAction={ask} /> : <PaneState compact title="Select a plugin" text="Its permissions and actions show here." />}
+                                </div>
+                            </section>
+                        </div>
                     )}
-                </section>
+                </div>
             </AppDialog>
             <AppDialog open={!!repoPending} onOpenChange={(o) => { if (!busy && !o) setRepoPending(null); }} icon={<IconAlertTriangle />} size="md"
                 title={repoPending ? `${repoPending.mode === "install" ? "Install" : "Update"} ${repoPending.preview.name}?` : ""}

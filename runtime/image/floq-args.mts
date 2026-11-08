@@ -12,7 +12,7 @@ export interface SkillSummary { provider: string; name: string; source: string; 
 export function parseArgs(args: string[]): { positional: string[]; named: NamedArgs } {
   const positional = [];
   const named: NamedArgs = {};
-  const booleanFlags = new Set(["isolated", "global", "dry-run", "agents", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here", "consume", "once"]);
+  const booleanFlags = new Set(["isolated", "global", "dry-run", "agents", "allow-plaintext", "wait", "no-wait", "full", "no-wire", "all-projects", "here", "consume", "once", "user", "pin", "unpin", "pinned"]);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith("--")) {
       positional.push(args[i]);

@@ -26,6 +26,81 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # --- Optional agent memory store (the runtime does not depend on it) ---
+  # Enable: in .env set COMPOSE_PROFILES=memory, FLOQ_REDIS_PASSWORD=<long random> and
+  #   FLOQ_REDIS_URL=redis://:<same password>@dragonfly:6379
+  # The store is only reachable on the compose network (no host port) and refuses to start without a password,
+  # because agent sandboxes share that network. Compose reads every service even in inactive profiles, so the
+  # password is checked when the container starts, not when the file is parsed.
+  #
+  # Dragonfly (recommended, profile `memory`): snapshots every 5 minutes and on graceful stop.
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.1.0
+    profiles: ["memory"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      FLOQ_REDIS_PASSWORD: ${FLOQ_REDIS_PASSWORD:-}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        test -n "$$FLOQ_REDIS_PASSWORD" || { echo "FLOQ_REDIS_PASSWORD is required to start the memory store" >&2; exit 1; }
+        exec dragonfly --logtostderr --requirepass="$$FLOQ_REDIS_PASSWORD" --dir=/data --dbfilename=dump --df_snapshot_format=true --snapshot_cron="*/5 * * * *" --maxmemory=1gb --proactor_threads=4
+    ulimits:
+      memlock: -1
+    volumes:
+      - dragonflydata:/data
+    # No redis-cli in the image: speak RESP over bash's /dev/tcp (AUTH, then PING, expect +PONG).
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/6379 && printf 'AUTH %s\r\nPING\r\n' "$$FLOQ_REDIS_PASSWORD" >&3 && read -t 3 -r a <&3 && read -t 3 -r b <&3 && [ "$${b%$$'\r'}" = "+PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis 8+ (alternative, profile `memory-redis`, needs the Query Engine that ships with Redis 8): AOF + RDB, same password rule.
+  # Use FLOQ_REDIS_URL=redis://:<password>@redis:6379 and COMPOSE_PROFILES=memory-redis. Run one of the two, not both.
+  redis:
+    image: redis:8.2
+    profiles: ["memory-redis"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      FLOQ_REDIS_PASSWORD: ${FLOQ_REDIS_PASSWORD:-}
+      REDISCLI_AUTH: ${FLOQ_REDIS_PASSWORD:-}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        test -n "$$FLOQ_REDIS_PASSWORD" || { echo "FLOQ_REDIS_PASSWORD is required to start the memory store" >&2; exit 1; }
+        exec redis-server --requirepass "$$FLOQ_REDIS_PASSWORD" --appendonly yes --appendfsync everysec --save 300 10 --maxmemory 1gb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   runtime:
     build:
       context: ./runtime
@@ -60,8 +135,19 @@ services:
       FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
       FLOQ_SESSION_MAX_LIFETIME_MS: ${FLOQ_SESSION_MAX_LIFETIME_MS:-3600000}
       FLOQ_LOG_LEVEL: ${FLOQ_LOG_LEVEL:-info}
+      # Agent memory (optional; see the dragonfly / redis services). Empty FLOQ_REDIS_URL = memory off.
+      FLOQ_REDIS_URL: ${FLOQ_REDIS_URL:-}
+      FLOQ_EMBEDDINGS: ${FLOQ_EMBEDDINGS:-local}
+      FLOQ_EMBEDDINGS_MODEL: ${FLOQ_EMBEDDINGS_MODEL:-}
+      FLOQ_EMBEDDINGS_DIMS: ${FLOQ_EMBEDDINGS_DIMS:-}
+      FLOQ_EMBEDDINGS_THREADS: ${FLOQ_EMBEDDINGS_THREADS:-4}
+      FLOQ_EMBEDDINGS_DTYPE: ${FLOQ_EMBEDDINGS_DTYPE:-}
+      FLOQ_EMBEDDINGS_CACHE: /var/lib/floq/embeddings
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - shards3:/var/lib/floq/shards
+      # Downloaded embedding models survive image rebuilds.
+      - embeddings3:/var/lib/floq/embeddings
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
       interval: 30s
@@ -99,4 +185,7 @@ services:
 
 volumes:
   pgdata3:
+  redisdata:
+  dragonflydata:
+  embeddings3:
   shards3:

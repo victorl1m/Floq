@@ -46,7 +46,7 @@ function CredentialRow({ row, editing, draft, saving, error, onDraft, onEdit, on
     return (
         <li data-credential={row.name} data-present={row.present ? "true" : "false"} className="space-y-2 text-xs">
             <div className="flex flex-wrap items-center gap-2">
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{row.name}</code>
+                <code className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{row.name}</code>
                 <Badge variant={row.present ? "secondary" : row.required ? "destructive" : "outline"}>{row.present ? "Present" : "Missing"}</Badge>
                 <span className="text-muted-foreground">{row.required ? "Required" : "Optional"}</span>
                 {row.editable && !editing && (

@@ -142,12 +142,6 @@ export function containerOf(layout: ProjectLayout, projectId: string): string | 
   return parentOf(layout, "project", projectId);
 }
 
-function withoutProject(layout: ProjectLayout, projectId: string): ProjectLayout {
-  return {
-    root: layout.root.filter((entry) => !same(entry, "project", projectId)),
-    folders: Object.fromEntries(Object.entries(layout.folders).map(([id, list]) => [id, list.filter((item) => item !== projectId)])),
-  };
-}
 
 function insertAt<T>(list: readonly T[], index: number, item: T): T[] {
   const next = list.slice();
@@ -173,7 +167,7 @@ export function moveFolderInto(layout: ProjectLayout, folderId: string, parentId
 /** Move a project next to an anchor project or folder (relative to the anchor's own container). */
 export function moveProjectRelative(layout: ProjectLayout, projectId: string, anchor: LayoutEntry, edge: "before" | "after"): ProjectLayout {
   if (anchor.kind === "project" && anchor.id === projectId) return layout;
-  const base = withoutProject(layout, projectId);
+  const base = withoutEntry(layout, "project", projectId);
   const parent = parentOf(base, anchor.kind, anchor.id);
   if (parent === undefined) return layout;
   const list = entriesIn(base, parent);
@@ -210,7 +204,7 @@ export function moveFolderToEnd(layout: ProjectLayout, folderId: string): Projec
 
 export function addFolder(layout: ProjectLayout, folderId: string): ProjectLayout {
   if (folderId in layout.folders) return layout;
-  return { root: [...layout.root, { kind: "folder", id: folderId }], folders: { ...layout.folders, [folderId]: [] } };
+  return { ...layout, root: [...layout.root, { kind: "folder", id: folderId }], folders: { ...layout.folders, [folderId]: [] }, children: { ...(layout.children ?? {}), [folderId]: [] } };
 }
 
 /** Remove a folder; its projects take the folder's place in the root, in order. */

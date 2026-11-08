@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import { createAuth, migrateAuth } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { ClaudeOAuth } from "./claudeOauth.js";
@@ -14,6 +15,9 @@ import { SetupToken } from "./setupToken.js";
 import { SettingsStore } from "./settings.js";
 import { AgentLinks } from "./links.js";
 import { CanvasNotes } from "./notes.js";
+import { MemoryService } from "./memories.js";
+import { startMemoryImport } from "./memoryImport.js";
+import { createEmbedder } from "./embeddings.js";
 import { Keychains } from "./keychains.js";
 import { WiredContext } from "./wiredContext.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -77,9 +81,19 @@ manager.keychains = keychains;
 const canvasNotes = new CanvasNotes(pool);
 const wired = new WiredContext(pool, (userId, sessionId) => keychains.resolve(userId, sessionId));
 manager.wired = wired;
+// Agent memory is on only when FLOQ_REDIS_URL is set. It connects in the background and never delays boot.
+const memories = new MemoryService(pool, { url: config.redisUrl ?? undefined, embedder: createEmbedder({ ...process.env, FLOQ_EMBEDDINGS: config.embeddings }, { cacheDir: process.env.FLOQ_EMBEDDINGS_CACHE?.trim() || join(dirname(config.shardRoot), "embeddings") }) });
+memories.start();
+if (memories.enabled()) {
+  wired.memories = memories; manager.memories = memories; canvasNotes.memories = memories;
+  // First-enable import of legacy kind=memory notes (idempotent, Redis markers, notes untouched).
+  const rawCmd = memories.marker;
+  startMemoryImport(pool, memories, rawCmd);
+}
 const orchestrator = new Orchestrator(pool, manager, settings, agentLinks, keychains);
 const subagents = new SubagentService(pool, orchestrator, manager, settings);
 manager.subagents = subagents;
+subagents.memoryOn = memories.enabled();
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const tasks = new TasksService(prisma);
@@ -104,7 +118,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
 
 await server.listen();
 log.info("runtime.listening", {

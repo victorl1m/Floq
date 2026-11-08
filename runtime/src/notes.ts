@@ -1,6 +1,8 @@
 import type pg from "pg";
 import { HttpError, badRequest, conflict, notFound } from "./errors.js";
 import { log } from "./logger.js";
+import type { MemoryCtx, MemoryInput } from "./memories.js";
+import { splitFacts } from "./memoryImport.js";
 
 export const NOTE_COLORS = ["yellow", "blue", "green", "pink", "purple", "gray"] as const;
 export type NoteColor = (typeof NOTE_COLORS)[number];
@@ -114,6 +116,8 @@ function toNote(r: Record<string, unknown>): CanvasNote {
 }
 
 export class CanvasNotes {
+  /** Set when agent memory is enabled: `sticky new --kind memory` then stores a memory instead of a card. */
+  memories?: { available(): boolean; add(ctx: MemoryCtx, input: MemoryInput): Promise<{ id: string; action: string }> };
   constructor(private readonly pool: pg.Pool) {}
 
   /** "none" addresses the scratch canvas (project_id NULL). A real project must belong to the user. */
@@ -389,6 +393,20 @@ export class CanvasNotes {
     const input = (body && typeof body === "object" && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
     // `system` notes are the user's rules for every agent in every project: agents can never mint them.
     if (input.kind === "system") throw new HttpError(403, "system_note_readonly", "System notes are the user's rules for all agents: only the user can create them. Use kind memory or a regular note");
+    // Memory enabled: durable project facts live in the memory store. Unreachable store or empty text: the legacy card (imported later).
+    if (input.kind === "memory" && this.memories?.available() && typeof input.text === "string" && input.text.trim()) {
+      try {
+        const ctx: MemoryCtx = { userId, projectId: s.project_id ?? null, sessionId, actor: "agent", author: s.title || "agent" };
+        let first: { id: string; action: string } | null = null;
+        for (const fact of splitFacts(input.text)) { const r = await this.memories.add(ctx, { text: fact, type: "fact", scope: "project" }); first ??= r; }
+        if (first) {
+          const now = new Date().toISOString();
+          return { id: first.id, projectId: s.project_id ?? null, text: input.text, color: "yellow", kind: "memory", author: s.title || "agent", x: 0, y: 0, w: 240, h: 160, linkedSessionIds: [], title: null, agentNoteName: null, placed: true, createdAt: now, updatedAt: now, redirected: "memory" } as CanvasNote & { redirected: "memory" };
+        }
+      } catch (error) {
+        if (!(error instanceof HttpError && error.status === 503)) throw error;
+      }
+    }
     const anchor = (await this.agentList(userId, sessionId)).filter((n) => n.projectId === (s.project_id ?? null)).pop();
     const note = await this.create(userId, s.project_id ?? "none", { w: 240, h: 160, ...input, x: input.x ?? (anchor ? anchor.x + anchor.w + 30 : 0), y: input.y ?? (anchor ? anchor.y : 0) }, s.title || "agent");
     return note.kind === "note" ? this.link(userId, note.id, sessionId) : note;

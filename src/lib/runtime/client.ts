@@ -6,6 +6,12 @@ import type {
   Keychain,
   KeychainInput,
   CanvasNote,
+  Memory,
+  MemoryEvent,
+  MemoryInput,
+  MemoryPatch,
+  MemoryStatus,
+  MemoryType,
   CanvasNoteInput,
   AgentMessageEvent,
   AgentRole,
@@ -849,6 +855,31 @@ export class RuntimeClient {
   }
   async unlinkNote(noteId: string, sessionId: string): Promise<CanvasNote> {
     return this.call<CanvasNote>("DELETE", `/v1/notes/${encodeURIComponent(noteId)}/links/${encodeURIComponent(sessionId)}`);
+  }
+
+  // --- agent memory ---
+  async projectMemories(projectId: string, opts: { q?: string; type?: MemoryType; includeInvalid?: boolean } = {}): Promise<{ memories: Memory[]; mode: string }> {
+    const qs = new URLSearchParams();
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.type) qs.set("type", opts.type);
+    if (opts.includeInvalid) qs.set("include_invalid", "1");
+    const query = qs.toString();
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/memories${query ? `?${query}` : ""}`);
+  }
+  async createMemory(projectId: string, input: MemoryInput & { text: string }): Promise<Memory> {
+    return this.call<Memory>("POST", `/v1/projects/${encodeURIComponent(projectId)}/memories`, input);
+  }
+  async updateMemory(id: string, patch: MemoryPatch): Promise<Memory> {
+    return this.call<Memory>("PATCH", `/v1/memories/${encodeURIComponent(id)}`, patch);
+  }
+  async deleteMemory(id: string): Promise<void> {
+    await this.call("DELETE", `/v1/memories/${encodeURIComponent(id)}`);
+  }
+  async memoryEvents(id: string): Promise<MemoryEvent[]> {
+    return (await this.call<{ events: MemoryEvent[] }>("GET", `/v1/memories/${encodeURIComponent(id)}/events`)).events;
+  }
+  memoryStatus(): Promise<MemoryStatus> {
+    return this.call<MemoryStatus>("GET", "/v1/memory/status");
   }
 
   // Keychains (wallets of secrets linked to agents). Values are write-only.

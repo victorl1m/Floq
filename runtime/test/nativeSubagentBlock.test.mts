@@ -11,7 +11,7 @@ test("claude args deny Agent and Task and carry the hook settings", () => {
   const args = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.100 (Claude Code)" });
   assert.deepEqual(args.slice(0, 2), ["--disallowedTools", "Agent,Task"]);
   const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-  assert.deepEqual(settings, claudeBlockSettings());
+  assert.deepEqual(settings, claudeBlockSettings(undefined, null, "/usr/local/bin/floq-permission-request.mjs"));
   assert.deepEqual(settings.permissions.deny, ["Agent", "Task"]);
   assert.equal(settings.hooks.PreToolUse[0].matcher, "Agent|Task");
   assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes(BLOCK_HOOK_PATH));

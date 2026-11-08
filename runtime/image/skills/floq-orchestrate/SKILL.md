@@ -73,6 +73,21 @@ floq note list
 
 Notes are shared among the user's agents. Keep them concise and update or append rather than repeating a large context in every terminal message.
 
+## Memory
+
+Long-term project memory, available when the server has FLOQ_REDIS_URL set (otherwise `floq memory` exits 3). Search before a task, save durable facts after.
+
+```sh
+floq memory search "topic of the task"          # id  type  score  title
+floq memory read ID
+floq memory add "One fact, decision or procedure" --type decision --title "Short title"   # "-" reads stdin; --user = global to the user; --pin = shown to every agent
+floq memory update ID --text "corrected" [--pin|--unpin]
+floq memory forget ID --reason "outdated"       # invalidates, never hard-deletes
+floq memory list [--type T] [--pinned]
+```
+
+One fact per memory, no secrets, no transient status (use notes for that). Pin only project-wide essentials. Forget or update memories you find wrong.
+
 ## Canvas notes
 
 The user can wire canvas notes (sticky notes) to you. Linked notes are yours to read and edit; you cannot see other notes.

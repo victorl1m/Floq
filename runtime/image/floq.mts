@@ -13,6 +13,7 @@
 //   floq wait <UUID|Name> [--timeout S] [--chars N|--full]   block until the agent is idle, print its last reply
 //   floq check <UUID|Name> [--chars N|--full]   status line plus the agent's last full reply (terminal tail while it works)
 //   floq note list | read N | write N TEXT | append N TEXT | delete N
+//   floq memory add "TEXT"|- [--title T] [--type fact|decision|procedure|episode] [--user] [--pin] | search "QUERY" [--type T] [--k N] | list [--type T] [--pinned] | read ID | update ID [--text T|-] [--title T] [--type T] [--pin|--unpin] | forget ID [--reason R]   long-term project memory
 //   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | delete ID | new [TEXT|-] [--color C] [--kind note|memory|system]   canvas notes: wired to this agent, plus the project's memory/system notes
 //   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only)
 //   floq subagent recruit|list|ask|result|dismiss   always-available Floq subagents (limits enforced by the runtime)
@@ -64,12 +65,18 @@ Commands:
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
   floq note delete NAME                  delete a shared note and its canvas card
   floq wired                             print what the user wired to you on the canvas (notes, keychain names, linked agents); re-read it after a context compaction
+  floq memory add "TEXT"|- [--title T] [--type fact|decision|procedure|episode] [--user] [--pin]   save one durable fact/decision/procedure to project memory ("-" reads stdin; --user = global to you; --pin = injected into every agent's context)
+  floq memory search "QUERY" [--type T] [--k N]   hybrid full-text + semantic search of memory (default 8 results, max 50)
+  floq memory list [--type T] [--pinned]          list memories (id, type, title)
+  floq memory read ID                             print one memory in full
+  floq memory update ID [--text T|-] [--title T] [--type T] [--pin|--unpin]   correct a memory
+  floq memory forget ID [--reason R]              invalidate a wrong/outdated memory (kept in history, never returned by search)
   floq sticky list                       canvas notes the user wired to this agent plus the project's memory/system notes (id, kind, color, first line)
   floq sticky read ID                    print a note's text
   floq sticky write ID TEXT|-            replace its text ("-" reads stdin); refused on system notes (only the user edits those)
   floq sticky append ID TEXT|-           add to the end of its text
   floq sticky delete ID                  delete a note or memory card; refused on system notes (only the user deletes those)
-  floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits; system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
+  floq sticky new [TEXT|-] [--color yellow|blue|green|pink|purple|gray] [--kind note|memory|system] [--x N --y N]   create a note (default kind note: wired to you; memory: shared project memory every agent of the project reads and edits (when 'floq memory' is enabled on this server this saves a memory instead and prints its id); system: general rules every agent of yours follows in every project, only the user can edit them afterwards; create one only when the user asked for it)
   floq port open PORT [--protocol http|https|tcp] [--reason TEXT]   ask the user to open a port of this session on their computer; blocks up to 60s for their Allow/Deny (never opened without it)
   floq plugin list                       plugins the user enabled that agents may call, with their routes
   floq plugin call ID PATH [--json BODY]   call a plugin route as this session (output is sanitized); outward-facing writes ask the user for approval first
@@ -139,11 +146,16 @@ async function call<T = Record<string, unknown>>(path: string, body?: unknown): 
     body: JSON.stringify(body ?? {}),
   });
   const text = await response.text();
-  let data: { error?: { message?: string } };
+  let data: { error?: { message?: string; code?: string } };
   try {
     data = JSON.parse(text) as { error?: { message?: string } };
   } catch {
     data = { error: { message: text.slice(0, 200) } };
+  }
+  if (response.status === 503 && path.startsWith("memory/")) {
+    const code = (data.error as { code?: string } | undefined)?.code ?? (/memory_disabled/.test(text) ? "memory_disabled" : /memory_unavailable/.test(text) ? "memory_unavailable" : "");
+    if (code === "memory_disabled") { console.error("floq: memory is disabled on this Floq server (set FLOQ_REDIS_URL)"); process.exit(3); }
+    if (code === "memory_unavailable") { console.error("floq: the memory store is not reachable right now; try again shortly"); process.exit(3); }
   }
   if (!response.ok) {
     console.error("floq: " + (data.error?.message ?? "request failed (" + response.status + ")"));
@@ -264,6 +276,7 @@ const allowedOptions: Record<string, string[]> = {
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
   secrets: ["description", "value", "expose", "keychain"],
   secret: ["keychain"],
+  memory: ["title", "type", "user", "pin", "unpin", "pinned", "k", "text", "reason"],
 };
 if (!allowedOptions[command]) usage();
 for (const option of Object.keys(named)) {
@@ -647,6 +660,49 @@ switch (command) {
     console.log(block || "nothing is wired to this agent on the canvas");
     break;
   }
+  case "memory": {
+    const [sub, id, ...words] = positional;
+    type Mem = { id: string; type: string; title: string; text: string; scope: string; pinned: boolean; author?: string | null; updatedAt?: string; invalidatedAt?: string | null; score?: number };
+    const str = (v: string | boolean | undefined) => (typeof v === "string" ? v : undefined);
+    for (const k of ["title", "type", "k", "text", "reason"]) if (named[k] !== undefined && typeof named[k] !== "string") usage();
+    const type = str(named.type);
+    if (type !== undefined && !["fact", "decision", "procedure", "episode"].includes(type)) { console.error("floq: --type must be fact, decision, procedure or episode"); process.exit(2); }
+    const argText = async (parts: string[]) => (parts.join(" ") === "-" ? await readStdinText() : parts.join(" "));
+    const line = (m: Mem) => m.id + "  " + m.type + "  " + (m.score === undefined ? "-" : m.score.toFixed(3)) + "  " + ((m.title || m.text.split("\n")[0]).slice(0, 100));
+    if (sub === "add" && id !== undefined) {
+      const text = await argText([id, ...words]);
+      if (!text.trim()) { console.error("floq: memory text is empty"); process.exit(2); }
+      const r = await call<{ id: string; action: string }>("memory/add", { text, title: str(named.title), type, scope: named.user === true ? "user" : undefined, pinned: named.pin === true ? true : undefined });
+      console.log(r.id + "  " + r.action);
+    } else if (sub === "search" && id !== undefined) {
+      const k = named.k === undefined ? undefined : Number(named.k);
+      if (k !== undefined && (!Number.isInteger(k) || k < 1 || k > 50)) { console.error("floq: --k must be an integer from 1 to 50"); process.exit(2); }
+      const r = await call<{ mode?: string; results: Mem[] }>("memory/search", { query: [id, ...words].join(" "), type, k });
+      for (const m of r.results) console.log(line(m));
+      if (!r.results.length) console.log("no matching memories");
+    } else if (sub === "list" && id === undefined) {
+      const r = await call<{ memories: Mem[] }>("memory/list", { type, pinned: named.pinned === true ? true : undefined });
+      for (const m of r.memories) console.log(line({ ...m, score: undefined }));
+      if (!r.memories.length) console.log("no memories");
+    } else if (sub === "read" && id && words.length === 0) {
+      const r = await call<{ memory?: Mem } & Partial<Mem>>("memory/get", { id });
+      const m = (r.memory ?? r) as Mem;
+      console.log(m.id + "  " + m.type + "  " + m.scope + (m.pinned ? "  pinned" : "") + (m.invalidatedAt ? "  INVALIDATED" : "") + (m.author ? "  by " + m.author : ""));
+      if (m.title) console.log("title: " + m.title);
+      console.log(m.text);
+    } else if (sub === "update" && id && words.length === 0) {
+      if (named.pin === true && named.unpin === true) usage();
+      const text = named.text === undefined ? undefined : await argText([named.text as string]);
+      const body = { id, text, title: str(named.title), type, pinned: named.pin === true ? true : named.unpin === true ? false : undefined };
+      if (body.text === undefined && body.title === undefined && body.type === undefined && body.pinned === undefined) usage();
+      await call("memory/update", body);
+      console.log("ok");
+    } else if (sub === "forget" && id && words.length === 0) {
+      await call("memory/forget", { id, reason: str(named.reason) });
+      console.log("ok");
+    } else usage();
+    break;
+  }
   case "sticky": {
     // Canvas notes wired to this agent on the canvas (separate from the named shared notes of "floq note").
     const [sub, id, ...words] = positional;
@@ -669,6 +725,7 @@ switch (command) {
       const text = await textOf(parts);
       const num = (v: string | boolean | undefined) => (typeof v === "string" ? Number(v) : undefined);
       const note = await call<Sticky>("sticky/create", { text, color: typeof named.color === "string" ? named.color : undefined, kind: typeof named.kind === "string" ? named.kind : undefined, x: num(named.x), y: num(named.y) });
+      if ((note as Sticky & { redirected?: string }).redirected === "memory") console.error("stored as a memory (floq memory is enabled); manage it with `floq memory`");
       console.log(note.id);
     } else usage();
     break;

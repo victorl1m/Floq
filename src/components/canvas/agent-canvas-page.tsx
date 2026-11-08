@@ -44,6 +44,7 @@ import ActivityPanel from "./activity-panel";
 import { CanvasTitlebarToolbar } from "./canvas-titlebar-toolbar";
 import { ShortcutTip } from "./shortcut-tip";
 import KeychainDialog from "./keychain-dialog";
+import MemoryDialog from "./memory-dialog";
 import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
 import { stackKeychains, stackNotes } from "./note-placement";
 import { NOTE_DEFAULT, NOTE_PREFIX, NOTE_TEAL, NoteProvider, NoteWireCtx, isNoteId, isNoteLinkId, noteEdgeTypes, noteLinkId, noteNodeTypes, useCanvasNotes, type NoteWireEdge } from "./canvas-notes";
@@ -524,6 +525,17 @@ function AgentCanvas() {
   const [tool, setTool] = useState<"pan" | "select">("pan");
   const [linkMode, setLinkMode] = useState<{ from: string | null } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  // Memory exists only when the runtime has FLOQ_REDIS_URL; until status says so, the button stays hidden.
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  // status.enabled is the stable switch (FLOQ_REDIS_URL set): it does not flap while Redis blips, unlike status.redis.
+  const [memoryConfigured, setMemoryConfigured] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    client?.memoryStatus().then((s) => { if (alive) { setMemoryEnabled(s.redis); setMemoryConfigured(s.enabled ?? s.redis); } }).catch(() => { if (alive) setMemoryEnabled(false); });
+    return () => { alive = false; };
+  }, [client]);
+  const noteCtxValue = useMemo(() => ({ ...notes.ctxValue, hideMemoryKind: memoryConfigured }), [notes.ctxValue, memoryConfigured]);
   const [activityFilter, setActivityFilter] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [menuTarget, setMenuTarget] = useState<MenuTarget>({ kind: "pane", flow: { x: 0, y: 0 } });
@@ -1134,7 +1146,7 @@ function AgentCanvas() {
 
   return (
     <CanvasCtx.Provider value={ctx}>
-      <NoteProvider value={notes.ctxValue}>
+      <NoteProvider value={noteCtxValue}>
       <KeychainProvider value={keychains.ctxValue}>
       <KeychainWireCtx.Provider value={{ unlink: keychains.unlink }}>
       <NoteWireCtx.Provider value={{ unlink: notes.unlink }}>
@@ -1253,6 +1265,7 @@ function AgentCanvas() {
           onAddKeychain={addKeychainCenter}
           onRelayout={relayout}
           onShowNotes={showAllNotes}
+          onOpenMemory={memoryEnabled ? () => setMemoryOpen(true) : undefined}
           onFit={() => void fitView({ duration: 200, ...fitOptsRef.current })}
           activityOpen={showActivity}
           onToggleActivity={() => { setActivityFilter(null); setShowActivity((value) => !value); }}
@@ -1270,6 +1283,10 @@ function AgentCanvas() {
         onWake={(session) => void wake(session)}
         onCloseFocus={() => wrapRef.current?.focus()}
       />
+
+      {memoryOpen && memoryEnabled && activeProjectId && (
+        <MemoryDialog projectId={activeProjectId} projectName={projectName} client={client} onClose={() => setMemoryOpen(false)} />
+      )}
 
       {keychains.managing && keychains.keychains.find((kc) => kc.id === keychains.managing) && (
         <KeychainDialog key={keychains.managing} keychain={keychains.keychains.find((kc) => kc.id === keychains.managing)!} client={client} onClose={() => keychains.setManaging(null)} onChanged={keychains.refresh} />

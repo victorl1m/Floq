@@ -65,12 +65,12 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
     const regionId = `plugin-config-${plugin.id}`;
     return (
         <div data-plugin={plugin.id} data-status={plugin.status}>
-            <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-h-[4.5rem] flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex min-w-0 flex-1 gap-3">
                     <Icon className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
                     <div className="min-w-0 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium">{plugin.name}</span>
+                            <span className="min-w-0 truncate text-sm font-medium">{plugin.name}</span>
                             {plugin.version && <Badge variant="outline" className="font-mono">v{plugin.version}</Badge>}
                             <Badge variant={status.variant}>{status.label}</Badge>
                             {plugin.scope === "install" && <Badge variant="outline">Whole runtime</Badge>}
@@ -83,20 +83,20 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-4 sm:justify-end">
                     {isAdmin && !invalid && (
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground sm:min-w-[7.5rem]">
                             {plugin.scope === "install" ? "Enabled" : "Available"}
                             <Switch checked={plugin.enabled} disabled={busy} aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.name} for this runtime`} onCheckedChange={onToggleInstall} />
                         </label>
                     )}
                     {plugin.scope === "user" && plugin.enabled && (
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground sm:min-w-[6.5rem]">
                             On for me
                             <Switch checked={plugin.userEnabled} disabled={busy} aria-label={`Use ${plugin.name}`} onCheckedChange={onToggleUser} />
                         </label>
                     )}
                     {!invalid && (
-                        <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={regionId} onClick={() => setOpen((v) => !v)}>
-                            Configure <IconChevronDown className={open ? "rotate-180" : undefined} />
+                        <Button variant="ghost" size="sm" className="min-w-[6.5rem]" aria-expanded={open} aria-controls={regionId} onClick={() => setOpen((v) => !v)}>
+                            Configure <IconChevronDown className={open ? "rotate-180" : undefined} aria-hidden />
                         </Button>
                     )}
                 </div>
@@ -152,8 +152,13 @@ export default function PluginsSection() {
                 </div>
             )}
             <SettingsGroup>
-                {loading && !all.length && <div role="status" className="p-4 text-sm text-muted-foreground">Loading plugins…</div>}
-                {!loading && !all.length && <div className="p-4 text-sm text-muted-foreground">No plugins are installed on this runtime.</div>}
+                {loading && !all.length && <div role="status" className="flex min-h-[4.5rem] items-center p-4 text-sm text-muted-foreground">Loading plugins…</div>}
+                {!loading && !all.length && (
+                    <div className="flex min-h-[4.5rem] flex-wrap items-center justify-between gap-3 p-4 text-sm text-muted-foreground">
+                        <span>No plugins are installed on this runtime.</span>
+                        {isAdmin && <Button variant="outline" size="sm" onClick={() => setBrowsing(true)}><IconDownload /> Browse plugins</Button>}
+                    </div>
+                )}
                 {all.map((plugin) => (
                     <PluginRow
                         key={plugin.id} plugin={plugin} isAdmin={isAdmin} busy={busyId === plugin.id}

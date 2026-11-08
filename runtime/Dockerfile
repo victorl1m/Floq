@@ -13,7 +13,11 @@ COPY image ./image
 # `npm run build` ends with scripts/copy-plugin-assets.mjs (copies plugin skill folders next to the compiled plugins).
 COPY scripts/copy-plugin-assets.mjs ./scripts/copy-plugin-assets.mjs
 # Prisma generation reads the config's datasource URL but does not connect; use a build-only placeholder.
-RUN DATABASE_URL=postgresql://floq:build-only@127.0.0.1:5432/floq npm run build && npm prune --omit=dev
+# --build-arg WITHOUT_LOCAL_EMBEDDINGS=1 leaves out the optional local embedding stack (@huggingface/transformers + onnxruntime, ~hundreds of MB);
+# memory then needs FLOQ_EMBEDDINGS=openai or off (full-text search). Default: keep it.
+ARG WITHOUT_LOCAL_EMBEDDINGS=0
+RUN DATABASE_URL=postgresql://floq:build-only@127.0.0.1:5432/floq npm run build && npm prune --omit=dev \
+    && if [ "$WITHOUT_LOCAL_EMBEDDINGS" = "1" ]; then rm -rf node_modules/@huggingface node_modules/onnxruntime-node node_modules/onnxruntime-web node_modules/onnxruntime-common; fi
 
 # passt/pasta built from a pinned upstream release. Debian bookworm ships passt 0.0~git20230309, which predates
 # --map-host-loopback (the runtime API is reached through it); bookworm-backports has no passt and the trixie package
@@ -96,11 +100,12 @@ COPY --from=build /app/dist/image/floq-setup.mjs /usr/local/bin/floq-setup.mjs
 COPY --from=build /app/dist/image/floq-vault.mjs /usr/local/bin/floq-vault
 COPY --from=build /app/dist/image/floq-block-native-subagent.mjs /usr/local/bin/floq-block-native-subagent.mjs
 COPY --from=build /app/dist/image/floq-native-question.mjs /usr/local/bin/floq-native-question.mjs
+COPY --from=build /app/dist/image/floq-permission-request.mjs /usr/local/bin/floq-permission-request.mjs
 # Managed (policy) settings outrank user, project and local settings and are read-only to agents: native subagents stay denied.
 COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
 RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault \
-    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /etc/claude-code/managed-settings.json
+    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
 # Copy of bwrap under a path no host AppArmor profile is attached to (see shard.ts).
 RUN cp /usr/bin/bwrap /usr/local/bin/floq-bwrap
 # pasta (FLOQ_NETNS) from the passt stage, installed under its own path for the same AppArmor reason as floq-bwrap

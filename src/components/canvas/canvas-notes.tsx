@@ -64,6 +64,8 @@ interface NoteCtxValue {
   titleOf: (sessionId: string) => string;
   /** Id of a note being pointed at ("Show on canvas"); its card pulses. */
   highlight: string | null;
+  /** Agent memory is enabled on the server: the legacy `memory` kind leaves the picker (existing cards stay readable). */
+  hideMemoryKind?: boolean;
 }
 // Inert default so a card rendered outside (or out of sync with) its provider degrades instead of crashing the canvas.
 const NoteCtx = createContext<NoteCtxValue>({ patch: () => {}, remove: () => {}, setEditing: () => {}, isNew: () => false, titleOf: () => "agent", highlight: null });
@@ -211,7 +213,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
               </button>
             </PopoverTrigger>
             <PopoverContent data-note-color-picker className="flex w-64 flex-col gap-0.5 p-1" side="bottom" align="start">
-              {KIND_KEYS.map((key) => {
+              {KIND_KEYS.filter((key) => !(ctx.hideMemoryKind && key === "memory" && note.kind !== "memory")).map((key) => {
                 const Item = KINDS[key].icon;
                 return (
                   <button
@@ -280,7 +282,7 @@ const NoteCard = memo(function NoteCard({ data, selected }: NodeProps<NoteNode>)
           )}
           {kind.badge && (
             <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px]", kind.badge)} title={kind.hint + (note.author ? ` Created by agent ${note.author}.` : "")}>
-              {note.kind === "system" ? "System · all agents, read-only" : "Memory · all agents"}
+              {note.kind === "system" ? "System · all agents, read-only" : ctx.hideMemoryKind ? "Memory · legacy, now in Memory" : "Memory · all agents"}
             </span>
           )}
           {linked.length > 0 && note.kind !== "system" && note.kind !== "memory" && (

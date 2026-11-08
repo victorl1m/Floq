@@ -71,6 +71,8 @@ export interface ApprovalRecord {
   ttlMs: number;
   /** Requested with --wait: withdrawn when the waiter stops polling (see WAITER_GONE_MS). */
   waiter?: boolean;
+  /** In-memory only (a restart expires pending requests anyway): skip typing the decision into the terminal. */
+  silent?: boolean;
   /** Audit: set when a plugin (not the user's app session) answered, e.g. "plugin:waha". */
   resolvedVia?: string;
 }
@@ -127,6 +129,8 @@ export interface RequestInput {
   ttlSec?: unknown;
   /** True when the requester blocks on the answer (`--wait`). */
   waiting?: unknown;
+  /** Native provider prompt answered through a hook: the answer goes back through the hook, never typed into the terminal. */
+  silent?: boolean;
 }
 
 interface Timers { expiry?: NodeJS.Timeout; liveness?: NodeJS.Timeout }
@@ -289,7 +293,7 @@ export class Approvals {
     this.requests.set(input.requester.id, recent);
 
     const id = newApprovalId();
-    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + NEVER_MS, validUntil: null, decidedAt: null, ttlMs, waiter: input.waiting === true };
+    const a: ApprovalRecord = { id, userId, requester: input.requester, target: input.target, action, actionHash: hash, detail, irreversible: isIrreversibleAction(action + " " + detail), status: "pending", createdAt: t, expiresAt: t + NEVER_MS, validUntil: null, decidedAt: null, ttlMs, waiter: input.waiting === true, ...(input.silent === true ? { silent: true } : {}) };
     this.records.set(id, a);
     if (a.waiter) this.polled.set(id, t);
     const timers: Timers = {
@@ -338,7 +342,7 @@ export class Approvals {
   /** The runtime types the decision (marked as issued by the user) into the target, and a short notice into the requester. */
   private async announce(a: ApprovalRecord): Promise<void> {
     const deliver = this.options.deliver;
-    if (!deliver || a.target.kind === "plugin") return;
+    if (!deliver || a.target.kind === "plugin" || a.silent) return;
     const decision = a.status === "granted" ? "granted" : "denied";
     const base = { id: a.id, action: a.action, decision, validUntil: a.validUntil ?? 0 } as const;
     try {

@@ -1,5 +1,5 @@
 import {
-  IconActivity, IconArrowsMaximize, IconDots, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
+  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
   IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -28,6 +28,8 @@ export interface CanvasTitlebarToolbarProps {
   onAddKeychain: () => void;
   onRelayout: () => void;
   onShowNotes: () => void;
+  /** Undefined hides the Memory button (memory is off on this runtime). */
+  onOpenMemory?: () => void;
   onFit: () => void;
   activityOpen: boolean;
   onToggleActivity: () => void;
@@ -84,6 +86,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <ShortcutTip label="Re-layout">{toolButton(false, "Re-layout", p.onRelayout, <IconLayoutDistributeHorizontal size={16} />)}</ShortcutTip>
             <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", p.onShowNotes, <IconNotes size={16} />)}</ShortcutTip>
             <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", p.onFit, <IconArrowsMaximize size={16} />)}</ShortcutTip>
+            {p.onOpenMemory && <ShortcutTip label="Memory">{toolButton(false, "Memory", p.onOpenMemory, <IconBrain size={16} />)}</ShortcutTip>}
             <ShortcutTip label="Activity">{toolButton(p.activityOpen, "Activity", p.onToggleActivity, <IconActivity size={16} />)}</ShortcutTip>
           </div>
         </div>
@@ -107,6 +110,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuItem onSelect={p.onRelayout}><IconLayoutDistributeHorizontal size={16} />Re-layout</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onShowNotes}><IconNotes size={16} />Show all notes</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onFit}><IconArrowsMaximize size={16} />Fit view (F)</DropdownMenuItem>
+            {p.onOpenMemory && <DropdownMenuItem onSelect={p.onOpenMemory}><IconBrain size={16} />Memory</DropdownMenuItem>}
             <DropdownMenuCheckboxItem checked={p.activityOpen} onCheckedChange={p.onToggleActivity}><IconActivity size={16} />Activity</DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>

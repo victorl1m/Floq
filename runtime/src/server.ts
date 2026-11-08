@@ -20,6 +20,7 @@ import type { GithubLinker } from "./github.js";
 import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles.js";
 import type { AgentLinks } from "./links.js";
 import type { CanvasNotes } from "./notes.js";
+import { defangMemories, type MemoryService, type MemoryCtx } from "./memories.js";
 import type { Keychain, Keychains } from "./keychains.js";
 import type { WiredContext } from "./wiredContext.js";
 import { selectableAgentModels, type Orchestrator, type PendingCounts } from "./orchestrator.js";
@@ -75,6 +76,8 @@ interface Deps {
   /** Optional so existing callers keep working; absent = no wired-context feature. */
   wired?: WiredContext;
   subagents?: SubagentService;
+  /** Agent memory (Redis); absent or unconfigured = memory endpoints answer 503 memory_unavailable. */
+  memories?: MemoryService;
   pool: pg.Pool;
   credentials: CredentialBroker;
   claudeOauth: ClaudeOAuth;
@@ -89,7 +92,7 @@ interface Deps {
   plugins?: PluginHost;
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -112,6 +115,20 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   });
   void approvals.init();
   plugins?.setApprovals(approvals);
+  // A pinned memory changed: refresh the wired context of the agents that read it and tell the live ones.
+  if (memories && wired) {
+    memories.onPinnedChange = (userId, memory, exceptSessionId) => {
+      void (async () => {
+        for (const id of await memories.sessionIdsFor(userId, memory)) {
+          try {
+            const r = await wired.sync(userId, id);
+            if (id !== exceptSessionId && (r.added.length || r.removed.length || r.updated.length)) await manager.notifyWired(userId, id, r.added, r.removed, r.block, r.updated);
+          } catch (error) { log.warn("wired.touch_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+        }
+      })().catch(() => undefined);
+    };
+  }
+  const memoryOff = () => new HttpError(503, "memory_disabled", "Memory is disabled on this Floq server (set FLOQ_REDIS_URL)");
   const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text), scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
   const decisionsReady = decisions.init();
   plugins?.setAttention({ approvals, decisions });
@@ -447,6 +464,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const parties = await orchestrator.approvalParties(userId, sessionId, body.target);
           return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, ttlSec: body.timeoutSec, waiting: body.wait === true }));
         }
+        case "approvals/native-request": {
+          // Claude Code's own permission prompt (safety checks that bypass mode does not skip), routed to the island by the PermissionRequest hook.
+          const parties = await orchestrator.approvalParties(userId, sessionId, undefined);
+          if (parties.requester.provider !== "claude") throw badRequest("Invalid native request");
+          return send(res, 200, await approvals.request(userId, { requester: parties.requester, target: parties.target, action: body.action, detail: body.detail, waiting: true, silent: true }));
+        }
         case "approvals/status":
           return send(res, 200, await approvals.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));
         case "approvals/verify":
@@ -597,6 +620,20 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           if (!wired) return send(res, 200, { block: "" });
           const { block } = await wired.sync(userId, sessionId);
           return send(res, 200, { block });
+        }
+        case "memory/add": case "memory/update": case "memory/forget": case "memory/search": case "memory/list": case "memory/get": {
+          if (!memories?.enabled()) throw memoryOff();
+          const ctx = await memories.ctxForSession(userId, sessionId);
+          // Agent-facing: every free-text field is defanged so a memory cannot forge Floq's own markers.
+          const reply = (payload: unknown) => send(res, 200, defangMemories(payload));
+          switch (path) {
+            case "memory/add": return reply(await memories.add(ctx, body));
+            case "memory/update": return reply(await memories.update(ctx, body.id, { text: body.text, title: body.title, type: body.type, pinned: body.pinned }));
+            case "memory/forget": return reply(await memories.forget(ctx, body.id, body.reason));
+            case "memory/search": return reply(await memories.search(ctx, { query: body.query, type: body.type, k: body.k }));
+            case "memory/list": return reply({ memories: await memories.list(ctx, { type: body.type, pinned: body.pinned, limit: body.limit }) });
+            default: return reply(await memories.get(ctx, body.id));
+          }
         }
         case "notes/list":
           return send(res, 200, await orchestrator.noteList(userId));
@@ -981,6 +1018,35 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         }
       }
     };
+
+    // Agent memory for the app (Memory dialog). `status` answers even when memory is off so the UI can hide the button.
+    if (method === "GET" && url.pathname === "/v1/memory/status") return send(res, 200, memories?.enabled() ? memories.status() : { enabled: false, redis: false, backend: null, embeddings: "off", model: "off", ready: false, vectors: false, migration: null });
+    const memCtx = (projectId: string | null): MemoryCtx => ({ userId, projectId, actor: "user", anyProject: false });
+    const memList = /^\/v1\/projects\/([\w-]+)\/memories$/.exec(url.pathname);
+    if (memList && (method === "GET" || method === "POST")) {
+      if (!memories?.enabled()) throw memoryOff();
+      await memories.requireProject(userId, memList[1]);
+      const ctx = memCtx(memList[1]);
+      if (method === "POST") {
+        const body = await readJson<Record<string, unknown>>(req);
+        return send(res, 200, await memories.add(ctx, body));
+      }
+      const q = url.searchParams.get("q") ?? "";
+      const type = url.searchParams.get("type") || undefined;
+      const includeInvalid = url.searchParams.get("include_invalid") === "1";
+      if (q.trim()) { const r = await memories.search(ctx, { query: q, type, k: 50, includeInvalid }); return send(res, 200, { memories: r.results, mode: r.mode }); }
+      return send(res, 200, { memories: await memories.list(ctx, { type, limit: 500, includeInvalid }), mode: memories.status().ready ? "hybrid" : "fulltext" });
+    }
+    const memOne = /^\/v1\/memories\/([\w-]+)$/.exec(url.pathname);
+    const memEvents = /^\/v1\/memories\/([\w-]+)\/events$/.exec(url.pathname);
+    if ((memOne && (method === "PATCH" || method === "DELETE")) || (memEvents && method === "GET")) {
+      if (!memories?.enabled()) throw memoryOff();
+      const ctx = { ...memCtx(null), anyProject: true };
+      if (memEvents) return send(res, 200, { events: await memories.events(ctx, memEvents[1]) });
+      if (method === "DELETE") { await memories.remove(ctx, memOne![1]); return send(res, 200, { ok: true }); }
+      const body = await readJson<Record<string, unknown>>(req);
+      return send(res, 200, await memories.update(ctx, memOne![1], body));
+    }
 
     const notesMatch = /^\/v1\/projects\/([\w-]+)\/notes$/.exec(url.pathname);
     if (notesMatch && method === "GET") return send(res, 200, { notes: await notes.list(userId, notesMatch[1]) });

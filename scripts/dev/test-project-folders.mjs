@@ -98,3 +98,18 @@ test('nested folder moves preserve descendants, reject cycles, and promote child
   assert.deepEqual(l.root, [{ kind: 'folder', id: 'b' }]);
   assert.deepEqual(l.children.b, [{ kind: 'project', id: 'p' }]);
 });
+
+test('new subfolder inside a nested folder stays nested and keeps sibling nesting', () => {
+  const sub = (l, id, parent) => m.applyDrop(m.addFolder(l, id), { kind: 'folder', id }, { type: 'folder', id: parent, edge: 'into' });
+  let l = m.reconcileLayout(null, ['p', 'q'], ['a']);
+  l = m.reconcileLayout(sub(l, 'b', 'a'), ['p', 'q'], ['a', 'b']);
+  l = m.reconcileLayout(sub(l, 'c', 'b'), ['p', 'q'], ['a', 'b', 'c']);
+  assert.deepEqual(l.root.filter((e) => e.kind === 'folder'), [{ kind: 'folder', id: 'a' }]);
+  assert.deepEqual(l.children.a, [{ kind: 'folder', id: 'b' }]);
+  assert.deepEqual(l.children.b, [{ kind: 'folder', id: 'c' }]);
+  l = m.reconcileLayout(sub(l, 'd', 'a'), ['p', 'q'], ['a', 'b', 'c', 'd']);
+  assert.deepEqual(l.children.a, [{ kind: 'folder', id: 'd' }, { kind: 'folder', id: 'b' }]);
+  assert.deepEqual(l.children.b, [{ kind: 'folder', id: 'c' }]);
+  l = m.applyDrop(l, { kind: 'project', id: 'p' }, { type: 'project', id: 'q', edge: 'after' });
+  assert.deepEqual(l.children.b, [{ kind: 'folder', id: 'c' }]);
+});
