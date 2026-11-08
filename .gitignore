@@ -46,3 +46,6 @@ __pycache__/
 
 # Local AI tooling state
 .impeccable/
+.agents/
+skills-lock.json
+premium-audit.json

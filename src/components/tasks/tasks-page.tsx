@@ -457,7 +457,7 @@ export default function TasksPage() {
   };
 
   const cardCount = useMemo(() => visibleBoard?.lists.reduce((total, list) => total + list.cards.length, 0) ?? 0, [visibleBoard]);
-  // Arrow keys, Home and End move across board tabs and source tabs as one strip (DESIGN.md "Project navigation").
+  // Arrow keys, Home and End move across board tabs and source tabs as one strip (docs/DESIGN.md "Project navigation").
   const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, key: string) => {
     const tabs = [...openedBoards.map((item) => "b:" + item.id), ...openedSources.map((item) => "s:" + sourceTabId(item))];
     const currentIndex = tabs.indexOf(key);

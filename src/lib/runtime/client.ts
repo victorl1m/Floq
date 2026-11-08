@@ -193,13 +193,13 @@ export class RuntimeClient {
   }
 
   /** Unauthenticated: tells the login flow whether the account needs first-run setup. */
-  async setupLookup(email: string): Promise<{ step: "setup" | "password" }> {
-    return (await this.request<{ step: "setup" | "password" }>("POST", "/v1/setup/lookup", { email })).data;
+  async setupLookup(email: string, setupToken?: string): Promise<{ step: "setup" | "password" }> {
+    return (await this.request<{ step: "setup" | "password" }>("POST", "/v1/setup/lookup", { email, ...(setupToken ? { setupToken } : {}) })).data;
   }
 
-  /** Unauthenticated: creates the first administrator. 409 setup_unavailable if already done. */
-  async setupAdmin(email: string, password: string, name?: string, companyName?: string): Promise<void> {
-    await this.request("POST", "/v1/setup/admin", { email, password, ...(name ? { name } : {}), ...(companyName ? { companyName } : {}) });
+  /** Unauthenticated: creates the first administrator; needs the one-time setup token from the runtime logs. 403 setup_unavailable if unavailable or the token is wrong/used. */
+  async setupAdmin(email: string, password: string, setupToken: string, name?: string, companyName?: string): Promise<void> {
+    await this.request("POST", "/v1/setup/admin", { email, password, setupToken, ...(name ? { name } : {}), ...(companyName ? { companyName } : {}) });
   }
 
   async signUp(name: string, email: string, password: string): Promise<{ token: string; user: AuthUser }> {

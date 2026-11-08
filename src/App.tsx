@@ -16,6 +16,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SubagentToaster } from "./components/canvas/subagent-toaster";
 import { AskDialogHost } from "./components/ui/ask-dialog";
+import { AutoApproveConfirmHost } from "./components/agents/auto-approve-confirm";
 import { CrossProjectToaster } from "./components/window/cross-project-toaster";
 import HomeView from "./components/home/home-view";
 import SettingsDialog from "./components/settings/settings-dialog";
@@ -93,6 +94,7 @@ function App() {
       {user && ready && <SubagentToaster />}
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}
+      {user && ready && <AutoApproveConfirmHost />}
       {ready && !user && <LoginScreen />}
       {user && (
         <>

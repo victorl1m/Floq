@@ -114,7 +114,7 @@ interface RuntimeContextValue {
   openedIds: string[];
   signIn: (input: SignInInput) => Promise<void>;
   lookup: (baseUrl: string, email: string) => Promise<"setup" | "password">;
-  setupAdmin: (input: SignInInput & { name?: string; companyName?: string }) => Promise<void>;
+  setupAdmin: (input: SignInInput & { setupToken: string; name?: string; companyName?: string }) => Promise<void>;
   signOut: () => Promise<void>;
   organizations: Organization[];
   organizationsLoading: boolean;
@@ -675,10 +675,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setupAdmin = useCallback(
-    async (input: SignInInput & { name?: string; companyName?: string }) => {
+    async (input: SignInInput & { setupToken: string; name?: string; companyName?: string }) => {
       const baseUrl = normalizeBaseUrl(input.baseUrl);
       if (!baseUrl) throw new Error("Enter the runtime URL");
-      await new RuntimeClient(baseUrl).setupAdmin(input.email, input.password, input.name, input.companyName);
+      await new RuntimeClient(baseUrl).setupAdmin(input.email, input.password, input.setupToken, input.name, input.companyName);
       await signIn(input);
     },
     [signIn],

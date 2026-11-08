@@ -137,6 +137,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS git_coauthor BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS always_recruit_subagents BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS allow_cross_project_agents BOOLEAN NOT NULL DEFAULT TRUE;
+    -- Set when the user answered the one-time auto-approve confirmation before their first agent session.
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_approve_ack_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS provider_credentials (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,
@@ -221,6 +223,12 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       decided_at TIMESTAMPTZ
     );
     CREATE INDEX IF NOT EXISTS agent_approvals_user_idx ON agent_approvals (user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS setup_token (
+      id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+      token_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      used_at TIMESTAMPTZ
+    );
     CREATE TABLE IF NOT EXISTS agent_decisions (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       requester_session_id UUID NOT NULL, requester_project_id UUID,

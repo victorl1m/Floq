@@ -19,6 +19,7 @@ import { loadComposerPrefs } from "@/lib/prefs";
 import { useUsableProviders } from "./use-usable-providers";
 import SetupAgentsDialog from "./setup-agents-dialog";
 import { PROVIDER_LABEL, ProviderIcon } from "./provider";
+import { confirmAutoApprove } from "./auto-approve-confirm";
 import { providerThemeProps } from "@/lib/provider-theme";
 import ProjectPicker from "@/components/projects/project-picker";
 import CloneDialog from "@/components/home/clone-dialog";
@@ -95,6 +96,7 @@ export default function NewAgentDialog() {
         setBusy(true);
         setError(null);
         try {
+            if (!(await confirmAutoApprove(client, provider))) return;
             const session = await client.createSession(input);
             upsertSession(session);
             // Started from the canvas: stay on it and select + centre the new node. The terminal dialog opens only on an explicit "Open".

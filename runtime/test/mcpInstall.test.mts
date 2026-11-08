@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { fixture } from "./mcpFixture.mjs";
 
+// Fake placeholder fixture, not a real credential.
 const SECRET = "sk-live-VERY-SECRET-123";
 
 const done = (t, f) => t.after(() => rmSync(f.temp, { recursive: true, force: true }));

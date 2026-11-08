@@ -1,4 +1,4 @@
-// Pure contribution logic. Relative imports only so scripts/test-plugin-host.mjs can load it without a bundler.
+// Pure contribution logic. Relative imports only so scripts/dev/test-plugin-host.mjs can load it without a bundler.
 import type { ComponentType } from "react";
 import type { PluginInfo, PluginViewDecl, PluginRightSidebarTabDecl, PluginTaskSourceDecl } from "../lib/runtime/types";
 import type { PluginViewProps, PluginTabProps, PluginTaskSourceProps, UiPluginDefinition } from "./sdk";
@@ -13,7 +13,7 @@ export interface Contributions { plugins: PluginInfo[]; views: ActiveView[]; tab
 export const isActive = (p: PluginInfo) => p.status === "enabled" && p.enabled && p.userEnabled;
 
 /**
- * Server list x loaded UI halves -> what the app may render. Plugins sort by name (DESIGN.md "Plugins"), then manifest order.
+ * Server list x loaded UI halves -> what the app may render. Plugins sort by name (docs/DESIGN.md "Plugins"), then manifest order.
  * A view needs both a manifest declaration and a UI component; UI definitions for plugins the server does not list are ignored.
  */
 export function activeContributions(server: PluginInfo[], loaded: Record<string, UiPluginDefinition | undefined>): Contributions {

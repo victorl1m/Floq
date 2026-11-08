@@ -10,12 +10,25 @@ function isHttpUrl(value: string): boolean {
     }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Plain HTTP is only allowed for loopback; the desktop CSP blocks it elsewhere. */
+function isSecureOrLoopback(value: string): boolean {
+    try {
+        const url = new URL(normalizeBaseUrl(value));
+        return url.protocol !== "http:" || LOOPBACK_HOSTS.has(url.hostname);
+    } catch {
+        return true; // reported by isHttpUrl
+    }
+}
+
 export const emailSchema = z.object({
     serverUrl: z
         .string()
         .trim()
         .min(1, "Enter the runtime URL")
-        .refine(isHttpUrl, "Enter a valid http(s) URL"),
+        .refine(isHttpUrl, "Enter a valid http(s) URL")
+        .refine(isSecureOrLoopback, "Plain HTTP is only allowed for localhost. Use HTTPS (see the README)."),
     email: z.string().trim().min(1, "Enter your email").email("Enter a valid email"),
 });
 export type EmailValues = z.infer<typeof emailSchema>;
@@ -29,6 +42,8 @@ export const MIN_PASSWORD = 12;
 
 export const setupSchema = z
     .object({
+        email: z.string().trim().min(1, "Enter the administrator email").email("Enter a valid email"),
+        setupToken: z.string().trim().min(1, "Paste the setup token from the runtime logs").max(256, "Setup token is too long"),
         name: z.string().trim().max(100, "Name is too long").optional(),
         companyName: z.string().trim().max(80, "Company name is too long").optional(),
         password: z

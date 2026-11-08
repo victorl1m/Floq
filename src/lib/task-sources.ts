@@ -1,4 +1,4 @@
-// Pure helpers for task-source tabs. Relative imports only so scripts/test-task-sources.mjs runs without a bundler.
+// Pure helpers for task-source tabs. Relative imports only so scripts/dev/test-task-sources.mjs runs without a bundler.
 import type { TaskSourceInfo } from "./runtime/types";
 
 export interface SourcePrefs { open: string[]; active: string }

@@ -1,6 +1,6 @@
 /**
- * The only UI surface plugin code may import (enforced by scripts/test-plugin-imports.mjs). It re-exports the shared owners named in
- * UX-CONTRACT.md, so their behavior, theming and checks carry over, plus the plugin compositions below.
+ * The only UI surface plugin code may import (enforced by scripts/dev/test-plugin-imports.mjs). It re-exports the shared owners named in
+ * docs/UX-CONTRACT.md, so their behavior, theming and checks carry over, plus the plugin compositions below.
  */
 export * from "@/components/ui/button";
 export * from "@/components/ui/badge";

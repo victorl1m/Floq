@@ -3,7 +3,7 @@ import { IconSend } from "@tabler/icons-react";
 import { Button, PluginPage, PluginState, toast, usePluginApi, usePluginEvent } from "@/plugins/kit";
 import { defineUiPlugin, type PluginViewProps } from "@/plugins/sdk";
 
-/** Dev-only example UI half. Imports only react, tabler icons, the kit and the sdk (scripts/test-plugin-imports.mjs enforces it). */
+/** Dev-only example UI half. Imports only react, tabler icons, the kit and the sdk (scripts/dev/test-plugin-imports.mjs enforces it). */
 function ExampleView({ plugin }: PluginViewProps) {
   const api = usePluginApi(plugin.id);
   const [message, setMessage] = useState<string | null>(null);

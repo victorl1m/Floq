@@ -1,7 +1,7 @@
 {
   "profile": "product-admin",
   "sourceRoots": ["src"],
-  "canonicalMap": "UX-CONTRACT.md",
+  "canonicalMap": "docs/UX-CONTRACT.md",
   "requiredCapabilities": ["Select/Listbox", "Date", "Form", "Scrollbar", "Toast", "CRUD"],
   "ownership": {
     "Select/Listbox": "authored",
@@ -10,7 +10,7 @@
   "commands": {
     "build": "npm run build",
     "typecheck": "npx tsc --noEmit",
-    "tests": "node scripts/test-user-preferences.mjs && node scripts/test-performance-prefs.mjs && node scripts/test-project-prefs.mjs && node scripts/test-project-refresh.mjs"
+    "tests": "node scripts/dev/test-user-preferences.mjs && node scripts/dev/test-performance-prefs.mjs && node scripts/dev/test-project-prefs.mjs && node scripts/dev/test-project-refresh.mjs"
   },
   "requiredCommands": ["build", "typecheck", "tests"],
   "evidence": {

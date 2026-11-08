@@ -1,4 +1,4 @@
-// Loading the UI half of an installed plugin. Dependency-free (no React import) so scripts/test-plugin-remote-ui.mjs can run it under plain node.
+// Loading the UI half of an installed plugin. Dependency-free (no React import) so scripts/dev/test-plugin-remote-ui.mjs can run it under plain node.
 import type { UiPluginDefinition } from "./sdk";
 
 /** What the app shares with every remote UI bundle, so there is exactly one React and one kit. Tabler icons are not shared: bundles use `kit.resolvePluginIcon`. */

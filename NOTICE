@@ -9,3 +9,8 @@ The image bundles the skill-creator skill from https://github.com/anthropics/ski
 (skills/skill-creator, pinned commit ca45fc496a3436251f191354091d557da31c15b5) for Claude Code. It is licensed under the
 Apache License, Version 2.0; its LICENSE.txt is kept in the skill's folder inside the image.
 Other skills fetched when the image is built (obra/superpowers, blader/humanizer) keep their own licenses.
+
+caniuse-lite (CC-BY-4.0, https://github.com/browserslist/caniuse-lite) is a
+development-time dependency of the frontend build tooling (browserslist data). It is
+not bundled into the app bundle or the runtime image, so no attribution is
+required for what Floq ships. If that changes, add its CC-BY-4.0 attribution here.

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/agents/provider";
+import { confirmAutoApprove } from "@/components/agents/auto-approve-confirm";
 import { providerThemeProps } from "@/lib/provider-theme";
 import CloneDialog from "./clone-dialog";
 import SetupAgentsDialog from "@/components/agents/setup-agents-dialog";
@@ -137,6 +138,7 @@ export default function HomeView() {
         const projectName = selectedProject.displayName || selectedProject.name;
         setBusy(true);
         try {
+            if (!(await confirmAutoApprove(client, provider))) return;
             // A project needs one orchestrator. Check the live list (the store may be stale); fall back to the store.
             let known = sessions;
             try { known = await client.sessions(); } catch { /* use the store's list */ }

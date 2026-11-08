@@ -16,6 +16,8 @@ export interface PublicSettings {
   alwaysRecruitSubagents: boolean;
   /** Agents may discover and message agents of the user's other projects (default on). */
   allowCrossProjectAgents: boolean;
+  /** The user has answered the one-time "auto-approve runs commands without prompts" confirmation. */
+  autoApproveAcknowledged: boolean;
   github: { login: string; connectedAt: string } | null;
 }
 
@@ -27,6 +29,8 @@ export interface SettingsPatch {
   gitCoauthor?: boolean;
   alwaysRecruitSubagents?: boolean;
   allowCrossProjectAgents?: boolean;
+  /** Only `true` is accepted: the acknowledgement cannot be withdrawn. */
+  autoApproveAcknowledged?: boolean;
 }
 
 /** Decrypted values used to launch one user's agent session. */
@@ -77,6 +81,7 @@ export class SettingsStore {
       gitCoauthorAvailable: Boolean(this.config.gitCoauthor),
       alwaysRecruitSubagents: row?.always_recruit_subagents ?? true,
       allowCrossProjectAgents: row?.allow_cross_project_agents ?? true,
+      autoApproveAcknowledged: Boolean(row?.auto_approve_ack_at),
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
   }
@@ -108,6 +113,10 @@ export class SettingsStore {
     if (patch.allowCrossProjectAgents !== undefined) {
       if (typeof patch.allowCrossProjectAgents !== "boolean") throw badRequest("allowCrossProjectAgents must be boolean");
       push("allow_cross_project_agents", patch.allowCrossProjectAgents);
+    }
+    if (patch.autoApproveAcknowledged !== undefined) {
+      if (patch.autoApproveAcknowledged !== true) throw badRequest("autoApproveAcknowledged can only be set to true");
+      sets.push("auto_approve_ack_at = COALESCE(auto_approve_ack_at, now())");
     }
     if (patch.gitName !== undefined) push("git_name", cleanText(patch.gitName, "gitName", 100));
     if (patch.gitEmail !== undefined) {

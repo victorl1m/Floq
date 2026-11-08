@@ -10,6 +10,10 @@
 
 </div>
 
+> [!WARNING]
+> **Run the runtime only on a dedicated VM or a single-tenant host.** The runtime container runs as root with broad capabilities (`SYS_ADMIN`, `SETUID`, `SETGID`, `CHOWN`, `DAC_OVERRIDE` and others), `apparmor:unconfined` and `/dev/fuse`, because gocryptfs and bubblewrap need them. It is not a hardened boundary against a hostile agent or a hostile co-tenant.
+> **Auto-approve is on by default**, so an agent can run commands in the container without asking. The first run asks you to confirm this and explains the effect.
+
 Floq is a Tauri desktop app that connects to a **runtime** you host. The runtime starts [Claude Code](https://docs.claude.com/en/docs/claude-code) and [Codex CLI](https://github.com/openai/codex) sessions inside a container, each behind a PTY and a per-user sandbox, and streams the terminals to the app over WebSocket. Agents sign in with **your own Claude or ChatGPT subscription**, not with API keys.
 
 > **Status:** early (`0.x`) software. Expect rough edges and breaking changes. The Windows installers are **unsigned**, so SmartScreen will warn when you run them. macOS binaries are not published yet (building from source on macOS works). Read the [security model](#security-model) before you deploy a runtime.
@@ -45,7 +49,7 @@ npm run build        # TypeScript check and Vite production build
 npm run tauri build  # desktop bundles
 ```
 
-The app needs a runtime to talk to. To prefill the runtime URL at build time set `VITE_FLOQ_RUNTIME_URL` (for example `https://floq.example.com`); otherwise the app remembers the last URL you used.
+The app needs a runtime to talk to. To prefill the runtime URL at build time set `VITE_FLOQ_RUNTIME_URL` (for example `https://floq.example.com`); otherwise the app remembers the last URL you used. The runtime URL is chosen at run time, so the desktop app's Content-Security-Policy (`connect-src` in `src-tauri/tauri.conf.json`) allows any `https:`/`wss:` origin but plain `http:`/`ws:` only for `localhost` and `127.0.0.1`. A runtime on a plain-HTTP LAN address is therefore blocked; put it behind TLS or add its origin to `connect-src` in your own build.
 
 ## Self-hosting the runtime
 
@@ -53,7 +57,7 @@ The runtime (`runtime/`) ships a Dockerfile and a Docker Compose file with the r
 
 1. Create a Compose service from `runtime/docker-compose.yml` (build context is `runtime/`).
 2. Fill in the environment from [`runtime/.env.example`](runtime/.env.example). Required: `POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `FLOQ_ENCRYPTION_KEY`, `BETTER_AUTH_URL`. Generator commands are in the file.
-3. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL` to the first account's address; the admin chooses a password in the app on first sign-in.
+3. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL` to the first account's address. On first start the runtime prints a one-time setup token to its logs (look for `FLOQ SETUP TOKEN`). In the app choose **Set up the administrator**, enter the token and the email, and pick a password. The token works once; only its hash is stored, and a new one is printed on restart while the account is still unclaimed.
 4. Publish the `runtime` service on port `8787` over HTTPS. Do not publish host ports and keep PostgreSQL unpublished.
 5. Deploy, then enter the runtime URL in the app and sign in.
 
@@ -109,10 +113,21 @@ src/             React interface (components, hooks, lib/runtime client and stor
 src-tauri/       Tauri 2 shell (Rust): window, plugins, port forwarding, capabilities
 runtime/         self-hosted server: src/, image/, prisma/, test/, Dockerfile, docker-compose.yml
 skills/          canonical source of the floq-orchestrate skill
-scripts/         client-side checks (test-*.mjs) and Playwright probes with synthetic data
-docs/            orchestration, secrets and design notes
-DESIGN.md        interface design rules
+scripts/         build helpers; scripts/dev/ holds client-side checks (test-*.mjs) and Playwright probes with synthetic data
+docs/            orchestration, secrets, plugins, release notes and UI notes (see below)
 ```
+
+## Documentation
+
+- [`docs/ORCHESTRATION.md`](docs/ORCHESTRATION.md): how agents recruit and coordinate other agents
+- [`docs/SECRETS.md`](docs/SECRETS.md): the secrets vault
+- [`docs/ENCRYPTED-HOME-CONCURRENCY.md`](docs/ENCRYPTED-HOME-CONCURRENCY.md): known EPERM issue on encrypted homes
+- [`docs/plugins/`](docs/plugins/README.md): plugin authoring
+- [`docs/component-system.md`](docs/component-system.md), [`docs/view-transitions.md`](docs/view-transitions.md), [`docs/ui-research.md`](docs/ui-research.md): UI system notes
+- [`docs/DESIGN.md`](docs/DESIGN.md): interface design rules
+- [`docs/UX-CONTRACT.md`](docs/UX-CONTRACT.md): canonical UI behavior map
+- [`docs/PRODUCT.md`](docs/PRODUCT.md): product context
+- [`docs/releases/`](docs/releases): release notes
 
 ## Contributing
 

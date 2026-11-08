@@ -9,7 +9,9 @@ import type { UsageService } from "./usage.js";
 import type { SkillsService } from "./skills.js";
 import { loadSkillFromCatalog, previewCatalogSkill, searchSkillCatalog } from "./skillCatalog.js";
 import type { CredentialBroker } from "./credentials.js";
-import { createBootstrapAdmin, setupAvailable, type Auth } from "./auth.js";
+import { createBootstrapAdmin, setupLookupStep, type Auth } from "./auth.js";
+import { SetupToken } from "./setupToken.js";
+import { clientIp as clientIpFor, normalizeAuthForwardedHeaders } from "./clientIp.js";
 import type { Config } from "./config.js";
 import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unavailable } from "./errors.js";
 import { log } from "./logger.js";
@@ -59,6 +61,8 @@ const SELF_RESTART_DELAY_MS = 750;
 
 interface Deps {
   config: Config;
+  /** One-time setup token for the bootstrap admin; defaults to a DB-backed instance. */
+  setupToken?: SetupToken;
   manager: SessionManager;
   auth: Auth;
   settings: SettingsStore;
@@ -85,7 +89,7 @@ interface Deps {
   plugins?: PluginHost;
 }
 
-export function createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -115,17 +119,8 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
   manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
   const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
 
-  // Client address for rate limits: the socket peer, unless FLOQ_TRUST_PROXY=true (a proxy we control appends to
-  // X-Forwarded-For; the rightmost hop is the one it added, earlier hops are client-controlled).
-  function clientIp(req: IncomingMessage): string {
-    if (process.env.FLOQ_TRUST_PROXY === "true") {
-      const forwarded = req.headers["x-forwarded-for"];
-      const raw = Array.isArray(forwarded) ? forwarded[forwarded.length - 1] : forwarded;
-      const hop = raw?.split(",").pop()?.trim();
-      if (hop) return hop;
-    }
-    return req.socket.remoteAddress || "unknown";
-  }
+  const setupToken = setupTokenDep ?? new SetupToken(pool);
+  const clientIp = (req: IncomingMessage): string => clientIpFor(req);
 
   function rateLimitSetup(req: IncomingMessage): void {
     const ip = clientIp(req);
@@ -647,8 +642,7 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     if (url.pathname.startsWith("/api/auth/")) {
       // Logging out puts the user's terminals and shard to sleep.
-      req.headers["x-forwarded-for"] = clientIp(req);
-      delete req.headers["x-real-ip"];
+      normalizeAuthForwardedHeaders(req);
       let signingOut: string | null = null;
       let signingOutSession = "";
       if (url.pathname === "/api/auth/sign-out") {
@@ -670,10 +664,11 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
 
     if (method === "POST" && (url.pathname === "/v1/setup/lookup" || url.pathname === "/v1/setup/admin")) {
       rateLimitSetup(req);
-      const body = await readJson<{ email?: unknown; password?: unknown; name?: unknown; companyName?: unknown }>(req);
+      const body = await readJson<{ email?: unknown; password?: unknown; name?: unknown; companyName?: unknown; setupToken?: unknown }>(req);
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       if (url.pathname === "/v1/setup/lookup") {
-        return send(res, 200, { step: (await setupAvailable(pool, config, email)) ? "setup" : "password" });
+        // Claimable state is revealed only to someone who already holds the setup token.
+        return send(res, 200, { step: await setupLookupStep(pool, config, setupToken, email, body.setupToken) });
       }
       const password = body.password;
       if (typeof password !== "string" || password.length < 12 || password.length > 128) {
@@ -684,8 +679,9 @@ export function createRuntimeServer({ config, manager, auth, settings, github, v
       if (body.companyName !== undefined && typeof body.companyName !== "string") throw badRequest("Company name must be text");
       const companyName = typeof body.companyName === "string" ? body.companyName.trim() : undefined;
       if ((companyName?.length ?? 0) > 80) throw badRequest("Company name must be 80 characters or fewer");
-      if (!(await createBootstrapAdmin(auth, pool, config, email, password, name, companyName))) {
-        throw conflict("Setup is not available", "setup_unavailable");
+      if (!(await createBootstrapAdmin(auth, pool, config, email, password, name, companyName, setupToken, body.setupToken))) {
+        // Same answer for: no such bootstrap account, already claimed, missing/wrong/used token.
+        throw new HttpError(403, "setup_unavailable", "Setup is not available, or the setup token is missing, wrong or already used");
       }
       return send(res, 200, { ok: true });
     }

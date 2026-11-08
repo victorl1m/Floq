@@ -3,7 +3,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
-RUN npm ci --include=dev || npm install
+RUN npm ci --include=dev
 COPY tsconfig.json ./
 COPY tsconfig.image.json ./
 COPY prisma.config.ts ./
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         socat nftables iproute2 \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code @openai/codex \
+    && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 \
     && npm cache clean --force
 # gocryptfs from the pinned upstream static release, NOT Debian's 2.3 package. Debian bookworm builds 2.3 against a
 # newer golang.org/x/sys whose Setreuid/Setregid affect every thread, which breaks gocryptfs's per-request uid switch
@@ -74,17 +74,19 @@ RUN mkdir -p /etc/apt/keyrings  \
     && apt-get update && apt-get install -y --no-install-recommends gh  \
     && rm -rf /var/lib/apt/lists/*
 # Preinstalled tooling. Everything lives under /usr because agent sandboxes only see /usr.
-# Pin these refs to release tags/commits for reproducible builds.
-ARG SUPERPOWERS_REF=main
-ARG HUMANIZER_REF=main
-ARG SPECKIT_REF=main
+# Pinned to release tags (verified upstream). Bump deliberately; override with --build-arg.
+ARG SUPERPOWERS_REF=v7.0.2
+ARG HUMANIZER_REF=v3.1.0
+ARG SPECKIT_REF=v1.3.2
+# uv is pinned to a release; the versioned installer downloads that release and verifies its checksum.
+ARG UV_VERSION=0.13.7
 # Full commit of anthropics/skills (skill-creator); the build fails if it cannot be fetched.
 ARG ANTHROPIC_SKILLS_REF=ca45fc496a3436251f191354091d557da31c15b5
 ENV UV_TOOL_DIR=/usr/local/share/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
     UV_PYTHON_INSTALL_DIR=/usr/local/share/uv/python \
     UV_CACHE_DIR=/tmp/uv-cache
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
     && uv tool install specify-cli --from "git+https://github.com/github/spec-kit.git@${SPECKIT_REF}" \
     && chmod -R a+rX /usr/local/share/uv \
     && rm -rf /tmp/uv-cache

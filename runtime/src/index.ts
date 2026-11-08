@@ -10,6 +10,7 @@ import { SessionManager } from "./manager.js";
 import { createShardDriver } from "./shard.js";
 import { ShardService } from "./shards.js";
 import { createRuntimeServer } from "./server.js";
+import { SetupToken } from "./setupToken.js";
 import { SettingsStore } from "./settings.js";
 import { AgentLinks } from "./links.js";
 import { CanvasNotes } from "./notes.js";
@@ -43,6 +44,15 @@ const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: conf
 const auth = createAuth(config, pool);
 await migrateAuth(auth);
 await migrateApp(pool);
+
+// First-run admin claim needs a one-time token: printed once here, only its hash is stored.
+const setupToken = new SetupToken(pool);
+const issuedSetupToken = await setupToken.issueIfNeeded(config.bootstrapAdminEmail);
+if (issuedSetupToken) {
+  process.stdout.write(
+    `\n=== FLOQ SETUP TOKEN ===\nEnter this token in the app to create the administrator for ${config.bootstrapAdminEmail}.\nIt is shown once, works once, and a new one is issued on restart while setup is unclaimed:\n\n  ${issuedSetupToken}\n\n========================\n\n`,
+  );
+}
 
 const settings = new SettingsStore(pool, config);
 const github = new GithubLinker(config, settings);
@@ -94,7 +104,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
 
 await server.listen();
 log.info("runtime.listening", {

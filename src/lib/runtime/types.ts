@@ -272,6 +272,8 @@ export interface UserSettings {
   alwaysRecruitSubagents?: boolean;
   /** Absent on older runtimes (treated as on). */
   allowCrossProjectAgents?: boolean;
+  /** Absent on older runtimes (treated as acknowledged). */
+  autoApproveAcknowledged?: boolean;
 }
 
 export interface SettingsPatch {
@@ -282,6 +284,7 @@ export interface SettingsPatch {
   gitCoauthor?: boolean;
   alwaysRecruitSubagents?: boolean;
   allowCrossProjectAgents?: boolean;
+  autoApproveAcknowledged?: true;
 }
 
 /** The fixed Floq subagent policy, read-only (GET /v1/subagents/policy). */

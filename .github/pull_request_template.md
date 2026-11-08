@@ -3,7 +3,7 @@
 ## How it was tested
 
 - [ ] `npx tsc --noEmit -p .` and `npm run build`
-- [ ] `node --test scripts/test-*.mjs`
+- [ ] `node --test scripts/dev/test-*.mjs`
 - [ ] Runtime: `npm run typecheck` and the relevant `runtime/test` suites (if the runtime changed)
 
 ## Checklist

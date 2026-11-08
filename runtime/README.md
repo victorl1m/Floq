@@ -5,14 +5,16 @@ Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, e
 ## Deploy on Dokploy
 
 1. Create a **Compose** service, source = this repo, compose path `runtime/docker-compose.yml`.
-2. Environment tab: paste `.env.example` and fill every secret (commands are in the comments). Set `BETTER_AUTH_URL` to your public https URL and `FLOQ_BOOTSTRAP_ADMIN_EMAIL` for the first account (no password in env: see First run).
+2. Environment tab: paste `.env.example` and fill every secret (commands are in the comments). Set `BETTER_AUTH_URL` to your public https URL and `FLOQ_BOOTSTRAP_ADMIN_EMAIL` for the first account (no password in env; read the one-time setup token from the logs: see First run).
 3. Domains tab: service `runtime`, port `8787`, HTTPS on. Do not add host ports.
 4. Deploy. Postgres (`db`) starts first. Runtime startup applies the checked-in Prisma migrations to the isolated `collaboration` schema, then runs the existing idempotent app bootstrap and Better Auth migrations. The database role needs permission to create that schema and its tables.
 5. In Floq point the runtime URL at your domain and sign in.
 
 ## First run (admin account)
 
-There is no password in the environment. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL`; when that email has no account yet, the app asks for it, `POST /v1/setup/lookup` answers `{"step":"setup"}`, and the admin chooses a password (12-128 chars) via `POST /v1/setup/admin`, then signs in normally. Setup optionally accepts a Company name (up to 80 characters) and creates the Better Auth account plus its initial owner organization atomically. If blank, the organization is named `<first name>'s Organization`; if no name was provided, it uses the email local part, falling back to `Admin`. Once the account exists (and for every other email) lookup answers `{"step":"password"}` and setup returns 409 `setup_unavailable`, so it cannot be used to discover accounts or take over. Both routes are unauthenticated and rate limited per IP (10/min).
+There is no password in the environment. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL`. Knowing that email is not enough to claim the account: while it has no account, the runtime issues a one-time **setup token** at start and prints it once to its logs (look for `FLOQ SETUP TOKEN`). Only a SHA-256 hash is stored (table `setup_token`); if the runtime restarts before the account is claimed, a new token replaces the old one. In the app, choose **Set up the administrator** on the sign-in screen and enter the token, the email, a password (12-128 chars) and optionally a name and company name. The app sends `POST /v1/setup/admin` with `{email, password, setupToken, name?, companyName?}`; the token is marked used as soon as the account exists, then the admin signs in normally.
+
+`POST /v1/setup/lookup` takes `{email, setupToken?}` and answers `{"step":"setup"}` only for the bootstrap email with a valid unused token; for every other input (no token, wrong token, other email, account already exists) it answers `{"step":"password"}`, so it cannot be used to discover accounts or claimable state. `POST /v1/setup/admin` answers 403 `setup_unavailable` with one message for a missing, wrong or used token, an unknown email, and an already-claimed account. Setup creates the Better Auth account plus its initial owner organization atomically; if the company name is blank the organization is named `<first name>'s Organization` (email local part, then `Admin`, as fallbacks). Both routes are unauthenticated and rate limited per IP (10/min).
 
 ## Joining an organization
 

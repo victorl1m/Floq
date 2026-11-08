@@ -1,5 +1,9 @@
 # Security Policy
 
+> [!WARNING]
+> **Run the runtime only on a dedicated VM or a single-tenant host.** The runtime container runs as root with broad capabilities (`SYS_ADMIN`, `SETUID`, `SETGID`, `CHOWN`, `DAC_OVERRIDE` and others), `apparmor:unconfined` and `/dev/fuse`, because gocryptfs and bubblewrap need them. It is not a hardened boundary against a hostile agent or a hostile co-tenant.
+> **Auto-approve is on by default**, so an agent can run commands in the container without asking. The first run asks you to confirm this and explains the effect.
+
 ## Supported versions
 
 Floq is early (0.x) software. Only the latest released `0.x` version (and the `main` branch) receives security fixes.

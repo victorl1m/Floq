@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { toast } from "sonner";
 import { IconArrowRight, IconCode, IconFolder, IconLock, IconServer, IconTerminal2 } from "@tabler/icons-react";
 import { RuntimeClient, RuntimeError, normalizeBaseUrl } from "@/lib/runtime/client";
 import { Button } from "@/components/ui/button";
@@ -72,10 +71,12 @@ function EmailStep({
     initialUrl,
     initialEmail,
     onDone,
+    onSetup,
 }: {
     initialUrl: string;
     initialEmail: string;
     onDone: (values: EmailValues, step: "password" | "setup") => void;
+    onSetup: (values: Partial<EmailValues>) => void;
 }) {
     const { lookup, changeServer } = useRuntime();
     const [editingUrl, setEditingUrl] = useState(initialUrl === "" || changeServer);
@@ -88,6 +89,7 @@ function EmailStep({
 
     async function onSubmit(values: EmailValues) {
         try {
+            // No setup token here, so the runtime never reveals whether first-run setup is open: this is always the password step.
             onDone(values, await lookup(values.serverUrl, values.email));
         } catch (e) {
             form.setError("root", { message: messageOf(e) });
@@ -141,6 +143,21 @@ function EmailStep({
                 </div>
                 <RootError message={errors.root?.message} />
                 <SubmitButton busy={isSubmitting}>Continue</SubmitButton>
+                <div className="auth-invitation">
+                    <span>First run of this runtime?</span>
+                    <Button
+                        type="button"
+                        variant="link"
+                        className="h-auto px-1"
+                        disabled={isSubmitting}
+                        onClick={async () => {
+                            if (!(await form.trigger("serverUrl"))) return;
+                            onSetup(form.getValues());
+                        }}
+                    >
+                        Set up the administrator
+                    </Button>
+                </div>
             </form>
         </Form>
     );
@@ -269,11 +286,11 @@ function InvitationRegistrationStep({
     );
 }
 
-function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email: string; onConflict: () => void }) {
+function SetupStep({ serverUrl, email, onBack }: { serverUrl: string; email: string; onBack: (email: string) => void }) {
     const { setupAdmin } = useRuntime();
     const form = useForm<SetupValues>({
         resolver: zodResolver(setupSchema),
-        defaultValues: { name: "", companyName: "", password: "", confirm: "" },
+        defaultValues: { email, setupToken: "", name: "", companyName: "", password: "", confirm: "" },
     });
     const { isSubmitting, errors } = form.formState;
 
@@ -281,15 +298,16 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
         try {
             await setupAdmin({
                 baseUrl: serverUrl,
-                email,
+                email: values.email,
+                setupToken: values.setupToken,
                 password: values.password,
                 name: values.name?.trim() || undefined,
                 companyName: values.companyName?.trim() || undefined,
             });
         } catch (e) {
-            if (e instanceof RuntimeError && e.status === 409) {
-                toast.info("Setup is already complete", { description: "Sign in with your password." });
-                onConflict();
+            if (e instanceof RuntimeError && (e.status === 403 || e.status === 409)) {
+                // One answer for "no such account", "already claimed" and "bad token": do not hint which.
+                form.setError("setupToken", { message: "Setup is not available, or the setup token is missing, wrong or already used." });
                 return;
             }
             form.setError("root", { message: messageOf(e) });
@@ -302,12 +320,42 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                 <div className="flex flex-col gap-4">
                     <FormField
                         control={form.control}
+                        name="setupToken"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Setup token</FormLabel>
+                                <FormControl>
+                                    <Input autoComplete="off" autoCapitalize="off" spellCheck={false} autoFocus {...field} />
+                                </FormControl>
+                                <FormDescription>
+                                    Printed once in the runtime logs at start (look for FLOQ SETUP TOKEN). It works once.
+                                </FormDescription>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <FormField
+                        control={form.control}
+                        name="email"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Administrator email</FormLabel>
+                                <FormControl>
+                                    <Input type="email" autoComplete="email" {...field} />
+                                </FormControl>
+                                <FormDescription>Must match FLOQ_BOOTSTRAP_ADMIN_EMAIL on the runtime.</FormDescription>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <FormField
+                        control={form.control}
                         name="name"
                         render={({ field }) => (
                             <FormItem>
                                 <FormLabel>Name (optional)</FormLabel>
                                 <FormControl>
-                                    <Input autoComplete="name" autoFocus {...field} />
+                                    <Input autoComplete="name" {...field} />
                                 </FormControl>
                                 <FormMessage />
                             </FormItem>
@@ -360,6 +408,7 @@ function SetupStep({ serverUrl, email, onConflict }: { serverUrl: string; email:
                 </div>
                 <RootError message={errors.root?.message} />
                 <SubmitButton busy={isSubmitting}>Create administrator</SubmitButton>
+                <Button type="button" variant="ghost" disabled={isSubmitting} onClick={() => onBack(form.getValues("email"))}>Back to sign in</Button>
             </form>
         </Form>
     );
@@ -379,7 +428,7 @@ export default function LoginScreen() {
         step === "invite"
             ? "Use the invitation token from your organization owner."
             : step === "setup"
-            ? "This is the first run of this runtime. This email becomes the administrator account."
+            ? "Enter the setup token from the runtime logs. This email becomes the administrator account."
             : step === "password"
               ? "Enter your password to continue."
               : "Connect to your Floq Runtime to run agents in the cloud.";
@@ -403,7 +452,7 @@ export default function LoginScreen() {
                         <span className="auth-form-symbol"><IconLock size={21} aria-hidden="true" /></span>
                         <h1 className="text-[1.65rem] font-semibold tracking-tight leading-tight">{heading}</h1>
                         <p className="text-sm leading-relaxed text-muted-foreground">{subtitle}</p>
-                        {step !== "email" && step !== "invite" && (
+                        {step === "password" && (
                             <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs">
                                 <span className="max-w-56 truncate">{email}</span>
                                 <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setStep("email")}>
@@ -424,11 +473,16 @@ export default function LoginScreen() {
                                     if (pendingInvitationToken && values.email.trim().toLowerCase() !== email.trim().toLowerCase()) setPendingInvitationToken(null);
                                     setStep(next);
                                 }}
+                                onSetup={(values) => {
+                                    if (values.serverUrl) setServerUrl(values.serverUrl);
+                                    setEmail(values.email ?? "");
+                                    setStep("setup");
+                                }}
                             />
                         )}
                         {step === "password" && <PasswordStep serverUrl={serverUrl} email={email} invitationToken={pendingInvitationToken ?? undefined} onDiscardInvitation={() => setPendingInvitationToken(null)} />}
                         {step === "setup" && (
-                            <SetupStep serverUrl={serverUrl} email={email} onConflict={() => setStep("password")} />
+                            <SetupStep serverUrl={serverUrl} email={email} onBack={(next) => { setEmail(next); setStep("email"); }} />
                         )}
                         {step === "invite" && (
                             <InvitationRegistrationStep

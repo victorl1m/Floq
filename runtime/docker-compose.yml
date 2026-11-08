@@ -38,7 +38,7 @@ services:
     expose:
       - "8787"
     environment:
-      DATABASE_URL: postgres://floq:${POSTGRES_PASSWORD}@db:5432/floq
+      DATABASE_URL: postgres://floq:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy Environment}@db:5432/floq
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET (openssl rand -base64 48)}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set BETTER_AUTH_URL to the public https URL}
       FLOQ_ENCRYPTION_KEY: ${FLOQ_ENCRYPTION_KEY:?set FLOQ_ENCRYPTION_KEY (openssl rand -hex 32)}

@@ -5,7 +5,11 @@ import { APIError } from "better-auth/api";
 import type pg from "pg";
 import type { Config } from "./config.js";
 import { log } from "./logger.js";
+import type { SetupToken } from "./setupToken.js";
 import { registerBootstrapAdmin } from "./bootstrapRegistration.js";
+
+/** x-forwarded-for is the only header better-auth reads for the client IP (see the comment in createAuth). */
+export const AUTH_IP_ADDRESS = { ipAddressHeaders: ["x-forwarded-for"] };
 
 export function createAuth(config: Config, pool: pg.Pool) {
   return betterAuth({
@@ -40,7 +44,10 @@ export function createAuth(config: Config, pool: pg.Pool) {
     advanced: {
       useSecureCookies: config.authUrl.startsWith("https://"),
       defaultCookieAttributes: { httpOnly: true, sameSite: "none", secure: config.authUrl.startsWith("https://") },
-      ipAddress: { ipAddressHeaders: ["x-forwarded-for", "x-real-ip"] },
+      // better-auth rate-limits per IP read from x-forwarded-for. That header is client-controlled, so server.ts
+      // (normalizeAuthForwardedHeaders in clientIp.ts) overwrites it with the trusted client address (socket peer, or the
+      // proxy-appended hop under FLOQ_TRUST_PROXY=true) and deletes x-real-ip before every /api/auth/* request.
+      ipAddress: AUTH_IP_ADDRESS,
     },
     // The bootstrap admin account is created only through /v1/setup/admin (direct insert, not this path): open signup
     // must never let someone else claim that email.
@@ -76,7 +83,13 @@ export async function setupAvailable(pool: pg.Pool, config: Config, email: strin
   return !existing.rowCount;
 }
 
-/** Create the bootstrap admin with the password they chose. Returns false if the account already exists. */
+/** Setup is claimable only with the one-time setup token: without it the answer is the same as for any other email. */
+export async function setupLookupStep(pool: pg.Pool, config: Config, setupToken: SetupToken, email: string, token: unknown): Promise<"setup" | "password"> {
+  if (!(await setupAvailable(pool, config, email))) return "password";
+  return (await setupToken.verify(token)) ? "setup" : "password";
+}
+
+/** Create the bootstrap admin with the password they chose and the one-time setup token. Returns false if unavailable or the token is wrong/used. */
 export async function createBootstrapAdmin(
   auth: Auth,
   pool: pg.Pool,
@@ -84,12 +97,16 @@ export async function createBootstrapAdmin(
   email: string,
   password: string,
   name: string,
-  companyName?: string,
+  companyName: string | undefined,
+  setupToken: SetupToken,
+  token: unknown,
 ): Promise<boolean> {
   if (!(await setupAvailable(pool, config, email))) return false;
+  if (!(await setupToken.verify(token))) return false;
   const ctx = await auth.$context;
   const created = await registerBootstrapAdmin(pool, { email, password, name, companyName }, (value) => ctx.password.hash(value));
   if (!created) return false;
+  await setupToken.markUsed();
   log.info("auth.bootstrap_admin", { email });
   return true;
 }

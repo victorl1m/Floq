@@ -77,7 +77,7 @@ Anything a handler returns, and any `HttpError` message it throws, is scrubbed o
 
 ## 6. The UI kit and design rules
 
-Plugin UI imports **only** from `react`, `@tabler/icons-react`, `@/plugins/kit`, `@/plugins/sdk` and its own folder (`scripts/test-plugin-imports.mjs` enforces it; plugins cannot ship CSS files).
+Plugin UI imports **only** from `react`, `@tabler/icons-react`, `@/plugins/kit`, `@/plugins/sdk` and its own folder (`scripts/dev/test-plugin-imports.mjs` enforces it; plugins cannot ship CSS files).
 
 - `@/plugins/kit` re-exports the shared primitives (Button, Badge, Card, Table, Empty, Field, Input, Textarea, Select, Switch, Checkbox, Tabs, Tooltip, Dialog, AlertDialog, Sheet, DropdownMenu, Skeleton, Kbd, `toast`) plus `PluginPage`, `PluginState`, `ExternalTaskRow`, `PluginBoundary`, `usePlugins`, `usePluginApi`, `usePluginEvent`.
 - Use `PluginPage` for the view shell and `PluginState` for `loading | empty | error | not-configured | disabled`. Error states keep what the user typed and offer Retry.
@@ -119,7 +119,7 @@ Runtime (see `runtime/test/pluginHost.test.mts`, `pluginContext.test.mts`, `plug
 3. Call `host.enable(id, "admin")`, then drive routes with `host.handle({...})` or through `createRuntimeServer` like `pluginsServer.test.mts`. Mock `fetchImpl` for upstream calls and assert the token never appears in errors or logs.
 4. Run: `node --import ./node_modules/.ptystub/register.mjs --import tsx --test test/<file>.test.mts`.
 
-Frontend: `npx tsc --noEmit`, then `node --test scripts/test-plugin-host.mjs scripts/test-plugin-kit.mjs scripts/test-plugin-imports.mjs scripts/test-plugin-tokens.mjs`.
+Frontend: `npx tsc --noEmit`, then `node --test scripts/dev/test-plugin-host.mjs scripts/dev/test-plugin-kit.mjs scripts/dev/test-plugin-imports.mjs scripts/dev/test-plugin-tokens.mjs`.
 
 ## 9. Installable plugins (floq-plugins)
 

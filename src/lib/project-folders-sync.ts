@@ -6,7 +6,7 @@
  * `floq.projectLayout.v1.<scope>`, `floq.projectFolderExpanded.<scope>`): that is now only an offline cache that this
  * engine keeps in step with the server.
  *
- * Pure and dependency free (no React, no DOM) so scripts/test-project-folders-sync.mjs can drive it with fakes.
+ * Pure and dependency free (no React, no DOM) so scripts/dev/test-project-folders-sync.mjs can drive it with fakes.
  */
 
 export interface FoldersDoc {

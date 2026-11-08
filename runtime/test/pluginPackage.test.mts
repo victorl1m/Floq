@@ -67,6 +67,7 @@ test("skill paths and sizes follow the addSkillPackage rules", () => {
 });
 
 test("error messages never echo package content", () => {
+  // Fake placeholder fixture, not a real credential.
   const secret = "SECRET_VALUE_IN_PACKAGE";
   for (const p of [pkg({ runtime: 5, [secret]: 1 }), pkg({ manifest: manifest({ id: secret }) }), pkg({ skills: { hello: { [secret + "/../x"]: "y" } } })]) {
     try { parse(p as never); assert.fail("should reject"); } catch (e) { assert.ok(e instanceof PackageError); assert.ok(!e.message.includes(secret), e.message); }

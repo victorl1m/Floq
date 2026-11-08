@@ -24,7 +24,7 @@ The runtime needs PostgreSQL and the variables in [`runtime/.env.example`](runti
 # App
 npx tsc --noEmit -p .
 npm run build
-node --test scripts/test-*.mjs
+node --test scripts/dev/test-*.mjs
 
 # Runtime
 cd runtime
@@ -35,14 +35,14 @@ npm test               # builds, then node --import tsx --test test/*.test.mts
 cd src-tauri && cargo check
 ```
 
-Browser probes in `scripts/` (`probe-*.py`, `verify-*.py`) run against `npm run dev` with synthetic API responses. Each file starts with a one-line description; set `FLOQ_UI_URL` if your dev server is not on the default port.
+Browser probes in `scripts/dev/` (`probe-*.py`, `verify-*.py`) run against `npm run dev` with synthetic API responses. Each file starts with a one-line description; set `FLOQ_UI_URL` if your dev server is not on the default port.
 
 ## Code style
 
-- TypeScript is strict. Follow the surrounding code and the rules in [`DESIGN.md`](DESIGN.md) and [`UX-CONTRACT.md`](UX-CONTRACT.md) for UI work.
+- TypeScript is strict. Follow the surrounding code and the rules in [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/UX-CONTRACT.md`](docs/UX-CONTRACT.md) for UI work.
 - `.editorconfig` and `.gitattributes` define whitespace and LF line endings. Do not reformat unrelated code.
 - No secrets, personal data, customer names or absolute local paths in code, tests, fixtures or docs. Use neutral names such as "Acme" in fixtures.
-- Add or update tests for behavior changes (runtime tests are `runtime/test/*.test.mts`, client tests are `scripts/test-*.mjs`).
+- Add or update tests for behavior changes (runtime tests are `runtime/test/*.test.mts`, client tests are `scripts/dev/test-*.mjs`).
 
 ## Commit messages
 

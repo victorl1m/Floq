@@ -10,6 +10,7 @@ import { Orchestrator } from "../dist/orchestrator.js";
 import { addToJsonConfig, addToTomlConfig, normalizeMcpInput, specSecretNames, vaultUsage } from "../dist/mcpConfig.js";
 import { fixture } from "./mcpFixture.mjs";
 
+// Fake placeholder fixture, not a real credential.
 const VALUE = "sk-live-NEVER-IN-CONFIG-0001";
 const HEADER_VALUE = "tok-live-NEVER-IN-CONFIG-0002";
 const key = Buffer.alloc(32, 5);
