@@ -37,10 +37,10 @@ export function PluginMark({ item, className }: { item: PluginCatalogItem; class
 export function CatalogCard({ item, selected, onSelect }: { item: PluginCatalogItem; selected: boolean; onSelect: (id: string) => void }) {
     const state = rowState(item);
     return (
-        <li>
+        <li className="min-w-0">
             <button type="button" data-plugin-card={item.id} data-state={state.status} aria-pressed={selected} onClick={() => onSelect(item.id)}
-                className={cn("flex h-full w-full flex-col gap-3 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border")}>
-                <div className="flex items-start gap-3">
+                className={cn("flex h-full w-full min-w-0 flex-col gap-3 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border")}>
+                <div className="flex min-w-0 items-start gap-3">
                     <PluginMark item={item} />
                     <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{item.name}</p>
