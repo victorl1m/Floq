@@ -1582,6 +1582,8 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   background-image: none;
 }
 :root[data-native-material] .workspace-surface[data-workspace-view="canvas"] { background-color: transparent; }
+/* Tasks: solid background so the desktop wallpaper does not show through the Mica frame behind boards and empty states. */
+:root[data-native-material] .workspace-surface[data-workspace-view="tasks"] { background-color: var(--background); }
 :root[data-native-material] .auth-screen { background-color: var(--shell-frame); background-image: none; }
 
 /* Content: always opaque over the native backdrop. */
