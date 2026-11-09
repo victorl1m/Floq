@@ -276,7 +276,7 @@ export default function CanonicalProjectList() {
     const currentFolder = containerOf(layout, project.id) ?? null;
     return <SidebarMenuItem key={project.id}>
       <div className="group/project">
-        <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row", ROW_OPEN)}>
+        <ContextMenu><ContextMenuTrigger asChild><DndRow kind="project" itemId={project.id} className={cn("group/project-row canonical-project-row", ROW_OPEN)}>
           <SidebarMenuButton asChild isActive={canvasProjectId === project.id} className="h-8 pr-8! text-[13px] font-medium"><DndButton title={`${project.cwd} · open canvas`} onClick={() => openCanvas(project.id)}>
             <ProjectMark project={project} className="text-muted-foreground [&:is(img)]:bg-sidebar-accent/40 [&:is(img)]:ring-1 [&:is(img)]:ring-sidebar-border/70" /><span className="min-w-0 flex-1 truncate">{project.displayName?.trim() || project.name}</span>
             <ProjectStatusSlot status={projectStatus(projectCounts.get(project.id), projectMemory.get(project.id))} />
