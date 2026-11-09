@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "next-themes";
 import App from "@/App";
 import IslandRoot from "@/components/island/island-root";
+import IslandBoundary from "@/components/island/island-boundary";
 import { applyCursorPreference } from "@/lib/cursor-preference";
 
 
@@ -29,7 +30,7 @@ if (island) void import("@/island.css");
 else { void import("@/index.css"); applyCursorPreference(); }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(island ? (
-  <React.StrictMode><ThemeProvider attribute={["class", "data-theme"]} defaultTheme="system" enableSystem><IslandRoot /></ThemeProvider></React.StrictMode>
+  <React.StrictMode><ThemeProvider attribute={["class", "data-theme"]} defaultTheme="system" enableSystem><IslandBoundary><IslandRoot /></IslandBoundary></ThemeProvider></React.StrictMode>
 ) : (
   <React.StrictMode>
     <RuntimeProvider>

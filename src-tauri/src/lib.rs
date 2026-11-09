@@ -943,6 +943,7 @@ pub fn run() {
             island::island_publish,
             island::island_intent,
             island::island_set_layout,
+            island::island_log,
             desktop::get_desktop_preferences,
             desktop::set_desktop_preference
         ])
@@ -998,8 +999,10 @@ pub fn run() {
                 // no native material, so no backdrop rectangle shows around the rounded corners.
                 match island::create_window(app.handle(), true) {
                     Ok(_island) => {
-                        // Hover is handled by the island's own DOM events; toggling click-through
-                        // on a transparent WebView2 window made the island vanish on hover.
+                        // The monitor only emits island:hover and re-asserts z-order; it never toggles
+                        // click-through (any tao window setter silently hides the island, see
+                        // island::set_visible_without_activation).
+                        island::start_hover_monitor(app.handle().clone());
                     }
                     Err(error) => eprintln!("Failed to create the approval island: {error}"),
                 }

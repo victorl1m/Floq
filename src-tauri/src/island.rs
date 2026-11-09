@@ -31,7 +31,7 @@ fn fullscreen_app_active_now() -> bool {
     };
     use windows::Win32::UI::Shell::SHQueryUserNotificationState;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsZoomed,
     };
     unsafe {
         // Our own window in front (the user opened Floq) never suppresses the island, even while a video
@@ -60,6 +60,10 @@ fn fullscreen_app_active_now() -> bool {
             if matches!(name.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
                 return false;
             }
+        }
+        // A merely maximized app covers the monitor when the taskbar auto-hides; that is not full screen.
+        if IsZoomed(hwnd).as_bool() {
+            return false;
         }
         let mut rect = windows::Win32::Foundation::RECT::default();
         if GetWindowRect(hwnd, &mut rect).is_err() {
@@ -530,6 +534,14 @@ fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(
     apply_frame(window, frame, corner_radius(frame.3, scale, expanded))
 }
 
+/// Show or hide the island window. This is the ONLY way visibility may change.
+///
+/// tao landmine: whenever ANY tao window flag actually changes (click-through, focusable, always_on_top,
+/// resizable, maximized, decorations, shadow, ...), tao's `apply_diff` runs `ShowWindow(SW_HIDE)` if its own
+/// VISIBLE flag is false. We show the island with a raw `ShowWindow(SW_SHOWNOACTIVATE)`, so tao always
+/// believes it is hidden and such a setter hides the island silently, with no log line. That caused the
+/// original "island vanished on hover". Rule: never call a tao window setter on the island except
+/// `set_size` / `set_position`; visibility goes only through this function.
 #[cfg(windows)]
 fn set_visible_without_activation(window: &WebviewWindow, visible: bool) -> Result<(), String> {
     if visible && fullscreen_suppressed() {
@@ -724,9 +736,6 @@ pub fn island_publish(
         .emit("island:snapshot", snapshot)
         .map_err(|error| error.to_string())?;
     if active {
-        island
-            .set_ignore_cursor_events(false)
-            .map_err(|error| error.to_string())?;
         if !was_active {
             apply_bounds(&island, expanded, height)?;
         }
@@ -739,7 +748,6 @@ pub fn island_publish(
         }
     } else {
         cancel_animation(&runtime.1);
-        let _ = island.set_ignore_cursor_events(false);
         // Let the frontend play its exit animation before the OS window goes away.
         let handle = app.clone();
         std::thread::spawn(move || {
@@ -789,9 +797,6 @@ pub fn set_enabled(
     window
         .emit("island:snapshot", snapshot)
         .map_err(|error| error.to_string())?;
-    window
-        .set_ignore_cursor_events(false)
-        .map_err(|error| error.to_string())?;
     apply_bounds(&window, expanded, height)?;
     set_visible_without_activation(&window, true)
 }
@@ -831,9 +836,6 @@ pub fn island_set_layout(
         state.layout_acked = true;
         state.recoveries = 0;
     }
-    window
-        .set_ignore_cursor_events(false)
-        .map_err(|error| error.to_string())?;
     diagnostic(
         window.app_handle(),
         &format!("layout expanded={expanded} height={height} pinned={pinned}"),
@@ -883,7 +885,6 @@ pub fn create_window(
     let _ = has_native_material;
     let window = builder.build()?;
     let _ = apply_bounds(&window, false, COLLAPSED_HEIGHT);
-    let _ = window.set_ignore_cursor_events(false);
     Ok(window)
 }
 
@@ -923,6 +924,98 @@ pub fn start_hover_monitor(app: tauri::AppHandle) {
     });
 }
 
+/// True when the island should be on screen (active, nothing suppressing it) but the OS window is hidden.
+fn needs_reshow(active: bool, visible: bool, fullscreen_hidden: bool, fullscreen_suppressed: bool) -> bool {
+    active && !visible && !fullscreen_hidden && !fullscreen_suppressed
+}
+
+/// Rate limit for the self-heal re-show (monotonic clock). Returns Some(log_it): the first 3 attempts
+/// are always logged; after that the show is still retried every 1 s but logged at most once per 10 s
+/// (the count is per process, so a persistently failing re-show cannot flood island.log).
+fn reshow_due() -> Option<bool> {
+    static BASE: OnceLock<std::time::Instant> = OnceLock::new();
+    static LAST: AtomicU64 = AtomicU64::new(0); // millis since BASE + 1 (0 = never)
+    static LAST_LOG: AtomicU64 = AtomicU64::new(0);
+    static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    let now = BASE.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) < 1000 {
+        return None;
+    }
+    LAST.store(now, Ordering::SeqCst);
+    let attempt = ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    let last_log = LAST_LOG.load(Ordering::SeqCst);
+    let log_it = attempt < 3 || now.saturating_sub(last_log) >= 10_000;
+    if log_it {
+        LAST_LOG.store(now, Ordering::SeqCst);
+    }
+    Some(log_it)
+}
+
+/// Milliseconds the cursor must stay outside before the native monitor asks the frontend to collapse.
+const COLLAPSE_AFTER_MS: u128 = 300;
+/// While the collapse condition persists, re-emit at most this often (the frontend handler is idempotent).
+const REEMIT_MS: u128 = 1000;
+
+/// Pure hover decision: Some(true) = expand, Some(false) = collapse, None = nothing to do.
+fn hover_decision(
+    inside: bool,
+    expanded: bool,
+    pinned: bool,
+    outside_ms: Option<u128>,
+    since_last_emit_ms: Option<u128>,
+) -> Option<bool> {
+    if inside && !expanded {
+        return Some(true);
+    }
+    if expanded && !pinned && !inside {
+        let outside = outside_ms?;
+        if outside >= COLLAPSE_AFTER_MS && since_last_emit_ms.map_or(true, |ms| ms >= REEMIT_MS) {
+            return Some(false);
+        }
+    }
+    None
+}
+
+fn mono_ms() -> u64 {
+    static BASE: OnceLock<std::time::Instant> = OnceLock::new();
+    BASE.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Millis since the last hover emit (None = never).
+fn since_last_hover_emit() -> Option<u128> {
+    let last = LAST_HOVER_EMIT.load(Ordering::SeqCst);
+    (last != 0).then(|| mono_ms().saturating_sub(last) as u128)
+}
+
+static LAST_HOVER_EMIT: AtomicU64 = AtomicU64::new(0);
+static LAST_KEEP_TOP: AtomicU64 = AtomicU64::new(0);
+
+/// `keep_on_top` at most once per second.
+fn keep_on_top_throttled(window: &WebviewWindow) {
+    let now = mono_ms();
+    let last = LAST_KEEP_TOP.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_KEEP_TOP.store(now, Ordering::SeqCst);
+    keep_on_top(window);
+}
+
+/// Whether the cursor is inside the island's real OS rect (cached rect only as a fallback).
+fn cursor_inside(app: &tauri::AppHandle, window: &WebviewWindow) -> Option<bool> {
+    let cursor = app.cursor_position().ok()?;
+    let rect = physical_rect(window).or_else(|| {
+        app.state::<IslandRuntime>()
+            .1
+            .rect
+            .lock()
+            .ok()
+            .and_then(|rect| *rect)
+    })?;
+    Some(contains(rect, cursor.x, cursor.y))
+}
+
 fn hover_tick(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("island") else {
         return;
@@ -943,10 +1036,15 @@ fn hover_tick(app: &tauri::AppHandle) {
             state.outside_since,
         )
     };
-    if active {
-        let visible = window.is_visible().unwrap_or(false);
-        if fullscreen_suppressed() {
-            // A game or full-screen video is in front: step aside (the request keeps waiting) and never touch z-order.
+    if !active {
+        return;
+    }
+    let inside = cursor_inside(app, &window);
+    let visible = window.is_visible().unwrap_or(false);
+    if fullscreen_suppressed() {
+        // A game or full-screen video is in front: step aside (the request keeps waiting) and never touch
+        // z-order. Never while the user is hovering the island or has it expanded/pinned.
+        if !(inside == Some(true) || expanded || pinned) {
             if visible {
                 FULLSCREEN_HIDDEN.store(true, Ordering::SeqCst);
                 diagnostic(app, "hide (full-screen app)");
@@ -954,83 +1052,86 @@ fn hover_tick(app: &tauri::AppHandle) {
             }
             return;
         }
-        if FULLSCREEN_HIDDEN.swap(false, Ordering::SeqCst) && !visible {
-            diagnostic(app, "show (full-screen app gone)");
-            let _ = set_visible_without_activation(&window, true);
-            return;
-        }
-    }
-    if !active || !window.is_visible().unwrap_or(false) {
+    } else if FULLSCREEN_HIDDEN.swap(false, Ordering::SeqCst) && !visible {
+        diagnostic(app, "show (full-screen app gone)");
+        let _ = set_visible_without_activation(&window, true);
         return;
     }
-    keep_on_top(&window);
-    if pinned {
-        return;
-    }
-    let animating = app
-        .state::<IslandRuntime>()
-        .1
-        .running
-        .load(Ordering::SeqCst)
-        != 0;
-    let desired = if animating {
-        None
-    } else {
-        bounds(&window, expanded, height)
-    };
-    let cached = app
-        .state::<IslandRuntime>()
-        .1
-        .rect
-        .lock()
-        .ok()
-        .and_then(|rect| *rect);
-    if let Some((x, y, width, h)) = desired {
-        if cached != Some((x, y, width as i32, h as i32)) {
-            let _ = apply_bounds(&window, expanded, height);
-        }
-    }
-    let Ok(cursor) = app.cursor_position() else {
-        return;
-    };
-    let inside = app
-        .state::<IslandRuntime>()
-        .1
-        .rect
-        .lock()
-        .ok()
-        .and_then(|rect| *rect)
-        .is_some_and(|rect| contains(rect, cursor.x, cursor.y));
-    let next = if inside && !expanded {
-        Some(true)
-    } else if expanded && !inside {
-        let since = outside_since.unwrap_or_else(std::time::Instant::now);
-        if since.elapsed() >= std::time::Duration::from_millis(300) {
-            Some(false)
-        } else {
-            if outside_since.is_none() {
-                if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-                    state.outside_since = Some(since);
-                }
+    if needs_reshow(
+        active,
+        visible,
+        FULLSCREEN_HIDDEN.load(Ordering::SeqCst),
+        fullscreen_suppressed(),
+    ) {
+        // Active island whose OS window is hidden without us having asked (no "hide" in the log): the
+        // user sees it vanish and no hover/layout can ever fire again. Show it again, at most once a second.
+        if let Some(log_it) = reshow_due() {
+            if log_it {
+                diagnostic(
+                    app,
+                    &format!(
+                        "self-heal show (hidden externally; expanded={expanded} pinned={pinned})"
+                    ),
+                );
             }
-            None
+            if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                state.outside_since = None;
+            }
+            let _ = apply_bounds(&window, expanded, height);
+            let _ = set_visible_without_activation(&window, true);
         }
+        return;
+    }
+    if !visible {
+        return;
+    }
+    keep_on_top_throttled(&window);
+    if !pinned {
+        // The native resize animation is no longer started (CSS owns the motion), so a non-zero `running`
+        // can only be stale: never let it block re-applying the desired bounds.
+        app.state::<IslandRuntime>().1.running.store(0, Ordering::SeqCst);
+        let desired = bounds(&window, expanded, height);
+        let cached = app
+            .state::<IslandRuntime>()
+            .1
+            .rect
+            .lock()
+            .ok()
+            .and_then(|rect| *rect);
+        if let Some((x, y, width, h)) = desired {
+            if cached != Some((x, y, width as i32, h as i32)) {
+                let _ = apply_bounds(&window, expanded, height);
+            }
+        }
+    }
+    let Some(inside) = inside else {
+        return;
+    };
+    // Track how long the cursor has been outside an expanded island.
+    let outside_since = if expanded && !inside {
+        let since = outside_since.unwrap_or_else(std::time::Instant::now);
+        if outside_since.is_none() {
+            if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
+                state.outside_since = Some(since);
+            }
+        }
+        Some(since)
     } else {
-        if inside && outside_since.is_some() {
+        if outside_since.is_some() {
             if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
                 state.outside_since = None;
             }
         }
         None
     };
-    if let Some(now_expanded) = next {
+    let outside_ms = outside_since.map(|since| since.elapsed().as_millis());
+    if let Some(now_expanded) =
+        hover_decision(inside, expanded, pinned, outside_ms, since_last_hover_emit())
+    {
         diagnostic(app, &format!("hover expanded={now_expanded}"));
-        if let Ok(mut state) = app.state::<IslandRuntime>().0.lock() {
-            // Keep applied geometry intact until the frontend finishes its morph.
-            // Updating expanded here would let the next tick shrink it too early.
-            state.outside_since = (!now_expanded).then(std::time::Instant::now);
-        }
-        let _ = window.set_ignore_cursor_events(false);
+        LAST_HOVER_EMIT.store(mono_ms(), Ordering::SeqCst);
+        // outside_since stays as is: the frontend ack (island_set_layout) clears it, and until then
+        // the collapse is re-emitted at most once per REEMIT_MS.
         let _ = window.emit(
             "island:hover",
             serde_json::json!({"expanded": now_expanded}),
@@ -1038,11 +1139,52 @@ fn hover_tick(app: &tauri::AppHandle) {
     }
 }
 
+/// Lines per second the UI log bridge accepts (a render loop must not flood island.log).
+const UI_LOG_PER_SECOND: u64 = 20;
+
+fn ui_log_allowed() -> bool {
+    static WINDOW_START: AtomicU64 = AtomicU64::new(0);
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let now = mono_ms();
+    let start = WINDOW_START.load(Ordering::SeqCst);
+    if start == 0 || now.saturating_sub(start) >= 1000 {
+        WINDOW_START.store(now, Ordering::SeqCst);
+        COUNT.store(1, Ordering::SeqCst);
+        return true;
+    }
+    COUNT.fetch_add(1, Ordering::SeqCst) < UI_LOG_PER_SECOND
+}
+
+fn sanitize_ui_message(message: &str) -> String {
+    message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(300)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Diagnostics from the island webview (DOM enter/leave, render errors). Messages only, never request text.
+#[tauri::command]
+pub fn island_log(window: WebviewWindow, message: String) -> Result<(), String> {
+    allowed_caller(&window, "island")?;
+    if !ui_log_allowed() {
+        return Ok(());
+    }
+    diagnostic(
+        window.app_handle(),
+        &format!("ui {}", sanitize_ui_message(&message)),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         IslandState, active_snapshot, clamped_height, contains, corner_radius, ease_out,
-        set_island_enabled, update_snapshot_state,
+        set_island_enabled, update_snapshot_state, hover_decision, sanitize_ui_message,
+        watchdog_action, WatchdogAction,
     };
     use serde_json::json;
 
@@ -1073,6 +1215,16 @@ mod tests {
         update_snapshot_state(&mut state, json!({"items": []}), true);
         assert!(!super::hide_is_current(&state, stale));
         assert!(super::hide_is_current(&state, state.visibility_generation));
+    }
+
+    #[test]
+    fn active_but_hidden_island_is_shown_again_unless_fullscreen_suppresses_it() {
+        use super::needs_reshow;
+        assert!(needs_reshow(true, false, false, false));
+        assert!(!needs_reshow(true, true, false, false), "already visible");
+        assert!(!needs_reshow(false, false, false, false), "inactive stays hidden");
+        assert!(!needs_reshow(true, false, true, false), "full-screen hide is handled by its own path");
+        assert!(!needs_reshow(true, false, false, true));
     }
 
     #[test]
@@ -1174,5 +1326,36 @@ mod tests {
         assert!(!update_snapshot_state(&mut state, snapshot, false));
         assert!(!state.active);
         assert!(state.last_non_empty_snapshot.is_some());
+    }
+    #[test]
+    fn hover_decision_expands_on_enter() {
+        assert_eq!(hover_decision(true, false, false, None, None), Some(true));
+        assert_eq!(hover_decision(true, true, false, None, None), None);
+    }
+
+    #[test]
+    fn hover_decision_collapses_only_after_delay() {
+        assert_eq!(hover_decision(false, true, false, Some(299), None), None);
+        assert_eq!(hover_decision(false, true, false, None, None), None);
+        assert_eq!(hover_decision(false, true, false, Some(300), None), Some(false));
+        assert_eq!(hover_decision(true, true, false, Some(900), None), None);
+    }
+
+    #[test]
+    fn hover_decision_never_collapses_while_pinned() {
+        assert_eq!(hover_decision(false, true, true, Some(5000), None), None);
+    }
+
+    #[test]
+    fn hover_decision_reemit_is_throttled_to_one_second() {
+        assert_eq!(hover_decision(false, true, false, Some(2000), Some(999)), None);
+        assert_eq!(hover_decision(false, true, false, Some(2000), Some(1000)), Some(false));
+    }
+
+    #[test]
+    fn ui_log_messages_are_single_line_and_capped() {
+        let cleaned = sanitize_ui_message(&format!("a\nb\r{}", "x".repeat(400)));
+        assert!(!cleaned.contains('\n') && !cleaned.contains('\r'));
+        assert!(cleaned.chars().count() <= 300);
     }
 }

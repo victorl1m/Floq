@@ -1,7 +1,7 @@
 {
   "name": "floq",
   "private": true,
-  "version": "0.6.24",
+  "version": "0.6.25",
   "description": "Desktop workspace for running Claude Code and Codex agents on a server you host",
   "author": "Victor Lima",
   "license": "MIT",
@@ -31,7 +31,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -78,6 +79,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.1",
     "@tauri-apps/cli": "^2",
     "@types/node": "^26.6.6",
     "@types/react": "^19.1.8",

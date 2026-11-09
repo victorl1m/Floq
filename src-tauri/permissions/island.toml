@@ -1,7 +1,7 @@
 [[permission]]
 identifier = "allow-island-bridge"
 description = "Allow the island window to publish layout and intent messages only."
-commands.allow = ["island_intent", "island_set_layout"]
+commands.allow = ["island_intent", "island_set_layout", "island_log"]
 
 [[permission]]
 identifier = "allow-main-commands"

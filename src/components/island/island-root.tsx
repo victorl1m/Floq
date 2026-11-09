@@ -6,6 +6,7 @@ import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRi
 import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
 import { useIslandLayout } from './use-island-layout';
+import { islandLog } from './island-log';
 
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
 /** What the user just answered: shown as a short colored result state instead of falling back to the stale "N waiting" pill. */
@@ -49,6 +50,12 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   useEffect(() => {
     if (displayed.current?.items.length) motionTimer.current = setTimeout(() => setMotion('idle'), 420);
     let disposed = false; let retry: ReturnType<typeof setInterval> | undefined; const unlisteners: (() => void)[] = [];
+    const onError = (e: ErrorEvent) => islandLog('window error: ' + String(e.message).slice(0, 200));
+    const onRejection = (e: PromiseRejectionEvent) => islandLog('unhandled rejection: ' + String(e.reason).slice(0, 200));
+    const onVisibility = () => islandLog('visibility ' + document.visibilityState);
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    document.addEventListener('visibilitychange', onVisibility);
     void (async () => {
       try {
         const snapshotListener = await listen<IslandSnapshot>('island:snapshot', ({payload}) => {
@@ -85,7 +92,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         retry = setInterval(() => { if (!previous.current) void send({type:'ready'}).catch(() => undefined); }, 1000);
       } catch (e) { if (!disposed) setLocalError(String(e)); }
     })();
-    return () => { disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
+    return () => { window.removeEventListener('error', onError); window.removeEventListener('unhandledrejection', onRejection); document.removeEventListener('visibilitychange', onVisibility); disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
   }, []);
   const items = (displaySnapshot?.items ?? []).filter(i => !answeredIds.current.has(i.id));
   const lastCurrent = useRef<AttentionItem | undefined>(undefined);
@@ -175,7 +182,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   if ((!displaySnapshot || !items.length) && !outcome) return null;
   // While the result is shown, queue motion (an exit from the emptied queue, or an enter from a new request) must not replay over it.
   const shownMotion = outcome ? 'idle' : motion;
-  return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+  return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { islandLog('dom enter'); clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { islandLog('dom leave'); clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
     {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
