@@ -6,11 +6,15 @@ interface Clock { set: (job: () => void, delay: number) => ReturnType<typeof set
 /** CSS owns the visible morph. Growth (including expanded content growing) applies immediately; shrinks wait for the morph. */
 export function createIslandLayoutController(
   apply: (layout: IslandLayout) => void | Promise<void>,
-  clock: Clock = { set: setTimeout, clear: clearTimeout },
+  // Wrapped: calling a bare `setTimeout` as `clock.set(...)` throws "Illegal invocation" in browsers (this = the clock).
+  clock: Clock = { set: (job, delay) => setTimeout(job, delay), clear: id => clearTimeout(id) },
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let last: IslandLayout | undefined, generation = 0, disposed = false;
   let native: IslandLayout = { expanded: false, height: 40, pinned: false };
+  // The layout the OS window is KNOWN to have (its resize call resolved). `native` is only what was last asked for.
+  let confirmed: IslandLayout = { expanded: false, height: 40, pinned: false };
+  let issued = 0;
   const cancel = () => { if (timer !== undefined) clock.clear(timer); timer = undefined; };
   return {
     request(layout: IslandLayout, reducedMotion = false) {
@@ -27,8 +31,9 @@ export function createIslandLayoutController(
         if (disposed || current !== generation) return;
         const previous = native;
         native = next;
+        const ticket = ++issued;
         try {
-          void Promise.resolve(apply(next)).catch(() => {
+          void Promise.resolve(apply(next)).then(() => { if (ticket === issued && !disposed) confirmed = next; }, () => {
             if (current === generation && !disposed) { last = undefined; native = previous; }
           });
         } catch {
@@ -38,7 +43,14 @@ export function createIslandLayoutController(
       if (!reducedMotion && (next.height < native.height || (!next.expanded && native.expanded))) timer = clock.set(flush, ISLAND_MORPH_MS);
       else flush();
     },
-    reset() { cancel(); ++generation; last = undefined; native = { expanded: false, height: 40, pinned: false }; },
+    /**
+     * True when the OS window is already expanded, at least `height` tall and no other resize is in flight:
+     * the capsule can open at once, with no native round trip to wait for (e.g. a re-hover during the pending shrink).
+     */
+    nativeReady(height: number) {
+      return !disposed && issued > 0 ? native.expanded && confirmed.expanded && confirmed.height >= Math.min(560, height) && same(native, confirmed) : false;
+    },
+    reset() { cancel(); ++generation; ++issued; last = undefined; native = { expanded: false, height: 40, pinned: false }; confirmed = native; },
     dispose() { disposed = true; cancel(); ++generation; },
   };
 }

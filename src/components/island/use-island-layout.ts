@@ -54,6 +54,9 @@ export function useIslandLayout({ active, expanded, pinned, requestKey, content 
     }
     if (!expanded) setVisibleExpanded(false);
     controller.current?.request({ expanded, height: expanded ? height : 40, pinned }, reducedMotion);
+    // One state machine: when the OS window is already expanded and tall enough (re-hover during the pending shrink,
+    // or growth of an open card) there is no native round trip to wait for, so the capsule opens in this same commit.
+    if (expanded && controller.current?.nativeReady(height)) setVisibleExpanded(true);
   }, [active, expanded, height, pinned, reducedMotion]);
   return {
     height: visibleExpanded ? Math.min(height, viewportHeight) : 40,

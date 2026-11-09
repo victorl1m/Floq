@@ -4,20 +4,21 @@
 * { box-sizing:border-box; }
 html, body, #root { margin:0; width:100%; height:100%; overflow:hidden; scrollbar-width:none; background:transparent; }
 button, textarea, input { font:inherit; }
-.island { position:relative; width:var(--island-width,440px); margin-left:calc((100% - var(--island-width,440px)) / 2); max-height:560px; overflow:hidden; scrollbar-width:none; border-radius:34px; background:#000; transform-origin:top center; clip-path:inset(0 0 0 round 34px); transition:clip-path 320ms cubic-bezier(.2,.8,.2,1), border-radius 320ms cubic-bezier(.2,.8,.2,1), height 320ms cubic-bezier(.2,.8,.2,1); will-change:height,clip-path; }
-.island.collapsed { height:40px; overflow:hidden; border-radius:20px; clip-path:inset(0 max(0px,calc((var(--island-width,440px) - 220px) / 2)) 0 round 20px); }
+.island { position:relative; width:var(--island-width,440px); margin-left:calc((100% - var(--island-width,440px)) / 2); max-height:560px; overflow:hidden; scrollbar-width:none; border-radius:34px; background:#000; transform-origin:top center; clip-path:inset(0 0 0 round 34px); transition:clip-path 300ms cubic-bezier(.2,.8,.2,1), border-radius 300ms cubic-bezier(.2,.8,.2,1), height 300ms cubic-bezier(.2,.8,.2,1); will-change:height,clip-path; }
+/* Hover is owned by CSS transitions only (no re-triggerable keyframes): every phase retargets from its current value, so it reverses mid-flight. Expanding: shell 300ms, pill out 80ms, content in after 100ms. Collapsing: content out 90ms, pill back after 150ms, shell 260ms after 40ms. */
+.island.collapsed { height:40px; overflow:hidden; border-radius:20px; transition:clip-path 260ms cubic-bezier(.2,.8,.2,1) 40ms, border-radius 260ms cubic-bezier(.2,.8,.2,1) 40ms, height 260ms cubic-bezier(.2,.8,.2,1) 40ms; clip-path:inset(0 max(0px,calc((var(--island-width,440px) - 220px) / 2)) 0 round 20px); }
 .island.expanded { min-height:40px; }
-.island-header { position:absolute; inset:0 0 auto; z-index:1; opacity:1; transition:opacity 140ms ease 100ms; height:40px; display:flex; align-items:center; justify-content:center; gap:9px; padding:0 16px; font-size:12px; white-space:nowrap; }
-.expanded .island-header { opacity:0; pointer-events:none; transition:opacity 90ms ease; }
+.island-header { position:absolute; inset:0 0 auto; z-index:1; opacity:1; transition:opacity 140ms ease 150ms; height:40px; display:flex; align-items:center; justify-content:center; gap:9px; padding:0 16px; font-size:12px; white-space:nowrap; }
+.expanded .island-header { opacity:0; pointer-events:none; transition:opacity 80ms ease; }
 .island-header strong { font-weight:600; }
 .island-dot { width:7px; height:7px; border-radius:50%; background:#34d27b; box-shadow:0 0 8px #34d27b; animation:dot-pulse 1.8s ease-in-out infinite; }
 .island-wave { display:flex; align-items:center; gap:2px; height:16px; margin-left:4px; }
 .island-wave i { width:2px; height:7px; border-radius:2px; background:#34d27b; }
 .island-wave i:nth-child(2), .island-wave i:nth-child(4) { height:12px; }.island-wave i:nth-child(3) { height:16px; }
-.island-content { max-height:var(--island-content-max-height,558px); overflow-x:hidden; overflow-y:auto; scrollbar-width:none; padding:18px; opacity:1; transform:translateY(0); transition:opacity 180ms ease 70ms, transform 240ms cubic-bezier(.2,.8,.2,1) 40ms; }
-.collapsed .island-content { opacity:0; transform:translateY(-4px); transition:opacity 110ms ease, transform 160ms ease; }
-/* The next card reveals gently while the shell adjusts to its measured height. */
-.expanded .island-content:not(.island-result) { animation:island-request-enter 180ms ease both; }
+.island-content { max-height:var(--island-content-max-height,558px); overflow-x:hidden; overflow-y:auto; scrollbar-width:none; padding:18px; opacity:1; transform:translateY(0); transition:opacity 180ms ease 100ms, transform 240ms cubic-bezier(.2,.8,.2,1) 100ms; }
+.collapsed .island-content { opacity:0; transform:translateY(-4px); transition:opacity 90ms ease, transform 160ms ease; }
+/* The next card reveals gently, only when the displayed card changes while open (React adds .island-card-enter). No fill-mode: transitions own the resting opacity. */
+.expanded .island-content.island-card-enter:not(.island-result) { animation:island-request-enter 180ms ease; }
 @keyframes island-request-enter { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
 .island-card-header { display:flex; align-items:center; gap:10px; min-height:36px; }
 .island-badge { position:relative; display:grid; place-items:center; flex:none; width:34px; height:34px; border-radius:50%; background:#2a2a2c; color:#fff; }
@@ -44,14 +45,14 @@ button.island-circle { display:grid; place-items:center; padding:0; width:36px; 
 .island-cycle { display:flex; justify-content:center; align-items:center; gap:7px; margin:12px 0 -5px; }.island-cycle button { display:flex; padding:3px; background:transparent; color:#8e8e93; }.island-queue { display:flex; gap:5px; }.island-queue span { width:5px; height:5px; border-radius:50%; background:#636366; }.island-queue span.active { background:#fff; }
 .island-error { color:#ff453a; }.island-spinner { animation:spin .7s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } } @keyframes dot-pulse { 50% { opacity:.55; transform:scale(.8); } } @keyframes shell-unfurl { 0% { clip-path:inset(0 calc(50% - 100px) calc(100% - 40px) round 20px); } 35% { clip-path:inset(0 0 calc(100% - 40px) round 20px); } 100% { clip-path:inset(0 0 0 round 34px); } }
-@media (prefers-reduced-motion:reduce) { .island.expanded { animation:none; } .island, .island-content, .collapsed .island-content { transform:none; filter:none; transition:none; } .island-header { transition:none; } .expanded .island-content:not(.island-result) { animation:none; } .island-dot, .island-spinner { animation:none; } }
+@media (prefers-reduced-motion:reduce) { .island.expanded { animation:none; } .island, .island.collapsed, .island-content, .collapsed .island-content { transform:none; filter:none; transition:none; } .island-header, .expanded .island-header { transition:none; } .expanded .island-content.island-card-enter { animation:none; } .island-dot, .island-spinner { animation:none; } }
 
 /* The window remains transparent; only the capsule itself is painted. */
 .island.island-enter { animation:island-enter 360ms cubic-bezier(.2,.8,.2,1) both; }
 .island.island-exit { animation:island-exit 260ms ease-in both; pointer-events:none; }
 .island.island-pulse-a { animation:island-pulse-a 420ms ease-out; }
 .island.island-pulse-b { animation:island-pulse-b 420ms ease-out; }
-.island-enter .island-header, .island-enter.expanded .island-content { animation:island-content-enter 220ms ease 80ms both; }
+.island-enter.collapsed .island-header, .island-enter.expanded .island-content { animation:island-content-enter 220ms ease 80ms backwards; }
 .island-pulse-a .island-badge, .island-pulse-a .island-count { animation:island-badge-a 420ms ease-out; }
 .island-pulse-b .island-badge, .island-pulse-b .island-count { animation:island-badge-b 420ms ease-out; }
 @keyframes island-enter { from { transform:translateY(-6px) scale(.985); opacity:0; } to { transform:translateY(0) scale(1); opacity:1; } }

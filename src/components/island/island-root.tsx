@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { acceptSnapshot, validAnswers, type AttentionItem, type DecisionAnswer, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
@@ -30,6 +30,8 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const pinnedRef = useRef(false);
   pinnedRef.current = pinned;
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** True while the pointer is really over the DOM island: a native "collapse" must not close it under the cursor. */
+  const hovered = useRef(false);
   const [selected, setSelected] = useState<string>();
   const [drafts, setDrafts] = useState<Record<string, DecisionAnswer[]>>({});
   const [localError, setLocalError] = useState<string>();
@@ -86,7 +88,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
           }
         });
         if (disposed) { snapshotListener(); return; } unlisteners.push(snapshotListener);
-        const hoverListener = await listen<{expanded:boolean}>('island:hover', ({payload}) => { if (payload.expanded || !outcomeRef.current) setExpanded(payload.expanded); });
+        const hoverListener = await listen<{expanded:boolean}>('island:hover', ({payload}) => {
+          if (payload.expanded) { clearTimeout(leaveTimer.current); setExpanded(true); }
+          else if (!outcomeRef.current && !hovered.current && !pinnedRef.current) setExpanded(false);
+        });
         if (disposed) { hoverListener(); return; } unlisteners.push(hoverListener);
         await send({type:'ready'});
         retry = setInterval(() => { if (!previous.current) void send({type:'ready'}).catch(() => undefined); }, 1000);
@@ -101,6 +106,9 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const current = submission && lastCurrent.current ? lastCurrent.current : active;
   const answers = current ? drafts[current.id] ?? [] : [];
   useEffect(() => { setLocalError(undefined); }, [current?.id]);
+  // The "next card" reveal plays only when the displayed card changes while the island is open, never on every expand.
+  const [cardEnter, setCardEnter] = useState(false);
+  const shownCard = useRef<string | undefined>(undefined);
   const shellLayout = useIslandLayout({
     active: !!snapshot?.items.length && (!!displaySnapshot || !!outcome),
     expanded,
@@ -108,6 +116,12 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     requestKey: outcome ? `result:${outcome.id}` : current?.id,
     content,
   });
+  useLayoutEffect(() => {
+    const changed = shownCard.current !== undefined && current?.id !== undefined && shownCard.current !== current.id;
+    shownCard.current = current?.id ?? shownCard.current;
+    if (changed && shellLayout.expanded) setCardEnter(true);
+  }, [current?.id]);
+  useLayoutEffect(() => { if (!shellLayout.expanded) setCardEnter(false); }, [shellLayout.expanded]);
   useEffect(() => {
     const id = submitting.current;
     if (!id || !snapshot) return;
@@ -179,16 +193,16 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     const id = current.id;
     setDrafts(old => ({ ...old, [id]: [...(old[id] ?? []).filter(a => a.questionId !== questionId), { questionId, optionIds, text }] }));
   };
-  if ((!displaySnapshot || !items.length) && !outcome) return null;
+  if ((!displaySnapshot || !items.length) && !outcome) { hovered.current = false; return null; }
   // While the result is shown, queue motion (an exit from the emptied queue, or an enter from a new request) must not replay over it.
   const shownMotion = outcome ? 'idle' : motion;
-  return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { islandLog('dom enter'); clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { islandLog('dom leave'); clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
+  return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { islandLog('dom enter'); hovered.current = true; clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { islandLog('dom leave'); hovered.current = false; clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
     <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
     {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
       <strong className="island-result-label">{OUTCOME_LABEL[outcome.kind]}</strong>
       {outcome.title && <span className="island-result-sub">{outcome.title}</span>}
-    </div> : current && <div key={current.id} className="island-content" ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
+    </div> : current && <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
         <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${actorLabel(current.approval.requester)}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>

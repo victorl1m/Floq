@@ -51,3 +51,45 @@ test('reduced motion applies every change immediately', () => {
   c.request({ expanded: false, height: 40, pinned: false }, true);
   assert.equal(applied.length, 3);
 });
+
+const tick = () => new Promise(r => setImmediate(r));
+
+test('nativeReady: false until the resize resolved, true again for a re-expand during the pending shrink', async () => {
+  const { c, applied, advance } = harness();
+  assert.equal(c.nativeReady(300), false, 'collapsed window is never ready');
+  c.request({ expanded: true, height: 300, pinned: false });
+  assert.equal(c.nativeReady(300), false, 'resize requested but not confirmed yet');
+  await tick();
+  assert.equal(c.nativeReady(300), true);
+  assert.equal(c.nativeReady(320), false, 'window is shorter than the card needs');
+  c.request({ expanded: false, height: 40, pinned: false });
+  advance(ISLAND_MORPH_MS - 100);
+  assert.equal(c.nativeReady(300), true, 'shrink still pending: window is still big');
+  c.request({ expanded: true, height: 300, pinned: false });
+  assert.equal(applied.length, 1, 're-expand during the pending shrink issues no native call');
+  assert.equal(c.nativeReady(300), true, 'so the capsule can open immediately');
+  advance(1000);
+  assert.equal(applied.length, 1, 'the cancelled shrink never fires');
+});
+
+test('nativeReady: false once the shrink was issued (in flight) and until the next resize is confirmed', async () => {
+  const { c, advance } = harness();
+  c.request({ expanded: true, height: 300, pinned: false });
+  await tick();
+  c.request({ expanded: false, height: 40, pinned: false });
+  advance(ISLAND_MORPH_MS);
+  assert.equal(c.nativeReady(300), false, 'native window is collapsing');
+  await tick();
+  c.request({ expanded: true, height: 300, pinned: false });
+  assert.equal(c.nativeReady(300), false, 'growth not confirmed yet: wait for the round trip');
+  await tick();
+  assert.equal(c.nativeReady(300), true);
+});
+
+test('reset forgets the confirmed window', async () => {
+  const { c } = harness();
+  c.request({ expanded: true, height: 300, pinned: false });
+  await tick();
+  c.reset();
+  assert.equal(c.nativeReady(300), false);
+});
