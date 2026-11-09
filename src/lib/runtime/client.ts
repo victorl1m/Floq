@@ -8,6 +8,7 @@ import type {
   CanvasNote,
   Memory,
   MemoryEvent,
+  MemoryGraph,
   MemoryInput,
   MemoryPatch,
   MemoryStatus,
@@ -865,6 +866,14 @@ export class RuntimeClient {
     if (opts.includeInvalid) qs.set("include_invalid", "1");
     const query = qs.toString();
     return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/memories${query ? `?${query}` : ""}`);
+  }
+  async projectMemoryGraph(projectId: string, opts: { includeInvalid?: boolean; k?: number; min?: number } = {}): Promise<MemoryGraph> {
+    const qs = new URLSearchParams();
+    if (opts.includeInvalid) qs.set("include_invalid", "1");
+    if (opts.k !== undefined) qs.set("k", String(opts.k));
+    if (opts.min !== undefined) qs.set("min", String(opts.min));
+    const query = qs.toString();
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/memories/graph${query ? `?${query}` : ""}`);
   }
   async createMemory(projectId: string, input: MemoryInput & { text: string }): Promise<Memory> {
     return this.call<Memory>("POST", `/v1/projects/${encodeURIComponent(projectId)}/memories`, input);

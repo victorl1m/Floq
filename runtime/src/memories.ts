@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
-import { createClient } from "redis";
+import { createClient, RESP_TYPES } from "redis";
+import { buildGraph, GRAPH_MAX_NODES, type GraphInput, type GraphResult } from "./memoryGraph.js";
 import { HttpError, badRequest, conflict, notFound } from "./errors.js";
 import { log } from "./logger.js";
 import { EMBED_DIMS, toFloat32Blob, type Embedder } from "./embeddings.js";
@@ -228,7 +229,8 @@ const requireId = (v: unknown): string => { if (typeof v !== "string" || !UUID.t
 // ---------- the service ----------
 
 export interface RedisLike {
-  sendCommand(args: Array<string | Buffer>): Promise<unknown>;
+  /** `binary`: blob strings come back as Buffers (stored vectors). */
+  sendCommand(args: Array<string | Buffer>, binary?: boolean): Promise<unknown>;
   readonly isReady: boolean;
   /** Quit the connection (stop reconnecting). */
   close?(): Promise<void>;
@@ -296,7 +298,7 @@ export class MemoryService {
       raw.on("ready", () => { this.warned = false; void this.prepare(); });
       raw.on("end", () => { this.indexReady = false; });
       this.raw = raw as never;
-      this.client = { sendCommand: (args) => raw.sendCommand(args as never) as Promise<unknown>, get isReady() { return raw.isReady; } };
+      this.client = { sendCommand: (args, binary) => raw.sendCommand(args as never, binary ? ({ typeMapping: { [RESP_TYPES.BLOB_STRING]: Buffer } } as never) : undefined) as Promise<unknown>, get isReady() { return raw.isReady; } };
       raw.connect().catch((error: unknown) => log.warn("memory.redis_connect_failed", { error: this.scrub(msg(error)) }));
     } catch (error) {
       this.invalidUrl = true;
@@ -519,6 +521,31 @@ export class MemoryService {
       const reply = await this.cmd("FT.SEARCH", INDEX_ALIAS, filter, "NOCONTENT", "SORTBY", "updated_at", "DESC", "LIMIT", 0, limit, "DIALECT", 2);
       return this.owned(ctx, o.includeInvalid, await this.loadMany(parseSearchReply(reply, false).map((r) => r.id))).map((m) => publicMemory(m));
     });
+  }
+
+  /** Memory graph: nodes + supersedes + top-k similarity edges (cosine of stored vectors when every node has one, keywords otherwise). */
+  async graph(ctx: MemoryCtx, o: { includeInvalid?: boolean; k?: unknown; min?: unknown } = {}): Promise<GraphResult> {
+    const list = await this.list(ctx, { limit: GRAPH_MAX_NODES, includeInvalid: o.includeInvalid });
+    return this.guard(async () => {
+      const input: GraphInput[] = list.map((m) => ({ id: m.id, title: m.title, text: m.text, supersededBy: m.supersededBy }));
+      if (this.embedder.mode !== "off" && this.vectorsComplete && this.indexDims) {
+        const rows = await Promise.all(list.map((m) => this.cmd2(["HMGET", "mem:" + m.id, "embedding", "embed_model"]))) as Array<Array<Buffer | null>>;
+        rows.forEach((r, i) => {
+          const blob = r?.[0], model = r?.[1]?.toString("utf8");
+          if (Buffer.isBuffer(blob) && blob.length === this.indexDims * 4 && model === this.embedder.model) {
+            const copy = Buffer.from(blob);
+            input[i].vector = new Float32Array(copy.buffer, copy.byteOffset, this.indexDims);
+          }
+        });
+      }
+      const k = o.k === undefined ? undefined : Number(o.k), min = o.min === undefined ? undefined : Number(o.min);
+      return buildGraph(input, { k, min });
+    });
+  }
+
+  private cmd2(args: string[]): Promise<unknown> {
+    if (!this.client) return Promise.reject(disabled());
+    return this.client.sendCommand(args, true);
   }
 
   async search(ctx: MemoryCtx, o: { query: unknown; type?: unknown; k?: unknown; includeInvalid?: boolean }): Promise<{ mode: "hybrid" | "fulltext"; results: Memory[] }> {
@@ -760,7 +787,7 @@ export class MemoryService {
     return purged;
   }
 
-  async update(ctx: MemoryCtx, rawId: unknown, patch: { text?: unknown; title?: unknown; type?: unknown; pinned?: unknown; invalidated?: unknown }): Promise<Memory> {
+  async update(ctx: MemoryCtx, rawId: unknown, patch: { text?: unknown; title?: unknown; type?: unknown; pinned?: unknown; invalidated?: unknown; reason?: unknown }): Promise<Memory> {
     const text = patch.text === undefined ? undefined : parseText(patch.text);
     const title = patch.title === undefined ? undefined : parseTitle(patch.title);
     const type = patch.type === undefined ? undefined : parseType(patch.type);
@@ -792,7 +819,7 @@ export class MemoryService {
           }
           set.push("text", text, "content_hash", newHash);
         }
-        if (invalidated === true && before.valid) set.push("valid", "0", "invalidated_at", String(Date.now()), "invalid_reason", "Invalidated by " + ctx.actor);
+        if (invalidated === true && before.valid) set.push("valid", "0", "invalidated_at", String(Date.now()), "invalid_reason", typeof patch.reason === "string" && patch.reason.trim() ? patch.reason.trim().slice(0, 500) : "Invalidated by " + ctx.actor);
         if (invalidated === false && !before.valid) {
           const other = await this.findByHash(before.userId, pid, newHash);
           if (other && other !== before.id) throw conflict("Another valid memory already holds this text", "memory_duplicate");

@@ -87,6 +87,11 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  /* Memory types (Okabe-Ito based, distinct under common colour-vision deficiencies) */
+  --mem-fact: oklch(0.52 0.15 248);
+  --mem-decision: oklch(0.52 0.19 315);
+  --mem-procedure: oklch(0.52 0.13 165);
+  --mem-episode: oklch(0.58 0.15 65);
   --radius: 0.625rem;
   --ascii-skeleton: #5e5e66;
   --ascii-accent: #f97316;
@@ -166,6 +171,11 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  /* Memory types (Okabe-Ito based, distinct under common colour-vision deficiencies) */
+  --mem-fact: oklch(0.74 0.13 248);
+  --mem-decision: oklch(0.74 0.15 315);
+  --mem-procedure: oklch(0.76 0.14 165);
+  --mem-episode: oklch(0.8 0.14 70);
   --sidebar: #1c1c1e;
   --sidebar-foreground: #f5f5f7;
   --sidebar-primary: #f97316;
@@ -1660,3 +1670,9 @@ html[data-sidebar-resizing="true"] iframe, html[data-sidebar-resizing="true"] we
   :root[data-native-material] :is(.settings-dialog, .app-dialog).floq-frosted-dialog { background: Canvas; }
 }
 /* === end native window material === */
+
+/* === Memory graph ===========================================================================
+   The graph is a <canvas> drawn by GraphEngine (memory-graph-view.tsx): colours come from the CSS variables above
+   (--mem-*, --muted-foreground, --primary-text, --foreground, --background), so only the element itself is styled here. */
+canvas.memgraph { image-rendering: auto; }
+canvas.memgraph:focus-visible { outline: none; }

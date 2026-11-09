@@ -1037,6 +1037,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (q.trim()) { const r = await memories.search(ctx, { query: q, type, k: 50, includeInvalid }); return send(res, 200, { memories: r.results, mode: r.mode }); }
       return send(res, 200, { memories: await memories.list(ctx, { type, limit: 500, includeInvalid }), mode: memories.status().ready ? "hybrid" : "fulltext" });
     }
+    const memGraph = /^\/v1\/projects\/([\w-]+)\/memories\/graph$/.exec(url.pathname);
+    if (memGraph && method === "GET") {
+      if (!memories?.enabled()) throw memoryOff();
+      await memories.requireProject(userId, memGraph[1]);
+      return send(res, 200, await memories.graph(memCtx(memGraph[1]), { includeInvalid: url.searchParams.get("include_invalid") === "1", k: url.searchParams.get("k") ?? undefined, min: url.searchParams.get("min") ?? undefined }));
+    }
     const memOne = /^\/v1\/memories\/([\w-]+)$/.exec(url.pathname);
     const memEvents = /^\/v1\/memories\/([\w-]+)\/events$/.exec(url.pathname);
     if ((memOne && (method === "PATCH" || method === "DELETE")) || (memEvents && method === "GET")) {

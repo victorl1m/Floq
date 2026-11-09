@@ -684,7 +684,9 @@ export interface Memory {
 }
 export type MemorySearchMode = "hybrid" | "fulltext";
 export interface MemoryInput { text?: string; title?: string; type?: MemoryType; pinned?: boolean; scope?: MemoryScope }
-export interface MemoryPatch { text?: string; title?: string; type?: MemoryType; pinned?: boolean; invalidated?: boolean }
+export interface MemoryPatch { text?: string; title?: string; type?: MemoryType; pinned?: boolean; invalidated?: boolean; /** with invalidated: true */ reason?: string }
+export interface MemoryGraphEdge { source: string; target: string; weight: number; kind: "semantic" | "keyword" | "supersedes" }
+export interface MemoryGraph { nodes: Array<{ id: string }>; edges: MemoryGraphEdge[]; mode: "semantic" | "keyword" }
 export interface MemoryEvent {
   id: number | string;
   memoryId: string;
@@ -695,4 +697,4 @@ export interface MemoryEvent {
   after: Partial<Memory> | null;
   createdAt: string;
 }
-export interface MemoryStatus { /** FLOQ_REDIS_URL is set (stable); redis = reachable now */ enabled?: boolean; redis: boolean; backend?: "redis" | "dragonfly" | null; embeddings: "local" | "openai" | "off"; model: string; ready: boolean; migration?: { done: boolean; notes: number; added: number; pinned: number; at: string | null } | null }
+export interface MemoryStatus { /** FLOQ_REDIS_URL is set (stable); redis = reachable now */ enabled?: boolean; redis: boolean; backend?: "redis" | "dragonfly" | null; embeddings: "local" | "openai" | "off"; model: string; ready: boolean; migration?: { done: boolean; notes: number; added: number; pinned: number; at: string | null } | null; vectors?: boolean }
