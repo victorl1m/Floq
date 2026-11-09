@@ -220,7 +220,9 @@ export function ApprovalChip() {
 export function ApprovalHost({ suppressed = false }: { suppressed?: boolean }) {
   const { client } = useRuntime();
   useApprovalSync(client);
-  const { items, deferred, index } = useApprovalState();
+  const { items, deferred, index, manual } = useApprovalState();
+  // The island answers approvals while it is up; the footer chip or pill (manual) still opens the dialog on request.
+  suppressed = suppressed && !manual;
   const ordered = sortedItems(items);
   const current = ordered[Math.min(index, ordered.length - 1)];
   const pending = pendingCount(items);

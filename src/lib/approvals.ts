@@ -20,8 +20,8 @@ export interface ApprovalItem {
   state: "pending" | "expired" | "allowed" | "denied";
 }
 
-interface State { items: ApprovalItem[]; /** The user pressed Esc: the dialog stays closed (pill + footer chip remain) until a new request arrives. */ deferred: boolean; /** Newest-first index of the card in front. */ index: number }
-let state: State = { items: [], deferred: false, index: 0 };
+interface State { items: ApprovalItem[]; /** The user pressed Esc: the dialog stays closed (pill + footer chip remain) until a new request arrives. */ deferred: boolean; /** Newest-first index of the card in front. */ index: number; /** The user clicked the footer chip or pill: show the dialog even while the island is handling approvals. */ manual: boolean }
+let state: State = { items: [], deferred: false, index: 0, manual: false };
 const listeners = new Set<() => void>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const EXPIRED_VISIBLE_MS = 5000;
@@ -82,12 +82,12 @@ export function upsertApproval(approval: ApprovalRequest) {
   const item: ApprovalItem = { approval, deadline: Date.now() + approval.remainingMs, state: "pending" };
   if (existing) { set({ ...state, items: state.items.map((i) => (i.approval.id === approval.id ? item : i)) }); return; }
   // A new request always shows itself again, even when an earlier one was deferred.
-  set({ items: [...state.items, item], deferred: false, index: 0 });
+  set({ items: [...state.items, item], deferred: false, index: 0, manual: false });
   attention();
 }
 
-export function deferApprovals() { set({ ...state, deferred: true }); }
-export function reopenApprovals() { set({ ...state, deferred: false }); }
+export function deferApprovals() { set({ ...state, deferred: true, manual: false }); }
+export function reopenApprovals() { set({ ...state, deferred: false, manual: true }); }
 export function selectApproval(index: number) {
   const count = state.items.length;
   if (count) set({ ...state, index: ((index % count) + count) % count });
@@ -168,7 +168,7 @@ export function useApprovalSync(client: RuntimeClient | null) {
       window.removeEventListener("focus", onFocus);
       ws?.close();
       for (const id of [...timers.keys()]) clearTimer(id);
-      set({ items: [], deferred: false, index: 0 });
+      set({ items: [], deferred: false, index: 0, manual: false });
     };
   }, [client]);
 }
