@@ -135,6 +135,10 @@ services:
       FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
       FLOQ_SESSION_MAX_LIFETIME_MS: ${FLOQ_SESSION_MAX_LIFETIME_MS:-3600000}
       FLOQ_LOG_LEVEL: ${FLOQ_LOG_LEVEL:-info}
+      # Claude Code prompt cache (see runtime/README.md "Prompt cache"). auto = let the CLI choose; 5m | 1h force it.
+      FLOQ_CACHE_TTL: ${FLOQ_CACHE_TTL:-auto}
+      FLOQ_CACHE_HELPER_TTL: ${FLOQ_CACHE_HELPER_TTL:-auto}
+      FLOQ_CACHE_DISABLE: ${FLOQ_CACHE_DISABLE:-0}
       # Agent memory (optional; see the dragonfly / redis services). Empty FLOQ_REDIS_URL = memory off.
       FLOQ_REDIS_URL: ${FLOQ_REDIS_URL:-}
       FLOQ_EMBEDDINGS: ${FLOQ_EMBEDDINGS:-local}

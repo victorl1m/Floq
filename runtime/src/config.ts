@@ -66,6 +66,8 @@ export interface ProviderBinConfig {
   shell: string;
 }
 
+export type CacheTtl = "auto" | "5m" | "1h";
+
 export interface Config {
   version: string;
   host: string;
@@ -113,6 +115,15 @@ export interface Config {
   codexModelsOverridden: boolean;
   /** OAuth endpoints and public client ids used to refresh subscription logins (extracted from the installed CLIs). */
   oauth: Record<"claude" | "codex", { tokenUrl: string; clientId: string }>;
+  /**
+   * Claude Code prompt-cache TTL for the main conversation (`promptCacheTtl`). `auto` writes nothing, so the CLI
+   * picks (1h on a subscription within its limits, 5m otherwise). Forcing `1h` doubles the write cost on extra usage.
+   */
+  cacheTtl: CacheTtl;
+  /** TTL for helper calls outside the main conversation (`subagentPromptCacheTtl`); `auto` writes nothing. */
+  cacheHelperTtl: CacheTtl;
+  /** Debug kill switch: sets DISABLE_PROMPT_CACHING=1 for Claude sessions. */
+  cacheDisable: boolean;
   defaultCols: number;
   defaultRows: number;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -128,6 +139,12 @@ function readInt(raw: string | undefined, fallback: number, min = 0, max = Numbe
 function readBool(raw: string | undefined, fallback = false): boolean {
   if (raw === undefined) return fallback;
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
+/** FLOQ_CACHE_TTL / FLOQ_CACHE_HELPER_TTL: `5m` or `1h`; anything else (including unset) is `auto`. */
+export function parseCacheTtl(raw: string | undefined): CacheTtl {
+  const value = raw?.trim().toLowerCase();
+  return value === "5m" || value === "1h" ? value : "auto";
 }
 
 function readList(raw: string | undefined, fallback: string[]): string[] {
@@ -233,6 +250,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         clientId: env.FLOQ_CODEX_OAUTH_CLIENT_ID?.trim() || "app_EMoamEEZ73f0CkXaXp7hrann",
       },
     },
+    cacheTtl: parseCacheTtl(env.FLOQ_CACHE_TTL),
+    cacheHelperTtl: parseCacheTtl(env.FLOQ_CACHE_HELPER_TTL),
+    cacheDisable: readBool(env.FLOQ_CACHE_DISABLE, false),
     defaultCols: readInt(env.FLOQ_DEFAULT_COLS, DEFAULTS.defaultCols, 20, 500),
     defaultRows: readInt(env.FLOQ_DEFAULT_ROWS, DEFAULTS.defaultRows, 5, 200),
     logLevel: (env.FLOQ_LOG_LEVEL?.trim() as Config["logLevel"]) || "info",

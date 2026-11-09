@@ -63,3 +63,47 @@ test("Claude trust config reads regular files but rejects symlink targets", () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Claude cache TTL: auto writes no keys, 1h/5m set promptCacheTtl, helper TTL maps to subagentPromptCacheTtl", () => {
+  for (const cache of [undefined, {}, { ttl: "auto", helperTtl: "auto" }] as const) {
+    const settings = claudeStartupSettings({}, false, cache);
+    assert.equal("promptCacheTtl" in settings, false);
+    assert.equal("subagentPromptCacheTtl" in settings, false);
+  }
+  assert.equal(claudeStartupSettings({}, false, { ttl: "1h" }).promptCacheTtl, "1h");
+  assert.equal(claudeStartupSettings({}, false, { ttl: "5m" }).promptCacheTtl, "5m");
+  const helper = claudeStartupSettings({}, false, { helperTtl: "1h" });
+  assert.equal(helper.subagentPromptCacheTtl, "1h");
+  assert.equal("promptCacheTtl" in helper, false);
+});
+
+test("Claude cache TTL: the user's own setting wins over the Floq default", () => {
+  const settings = claudeStartupSettings({ promptCacheTtl: "5m", subagentPromptCacheTtl: "5m" }, false, { ttl: "1h", helperTtl: "1h" });
+  assert.equal(settings.promptCacheTtl, "5m");
+  assert.equal(settings.subagentPromptCacheTtl, "5m");
+});
+
+test("Claude cache TTL: a value Floq wrote is removed when the config returns to auto; a user's value survives", () => {
+  const first = claudeStartupSettings({}, false, { ttl: "1h", helperTtl: "1h" });
+  assert.equal(first.promptCacheTtl, "1h");
+  assert.deepEqual(first.floqManaged, { promptCacheTtl: "1h", subagentPromptCacheTtl: "1h" });
+  // Relaunch with the same config: stable, still Floq's.
+  assert.deepEqual(claudeStartupSettings(first, false, { ttl: "1h", helperTtl: "1h" }), first);
+  // Back to auto: Floq's leftovers go away, marker too.
+  const auto = claudeStartupSettings(first, false, { ttl: "auto", helperTtl: "auto" });
+  assert.equal("promptCacheTtl" in auto, false);
+  assert.equal("subagentPromptCacheTtl" in auto, false);
+  assert.equal("floqManaged" in auto, false);
+  // Another TTL replaces Floq's value.
+  assert.equal(claudeStartupSettings(first, false, { ttl: "5m" }).promptCacheTtl, "5m");
+  assert.equal("subagentPromptCacheTtl" in claudeStartupSettings(first, false, { ttl: "5m" }), false);
+  // The user changed it to a different value after Floq wrote 1h: never touched, never overwritten.
+  const edited = { ...first, promptCacheTtl: "5m" };
+  assert.equal(claudeStartupSettings(edited, false, { ttl: "auto" }).promptCacheTtl, "5m");
+  assert.equal(claudeStartupSettings(edited, false, { ttl: "1h" }).promptCacheTtl, "5m");
+  assert.equal("promptCacheTtl" in (claudeStartupSettings(edited, false, { ttl: "auto" }).floqManaged as object ?? {}), false);
+  // A user value equal to the Floq default, set before Floq wrote anything, is not claimed by Floq.
+  const own = claudeStartupSettings({ promptCacheTtl: "1h" }, false, { ttl: "1h" });
+  assert.equal("floqManaged" in own, false);
+  assert.equal(claudeStartupSettings(own, false, { ttl: "auto" }).promptCacheTtl, "1h");
+});

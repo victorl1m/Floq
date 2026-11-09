@@ -1,12 +1,45 @@
+import type { CacheTtl } from "./config.js";
 import { constants, fstatSync, lstatSync, openSync, readSync, closeSync } from "node:fs";
 
-/** Keep startup consent aligned with the user's explicit Floq auto-approve choice. */
-export function claudeStartupSettings(settings: Record<string, unknown>, autoApprove: boolean): Record<string, unknown> {
+export interface ClaudeCacheOptions {
+  ttl?: CacheTtl;
+  helperTtl?: CacheTtl;
+}
+
+const CACHE_KEYS = ["promptCacheTtl", "subagentPromptCacheTtl"] as const;
+
+/**
+ * Keep startup consent aligned with the user's explicit Floq auto-approve choice.
+ *
+ * Cache TTLs are Claude Code (2.1.x) internal setting keys, written only when not `auto`. This file is read back and
+ * rewritten on every launch, so what Floq wrote would look like the user's own choice next time. `floqManaged`
+ * records the values Floq wrote: a key that still equals its recorded value is Floq's, and is removed or replaced when
+ * the config changes (back to `auto`, or another TTL). A key with any other value was set by the user and is never
+ * touched; it also takes precedence over the Floq default.
+ */
+export function claudeStartupSettings(settings: Record<string, unknown>, autoApprove: boolean, cache: ClaudeCacheOptions = {}): Record<string, unknown> {
   const env = settings.env && typeof settings.env === "object" && !Array.isArray(settings.env) ? settings.env as Record<string, unknown> : {};
+  const previous = settings.floqManaged && typeof settings.floqManaged === "object" && !Array.isArray(settings.floqManaged) ? settings.floqManaged as Record<string, unknown> : {};
+  const wanted: Record<(typeof CACHE_KEYS)[number], CacheTtl | undefined> = { promptCacheTtl: cache.ttl, subagentPromptCacheTtl: cache.helperTtl };
+  const base: Record<string, unknown> = { ...settings };
+  const managed: Record<string, string> = {};
+  const defaults: Record<string, string> = {};
+  for (const key of CACHE_KEYS) {
+    const want = wanted[key] && wanted[key] !== "auto" ? wanted[key] : undefined;
+    const written = typeof previous[key] === "string" ? previous[key] : undefined;
+    if (written !== undefined && base[key] === written) {
+      if (want === written) { managed[key] = written; continue; } // unchanged: still Floq's
+      delete base[key]; // Floq's leftover from an earlier config
+    }
+    if (want && base[key] === undefined) { defaults[key] = want; managed[key] = want; }
+  }
+  delete base.floqManaged;
   return {
     autoCompactEnabled: true,
     idleCompaction: true,
-    ...settings,
+    ...defaults,
+    ...base,
+    ...(Object.keys(managed).length ? { floqManaged: managed } : {}),
     env: { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "150000", ...env },
     tui: "fullscreen",
     skipDangerousModePermissionPrompt: autoApprove,

@@ -118,3 +118,11 @@ test("codex guidance carries the block inside the managed section, replaced on e
   assert.ok(!cleared.includes(WIRED_BEGIN));
   assert.equal(mergeFloqGuidance(cleared), cleared);
 });
+
+test("wired block is byte-identical for the same refs in any input order and carries no revision or timestamp text", () => {
+  const items = [agent("a1", "Reviewer"), note("n1", "Use pnpm"), note("n2", "Run tests"), keychain("k1", "Prod", ["A_TOKEN"])];
+  const block = buildWiredBlock(items);
+  assert.equal(buildWiredBlock([items[3], items[2], items[0], items[1]]), block);
+  assert.equal(buildWiredBlock([...items]), block);
+  assert.doesNotMatch(block, /updatedAt|\brev\b|\d{4}-\d{2}-\d{2}T/);
+});

@@ -27,6 +27,18 @@ Public signup stays off unless `FLOQ_ALLOW_SIGNUP=1`. A person without an accoun
 - Before a session starts the credential file is written (0600) to `~/.claude/.credentials.json` or the session's `CODEX_HOME/auth.json`; after each refresh the files of live sessions are rewritten. If a CLI refreshes by itself, its newer credential is adopted into Postgres. `DELETE /v1/providers/:id/login` removes the stored credential and the files.
 - Commit author is the user (settings `gitName`/`gitEmail`, else the connected GitHub identity `<id>+<login>@users.noreply.github.com`, else the Floq account). `FLOQ_GIT_COAUTHOR` (default `floqless <floq@flowless.app>`, empty disables it server-wide) is added as a `Co-authored-by` trailer by a system `commit-msg` hook that also strips Claude Code's and Codex's own trailers; users can turn it off with the `gitCoauthor` setting (`gitCoauthorAvailable` is false when the server disabled it). Claude Code's own attribution is disabled in each user's `~/.claude/settings.json` and its PR text becomes "Generated with Floq (https://floq.flowless.app)" while the co-author is on. Repositories with their own `core.hooksPath` (e.g. husky) override the system hook and get no trailer.
 
+## Prompt cache (Claude Code)
+
+Floq sessions sign in with the user's subscription, so Claude Code already uses a 1h prompt-cache TTL there (5m on an API key, Bedrock or Vertex), and every cache read refreshes the timer for free. That is the warming: Floq does not send keepalive turns. These variables only matter when you want to override the CLI. The setting keys behind them (`promptCacheTtl`, `subagentPromptCacheTtl`, `DISABLE_PROMPT_CACHING`) are Claude Code internals as of 2.1.319 and may be renamed; the default `auto` writes nothing, so a rename is harmless.
+
+| Variable | Values | Effect |
+| --- | --- | --- |
+| `FLOQ_CACHE_TTL` | `auto` (default), `5m`, `1h` | Main-conversation TTL. `5m`/`1h` write `promptCacheTtl` into each user's generated `~/.claude/settings.json` (a value the user set there themselves wins; Floq records what it wrote under `floqManaged` and removes its own value when the setting goes back to `auto` or changes, but never touches a different one). Forcing `1h` changes nothing on a subscription within its limits; on extra usage it doubles the cache write cost (2x instead of 1.25x), so leave `auto` unless you need it. |
+| `FLOQ_CACHE_HELPER_TTL` | `auto` (default), `5m`, `1h` | TTL for small helper calls outside the main conversation (`subagentPromptCacheTtl`). The CLI's own subagents are blocked in Floq, so this is rarely worth changing. |
+| `FLOQ_CACHE_DISABLE` | `1` to turn off | Debug only: sets `DISABLE_PROMPT_CACHING=1` for Claude sessions (forced after the vault, so a vault secret cannot undo it). Every request becomes a full-price cold write. |
+
+Invalid values fall back to `auto`.
+
 ## Host requirements
 
 - `/dev/fuse` and the capabilities in `docker-compose.yml` (see the comment there).

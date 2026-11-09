@@ -1,6 +1,6 @@
 [package]
 name = "floq"
-version = "0.6.26"
+version = "0.6.27"
 description = "Desktop workspace for running Claude Code and Codex agents on a server you host"
 authors = ["Victor Lima"]
 license = "MIT"

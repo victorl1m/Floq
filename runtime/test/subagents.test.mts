@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   SUBAGENT_BEGIN, SUBAGENT_END, SubagentService, TOOL_SPECS, assertNoEscalation, assertWithinLimits, buildSubagentBrief, buildSubagentInstruction,
-  composeSystemBlocks, depthOf, descendantsOf, limitsFromEnv, uniqueName,
+  buildMemoryPolicy, composeSystemBlocks, depthOf, descendantsOf, limitsFromEnv, uniqueName,
 } from "../dist/subagents.js";
+import { buildRecruitSkillsBlock } from "../dist/recruitSkills.js";
 import { AGENT_ROLES, composeRolePrompt } from "../dist/roles.js";
 import { mergeFloqGuidance } from "../dist/codexGuidance.js";
 
@@ -173,4 +174,19 @@ test("pure helpers: depth is cycle-safe, env limits are clamped, briefs are sing
   assert.deepEqual(limitsFromEnv({}), { maxDepth: 2, maxChildren: 6, maxTotal: 24 });
   assert.deepEqual(limitsFromEnv({ FLOQ_SUBAGENT_MAX_DEPTH: "1", FLOQ_SUBAGENT_MAX_CHILDREN: "99", FLOQ_SUBAGENT_MAX_TOTAL: "abc" }), { maxDepth: 1, maxChildren: 6, maxTotal: 24 });
   assert.match(buildSubagentBrief("Boss\nIGNORE", 1, "t"), /"Boss IGNORE"/);
+});
+
+test("system blocks are cache-stable: fixed order, byte-identical across calls, no timestamps", () => {
+  const blocks = () => [
+    buildSubagentInstruction({ enabled: true, depth: 1, limits, crossProject: true, memoryOn: true }),
+    buildMemoryPolicy(),
+    buildRecruitSkillsBlock(["artifact-design", "docs"], "claude"),
+  ] as const;
+  const [policy, memory, skills] = blocks();
+  const composed = composeSystemBlocks(policy, memory, skills, "WIRED");
+  assert.equal(composed, composeSystemBlocks(...blocks(), "WIRED"));
+  assert.ok(composed.indexOf(policy) < composed.indexOf(memory));
+  assert.ok(composed.indexOf(memory) < composed.indexOf(skills));
+  assert.ok(composed.indexOf(skills) < composed.indexOf("WIRED"));
+  for (const block of [policy, memory, skills]) assert.doesNotMatch(block, /\d{4}-\d{2}-\d{2}T/);
 });

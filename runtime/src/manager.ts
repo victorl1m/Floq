@@ -1393,7 +1393,7 @@ export class SessionManager {
     const env = buildSessionEnv(this.config, row.provider, profile, row.id);
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
-    Object.assign(env, forcedSessionEnv(row.provider)); // a vault entry must not undo the renderer pin
+    Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
     // Keychain secrets are NOT injected into the environment or written to files any more: an agent pulls each one with
     // `floq secret get NAME`, which the runtime logs so the user sees which keys were used. Clear files left by older versions.
     try { this.syncSecretFiles(handle, row.id, {}); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
@@ -1995,7 +1995,7 @@ export class SessionManager {
     }
     settings.attribution = { commit: "", pr: profile.gitCoauthor ? FLOQ_PR_ATTRIBUTION : "" };
     settings.includeCoAuthoredBy = false;
-    settings = claudeStartupSettings(settings, profile.claudeAutoApprove);
+    settings = claudeStartupSettings(settings, profile.claudeAutoApprove, { ttl: this.config.cacheTtl, helperTtl: this.config.cacheHelperTtl });
     mkdirOwned(handle.mountPath, dirname(path), handle.uid);
     writeFileOwned(path, JSON.stringify(settings, null, 2), handle.uid, 0o644);
   }

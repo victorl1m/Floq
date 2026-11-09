@@ -63,3 +63,34 @@ test("Claude sessions pin the fullscreen renderer; Codex and shell sessions do n
     delete process.env.CLAUDE_CODE_NO_FLICKER;
   }
 });
+
+test("FLOQ_CACHE_DISABLE puts DISABLE_PROMPT_CACHING=1 on Claude only; default env has no prompt-caching key", () => {
+  const cfg = { passHostEnv: false, sessionEnvAllow: [], cacheDisable: false };
+  const profile = { gitName: "", gitEmail: "", gitCoauthor: "", githubToken: "" };
+  const cachingKeys = (env: Record<string, string>) => Object.keys(env).filter((k) => k.includes("PROMPT_CACHING"));
+  process.env.ENABLE_PROMPT_CACHING_1H = "1";
+  try {
+    assert.deepEqual(cachingKeys(buildSessionEnv(cfg, "claude", profile, "s1")), [], "host ENABLE_PROMPT_CACHING_1H is dropped");
+    assert.deepEqual(cachingKeys(forcedSessionEnv("claude")), []);
+    const on = { ...cfg, cacheDisable: true };
+    assert.equal(buildSessionEnv(on, "claude", profile, "s1").DISABLE_PROMPT_CACHING, "1");
+    assert.equal(forcedSessionEnv("claude", { cacheDisable: true }).DISABLE_PROMPT_CACHING, "1");
+    for (const p of ["codex", "shell"]) {
+      assert.deepEqual(cachingKeys(buildSessionEnv(on, p, profile, "s1")), []);
+      assert.deepEqual(forcedSessionEnv(p, { cacheDisable: true }), {});
+    }
+  } finally {
+    delete process.env.ENABLE_PROMPT_CACHING_1H;
+  }
+});
+
+test("the forced env applied after the vault overrides a vault DISABLE_PROMPT_CACHING value", () => {
+  const afterVault = { DISABLE_PROMPT_CACHING: "0", OTHER: "keep" };
+  Object.assign(afterVault, forcedSessionEnv("claude", { cacheDisable: true }));
+  assert.equal(afterVault.DISABLE_PROMPT_CACHING, "1");
+  assert.equal(afterVault.OTHER, "keep");
+  // Switch off: the vault value is not ours to touch.
+  const off = { DISABLE_PROMPT_CACHING: "0" };
+  Object.assign(off, forcedSessionEnv("claude", { cacheDisable: false }));
+  assert.equal(off.DISABLE_PROMPT_CACHING, "0");
+});
