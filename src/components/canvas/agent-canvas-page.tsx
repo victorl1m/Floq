@@ -61,6 +61,7 @@ import { branchChangeToFollow, followBranchChange, isOutdatedRuntimeBranchError,
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
+import { openChangesDialog, useChangesDialog } from "@/lib/changes-dialog";
 import { setCanvasSidebarSession } from "@/lib/right-sidebar";
 import { askConfirm } from "@/components/ui/ask-dialog";
 
@@ -526,6 +527,7 @@ function AgentCanvas() {
   const [linkMode, setLinkMode] = useState<{ from: string | null } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const { count: changeCount } = useChangesDialog();
   // Memory exists only when the runtime has FLOQ_REDIS_URL; until status says so, the button stays hidden.
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   // status.enabled is the stable switch (FLOQ_REDIS_URL set): it does not flap while Redis blips, unlike status.redis.
@@ -1267,6 +1269,8 @@ function AgentCanvas() {
           onShowNotes={showAllNotes}
           onOpenMemory={memoryEnabled ? () => setMemoryOpen(true) : undefined}
           onFit={() => void fitView({ duration: 200, ...fitOptsRef.current })}
+          onOpenChanges={openChangesDialog}
+          changeCount={changeCount}
           activityOpen={showActivity}
           onToggleActivity={() => { setActivityFilter(null); setShowActivity((value) => !value); }}
           onKeyDown={onKeyDown}

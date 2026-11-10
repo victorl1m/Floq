@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { IconAppWindow, IconChevronRight, IconFiles, IconGitCompare, IconMessages, IconX } from "@tabler/icons-react";
+import { IconAppWindow, IconChevronRight, IconFiles, IconMessages, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
-import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { useRuntime } from "@/lib/runtime/store";
 import { usePerformancePrefs } from "@/lib/prefs";
 import {
@@ -16,8 +15,7 @@ import {
   resolveRightSidebarTab,
   type RightSidebarTab,
 } from "@/lib/right-sidebar";
-import { isLive } from "../provider";
-import ChangesTab, { type WorkspaceTarget } from "./changes-tab";
+import { usePanelContext } from "./use-panel-context";
 import AppWindowTab, { useDisplayAnnouncements } from "./app-window-tab";
 import ConversationsTab from "./conversations-tab";
 import FilesTab from "./files-tab";
@@ -26,7 +24,6 @@ import { PluginBoundary, usePlugins } from "@/plugins/host";
 import { resolvePluginIcon } from "@/plugins/icons";
 
 const CORE_TAB_DEFS: Array<{ id: RightSidebarTab; label: string; icon: typeof IconFiles }> = [
-  { id: "changes", label: "Changes", icon: IconGitCompare },
   { id: "files", label: "Files", icon: IconFiles },
   { id: "conversations", label: "Conversations", icon: IconMessages },
   { id: "app", label: "App window", icon: IconAppWindow },
@@ -46,9 +43,9 @@ function useNarrow(): boolean {
 
 /** Shared project panel for agent workspaces and the selected canvas workspace. Overlays content on narrow windows. */
 export default function RightSidebar() {
-  const { client, sessions, projects, view, selectedId, selectedTerminalId, activeProjectId, canvasProjectId, activeWorkspaceId } = useRuntime();
-  const { open, width, tab: storedTab, canvasSessionId } = useRightSidebar();
-  // The four core tabs never change; enabled plugin tabs append. A stored tab of a disabled plugin falls back to Changes.
+  const { client, sessions } = useRuntime();
+  const { open, width, tab: storedTab } = useRightSidebar();
+  // The core tabs never change; enabled plugin tabs append. A stored tab of a disabled plugin falls back to Files.
   const plugins = usePlugins();
   const pluginTabs = plugins.tabs;
   const TABS = useMemo(() => [...CORE_TAB_DEFS, ...pluginTabs.map((t) => ({ id: `plugin:${t.pluginId}/${t.tabId}` as RightSidebarTab, label: t.label, icon: resolvePluginIcon(t.icon) }))], [pluginTabs]);
@@ -66,7 +63,6 @@ export default function RightSidebar() {
   const drag = useRef<{ startX: number; startWidth: number; moved: boolean } | null>(null);
   const hideTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(hideTimer.current), []);
-  const [changeCount, setChangeCount] = useState<number | null>(null);
   useDisplayAnnouncements(client, sessions);
 
   useEffect(() => {
@@ -106,52 +102,11 @@ export default function RightSidebar() {
     };
   }, [open, reducedMotion]);
 
-  const inWorkspaceView = view === "terminal" || view === "session";
-  const activeId = view === "terminal" ? selectedTerminalId : view === "session" ? selectedId : null;
-  const canvasSelection = view === "canvas" && canvasSessionId
-    ? sessions.find((item) => item.id === canvasSessionId && item.projectId === canvasProjectId && item.provider !== "shell")
-    : undefined;
-  const activeSession = view === "canvas" ? canvasSelection : sessions.find((item) => item.id === activeId);
-  // Closing the last tab leaves no active session; the panel must stay on the same project so its closed
-  // conversations can be restored, and Changes/Files fall back to that project's newest session.
-  const projectId = view === "canvas"
-    ? activeSession?.projectId ?? canvasProjectId
-    : activeSession ? activeSession.projectId ?? null : inWorkspaceView ? activeProjectId : null;
-  const project = projectId ? projects.find((item) => item.id === projectId) : undefined;
-  const canvasWorkspace = view === "canvas" && project
-    ? activeSession
-      ? project.workspaces.find((workspace) => sessionsForWorkspace(project.id, workspace, sessions).some((item) => item.id === activeSession.id))
-      : project.workspaces.find((workspace) => workspace.id === activeWorkspaceId)
-    : undefined;
-  const session = useMemo(() => {
-    if (activeSession) return activeSession;
-    if (!projectId) return undefined;
-    const mine = view === "canvas"
-      ? canvasWorkspace ? sessionsForWorkspace(projectId, canvasWorkspace, sessions).filter((item) => item.provider !== "shell") : []
-      : sessions.filter((item) => item.provider !== "shell" && item.projectId === projectId);
-    const stamp = (item: (typeof mine)[number]) => Date.parse(item.endedAt ?? item.startedAt ?? item.createdAt) || 0;
-    return mine.find((item) => isLive(item.state)) ?? mine.sort((a, b) => stamp(b) - stamp(a))[0];
-  }, [activeSession, projectId, sessions, view, canvasWorkspace]);
-  // Changes and Files span every folder / worktree of the project, each reached through one of its sessions.
-  const targets = useMemo<WorkspaceTarget[]>(() => {
-    if (view === "canvas") {
-      if (!project || !canvasWorkspace || !session) return [];
-      return [{ id: canvasWorkspace.id, label: canvasWorkspace.name || canvasWorkspace.cwd, branch: canvasWorkspace.branch, sessionId: session.id }];
-    }
-    const result: WorkspaceTarget[] = [];
-    const stamp = (item: (typeof sessions)[number]) => Date.parse(item.createdAt) || 0;
-    for (const workspace of project?.workspaces ?? []) {
-      const members = sessionsForWorkspace(project!.id, workspace, sessions);
-      const rep = members.find((item) => item.id === activeSession?.id) ?? [...members].sort((a, b) => stamp(b) - stamp(a))[0];
-      if (rep) result.push({ id: workspace.id, label: workspace.name || workspace.cwd, branch: workspace.branch, sessionId: rep.id });
-    }
-    if (result.length === 0 && session) result.push({ id: session.worktreeId ?? session.cwd, label: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "Workspace", branch: session.branch ?? null, sessionId: session.id });
-    return result;
-  }, [project, sessions, activeSession, session, view, canvasWorkspace]);
+  const { session, activeSession, projectId, project, canvasWorkspace, targets, view } = usePanelContext();
   const contextTarget = targets.find((target) => !activeSession || target.sessionId === activeSession.id) ?? targets[0];
   const contextWorkspaceLabel = contextTarget?.label ?? (view === "canvas" ? canvasWorkspace?.name || canvasWorkspace?.cwd : undefined);
   const conversationCount = useMemo(() => projectId === null && !activeSession ? 0 : sessions.filter((item) => item.provider !== "shell" && (item.projectId ?? null) === projectId).length, [sessions, projectId, activeSession]);
-  const badges: Partial<Record<RightSidebarTab, number | null>> = { changes: changeCount, conversations: conversationCount };
+  const badges: Partial<Record<RightSidebarTab, number | null>> = { conversations: conversationCount };
 
   const contextAvailable = !!client && (!!activeSession || !!projectId);
   if (!present || !contextAvailable) return null;
@@ -275,9 +230,6 @@ export default function RightSidebar() {
       </div>
       {/* Panels stay mounted so tree expansion, scroll and loaded diffs survive switching tabs. */}
       <div id="right-sidebar-panel" role="tabpanel" aria-labelledby={`right-sidebar-tab-${tab}`} className="min-h-0 flex-1">
-        <div className={cn("h-full", tab !== "changes" && "hidden")}>
-          {session ? <ChangesTab client={client} targets={targets} onCount={setChangeCount} /> : <PanelEmpty icon={<IconGitCompare />} title={view === "canvas" && !canvasWorkspace ? "No active workspace" : view === "canvas" ? "No agent in this workspace" : "No agent in this project"} hint={view === "canvas" && !canvasWorkspace ? "Choose a workspace for this project to review its changes." : "Start an agent in this workspace to review its changes."} />}
-        </div>
         <div className={cn("h-full", tab !== "files" && "hidden")}>
           {session ? <FilesTab client={client} targets={targets} projectId={projectId} /> : <PanelEmpty icon={<IconFiles />} title={view === "canvas" && !canvasWorkspace ? "No active workspace" : view === "canvas" ? "No agent in this workspace" : "No agent in this project"} hint={view === "canvas" && !canvasWorkspace ? "Choose a workspace for this project to browse its files." : "Start an agent in this workspace to browse its files."} />}
         </div>

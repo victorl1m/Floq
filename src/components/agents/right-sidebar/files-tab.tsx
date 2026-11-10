@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { toast } from "sonner";
-import { IconArrowLeft, IconCheck, IconChevronRight, IconCopy, IconDownload, IconFiles, IconFolderOpen, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
+import { IconChevronRight, IconCopy, IconDownload, IconFiles, IconFolderOpen, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
@@ -8,13 +8,12 @@ import { copyText } from "@/lib/clipboard";
 import { canOpenInExplorer, downloadWorkspacePath, ejectProjectMount, hasOpenMount, openProjectInExplorer } from "@/lib/file-download";
 import { cn } from "cn";
 import type { RuntimeClient } from "@/lib/runtime/client";
-import type { FileContent, FileEntry, FileListing } from "@/lib/runtime/workspace-files";
+import type { FileEntry, FileListing } from "@/lib/runtime/workspace-files";
 import { errorMessage } from "@/lib/runtime/store";
 import { FileIcon, FolderIcon } from "./file-icons";
-import { useHighlighter } from "@/hooks/use-highlighter";
-import { languageForPath } from "@/lib/runtime/language";
 import { buildTreeStatus, hasGitChanges, publishGitChanges, STATUS_BADGE_TONE, STATUS_NAME_TONE, useGitChanges } from "./git-status";
 import { GROUP_LETTER, type ChangeGroup } from "./diff-parse";
+import FileDialog from "./files-tab-file-dialog";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 import type { WorkspaceTarget } from "./changes-tab";
 
@@ -33,14 +32,6 @@ function splitTreePath(full: string): { id: string; rel: string } {
 
 const INDENT = 12;
 const BASE_PAD = 8;
-const SPLIT_MIN_WIDTH = 560;
-const MAX_PREVIEW_LINES = 5000;
-const MAX_HIGHLIGHT_BYTES = 300 * 1024;
-const MAX_HIGHLIGHT_LINE = 2000;
-
-function formatSize(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
 
 /** Folders first, then files, each alphabetical. */
 function sortEntries(entries: FileEntry[]): FileEntry[] {
@@ -57,116 +48,22 @@ function StatusMark({ status }: { status: ChangeGroup | "dir" | null }) {
   return <span aria-hidden className={cn("w-3 shrink-0 text-center font-mono text-[10px] font-semibold", STATUS_BADGE_TONE[status])}>{GROUP_LETTER[status]}</span>;
 }
 
-function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
-  const ref = useRef<T>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const node = ref.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.round(entry.contentRect.width)));
-    observer.observe(node);
-    setWidth(Math.round(node.getBoundingClientRect().width));
-    return () => observer.disconnect();
-  }, []);
-  return [ref, width];
-}
-
-function Breadcrumb({ path }: { path: string }) {
-  const parts = path.split("/");
-  return (
-    <ol aria-label="File path" className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap text-xs text-muted-foreground" title={path}>
-      {parts.map((part, index) => {
-        const last = index === parts.length - 1;
-        return (
-          <li key={index} className={cn("flex items-center", last ? "min-w-0 shrink-0 text-foreground" : "min-w-0 shrink")}>
-            {index > 0 && <IconChevronRight aria-hidden className="mx-0.5 size-3 shrink-0 opacity-60" />}
-            <span className={cn("truncate", last && "font-medium")}>{part}</span>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-function Preview({ client, sessionId, path, label, onBack }: { client: RuntimeClient; sessionId: string; path: string; label?: string; onBack?: () => void }) {
-  const [file, setFile] = useState<FileContent | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setFile(null);
-    setError(null);
-    client.readFile(sessionId, path)
-      .then((result) => { if (!cancelled) setFile(result); })
-      .catch((cause) => { if (!cancelled) setError(errorMessage(cause)); });
-    return () => { cancelled = true; };
-  }, [client, sessionId, path, version]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1500);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  const lines = useMemo(() => (file && !file.binary && !file.tooLarge ? file.content.replace(/\n$/, "").split("\n") : null), [file]);
-  const shown = lines && lines.length > MAX_PREVIEW_LINES ? lines.slice(0, MAX_PREVIEW_LINES) : lines;
-
-  const highlightable = !!shown && !!file && file.size <= MAX_HIGHLIGHT_BYTES && shown.every((line) => line.length <= MAX_HIGHLIGHT_LINE);
-  const highlighter = useHighlighter(languageForPath(path), highlightable);
-  const colored = useMemo(() => {
-    if (!highlighter || !shown) return null;
-    try { return highlighter.highlight(shown.join("\n")).lines; } catch { return null; }
-  }, [highlighter, shown]);
-
-  async function copyPath() {
-    try { await navigator.clipboard.writeText(path); setCopied(true); } catch { /* clipboard may be unavailable */ }
-  }
-
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/70 bg-background/20 px-3">
-        {onBack && <Button type="button" variant="ghost" size="icon-xs" aria-label="Back to file tree" title="Back to file tree" onClick={onBack}><IconArrowLeft /></Button>}
-        <Breadcrumb path={label ? `${label}/${path}` : path} />
-        {file && !error && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
-        <Button type="button" variant="ghost" size="icon-xs" aria-label="Download file" title="Download file" onClick={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path)}><IconDownload /></Button>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy />}</Button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto bg-muted/10">
-        {error ? <PanelError message={error} onRetry={() => setVersion((value) => value + 1)} />
-          : !file ? <RowSkeletons count={10} rowClass="h-3.5" />
-          : file.binary ? <PanelEmpty icon={<IconFiles />} title="Binary file" hint="Text preview is not available." />
-          : file.tooLarge ? <PanelEmpty icon={<IconFiles />} title="File too large to preview" hint={`This file is ${formatSize(file.size)}.`} />
-          : shown && (
-            <div className="flex w-max min-w-full font-mono text-[11px] leading-[18px]">
-              <pre aria-hidden className="sticky left-0 shrink-0 select-none border-r border-border bg-background px-2 text-right text-muted-foreground/70 tabular-nums">{shown.map((_, index) => index + 1).join("\n")}</pre>
-              <pre aria-label={`Contents of ${file.path}`} className="min-w-0 flex-1 px-3 whitespace-pre">{colored ? colored.map((line, index) => <span key={index}>{line}{"\n"}</span>) : (shown.join("\n") || " ")}{lines && lines.length > shown.length ? `\n\n… ${(lines.length - shown.length).toLocaleString()} more lines not shown` : ""}</pre>
-            </div>
-          )}
-      </div>
-    </div>
-  );
-}
-
-/** Lazy file explorer of every folder / worktree in the active project (one top-level node each) with a read-only text preview. */
+/** Lazy file explorer of every folder / worktree in the active project (one top-level node each) that opens files in a read-only dialog. */
 export default function FilesTab({ client, targets, projectId }: { client: RuntimeClient; targets: WorkspaceTarget[]; projectId?: string | null }) {
   const [dirs, setDirs] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string | null>(null);
+  const [dialogPath, setDialogPath] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [showPreview, setShowPreview] = useState(false);
   const [treeFocused, setTreeFocused] = useState(false);
   const [menuItem, setMenuItem] = useState<FileEntry | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTarget = useRef<FileEntry | null>(null);
-  const [rootRef, width] = useElementWidth<HTMLDivElement>();
   const treeRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
   const generation = useRef(0);
-  const split = width >= SPLIT_MIN_WIDTH;
   const gitChanges = useGitChanges();
   const statusByTarget = useMemo(() => new Map(targets.map((target) => [target.id, buildTreeStatus(gitChanges.get(target.id))])), [targets, gitChanges]);
   /** Git status of a tree node: file group, or "dir" when a folder contains changes. */
@@ -203,9 +100,9 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
     setDirs({});
     setExpanded({});
     setSelected(null);
+    setDialogPath(null);
     setCursor(null);
     setQuery("");
-    setShowPreview(false);
     const roots = targetsRef.current.map((target) => treePath(target.id, ""));
     // Several project folders: each is a top-level node, opened by default.
     setExpanded(roots.length > 1 ? Object.fromEntries(roots.map((root) => [root, true])) : {});
@@ -231,7 +128,7 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
 
   function openFile(path: string) {
     setSelected(path);
-    setShowPreview(true);
+    setDialogPath(path);
   }
 
   const rows = useMemo<Row[]>(() => {
@@ -353,13 +250,11 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
   }
 
   const root = multi ? undefined : dirs[treePath(targets[0]?.id ?? "", "")];
-  const selectedTarget = selected ? targets.find((target) => target.id === splitTreePath(selected).id) : undefined;
-  const previewVisible = selected !== null && (split || showPreview);
-  const treeVisible = split || !previewVisible;
+  const dialogTarget = dialogPath ? targets.find((target) => target.id === splitTreePath(dialogPath).id) : undefined;
   const treeActiveId = treeFocused && cursorIndex >= 0 ? `files-row-${cursorIndex}` : undefined;
 
   const tree = (
-    <div className={cn("flex min-h-0 flex-col", split ? "w-[42%] min-w-48 shrink-0 border-r border-border" : "flex-1")}>
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border/70 bg-background/20 px-3 py-2">
         <div className="relative min-w-0 flex-1">
           <IconSearch aria-hidden className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -470,14 +365,9 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
   );
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-0">
-      {treeVisible && tree}
-      {previewVisible && selected && selectedTarget && <Preview key={selected} client={client} sessionId={selectedTarget.sessionId} path={splitTreePath(selected).rel} label={multi ? selectedTarget.label : undefined} onBack={split ? undefined : () => setShowPreview(false)} />}
-      {split && !previewVisible && (
-        <div className="flex min-w-0 flex-1 items-center justify-center bg-muted/20">
-          <PanelEmpty icon={<IconFiles />} title="Select a file to preview" hint="Use the arrow keys to browse and Enter to open." />
-        </div>
-      )}
+    <div className="flex h-full min-h-0">
+      {tree}
+      {dialogPath && dialogTarget && <FileDialog key={dialogPath} client={client} sessionId={dialogTarget.sessionId} path={splitTreePath(dialogPath).rel} label={multi ? dialogTarget.label : undefined} onClose={() => { setDialogPath(null); window.setTimeout(() => treeRef.current?.focus({ preventScroll: true }), 0); }} />}
     </div>
   );
 }

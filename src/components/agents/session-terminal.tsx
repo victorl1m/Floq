@@ -37,7 +37,7 @@ import type { ClientFrame, ServerFrame, SessionState, SessionSummary } from "@/l
 import { ProviderIcon, isLive } from "./provider";
 import { resumeHint, sleepReasonText } from "./sleep-copy";
 import { formatDistanceToNowStrict } from "date-fns";
-import { openRightSidebar } from "@/lib/right-sidebar";
+import { openChangesDialog } from "@/lib/changes-dialog";
 import { minimumContrastRatio, terminalTheme, useTerminalDark } from "@/lib/terminal-theme";
 
 interface Props {
@@ -680,13 +680,13 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                                     <Button
                                         variant="ghost"
                                         size="icon-sm"
-                                        aria-label="Review project changes"
-                                        onClick={() => openRightSidebar("changes")}
+                                        aria-label="Review changes"
+                                        onClick={openChangesDialog}
                                     >
                                         <IconGitCompare />
                                     </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>Review project changes</TooltipContent>
+                                <TooltipContent>Review changes</TooltipContent>
                             </Tooltip>
                         </div>
                     </div>,

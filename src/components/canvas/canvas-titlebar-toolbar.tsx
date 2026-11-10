@@ -1,5 +1,5 @@
 import {
-  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
+  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitCompare, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
   IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -8,6 +8,7 @@ import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatChangeCount } from "@/lib/changes-dialog";
 import { ShortcutTip } from "./shortcut-tip";
 
 type ToolbarProject = Parameters<typeof ProjectMark>[0]["project"];
@@ -31,6 +32,9 @@ export interface CanvasTitlebarToolbarProps {
   /** Undefined hides the Memory button (memory is off on this runtime). */
   onOpenMemory?: () => void;
   onFit: () => void;
+  onOpenChanges: () => void;
+  /** Uncommitted file count; null while unknown. */
+  changeCount: number | null;
   activityOpen: boolean;
   onToggleActivity: () => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
@@ -46,6 +50,8 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
   const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
     <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
+  const changeBadge = p.changeCount ? formatChangeCount(p.changeCount) : null;
+  const changesLabel = changeBadge ? `Changes (${changeBadge})` : "Changes";
   const separator = <span aria-hidden data-tauri-drag-region className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />;
 
   return (
@@ -87,6 +93,12 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", p.onShowNotes, <IconNotes size={16} />)}</ShortcutTip>
             <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", p.onFit, <IconArrowsMaximize size={16} />)}</ShortcutTip>
             {p.onOpenMemory && <ShortcutTip label="Memory">{toolButton(false, "Memory", p.onOpenMemory, <IconBrain size={16} />)}</ShortcutTip>}
+            <ShortcutTip label="Changes">
+              <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label={changesLabel} onClick={p.onOpenChanges}>
+                <IconGitCompare size={16} />
+                {changeBadge && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{changeBadge}</span>}
+              </Button>
+            </ShortcutTip>
             <ShortcutTip label="Activity">{toolButton(p.activityOpen, "Activity", p.onToggleActivity, <IconActivity size={16} />)}</ShortcutTip>
           </div>
         </div>
@@ -111,6 +123,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuItem onSelect={p.onShowNotes}><IconNotes size={16} />Show all notes</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onFit}><IconArrowsMaximize size={16} />Fit view (F)</DropdownMenuItem>
             {p.onOpenMemory && <DropdownMenuItem onSelect={p.onOpenMemory}><IconBrain size={16} />Memory</DropdownMenuItem>}
+            <DropdownMenuItem onSelect={p.onOpenChanges}><IconGitCompare size={16} />{changesLabel}</DropdownMenuItem>
             <DropdownMenuCheckboxItem checked={p.activityOpen} onCheckedChange={p.onToggleActivity}><IconActivity size={16} />Activity</DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>

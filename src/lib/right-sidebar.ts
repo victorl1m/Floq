@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type CoreRightSidebarTab = "changes" | "files" | "conversations" | "app";
+export type CoreRightSidebarTab = "files" | "conversations" | "app";
 /** Plugin tabs are `plugin:<pluginId>/<tabId>`. */
 export type RightSidebarTab = CoreRightSidebarTab | `plugin:${string}`;
 export const RIGHT_SIDEBAR_MIN = 260;
@@ -16,21 +16,21 @@ interface RightSidebarState {
 }
 
 const KEY = "floq.right-sidebar.v1";
-export const CORE_TABS: CoreRightSidebarTab[] = ["changes", "files", "conversations", "app"];
+export const CORE_TABS: CoreRightSidebarTab[] = ["files", "conversations", "app"];
 const PLUGIN_TAB = /^plugin:[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
 
 /**
  * The tab to actually show. A stored plugin tab cannot be validated at load (plugins load later), so it is resolved here against the
- * plugin tabs that are active right now: one from a disabled or removed plugin falls back to "changes".
+ * plugin tabs that are active right now: one from a disabled or removed plugin falls back to "files".
  */
 export function resolveRightSidebarTab(tab: RightSidebarTab, activePluginTabs: readonly string[]): RightSidebarTab {
     if (CORE_TABS.includes(tab as CoreRightSidebarTab)) return tab;
-    return activePluginTabs.includes(tab) ? tab : "changes";
+    return activePluginTabs.includes(tab) ? tab : "files";
 }
 const clamp = (width: number) => Math.min(RIGHT_SIDEBAR_MAX, Math.max(RIGHT_SIDEBAR_MIN, Math.round(width)));
 
 function load(): RightSidebarState {
-    const fallback: RightSidebarState = { open: false, width: RIGHT_SIDEBAR_DEFAULT, tab: "changes", canvasSessionId: null };
+    const fallback: RightSidebarState = { open: false, width: RIGHT_SIDEBAR_DEFAULT, tab: "files", canvasSessionId: null };
     try {
         const value = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<RightSidebarState> | null;
         if (!value || typeof value !== "object") return fallback;
@@ -63,5 +63,5 @@ export const setRightSidebarTab = (tab: RightSidebarTab) => set({ tab });
 export const setCanvasSidebarSession = (canvasSessionId: string | null) => {
     if (state.canvasSessionId !== canvasSessionId) set({ canvasSessionId });
 };
-/** Open the sidebar on a given tab (e.g. from the "Review project changes" button). */
+/** Open the sidebar on a given tab (e.g. the Files tab shortcut from an agent terminal). */
 export const openRightSidebar = (tab: RightSidebarTab) => set({ open: true, tab });
