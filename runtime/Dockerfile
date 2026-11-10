@@ -106,6 +106,11 @@ COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
 RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault \
     && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
+# Rootless apt/apt-get for agents (no root in the sandbox): per-user lists, packages unpacked under ~/.floq/apt, launchers in
+# ~/.local/bin. Root keeps the real tools (they sit later in PATH; the wrapper execs them for uid 0).
+COPY image/floq-apt /usr/local/bin/floq-apt
+RUN sed -i 's/\r$//' /usr/local/bin/floq-apt && chmod 755 /usr/local/bin/floq-apt \
+    && ln -sf floq-apt /usr/local/bin/apt && ln -sf floq-apt /usr/local/bin/apt-get && ln -sf floq-apt /usr/local/bin/apt-cache
 # Copy of bwrap under a path no host AppArmor profile is attached to (see shard.ts).
 RUN cp /usr/bin/bwrap /usr/local/bin/floq-bwrap
 # pasta (FLOQ_NETNS) from the passt stage, installed under its own path for the same AppArmor reason as floq-bwrap

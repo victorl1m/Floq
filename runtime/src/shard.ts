@@ -481,6 +481,10 @@ export class LinuxShardDriver implements ShardDriver {
       if (handle.netns && path === "/etc/resolv.conf") args.push("--ro-bind", this.netns!.resolvConfPath(uid), path);
       else if (existsSync(path)) args.push("--ro-bind", path, path);
     }
+    // apt's sources/keys and the image's dpkg database, read-only: /usr/local/bin/apt (image/floq-apt) runs apt rootless
+    // with its lists, cache and unpacked packages in the user's home, resolving against the packages the image has.
+    if (existsSync("/etc/apt")) args.push("--ro-bind", "/etc/apt", "/etc/apt");
+    if (existsSync("/var/lib/dpkg")) args.push("--perms", "0755", "--dir", "/var", "--perms", "0755", "--dir", "/var/lib", "--ro-bind", "/var/lib/dpkg", "/var/lib/dpkg");
     // Claude Code managed settings: this user's own copy (base policy + their plugins, see claudeManagedPlugins.ts) when
     // the launch wrote one, else the image's.
     const managed = this.claudeManagedDir(handle);

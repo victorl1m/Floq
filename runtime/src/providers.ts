@@ -162,6 +162,13 @@ export function forcedSessionEnv(provider: ProviderId, opts: { cacheDisable?: bo
     : {};
 }
 
+/** PATH with `<home>/.local/bin` in front (once). */
+export function withUserBin(home: string, path: string | undefined): string {
+  const bin = home.replace(/\/+$/, "") + "/.local/bin";
+  const rest = (path ?? "").split(":").filter((part) => part && part !== bin);
+  return [bin, ...rest].join(":");
+}
+
 export function buildSessionEnv(
   config: Config,
   provider: ProviderId,

@@ -1,0 +1,140 @@
+#!/bin/sh
+# floq-apt: rootless apt / apt-get for Floq agent sandboxes.
+#
+# Installed as /usr/local/bin/apt and /usr/local/bin/apt-get (ahead of /usr/bin in PATH). Agents run under a per-user
+# uid without root, and /usr, /etc/apt and /var/lib/dpkg are read-only, so the stock tools fail with "List directory
+# /var/lib/apt/lists/partial is missing" or "Permission denied". This wrapper keeps apt's state in the user's home:
+#   update                 package lists in ~/.floq/apt/state (per user, survives restarts)
+#   install PKG...         resolves against the image's installed packages, downloads the missing .debs and unpacks
+#                          them into ~/.floq/apt/root, then writes launchers for their programs into ~/.local/bin
+#   remove|purge PKG...    removes packages this wrapper installed
+#   anything else          (search, show, policy, list, download, ...) runs the real tool with the per-user state
+# Root (image builds) gets the real tool unchanged. Package maintainer scripts never run (no root, nothing to run them
+# against), which is fine for command-line tools and libraries.
+set -eu
+
+name=$(basename "$0")
+case "$name" in apt|apt-get|apt-cache) ;; *) name=apt-get ;; esac
+real="/usr/bin/$name"
+if [ "$(id -u)" = 0 ]; then exec "$real" "$@"; fi
+
+base="${FLOQ_APT_HOME:-$HOME/.floq/apt}"
+root="$base/root"
+bindir="$HOME/.local/bin"
+mkdir -p "$base/state/lists/partial" "$base/cache/archives/partial" "$base/installed" "$root" "$bindir"
+
+# Per-user state; resolution reads the image's dpkg database (read-only) so installed packages are not fetched again.
+status="${FLOQ_APT_STATUS:-/var/lib/dpkg/status}"
+[ -r "$status" ] || { status="$base/empty-status"; : > "$status"; }
+set -- -o "Dir::State=$base/state" -o "Dir::State::status=$status" -o "Dir::Cache=$base/cache" \
+  -o "Debug::NoLocking=1" \
+  ${FLOQ_APT_ETC:+-o "Dir::Etc=$FLOQ_APT_ETC"} "$@"
+nopts=$(( ${FLOQ_APT_ETC:+2} + 8 ))
+
+# Split our options, the user's options and the command + its arguments.
+cmd=""
+userargs=""
+pkgs=""
+i=0
+skipnext=0
+for arg in "$@"; do
+  i=$((i + 1))
+  [ "$i" -le "$nopts" ] && continue
+  if [ "$skipnext" = 1 ]; then userargs="$userargs $(printf %s "$arg" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"; skipnext=0; continue; fi
+  case "$arg" in
+    -o|-c|-t|-a|--option|--config-file|--target-release|--host-architecture)
+      userargs="$userargs $arg"; skipnext=1 ;;
+    -*) userargs="$userargs $(printf %s "$arg" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")" ;;
+    *) if [ -z "$cmd" ]; then cmd=$arg; else pkgs="$pkgs $arg"; fi ;;
+  esac
+done
+
+opts() { # our fixed options, as a quoted list for eval
+  j=0
+  for a in "$@"; do j=$((j + 1)); [ "$j" -le "$nopts" ] || break; printf " '%s'" "$(printf %s "$a" | sed "s/'/'\\\\''/g")"; done
+}
+OURS=$(opts "$@")
+
+# Launchers in ~/.local/bin for every program the unpacked packages ship, with their libraries on LD_LIBRARY_PATH.
+write_launchers() {
+  libs=""
+  for d in "$root"/usr/lib/*-linux-gnu "$root"/lib/*-linux-gnu "$root"/usr/lib "$root"/lib "$root"/usr/local/lib; do
+    [ -d "$d" ] && libs="${libs:+$libs:}$d"
+  done
+  # Drop launchers whose program is gone.
+  for f in "$bindir"/*; do
+    [ -f "$f" ] || continue
+    if grep -q '^# floq-apt launcher$' "$f" 2>/dev/null; then
+      target=$(sed -n 's/^exec "\(.*\)" "\$@"$/\1/p' "$f")
+      [ -n "$target" ] && [ -x "$target" ] || rm -f "$f"
+    fi
+  done
+  for d in "$root"/usr/bin "$root"/bin "$root"/usr/sbin "$root"/sbin "$root"/usr/local/bin; do
+    [ -d "$d" ] || continue
+    for p in "$d"/*; do
+      [ -f "$p" ] && [ -x "$p" ] || continue
+      out="$bindir/$(basename "$p")"
+      # Never overwrite something the user put there.
+      if [ -e "$out" ] && ! grep -q '^# floq-apt launcher$' "$out" 2>/dev/null; then continue; fi
+      {
+        echo '#!/bin/sh'
+        echo '# floq-apt launcher'
+        [ -n "$libs" ] && echo "export LD_LIBRARY_PATH=\"$libs\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\""
+        echo "exec \"$p\" \"\$@\""
+      } > "$out.tmp"
+      chmod 755 "$out.tmp"
+      mv -f "$out.tmp" "$out"
+    done
+  done
+}
+
+path_hint() {
+  case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: add $bindir to PATH to run them: export PATH=\"$bindir:\$PATH\"" ;; esac
+}
+
+case "$cmd" in
+  install)
+    [ -n "$pkgs" ] || { echo "floq-apt: name the packages to install" >&2; exit 100; }
+    plan=$(eval "/usr/bin/apt-get $OURS $userargs -s -q install $pkgs") || { printf '%s\n' "$plan" >&2; exit 100; }
+    todo=""
+    for entry in $(printf '%s\n' "$plan" | sed -n 's/^Inst \([^ ]*\) .*(\([^ ]*\) .*/\1=\2/p'); do
+      pkg=${entry%%=*}; ver=${entry#*=}
+      if [ "$(cat "$base/installed/$pkg.version" 2>/dev/null || true)" = "$ver" ]; then continue; fi
+      todo="$todo $entry"
+    done
+    if [ -z "$todo" ]; then echo "All requested packages are already installed."; write_launchers; exit 0; fi
+    echo "Installing into $root (rootless, no maintainer scripts):$(printf '%s' "$todo" | sed 's/=[^ ]*//g')"
+    dl="$base/cache/archives"
+    (cd "$dl" && eval "/usr/bin/apt-get $OURS $userargs -q download $todo") || exit 100
+    for entry in $todo; do
+      pkg=${entry%%=*}; ver=${entry#*=}
+      deb=$(ls -t "$dl/${pkg}_"*.deb 2>/dev/null | head -n 1)
+      [ -n "$deb" ] || { echo "floq-apt: download of $pkg failed" >&2; exit 100; }
+      dpkg-deb -x "$deb" "$root"
+      dpkg-deb -c "$deb" | awk '{ p = $6; sub(/^\.\//, "", p); if (p != "" && p !~ /\/$/) print p }' > "$base/installed/$pkg.list"
+      printf '%s\n' "$ver" > "$base/installed/$pkg.version"
+      rm -f "$deb"
+      echo "Unpacked $pkg ($ver)"
+    done
+    write_launchers
+    path_hint
+    ;;
+  remove|purge|autoremove)
+    [ -n "$pkgs" ] || { echo "floq-apt: name the packages to remove" >&2; exit 100; }
+    for pkg in $pkgs; do
+      list="$base/installed/$pkg.list"
+      if [ ! -f "$list" ]; then echo "floq-apt: $pkg was not installed by floq-apt (image packages are read-only)" >&2; continue; fi
+      while IFS= read -r f; do rm -f "$root/$f"; done < "$list"
+      rm -f "$list" "$base/installed/$pkg.version"
+      echo "Removed $pkg"
+    done
+    write_launchers
+    ;;
+  upgrade|full-upgrade|dist-upgrade|dselect-upgrade|reinstall|edit-sources|satisfy|build-dep)
+    echo "floq-apt: '$cmd' needs root, which Floq sandboxes do not have. Use 'apt install PKG' to add packages under your home." >&2
+    exit 100
+    ;;
+  *)
+    exec "$real" "$@"
+    ;;
+esac

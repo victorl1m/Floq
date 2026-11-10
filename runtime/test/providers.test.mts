@@ -94,3 +94,10 @@ test("the forced env applied after the vault overrides a vault DISABLE_PROMPT_CA
   Object.assign(off, forcedSessionEnv("claude", { cacheDisable: false }));
   assert.equal(off.DISABLE_PROMPT_CACHING, "0");
 });
+
+test("withUserBin puts ~/.local/bin first exactly once", async () => {
+  const { withUserBin } = await import("../dist/providers.js");
+  assert.equal(withUserBin("/home/agent", "/usr/local/bin:/usr/bin"), "/home/agent/.local/bin:/usr/local/bin:/usr/bin");
+  assert.equal(withUserBin("/home/agent/", "/usr/bin:/home/agent/.local/bin"), "/home/agent/.local/bin:/usr/bin");
+  assert.equal(withUserBin("/home/agent", undefined), "/home/agent/.local/bin");
+});

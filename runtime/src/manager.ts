@@ -17,7 +17,7 @@ import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
 import { DisplayAllocator, displayEnv } from "./display.js";
-import { buildSessionEnv, detectVersion, forcedSessionEnv, getProviderDefinition, resolveModel } from "./providers.js";
+import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
@@ -1391,6 +1391,8 @@ export class SessionManager {
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);
     const env = buildSessionEnv(this.config, row.provider, profile, row.id);
+    // ~/.local/bin first: user-installed tools, including the launchers `apt install` (image/floq-apt) writes there.
+    if (this.shards.driver.name === "linux") env.PATH = withUserBin(this.shards.driver.homePath(handle), env.PATH);
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
     Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
