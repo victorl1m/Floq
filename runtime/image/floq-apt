@@ -9,6 +9,9 @@
 #                          them into ~/.floq/apt/root, then writes launchers for their programs into ~/.local/bin
 #   remove|purge PKG...    removes packages this wrapper installed
 #   anything else          (search, show, policy, list, download, ...) runs the real tool with the per-user state
+# Config: apt reads ~/.floq/apt/etc (override with FLOQ_APT_ETC). It mirrors the image's /etc/apt as symlinks, refreshed
+# on every run, so extra sources and keys can be added per user (e.g. a keyring in ~/.floq/apt/etc/keyrings and a
+# sources.list.d entry with signed-by=) while /etc/apt stays read-only and shared by nobody else.
 # Root (image builds) gets the real tool unchanged. Package maintainer scripts never run (no root, nothing to run them
 # against), which is fine for command-line tools and libraries.
 set -eu
@@ -23,13 +26,39 @@ root="$base/root"
 bindir="$HOME/.local/bin"
 mkdir -p "$base/state/lists/partial" "$base/cache/archives/partial" "$base/installed" "$root" "$bindir"
 
+# Per-user apt config: the image's /etc/apt mirrored as symlinks plus whatever the user adds. A real file identical to the
+# image's (an earlier `cp -r /etc/apt`) becomes a link again so image updates reach it; links the image dropped go away.
+mirror_etc() { # $1 = image dir, $2 = user dir
+  mkdir -p "$2"
+  for f in "$2"/* "$2"/.[!.]*; do
+    [ -L "$f" ] || continue
+    case "$(readlink "$f")" in "$1"/*) [ -e "$f" ] || rm -f "$f" ;; esac
+  done
+  for src in "$1"/* "$1"/.[!.]*; do
+    [ -e "$src" ] || continue
+    dst="$2/$(basename "$src")"
+    if [ -d "$src" ] && [ ! -L "$src" ]; then
+      [ -L "$dst" ] && rm -f "$dst"
+      mirror_etc "$src" "$dst"
+    elif [ -L "$dst" ]; then
+      [ "$(readlink "$dst")" = "$src" ] || ln -sfn "$src" "$dst"
+    elif [ ! -e "$dst" ] || { [ -f "$dst" ] && cmp -s "$src" "$dst"; }; then
+      ln -sfn "$src" "$dst"
+    fi
+  done
+}
+if [ -z "${FLOQ_APT_ETC:-}" ]; then
+  FLOQ_APT_ETC="$base/etc"
+  [ -d /etc/apt ] && mirror_etc /etc/apt "$FLOQ_APT_ETC"
+  mkdir -p "$FLOQ_APT_ETC/keyrings" "$FLOQ_APT_ETC/sources.list.d"
+fi
+
 # Per-user state; resolution reads the image's dpkg database (read-only) so installed packages are not fetched again.
 status="${FLOQ_APT_STATUS:-/var/lib/dpkg/status}"
 [ -r "$status" ] || { status="$base/empty-status"; : > "$status"; }
 set -- -o "Dir::State=$base/state" -o "Dir::State::status=$status" -o "Dir::Cache=$base/cache" \
-  -o "Debug::NoLocking=1" \
-  ${FLOQ_APT_ETC:+-o "Dir::Etc=$FLOQ_APT_ETC"} "$@"
-nopts=$(( ${FLOQ_APT_ETC:+2} + 8 ))
+  -o "Debug::NoLocking=1" -o "Dir::Etc=$FLOQ_APT_ETC" "$@"
+nopts=10
 
 # Split our options, the user's options and the command + its arguments.
 cmd=""
