@@ -117,6 +117,60 @@ write_launchers() {
   done
 }
 
+# Python: unpacked modules live under $root, which no interpreter searches, and a package can be split between the image
+# and $root (Debian ships distutils/__init__.py in libpython3.X-stdlib but the rest in python3-distutils). A .pth in each
+# interpreter's user site appends $root's module dirs to sys.path and merges every package's __path__ with its twin on
+# the other side, so `import distutils.version` finds both halves. No PYTHONPATH needed.
+write_python_hook() {
+  for py in /usr/bin/python3 /usr/bin/python3.[0-9]*; do
+    case "$py" in *-config|*m) continue ;; esac
+    [ -x "$py" ] || continue
+    site=$("$py" -c 'import site; print(site.getusersitepackages())' 2>/dev/null) || continue
+    [ -n "$site" ] || continue
+    mkdir -p "$site"
+    cat > "$site/floq_apt_site.py.tmp" <<PY
+# floq-apt python hook (generated; see /usr/local/bin/floq-apt)
+import os, sys
+from importlib.machinery import PathFinder as _PathFinder
+ROOT = $(printf '%s' "$root" | "$py" -c 'import sys; print(repr(sys.stdin.read()))')
+def _dirs():
+    ver = "python%d.%d" % sys.version_info[:2]
+    for d in ("/usr/lib/" + ver, "/usr/lib/python3/dist-packages", "/usr/local/lib/" + ver + "/dist-packages", "/usr/lib/" + ver + "/lib-dynload"):
+        if os.path.isdir(ROOT + d) and ROOT + d not in sys.path:
+            sys.path.append(ROOT + d)
+def _twin(loc):
+    loc = os.path.abspath(loc)
+    if loc == ROOT or loc.startswith(ROOT + os.sep):
+        other = loc[len(ROOT):] or "/"
+    elif loc.startswith("/usr" + os.sep):
+        other = ROOT + loc
+    else:
+        return None
+    return other if os.path.isdir(other) else None
+class _Finder:
+    @classmethod
+    def find_spec(cls, name, path=None, target=None):
+        spec = _PathFinder.find_spec(name, path, target)
+        locs = spec and spec.submodule_search_locations
+        if locs is not None:
+            for loc in list(locs):
+                other = _twin(loc)
+                if other and other not in locs:
+                    locs.append(other)
+        return spec
+    @classmethod
+    def invalidate_caches(cls):
+        pass
+if os.path.isdir(ROOT):
+    _dirs()
+    if not any(getattr(f, "__name__", "") == "_Finder" and getattr(f, "__module__", "") == __name__ for f in sys.meta_path):
+        sys.meta_path.insert(0, _Finder)
+PY
+    mv -f "$site/floq_apt_site.py.tmp" "$site/floq_apt_site.py"
+    printf 'import floq_apt_site\n' > "$site/floq-apt.pth"
+  done
+}
+
 path_hint() {
   case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: add $bindir to PATH to run them: export PATH=\"$bindir:\$PATH\"" ;; esac
 }
@@ -131,7 +185,7 @@ case "$cmd" in
       if [ "$(cat "$base/installed/$pkg.version" 2>/dev/null || true)" = "$ver" ]; then continue; fi
       todo="$todo $entry"
     done
-    if [ -z "$todo" ]; then echo "All requested packages are already installed."; write_launchers; exit 0; fi
+    if [ -z "$todo" ]; then echo "All requested packages are already installed."; write_launchers; write_python_hook; exit 0; fi
     echo "Installing into $root (rootless, no maintainer scripts):$(printf '%s' "$todo" | sed 's/=[^ ]*//g')"
     dl="$base/cache/archives"
     (cd "$dl" && eval "/usr/bin/apt-get $OURS $userargs -q download $todo") || exit 100
@@ -146,6 +200,7 @@ case "$cmd" in
       echo "Unpacked $pkg ($ver)"
     done
     write_launchers
+    write_python_hook
     path_hint
     ;;
   remove|purge|autoremove)
