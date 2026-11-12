@@ -42,7 +42,7 @@ export function mountLocations(baseUrl: string, token: string): { davUrl: string
 }
 
 /**
- * Read-only WebDAV mounts of a project's workspace folders. A mount is an in-memory capability: it dies with the process,
+ * Read-write WebDAV mounts of a project's workspace folders. A mount is an in-memory capability: it dies with the process,
  * after 8 hours, on Eject, and on sign-out of the auth session it was created under.
  */
 export class DavMounts {

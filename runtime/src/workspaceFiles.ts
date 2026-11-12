@@ -9,6 +9,7 @@ import type { SessionManager } from "./manager.js";
 import { badRequest, notFound } from "./errors.js";
 import { safeRelative } from "./shard.js";
 import type { ShardService } from "./shards.js";
+import { createWorkspaceEntry, type CreatedEntry } from "./workspaceWrite.js";
 
 const LIST_LIMIT = 2_000;
 const LIST_SCAN_LIMIT = 50_000;
@@ -74,9 +75,12 @@ export async function resolveInside(root: string, input: unknown): Promise<{ rel
  * Checking a path and opening it later is a race: an agent in the sandbox controls the tree and could swap a checked
  * directory for a symlink into another user's mounted shard, which this process (root) would then read.
  * O_NONBLOCK keeps an agent-planted FIFO from hanging the open; callers check the file type on the handle.
+ * The final component is opened with O_NOFOLLOW (callers pass already-realpath'd paths): root must never be led through a
+ * symlink swapped in after realpath, e.g. to a device with side effects on open. A link there answers 404 (ELOOP).
+ * `followLink` is only for listing code that deliberately resolves in-workspace links; the descriptor check below still applies.
  */
-export async function openWithin(realRoot: string, path: string, flags = fsConstants.O_RDONLY): Promise<FileHandle> {
-  const handle = await open(path, flags | fsConstants.O_NONBLOCK).catch(() => null);
+export async function openWithin(realRoot: string, path: string, flags = fsConstants.O_RDONLY, followLink = false): Promise<FileHandle> {
+  const handle = await open(path, flags | fsConstants.O_NONBLOCK | (followLink ? 0 : fsConstants.O_NOFOLLOW)).catch(() => null);
   if (!handle) throw notFound("That file is no longer available");
   try {
     let actual: string | null = null;
@@ -154,7 +158,7 @@ export class WorkspaceFiles {
           let type: FileEntry["type"] | null = dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : null;
           if (dirent.isSymbolicLink()) {
             // Only show links that resolve to something inside the workspace, proven on a descriptor.
-            const linked = await openWithin(realRoot, join(base, dirent.name)).catch(() => null);
+            const linked = await openWithin(realRoot, join(base, dirent.name), fsConstants.O_RDONLY, true).catch(() => null);
             const targetInfo = linked ? await linked.stat().catch(() => null) : null;
             await linked?.close().catch(() => {});
             type = targetInfo?.isDirectory() ? "dir" : targetInfo?.isFile() ? "file" : null;
@@ -194,6 +198,13 @@ export class WorkspaceFiles {
     }
   }
 
+
+  /** Create an empty file or folder in a workspace folder, owned by the sandbox user. Same owner scoping as read/list. */
+  async create(userId: string, sessionId: string, body: { path?: unknown; name?: unknown; kind?: unknown }): Promise<CreatedEntry> {
+    const root = await this.root(userId, sessionId);
+    const handle = await this.shards.wake(userId);
+    return createWorkspaceEntry(root, body.path, body.name, body.kind, (handle as { uid?: number }).uid);
+  }
 
   /** Owner-scoped check done when a download link is issued: the session must be the user's and the path well formed. */
   async authorizeDownload(userId: string, sessionId: string, requested: unknown): Promise<string> {
@@ -287,7 +298,7 @@ export class WorkspaceFiles {
           continue;
         }
         if (!dirent.isFile() && !dirent.isSymbolicLink()) continue;
-        const handle = await openWithin(realRoot, child, fsConstants.O_RDONLY).catch(() => null);
+        const handle = await openWithin(realRoot, child, fsConstants.O_RDONLY, true).catch(() => null);
         if (!handle) continue; // vanished, or a link pointing outside the workspace
         let queued = false;
         try {

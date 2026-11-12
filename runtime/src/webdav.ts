@@ -3,15 +3,16 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { DavFolder, DavMounts } from "./davMounts.js";
-import { HttpError, badRequest, notFound } from "./errors.js";
+import type { DavFolder, DavMount, DavMounts } from "./davMounts.js";
+import { DAV_ALLOW_DELETE_COPY, DavWriter, WRITE_METHODS, type DavWriterOptions, splitDavPath, type Located } from "./davWrite.js";
+import { HttpError, notFound } from "./errors.js";
 import { log } from "./logger.js";
 import { HAS_PROC_FD, HIDDEN_NAMES, isWithin, openWithin, parseRange } from "./workspaceFiles.js";
 import type { SessionManager } from "./manager.js";
 import type { ShardHandle } from "./shard.js";
 
 export const PROPFIND_ENTRY_CAP = 2_000;
-const ALLOW = "OPTIONS, GET, HEAD, PROPFIND";
+const ALLOW = `OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, MOVE, PROPPATCH, LOCK, UNLOCK${DAV_ALLOW_DELETE_COPY ? ", DELETE, COPY" : ""}`;
 const MAX_BODY = 64 * 1024;
 
 export interface DavEntry {
@@ -46,7 +47,7 @@ export function propfindXml(entries: DavEntry[]): string {
       if (entry.mtime !== undefined) props.push(`<D:getetag>"${(entry.size ?? 0).toString(16)}-${Math.floor(entry.mtime).toString(16)}"</D:getetag>`);
     }
     if (entry.mtime !== undefined) props.push(`<D:getlastmodified>${new Date(entry.mtime).toUTCString()}</D:getlastmodified>`);
-    props.push("<D:supportedlock/>", "<D:lockdiscovery/>");
+    props.push("<D:supportedlock><D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry></D:supportedlock>", "<D:lockdiscovery/>");
     return `<D:response><D:href>${xml(entry.href)}</D:href><D:propstat><D:prop>${props.join("")}</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`;
   });
   return `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">${responses.join("")}</D:multistatus>`;
@@ -58,14 +59,22 @@ export interface DavDeps {
   mounts: DavMounts;
   shards: { awakeHandle(userId: string): ShardHandle | undefined; driver: { hostPath(handle: ShardHandle, rel: string): string } };
   manager: Pick<SessionManager, "withUserShardActivity">;
+  /** Largest accepted PUT body (default 2 GiB). */
+  maxPutBytes?: number;
+  /** Write policy overrides (concurrency cap, free-space reserve); tests use them. */
+  writer?: Omit<DavWriterOptions, "maxPutBytes">;
 }
 
 /**
- * Read-only WebDAV for Windows Explorer (WebClient), Finder and gvfs, served anonymously under /dav/<token>/ because the
- * Windows mini-redirector cannot send a bearer header. The token is the capability (see davMounts.ts).
+ * Read-write WebDAV (class 1+2) for Windows Explorer (WebClient), Finder and gvfs, served anonymously under /dav/<token>/
+ * because the Windows mini-redirector cannot send a bearer header. The token is the capability (see davMounts.ts).
+ * Reads are in this file, writes (MKCOL, PUT, MOVE, COPY, DELETE, PROPPATCH, LOCK, UNLOCK) in davWrite.ts.
  */
 export class WebDav {
-  constructor(private readonly deps: DavDeps) {}
+  private readonly writer: DavWriter;
+  constructor(private readonly deps: DavDeps) {
+    this.writer = new DavWriter({ ...deps.writer, maxPutBytes: deps.maxPutBytes });
+  }
 
   /** Paths this handler owns. "/" is only claimed for OPTIONS/PROPFIND probes, so the rest of the app is untouched. */
   handles(req: IncomingMessage): boolean {
@@ -79,6 +88,7 @@ export class WebDav {
       await this.dispatch(req, res);
     } catch (error) {
       if (res.headersSent) { res.destroy(); return; }
+      if (!req.readableEnded && WRITE_METHODS.has(req.method ?? "")) res.setHeader("Connection", "close"); // do not keep reading an unwanted body
       if (error instanceof HttpError) return this.text(res, error.status, error.message);
       const errno = (error as NodeJS.ErrnoException)?.code;
       if (errno === "ENOTCONN" || errno === "ECONNABORTED" || errno === "EIO") return this.text(res, 503, "Workspace not available", { "Retry-After": "30" });
@@ -113,13 +123,10 @@ export class WebDav {
     const method = req.method ?? "GET";
     const rawPath = (req.url ?? "").split("?")[0];
     if (method === "OPTIONS") { res.writeHead(200, { ...this.baseHeaders(), "Content-Length": 0 }).end(); return; }
-    if (method !== "PROPFIND" && method !== "GET" && method !== "HEAD") {
-      // LOCK, PROPPATCH, PUT, MKCOL, DELETE, MOVE, COPY, POST...: this share is read-only.
-      return this.text(res, 405, "This share is read-only");
-    }
-    let segments: string[];
-    try { segments = rawPath.split("/").filter((part) => part !== "").map((part) => decodeURIComponent(part)); } catch { throw badRequest("Invalid path"); }
-    if (segments.some((part) => part === "." || part === ".." || part.includes("/") || part.includes("\\") || part.includes("\0"))) throw badRequest("Invalid path");
+    const write = WRITE_METHODS.has(method);
+    if (!write && method !== "PROPFIND" && method !== "GET" && method !== "HEAD") return this.text(res, 405, "Method not allowed");
+    if (write && !DAV_ALLOW_DELETE_COPY && (method === "DELETE" || method === "COPY")) return this.text(res, 405, "Method not allowed");
+    const segments = splitDavPath(rawPath);
 
     const depth = typeof req.headers.depth === "string" ? req.headers.depth.trim().toLowerCase() : "infinity";
     if (method === "PROPFIND") {
@@ -129,7 +136,7 @@ export class WebDav {
         res.writeHead(403, { ...this.baseHeaders(), "Content-Type": 'application/xml; charset="utf-8"', "Content-Length": Buffer.byteLength(body) }).end(body);
         return;
       }
-    } else {
+    } else if (!write) {
       req.resume();
     }
     const head = method === "HEAD";
@@ -167,8 +174,35 @@ export class WebDav {
     if (!this.deps.mounts.isOnline(mount.userId) || !this.deps.shards.awakeHandle(mount.userId)) {
       return this.text(res, 503, "Your workspace is asleep. Open Floq and try again.", { "Retry-After": "60" });
     }
-    const op = () => this.serve(mount.userId, token, folder, rest, segments.slice(2), method, depth, head, req, res);
+    const op = write
+      ? async () => {
+        const located = await this.locate(mount, segments.slice(2));
+        await this.writer.run({ method, req, res, mount, segments: segments.slice(2), located, locate: (target) => this.locate(mount, target), assertLive: async () => { if (!(await this.deps.mounts.sessionLive(mount)) || !this.deps.mounts.resolve(mount.token)) throw notFound("This share is no longer available"); }, headers: () => this.baseHeaders() });
+      }
+      : () => this.serve(mount.userId, token, folder, rest, segments.slice(2), method, depth, head, req, res);
     await this.deps.manager.withUserShardActivity(mount.userId, op);
+  }
+
+  private findFolder(mount: DavMount, wanted: string): DavFolder | undefined {
+    return mount.folders.find((item) => item.name === wanted) ?? (() => {
+      const loose = mount.folders.filter((item) => item.name.toLowerCase() === wanted.toLowerCase());
+      return loose.length === 1 ? loose[0] : undefined;
+    })();
+  }
+
+  /** Real root of a workspace folder (proven inside the user's home) for a write; `segments` is [folder, ...rest]. */
+  private async locate(mount: DavMount, segments: string[]): Promise<Located> {
+    const folder = segments[0] === undefined ? undefined : this.findFolder(mount, segments[0]);
+    if (!folder) throw notFound("Not found");
+    const rest = segments.slice(1);
+    if (rest.some((part) => HIDDEN_NAMES.has(part))) throw new HttpError(403, "forbidden", "Forbidden");
+    const handle = this.deps.shards.awakeHandle(mount.userId);
+    if (!handle) throw new HttpError(503, "unavailable", "Your workspace is asleep. Open Floq and try again.");
+    const home = await realpath(handle.mountPath);
+    const root = await realpath(this.deps.shards.driver.hostPath(handle, folder.cwd)).catch(() => null);
+    if (!root || !isWithin(home, root)) throw notFound("Not found");
+    if (!(await lstat(root).catch(() => null))?.isDirectory()) throw notFound("Not found");
+    return { root, rest, folder, uid: (handle as { uid?: number }).uid };
   }
 
   private async serve(userId: string, token: string, folder: DavFolder, rest: string[], hrefSegments: string[], method: string, depth: string, head: boolean, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -202,11 +236,11 @@ export class WebDav {
           for await (const dirent of dir) {
             if (entries.length > PROPFIND_ENTRY_CAP || ++scanned > PROPFIND_ENTRY_CAP * 25) break;
             const child = dirent.name;
-            if (HIDDEN_NAMES.has(child) || child.includes("\0") || child.includes("\\")) continue;
+            if (HIDDEN_NAMES.has(child) || child.includes("\0") || child.includes("\\") || (child.startsWith(".dav-") && child.endsWith(".part"))) continue;
             let stats: { isDirectory(): boolean; isFile(): boolean; size: number; mtimeMs: number } | null = null;
             if (dirent.isSymbolicLink()) {
               // Same rule as the file browser: only links whose target stays inside the workspace, proven on a descriptor.
-              const linked = await openWithin(root, join(base, child), fsConstants.O_RDONLY).catch(() => null);
+              const linked = await openWithin(root, join(base, child), fsConstants.O_RDONLY, true).catch(() => null);
               if (linked) { stats = await linked.stat().catch(() => null); await linked.close().catch(() => {}); }
             } else {
               stats = await lstat(join(base, child)).catch(() => null);
