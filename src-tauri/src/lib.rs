@@ -474,10 +474,11 @@ fn same_origin_url(value: &str, origin: &str) -> Result<reqwest::Url, String> {
 }
 
 /// `/v1/sessions/<id>/files/download` with nothing but a `t` query parameter.
+/// Accepts only the runtime's signed download routes: workspace files and the project Artifacts folder.
 fn valid_download_url(url: &reqwest::Url) -> bool {
     let parts: Vec<&str> = url.path().split('/').collect();
     let id_ok = |id: &str| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    let path_ok = parts.len() == 6 && parts[0].is_empty() && parts[1] == "v1" && parts[2] == "sessions" && id_ok(parts[3]) && parts[4] == "files" && parts[5] == "download";
+    let path_ok = parts.len() == 6 && parts[0].is_empty() && parts[1] == "v1" && parts[2] == "sessions" && id_ok(parts[3]) && (parts[4] == "files" || parts[4] == "artifacts") && parts[5] == "download";
     let mut query = url.query_pairs();
     let first = query.next();
     path_ok && query.next().is_none() && matches!(first, Some((ref key, _)) if key == "t")
@@ -1187,5 +1188,24 @@ mod dav_item_tests {
         assert_eq!(url.as_str(), "https://host.example:8443/dav/0123456789abcdef0123456789abcdef/app/a%20b/a%C3%A7%C3%A3o%231.txt");
         assert_eq!(dav_item_url(&base, &[], true).as_str(), base.as_str());
         assert_eq!(dav_item_url(&base, &v(&["app", "a b"]), true).as_str(), "https://host.example:8443/dav/0123456789abcdef0123456789abcdef/app/a%20b/");
+    }
+}
+
+#[cfg(test)]
+mod download_url_tests {
+    use super::valid_download_url;
+    fn ok(u: &str) -> bool { valid_download_url(&reqwest::Url::parse(u).unwrap()) }
+    #[test]
+    fn accepts_workspace_and_artifact_links() {
+        assert!(ok("https://rt.example/v1/sessions/abc-123/files/download?t=tok"));
+        assert!(ok("https://rt.example/v1/sessions/abc-123/artifacts/download?t=tok"));
+    }
+    #[test]
+    fn rejects_other_shapes() {
+        assert!(!ok("https://rt.example/v1/sessions/abc/other/download?t=tok"));
+        assert!(!ok("https://rt.example/v1/sessions/abc/artifacts/download"));
+        assert!(!ok("https://rt.example/v1/sessions/abc/artifacts/download?t=a&x=b"));
+        assert!(!ok("https://rt.example/v1/sessions/../artifacts/download?t=a"));
+        assert!(!ok("https://rt.example/v1/sessions/abc/artifacts/link?t=a"));
     }
 }
