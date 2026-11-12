@@ -11,7 +11,7 @@ import { Panel } from "@xyflow/react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { ProviderIcon } from "@/components/agents/provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { STATE_DOT } from "@/components/agents/session-terminal";
 import { pastedTauriImage, pastedFiles, AttachmentChips, useAttachments, useTauriDrop } from "./canvas-attachments";
 import { sendToTargets } from "./canvas-send";
@@ -242,7 +242,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
             {all && <span className="animate-in rounded-md bg-primary/15 px-1.5 py-0.5 text-primary-text fade-in zoom-in-95">all running ({running.length})</span>}
             {!all && targets.map((session) => (
               <span key={session.id} className="flex animate-in items-center gap-1 rounded-md border border-border bg-muted/60 py-0.5 pr-0.5 pl-1.5 fade-in zoom-in-95 motion-reduce:animate-none">
-                <ProviderIcon provider={session.provider} className="size-3" />
+                <AgentAvatar session={session} size={18} />
                 <span className={cn("size-1.5 rounded-full", STATE_DOT[session.state])} />
                 <span className="max-w-32 truncate">{session.title}</span>
                 <Button variant="ghost" size="icon-xs" type="button" aria-label={`Remove ${session.title}`} className="size-4 rounded" onClick={() => removeTarget(session.id)}><IconX size={10} /></Button>
@@ -293,7 +293,7 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
             const session = sessions.find((candidate) => candidate.id === item.id);
             return (
               <button key={item.id} type="button" className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", index === mention.index && "bg-muted")} onMouseDown={(event) => event.preventDefault()} onClick={() => mention.command(item)}>
-                {session && <ProviderIcon provider={session.provider} className="size-3.5" />}
+                {session && <AgentAvatar session={session} size={18} />}
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {session && <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} />}
               </button>

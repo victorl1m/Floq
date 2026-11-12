@@ -1,5 +1,5 @@
 import {
-  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitCompare, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
+  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitBranch, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
   IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -33,6 +33,8 @@ export interface CanvasTitlebarToolbarProps {
   onOpenMemory?: () => void;
   onFit: () => void;
   onOpenChanges: () => void;
+  /** Current branch of the ground workspace; null while unknown. */
+  branch?: string | null;
   /** Uncommitted file count; null while unknown. */
   changeCount: number | null;
   activityOpen: boolean;
@@ -51,7 +53,8 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
     <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
   const changeBadge = p.changeCount ? formatChangeCount(p.changeCount) : null;
-  const changesLabel = changeBadge ? `Changes (${changeBadge})` : "Changes";
+  const branchName = p.branch || "No branch";
+  const changesLabel = changeBadge ? `Changes on ${branchName} (${changeBadge})` : `Changes on ${branchName}`;
   const separator = <span aria-hidden data-tauri-drag-region className="mx-0.5 h-5 w-px shrink-0 bg-border/80" />;
 
   return (
@@ -63,6 +66,16 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
           </span>
           <span aria-hidden data-tauri-drag-region className="canvas-titlebar-name min-w-0 truncate text-sm font-medium">{p.name}</span>
           <span className="sr-only">{p.name}</span>
+        </div>
+
+        <div data-tauri-drag-region className="canvas-titlebar-changes flex min-w-0 items-center justify-center">
+          <ShortcutTip label="Review agents' changes">
+            <button type="button" aria-label={changesLabel} onClick={p.onOpenChanges} className="flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-xs font-medium text-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">
+              <IconGitBranch size={14} aria-hidden className="shrink-0 text-muted-foreground" />
+              <span className="min-w-0 max-w-40 truncate">{branchName}</span>
+              {changeBadge && <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] leading-4 font-medium text-primary-foreground tabular-nums">{changeBadge}</span>}
+            </button>
+          </ShortcutTip>
         </div>
 
         <div data-tauri-drag-region role="group" aria-label="Canvas tools" className="canvas-titlebar-tools flex min-w-0 items-center gap-1">
@@ -93,12 +106,6 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <ShortcutTip label="Show all notes">{toolButton(false, "Show all notes", p.onShowNotes, <IconNotes size={16} />)}</ShortcutTip>
             <ShortcutTip label="Fit view" keys="F">{toolButton(false, "Fit view (F)", p.onFit, <IconArrowsMaximize size={16} />)}</ShortcutTip>
             {p.onOpenMemory && <ShortcutTip label="Memory">{toolButton(false, "Memory", p.onOpenMemory, <IconBrain size={16} />)}</ShortcutTip>}
-            <ShortcutTip label="Changes">
-              <Button type="button" variant="ghost" size="icon-sm" className="relative" aria-label={changesLabel} onClick={p.onOpenChanges}>
-                <IconGitCompare size={16} />
-                {changeBadge && <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{changeBadge}</span>}
-              </Button>
-            </ShortcutTip>
             <ShortcutTip label="Activity">{toolButton(p.activityOpen, "Activity", p.onToggleActivity, <IconActivity size={16} />)}</ShortcutTip>
           </div>
         </div>
@@ -123,7 +130,6 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuItem onSelect={p.onShowNotes}><IconNotes size={16} />Show all notes</DropdownMenuItem>
             <DropdownMenuItem onSelect={p.onFit}><IconArrowsMaximize size={16} />Fit view (F)</DropdownMenuItem>
             {p.onOpenMemory && <DropdownMenuItem onSelect={p.onOpenMemory}><IconBrain size={16} />Memory</DropdownMenuItem>}
-            <DropdownMenuItem onSelect={p.onOpenChanges}><IconGitCompare size={16} />{changesLabel}</DropdownMenuItem>
             <DropdownMenuCheckboxItem checked={p.activityOpen} onCheckedChange={p.onToggleActivity}><IconActivity size={16} />Activity</DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>

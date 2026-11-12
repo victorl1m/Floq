@@ -51,7 +51,7 @@ function FileCard({ change, entry, open, wrap, onToggle, onRetry }: {
         aria-expanded={open}
         title={change.originalPath ? `${change.originalPath} → ${change.path}` : change.path}
         onClick={onToggle}
-        className="sticky top-8 z-[1] flex h-7 w-full min-w-0 items-center gap-1.5 bg-background px-2 text-left text-xs hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className="floq-sticky-head sticky top-8 z-[1] flex h-7 w-full min-w-0 items-center gap-1.5 px-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
         <IconChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", open && "rotate-90")} />
         <span aria-label={GROUP_LABEL[group]} className={cn("w-3 shrink-0 text-center font-mono text-[11px] font-semibold", LETTER_TONE[group])}>{GROUP_LETTER[group]}</span>
@@ -227,9 +227,10 @@ export default function ChangesTab({ client, targets, onCount }: { client: Runti
               <section key={target.id} aria-label={target.label} className="border-b border-border">
                 <button
                   type="button"
+                  data-tone="section"
                   aria-expanded={!closed}
                   onClick={() => setFolderClosed((current) => ({ ...current, [target.id]: !closed }))}
-                  className="sticky top-0 z-[2] flex h-8 w-full min-w-0 items-center gap-1.5 border-b border-border/70 bg-muted/65 px-3 text-left text-xs hover:bg-muted/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                  className="floq-sticky-head sticky top-0 z-[2] flex h-8 w-full min-w-0 items-center gap-1.5 border-b border-border/70 px-3 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
                   <IconChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", !closed && "rotate-90")} />
                   <IconFolder className="size-3.5 shrink-0 text-muted-foreground" />
@@ -252,7 +253,7 @@ export default function ChangesTab({ client, targets, onCount }: { client: Runti
                       <>
                         {groups.map(({ group, items }) => (
                           <div key={group} role="group" aria-label={GROUP_LABEL[group]}>
-                            <h3 className="flex h-6 items-center gap-1.5 border-b border-border bg-muted/40 px-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                            <h3 data-tone="group" className="floq-sticky-head flex h-6 items-center gap-1.5 border-b border-border px-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                               {GROUP_LABEL[group]}
                               <span className="rounded-full bg-muted px-1.5 text-[10px] tabular-nums normal-case">{items.length}</span>
                             </h3>

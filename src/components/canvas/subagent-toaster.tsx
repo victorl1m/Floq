@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useRuntime } from "@/lib/runtime/store";
+import { roleLabel } from "@/lib/role-icons";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 
 /**
  * Headless: announces an agent recruiting a subagent (a new session that has a recruiting parent) with the shared toast.
@@ -24,7 +26,8 @@ export function SubagentToaster() {
       if (!session.parentSessionId) continue;
       const parent = sessions.find((item) => item.id === session.parentSessionId);
       toast.info(`${parent?.title ?? "An agent"} recruited ${session.title}`, {
-        description: session.role ? `Subagent, ${session.role}. Wired to its parent on the canvas.` : "Subagent. Wired to its parent on the canvas.",
+        icon: <AgentAvatar session={session} size={20} />,
+        description: session.role ? `Subagent, ${roleLabel(session.role)}. Wired to its parent on the canvas.` : "Subagent. Wired to its parent on the canvas.",
       });
     }
   }, [sessions, loaded]);

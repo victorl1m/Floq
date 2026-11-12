@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { openExternal } from "@/lib/open-external";
 import { portForwardingSupported, startForward, usePortForwarding } from "@/lib/port-forwarding";
-import { openRightSidebar } from "@/lib/right-sidebar";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import type { SessionDisplay, SessionSummary } from "@/lib/runtime/types";
 import { isLive } from "../provider";
@@ -142,7 +141,7 @@ export function useDisplayAnnouncements(client: RuntimeClient | null, sessions: 
           const frame = JSON.parse(String(message.data)) as { type?: string; sessionId?: string };
           if (frame?.type !== "display-started" || typeof frame.sessionId !== "string") return;
           const title = titles.current.get(frame.sessionId) ?? "An agent";
-          toast(`${title} opened an app window`, { action: { label: "Show", onClick: () => openRightSidebar("app") } });
+          toast(`${title} opened an app window on the canvas`);
         } catch { /* ignore malformed frames */ }
       };
       ws.onclose = () => {

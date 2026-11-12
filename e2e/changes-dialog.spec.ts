@@ -2,11 +2,18 @@ import { expect, test } from '@playwright/test';
 
 test.use({ viewport: { width: 1400, height: 900 } });
 
-test('toolbar Changes button shows a capped badge and opens the review dialog', async ({ page }) => {
+test('titlebar pill shows branch icon, branch name and a capped count, and opens the review dialog', async ({ page }) => {
   await page.goto('/e2e/harness/changes.html');
-  const button = page.getByRole('button', { name: 'Changes (99+)' }).first();
+  const button = page.getByRole('button', { name: /^Changes on .* \(99\+\)$/ });
   await expect(button).toBeVisible();
+  await expect(button).toContainText('feature/very-long-branch-name-here');
   await expect(button).toContainText('99+');
+  await expect(button.locator('svg')).toBeVisible();
+  const pill = (await button.boundingBox())!;
+  const bar = (await page.getByRole('toolbar', { name: 'Canvas toolbar' }).boundingBox())!;
+  expect(Math.abs(pill.x + pill.width / 2 - (bar.x + bar.width / 2))).toBeLessThan(2);
+  await expect(page.locator('.canvas-titlebar-changes')).toHaveAttribute('data-tauri-drag-region', 'true');
+  await expect(page.getByRole('toolbar').getByRole('button', { name: 'Changes', exact: true })).toHaveCount(0);
   await button.click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -18,7 +25,7 @@ test('toolbar Changes button shows a capped badge and opens the review dialog', 
 test('sidebar no longer has a Changes tab and a stored "changes" tab resolves to Files', async ({ page }) => {
   await page.goto('/e2e/harness/changes.html');
   const tabs = await page.evaluate(() => (window as any).__tabs);
-  expect(tabs.core).toEqual(['files', 'conversations', 'app']);
+  expect(tabs.core).toEqual(['files', 'conversations', 'artifacts']);
   expect(tabs.resolvedChanges).toBe('files');
 });
 
@@ -26,7 +33,7 @@ for (const theme of ['light', 'dark']) {
   test(`Changes dialog list scrolls inside the dialog and screenshots (${theme})`, async ({ page }) => {
     await page.goto('/e2e/harness/changes.html');
     if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'));
-    await page.getByRole('button', { name: /Changes \(/ }).first().click();
+    await page.getByRole('button', { name: /^Changes on / }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText(/files changed/i).first()).toBeVisible();
     const box = (await dialog.boundingBox())!;
@@ -45,7 +52,7 @@ for (const theme of ['light', 'dark']) {
 test('titlebar toolbar does not overflow at 820px', async ({ page }) => {
   await page.setViewportSize({ width: 820, height: 600 });
   await page.goto('/e2e/harness/changes.html');
-  await expect(page.getByRole('button', { name: /Changes \(/ }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Changes on / })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
   await page.screenshot({ path: '.tmp/shots/toolbar-820.png', clip: { x: 0, y: 0, width: 820, height: 60 } });

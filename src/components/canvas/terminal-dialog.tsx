@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { ActivityIndicator } from "@/components/agents/activity-indicator";
-import { PROVIDER_LABEL, ProviderIcon } from "@/components/agents/provider";
+import { PROVIDER_LABEL } from "@/components/agents/provider";
+import { roleLabel } from "@/lib/role-icons";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import SessionTerminal, { STATE_DOT } from "@/components/agents/session-terminal";
 import { FloqSurface } from "@/components/ui/floq-surface";
 import { cn } from "cn";
@@ -46,13 +48,13 @@ export default function TerminalDialog({ session, waking, onClose, onFullView, o
         {session && (
           <>
             <FloqSurface className="terminal-dialog-toolbar flex h-12 shrink-0 items-center gap-2 rounded-t-[inherit] rounded-b-none border-b border-border/70 px-3">
-              <ProviderIcon provider={session.provider} className="size-4" />
+              <AgentAvatar session={session} size={20} />
               <DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium leading-none" title={session.title}>{session.title}</DialogTitle>
               <DialogDescription className="sr-only">{PROVIDER_LABEL[session.provider]} terminal</DialogDescription>
               <span className={cn("size-2 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
               <Badge variant="outline" className="h-5 shrink-0 text-[10px] font-normal capitalize leading-none">{session.state}</Badge>
               <ActivityIndicator session={session} className="self-center" />
-              {session.role && <Badge variant="secondary" className="h-5 shrink-0 text-[10px] font-normal leading-none">{session.role}</Badge>}
+              {session.role && <Badge variant="secondary" className="h-5 shrink-0 text-[10px] font-normal leading-none">{roleLabel(session.role)}</Badge>}
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 {dormant && (
                   <Button type="button" size="xs" variant="secondary" disabled={waking} onClick={() => onWake(session)}>

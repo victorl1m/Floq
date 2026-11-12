@@ -16,6 +16,7 @@ import {
   useReactFlow,
   useStore,
   useViewport,
+  SelectionMode,
   type Connection,
   type FitViewOptions,
   type Node,
@@ -57,6 +58,7 @@ import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
+import { AppWindowProvider, appWindowNodeTypes, isAppWindowId, useCanvasAppWindows } from "./app-window-node";
 import { branchChangeToFollow, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
@@ -102,7 +104,7 @@ function EmptyCanvasViewport({ empty, projectId }: { empty: boolean; projectId: 
   return null;
 }
 
-const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes };
+const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes, ...appWindowNodeTypes };
 const edgeTypes = { wire: WireEdgeView, ...keychainEdgeTypes, ...noteEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
@@ -874,8 +876,16 @@ function AgentCanvas() {
     setNodes((current) => current.map((node) => node.id === id ? { ...node, zIndex: top } : node));
   }, [setNodes]);
 
+  // xyflow's marquee replaces the selection; with Shift/Cmd/Ctrl held we union it with what was selected when the drag started.
+  const marqueeBase = useRef<Set<string> | null>(null);
+  // Notes, keychains and app windows live in their own stores, so selection reaches them as xyflow select changes.
+  const otherNodesRef = useRef<{ nodes: Node[]; apply: Array<(changes: NodeChange<Node>[]) => void> }>({ nodes: [], apply: [] });
   const selectNodes = useCallback((ids: Set<string> | "all") => {
     setNodes((current) => current.map((node) => ({ ...node, selected: ids === "all" || ids.has(node.id) })));
+    const { nodes: others, apply } = otherNodesRef.current;
+    const changes = others.filter((node) => !!node.selected !== (ids === "all" || ids.has(node.id)))
+      .map((node) => ({ type: "select" as const, id: node.id, selected: ids === "all" || ids.has(node.id) }));
+    if (changes.length) for (const fn of apply) fn(changes);
   }, [setNodes]);
 
   const focusNodes = useCallback((ids: string[]) => {
@@ -912,24 +922,34 @@ function AgentCanvas() {
   fitOptsRef.current = fitViewOptions;
 
   const emptyCanvas = projectSessions.length === 0;
+  const appAnchor = useMemo(() => ({ x: nodes.reduce((max, node) => Math.max(max, node.position.x + (node.width ?? DEFAULT_NODE_SIZE.width)), 0) + 80, y: nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0 }), [nodes]);
+  const appWindows = useCanvasAppWindows(client, projectSessions, appAnchor);
+  otherNodesRef.current = {
+    nodes: [...notes.nodes, ...keychains.nodes, ...appWindows.nodes] as Node[],
+    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => keychains.onNodesChange(c.filter((x) => "id" in x && isKeychainId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id)))],
+  };
+  const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
-    ...notes.nodes, ...keychains.nodes, ...nodes,
+    ...notes.nodes, ...keychains.nodes, ...appWindows.nodes, ...nodes,
     ...(emptyCanvas ? [{ id: EMPTY_CANVAS_ID, type: "empty", position: { x: 0, y: 0 },
       width: 360, height: 208, style: { width: 360, height: 208 },
       draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
       data: { projectName, disabled: !activeProjectId, onCreate: openNewAgent },
     }] : []),
-  ] as Node[], [notes.nodes, keychains.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
+  ] as Node[], [notes.nodes, keychains.nodes, appWindows.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
     const forKeychain = (change: NodeChange<Node>) => "id" in change && isKeychainId(change.id);
-    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
+    const forApp = (change: NodeChange<Node>) => "id" in change && isAppWindowId(change.id);
+    const appChanges = changes.filter(forApp);
+    if (appChanges.length) appWindows.onNodesChange(appChanges);
+    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change) && !forApp(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
     const noteChanges = changes.filter(forNote);
     const keychainChanges = changes.filter(forKeychain);
     if (keychainChanges.length) keychains.onNodesChange(keychainChanges);
     if (agentChanges.length) onNodesChange(agentChanges as NodeChange<AgentNode>[]);
     if (noteChanges.length) notes.onNodesChange(noteChanges);
-  }, [onNodesChange, notes.onNodesChange, keychains.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onNodesChange, notes.onNodesChange, keychains.onNodesChange, appWindows.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addNoteAt = notes.add;
   const addKeychainCenter = useCallback(() => {
@@ -1075,7 +1095,7 @@ function AgentCanvas() {
   function onKeyDown(event: React.KeyboardEvent) {
     const target = event.target as HTMLElement;
     if (target.closest("input, textarea, select, [contenteditable=true], .xterm, [role=dialog], [data-radix-popper-content-wrapper]")) return;
-    if (event.key === "Escape") { setLinkMode(null); setSelectedEdgeId(null); return; }
+    if (event.key === "Escape") { setLinkMode(null); setSelectedEdgeId(null); selectNodes(new Set()); return; }
     if (event.key === "Delete" || event.key === "Backspace") {
       const agentIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
       const noteIds = notes.nodes.filter((node) => node.selected).map((node) => node.data.note.id);
@@ -1149,6 +1169,7 @@ function AgentCanvas() {
   return (
     <CanvasCtx.Provider value={ctx}>
       <NoteProvider value={noteCtxValue}>
+      <AppWindowProvider value={appWindowCtx}>
       <KeychainProvider value={keychains.ctxValue}>
       <KeychainWireCtx.Provider value={{ unlink: keychains.unlink }}>
       <NoteWireCtx.Provider value={{ unlink: notes.unlink }}>
@@ -1186,7 +1207,7 @@ function AgentCanvas() {
               onEdgeMouseLeave={() => setHoverEdgeId(null)}
               onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
               onEdgeContextMenu={(_, edge) => { setMenuTarget({ kind: "edge", id: edge.id }); setSelectedEdgeId(edge.id); selectNodes(new Set()); }}
-              onPaneClick={() => setSelectedEdgeId(null)}
+              onPaneClick={() => { setSelectedEdgeId(null); selectNodes(new Set()); }}
               onConnect={onConnect}
               onConnectEnd={onConnectEnd}
               isValidConnection={isValidConnection}
@@ -1197,6 +1218,14 @@ function AgentCanvas() {
               edgesFocusable={false}
               deleteKeyCode={null}
               selectionOnDrag={tool === "select"}
+              selectionMode={SelectionMode.Partial}
+              onSelectionStart={(event) => { marqueeBase.current = event.shiftKey || event.metaKey || event.ctrlKey ? new Set([...nodesRef.current, ...otherNodesRef.current.nodes].filter((node) => node.selected).map((node) => node.id)) : null; }}
+              onSelectionChange={({ nodes: picked }) => {
+                const base = marqueeBase.current;
+                if (base && [...base].some((id) => !picked.some((node) => node.id === id))) selectNodes(new Set([...base, ...picked.map((node) => node.id)]));
+              }}
+              onSelectionEnd={() => { marqueeBase.current = null; }}
+              multiSelectionKeyCode={["Shift", "Meta", "Control"]}
               panOnDrag={tool === "select" ? [1] : true}
               onlyRenderVisibleElements
               fitView={emptyCanvas || !savedViewport}
@@ -1271,6 +1300,7 @@ function AgentCanvas() {
           onFit={() => void fitView({ duration: 200, ...fitOptsRef.current })}
           onOpenChanges={openChangesDialog}
           changeCount={changeCount}
+          branch={currentBranch}
           activityOpen={showActivity}
           onToggleActivity={() => { setActivityFilter(null); setShowActivity((value) => !value); }}
           onKeyDown={onKeyDown}
@@ -1338,6 +1368,7 @@ function AgentCanvas() {
       </NoteWireCtx.Provider>
       </KeychainWireCtx.Provider>
       </KeychainProvider>
+      </AppWindowProvider>
       </NoteProvider>
     </CanvasCtx.Provider>
   );

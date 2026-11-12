@@ -28,7 +28,7 @@ function App() {
   return (
     <TooltipProvider>
       <div style={{ height: 40 }}>
-        <CanvasTitlebarToolbar project={{} as never} projectKey="p" name="Proj" sleepingCount={0} onWakeAll={noop} tool="select" onTool={noop} linkActive={false} onToggleLink={noop} onAddNote={noop} onAddKeychain={noop} onRelayout={noop} onShowNotes={noop} onFit={noop} onOpenChanges={openChangesDialog} changeCount={count} activityOpen={false} onToggleActivity={noop} onKeyDown={noop} />
+        <CanvasTitlebarToolbar project={{} as never} projectKey="p" name="Proj" sleepingCount={0} onWakeAll={noop} tool="select" onTool={noop} linkActive={false} onToggleLink={noop} onAddNote={noop} onAddKeychain={noop} onRelayout={noop} onShowNotes={noop} onFit={noop} onOpenChanges={openChangesDialog} changeCount={count} branch="feature/very-long-branch-name-here" activityOpen={false} onToggleActivity={noop} onKeyDown={noop} />
       </div>
       <Dialog open={open} onOpenChange={setChangesDialogOpen}>
         <DialogContent showCloseButton={false} className="flex h-[min(860px,90vh)] w-[min(1100px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-none">

@@ -34,7 +34,8 @@ import { MONO_FONT_FAMILY, loadMonoFont } from "@/lib/fonts";
 import { effectiveScrollback, loadPerformancePrefs, loadTerminalPrefs, usePerformancePrefs, useTerminalPrefs } from "@/lib/prefs";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { ClientFrame, ServerFrame, SessionState, SessionSummary } from "@/lib/runtime/types";
-import { ProviderIcon, isLive } from "./provider";
+import { isLive } from "./provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { resumeHint, sleepReasonText } from "./sleep-copy";
 import { formatDistanceToNowStrict } from "date-fns";
 import { openChangesDialog } from "@/lib/changes-dialog";
@@ -666,7 +667,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                 createPortal(
                     <div className="flex min-w-0 flex-1 items-center gap-2">
                         {titlebarTitle && <>
-                            <ProviderIcon provider={session.provider} />
+                            <AgentAvatar session={session} size={20} />
                             <span className="truncate text-sm font-medium">{session.title}</span>
                             <span
                                 title={session.state}
@@ -798,7 +799,7 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
                     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center terminal-scrim p-4 text-center">
                         <div className="flex max-h-full w-full max-w-sm flex-col items-center gap-3 overflow-y-auto py-2">
                             <div className="flex max-w-full items-center gap-2 text-muted-foreground">
-                                <ProviderIcon provider={session.provider} />
+                                <AgentAvatar session={session} size={20} />
                                 <span className="truncate text-xs">{session.title}</span>
                             </div>
                             <p className="text-sm font-medium text-foreground">{overlayTitle}</p>

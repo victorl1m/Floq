@@ -13,7 +13,7 @@ import { RuntimeError } from "@/lib/runtime/client";
 import type { SessionSummary } from "@/lib/runtime/types";
 import SessionTerminal, { STATE_DOT } from "./session-terminal";
 import { isLive } from "./provider";
-import { ProviderIcon } from "./provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { usePerformancePrefs } from "@/lib/prefs";
 import { chooseSplitPeer, resolveSplitPeer, visibleSplitIds } from "@/lib/runtime/terminal-split";
 import {
@@ -288,7 +288,7 @@ export default function TerminalPanel() {
                 <DropdownMenuLabel>Show beside</DropdownMenuLabel>
                 {splitCandidates.length ? splitCandidates.map((session) => (
                     <DropdownMenuItem key={session.id} onSelect={() => startSplit(session.id)}>
-                        <ProviderIcon provider={session.provider} />
+                        <AgentAvatar session={session} size={20} />
                         <span className="min-w-0 truncate">{session.title}</span>
                     </DropdownMenuItem>
                 )) : (
@@ -313,7 +313,7 @@ export default function TerminalPanel() {
                             return (
                                 <div key={session.id} className={cn("group flex h-7 shrink-0 items-center gap-1.5 rounded-md pr-1 pl-2.5 text-xs", active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50")}>
                                     <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
-                                    <ProviderIcon provider={session.provider} />
+                                    <AgentAvatar session={session} size={20} />
                                     <button type="button" className="max-w-40 truncate" title={[shellLocationLabel(session, project?.displayName || project?.name), session.branch, session.title].filter(Boolean).join(" · ")} onClick={() => activateSession(session, "terminal")}>
                                         {session.title}
                                     </button>
@@ -345,7 +345,7 @@ export default function TerminalPanel() {
                         return (
                             <div key={session.id} className={cn("group flex h-7 shrink-0 items-center gap-1.5 rounded-md pr-1 pl-2.5 text-xs", active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50")}>
                                 <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
-                                <ProviderIcon provider={session.provider} />
+                                <AgentAvatar session={session} size={20} />
                                 <button type="button" className="max-w-40 truncate" title={[project?.displayName || project?.name, session.branch, session.title].filter(Boolean).join(" · ")} onClick={() => activateSession(session, "agent")}>
                                     {session.title}
                                 </button>
@@ -390,7 +390,7 @@ export default function TerminalPanel() {
                         >
                             {split && session && (
                                 <div className="absolute inset-x-0 top-0 z-20 flex h-7 items-center gap-1.5 border-b border-border bg-background px-2 text-xs">
-                                    <ProviderIcon provider={session.provider} />
+                                    <AgentAvatar session={session} size={20} />
                                     <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[session.state])} title={session.state} />
                                     <span className="min-w-0 flex-1 truncate">{session.title}</span>
                                     <Button variant="ghost" size="icon-xs"
