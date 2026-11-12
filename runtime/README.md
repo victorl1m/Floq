@@ -154,6 +154,9 @@ Auth endpoints live under `/api/auth/*` (better-auth). `POST /api/auth/sign-in/e
 | GET | `/v1/info` | server info, provider availability |
 | GET/POST | `/v1/organizations` | list organizations for the signed-in user / create an owner organization |
 | GET | `/v1/organizations/:id` | list organization members (members only) |
+| PATCH | `/v1/organizations/:id` | `{name?, slug?}`: owner or admin (403 otherwise). Name 1-64 chars. Slug 3-40 chars `a-z0-9-`, no leading/trailing/double hyphen, not reserved (`admin`, `api`, `settings`, `new`, `personal-*`, ...): 400 `invalid_slug` / `reserved_slug`, 409 `slug_taken`. Personal organizations take a name only: 400 `personal_has_no_slug` |
+| GET | `/v1/organizations/slug-available?slug=&excludeId=` | `{available, reason?: "invalid"\|"reserved"\|"taken", normalized}`; `excludeId` lets an organization see its own slug as free; 60 lookups per user per minute (429 `rate_limited`). `/v1/organization-slugs/:slug` is the older equivalent |
+| GET/PUT/DELETE | `/v1/organizations/:id/image` | GET (members): the image with its stored content type, `nosniff`, `Cache-Control: private, no-cache` and an `ETag` (304 on `If-None-Match`). PUT (owner/admin, personal organizations included): raw body, `Content-Type` png/jpeg/webp, max 512 KB, magic bytes must match, SVG refused (415 `unsupported_image_type`, 413 `image_too_large`, 400 `invalid_image`). DELETE removes it. The organization JSON carries `imageUrl` (`/v1/organizations/:id/image?v=<updated ms>`) or null. Stored in `collaboration.organization_images` |
 | POST | `/v1/organizations/:id/invitations` | create a 7-day, email-bound, single-use member invitation; raw token is returned once |
 | POST | `/v1/organization-invitations/accept` | accept an invitation while signed into its invited email |
 | POST | `/v1/organization-invitations/register` | create a member account and accept a valid matching invitation while public signup is off; rate limited per IP |

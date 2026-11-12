@@ -56,6 +56,7 @@ import type {
   SubagentPolicy,
   UserSettings,
   Organization,
+  SlugAvailability,
   OrganizationInvitation,
   IssuedOrganizationInvitation,
   IncomingOrganizationInvitation,
@@ -252,8 +253,11 @@ export class RuntimeClient {
     return (await this.call<{ organization: Organization }>("POST", "/v1/organizations", { name, ...(slug ? { slug } : {}) })).organization;
   }
 
-  async organizationSlugAvailable(slug: string): Promise<{ slug: string; available: boolean }> {
-    return this.call("GET", `/v1/organization-slugs/${encodeURIComponent(slug)}`);
+  /** Live URL-name check. `excludeId` is the organization being edited so its own slug reads as available. */
+  async organizationSlugAvailable(slug: string, excludeId?: string): Promise<SlugAvailability> {
+    const query = new URLSearchParams({ slug });
+    if (excludeId) query.set("excludeId", excludeId);
+    return this.call("GET", `/v1/organizations/slug-available?${query}`);
   }
 
   async deleteOrganization(organizationId: string, confirm: string): Promise<void> {
@@ -300,8 +304,39 @@ export class RuntimeClient {
     await this.call("POST", `/v1/organization-invitations/${encodeURIComponent(invitationId)}/decline`, {});
   }
 
-  async renameOrganization(organizationId: string, name: string): Promise<void> {
-    await this.call("PATCH", `/v1/organizations/${encodeURIComponent(organizationId)}`, { name });
+  async updateOrganization(organizationId: string, patch: { name?: string; slug?: string }): Promise<void> {
+    await this.call("PATCH", `/v1/organizations/${encodeURIComponent(organizationId)}`, patch);
+  }
+
+  /** Uploads the (already cropped and resized) image as the raw request body. */
+  async setOrganizationImage(organizationId: string, image: Blob): Promise<void> {
+    const headers: Record<string, string> = { "Content-Type": image.type };
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/v1/organizations/${encodeURIComponent(organizationId)}/image`, { method: "PUT", headers, body: image });
+    } catch {
+      throw new RuntimeError(0, "network", "Runtime unreachable");
+    }
+    if (response.ok) return;
+    if (response.status === 401 && this.token) this.onUnauthorized?.();
+    let message = response.statusText || "Upload failed";
+    let code = "http_" + response.status;
+    try { const payload = await response.json() as { error?: { code?: string; message?: string } }; message = payload.error?.message ?? message; code = payload.error?.code ?? code; } catch { /* keep defaults */ }
+    throw new RuntimeError(response.status, code, message);
+  }
+
+  async removeOrganizationImage(organizationId: string): Promise<void> {
+    await this.call("DELETE", `/v1/organizations/${encodeURIComponent(organizationId)}/image`);
+  }
+
+  /** The image endpoint needs the bearer token, which an <img src> cannot send: fetch it as a Blob. `imageUrl` comes from the organization. */
+  async organizationImage(imageUrl: string): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    const response = await fetch(this.baseUrl + imageUrl, { headers });
+    if (!response.ok) throw new RuntimeError(response.status, "http_" + response.status, "Could not load the image");
+    return response.blob();
   }
 
   async createOrganizationInvitation(organizationId: string, email: string, role: "admin" | "member" = "member"): Promise<IssuedOrganizationInvitation> {

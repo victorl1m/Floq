@@ -189,7 +189,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Floq-Organization");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, If-None-Match, X-Floq-Organization");
     res.setHeader("Access-Control-Expose-Headers", "set-auth-token, X-Floq-Plugin-Sha256");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Max-Age", "600");
@@ -846,7 +846,23 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       }
     }
 
-    const organizationRoute = await routeOrganizations({ service: organizations, userId, method, pathname: url.pathname, readJson: () => readJson(req) });
+    const organizationRoute = await routeOrganizations({
+      service: organizations, userId, method, pathname: url.pathname, query: url.searchParams, readJson: () => readJson(req),
+      headers: { contentType: req.headers["content-type"], ifNoneMatch: req.headers["if-none-match"] },
+      readRaw: async (limit) => {
+        const declared = Number(req.headers["content-length"]);
+        if (Number.isFinite(declared) && declared > limit) throw new HttpError(413, "image_too_large", `The image must be ${limit / 1024} KB or smaller`);
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of req) { size += (chunk as Buffer).length; if (size > limit) throw new HttpError(413, "image_too_large", `The image must be ${limit / 1024} KB or smaller`); chunks.push(chunk as Buffer); }
+        return Buffer.concat(chunks);
+      },
+    });
+    if (organizationRoute?.raw) {
+      const { raw } = organizationRoute;
+      res.writeHead(organizationRoute.status, { "Content-Type": raw.contentType, "Content-Length": raw.data.length, ...raw.headers });
+      res.end(raw.data);
+      return;
+    }
     if (organizationRoute) {
       if (method !== "GET") void revalidatePeers(); // removal / leave: drop board sockets of members that lost access
       return send(res, organizationRoute.status, organizationRoute.body);

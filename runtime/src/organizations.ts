@@ -58,6 +58,8 @@ export interface OrganizationView {
   slug: string;
   role: OrganizationRole;
   personal: boolean;
+  /** Relative URL of the uploaded image (versioned so a change busts caches), or null when none is set. */
+  imageUrl: string | null;
   createdAt: string;
   members: OrganizationMemberView[];
 }
@@ -85,7 +87,26 @@ export interface IncomingInvitation {
 
 type Queryable = Pick<pg.Pool, "query">;
 
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,46})[a-z0-9]$/;
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38})[a-z0-9]$/;
+export const MAX_ORG_NAME = 64;
+/** Names a team URL must not take: they are (or may become) top-level routes or look official. */
+export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
+  "admin", "api", "settings", "new", "www", "app", "help", "support", "login", "logout", "signup", "signin", "invite", "invitations",
+  "organization", "organizations", "org", "orgs", "personal", "floq", "root", "system", "null", "undefined", "me", "account", "billing",
+]);
+export const MAX_ORG_IMAGE_BYTES = 512 * 1024;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+export type OrgImageType = (typeof IMAGE_TYPES)[number];
+
+/** The real format of an image by its leading bytes (never trusts the declared type); null for anything else, SVG included. */
+export function sniffImageType(bytes: Uint8Array): OrgImageType | null {
+  const b = Buffer.from(bytes.subarray(0, 12));
+  if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b.length >= 12 && b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+export interface OrgImage { contentType: OrgImageType; bytes: Buffer; updatedAt: Date; etag: string }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 /** Personal organizations have no slug (NULL): nothing to squat or collide with. The prefix stays reserved for old rows. */
@@ -116,19 +137,25 @@ function cleanName(value: unknown): string {
   if (typeof value !== "string") throw badRequest("Organization name must be text");
   const name = value.trim().replace(/\s+/g, " ");
   if (!name) throw badRequest("Organization name is required");
-  if (name.length > 80) throw badRequest("Organization name must be 80 characters or fewer");
+  if (name.length > MAX_ORG_NAME) throw badRequest(`Organization name must be ${MAX_ORG_NAME} characters or fewer`);
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) throw badRequest("Organization name cannot contain control characters");
   return name;
 }
 
+/** Why a slug cannot be used, or null when its shape is fine. Input is trimmed and lowercased first (that is `normalized`). */
+function slugProblem(normalized: string): "invalid" | "reserved" | null {
+  if (!SLUG_RE.test(normalized) || normalized.includes("--")) return "invalid";
+  if (normalized.startsWith(RESERVED_SLUG_PREFIX) || RESERVED_SLUGS.has(normalized)) return "reserved";
+  return null;
+}
+
 function cleanSlug(value: unknown): string {
   if (typeof value !== "string") throw badRequest("Slug must be text", "invalid_slug");
   const slug = value.trim().toLowerCase();
-  if (!SLUG_RE.test(slug) || slug.includes("--")) {
-    throw badRequest("Use 3-48 lowercase letters, numbers or single hyphens (not at the ends)", "invalid_slug");
-  }
-  if (slug.startsWith(RESERVED_SLUG_PREFIX)) throw badRequest("The \"personal-\" prefix is reserved", "invalid_slug");
+  const problem = slugProblem(slug);
+  if (problem === "invalid") throw badRequest("Use 3-40 lowercase letters, numbers or single hyphens (not at the ends)", "invalid_slug");
+  if (problem === "reserved") throw badRequest("That URL name is reserved", "reserved_slug");
   return slug;
 }
 
@@ -176,8 +203,9 @@ export class OrganizationsService {
 
   async list(userId: string): Promise<OrganizationView[]> {
     await this.ensurePersonal(userId);
-    const orgs = await this.pool.query<{ id: string; name: string; slug: string; role: OrganizationRole; created_at: Date; personal: boolean }>(
-      `SELECT o.id, o.name, o.slug, m.role, o.created_at, (o.personal_owner_id IS NOT NULL) AS personal FROM collaboration.organization_members m
+    const orgs = await this.pool.query<{ id: string; name: string; slug: string; role: OrganizationRole; created_at: Date; personal: boolean; image_at: Date | null }>(
+      `SELECT o.id, o.name, o.slug, m.role, o.created_at, (o.personal_owner_id IS NOT NULL) AS personal,
+              (SELECT i.updated_at FROM collaboration.organization_images i WHERE i.organization_id = o.id) AS image_at FROM collaboration.organization_members m
        JOIN collaboration.organizations o ON o.id = m.organization_id WHERE m.user_id = $1
        ORDER BY (o.personal_owner_id IS NULL), m.created_at, o.id`,
       [userId],
@@ -189,7 +217,8 @@ export class OrganizationsService {
       [orgs.rows.map((row) => row.id)],
     );
     return orgs.rows.map((row) => ({
-      id: row.id, name: row.name, slug: row.slug ?? "", role: row.role, personal: row.personal, createdAt: new Date(row.created_at).toISOString(),
+      id: row.id, name: row.name, slug: row.slug ?? "", role: row.role, personal: row.personal,
+      imageUrl: row.image_at ? `/v1/organizations/${row.id}/image?v=${new Date(row.image_at).getTime()}` : null, createdAt: new Date(row.created_at).toISOString(),
       members: members.rows.filter((member) => member.organization_id === row.id).map(({ id, name, email, role }) => ({ id, name, email, role })),
     }));
   }
@@ -237,10 +266,28 @@ export class OrganizationsService {
     return result.rows.map(({ id, name, email, role }) => ({ id, name, email, role }));
   }
 
-  async slugAvailable(slug: unknown): Promise<{ slug: string; available: boolean }> {
-    const clean = cleanSlug(slug);
-    const taken = await this.pool.query("SELECT 1 FROM collaboration.organizations WHERE slug = $1", [clean]);
-    return { slug: clean, available: !taken.rowCount };
+  /**
+   * Live availability check for the URL-name field. `excludeId` is the organization being edited, so its own current slug
+   * reads as available. Rate-limited per user: it is a lookup oracle for which team names exist.
+   */
+  async slugAvailable(slug: unknown, excludeId?: string, userId?: string): Promise<{ slug: string; normalized: string; available: boolean; reason?: "invalid" | "reserved" | "taken" }> {
+    if (userId) this.throttleLookup(userId);
+    const normalized = typeof slug === "string" ? slug.trim().toLowerCase() : "";
+    const problem = slugProblem(normalized);
+    if (problem) return { slug: normalized, normalized, available: false, reason: problem };
+    const exclude = excludeId && /^[0-9a-f-]{36}$/i.test(excludeId) ? excludeId : null;
+    const taken = await this.pool.query("SELECT 1 FROM collaboration.organizations WHERE slug = $1 AND ($2::uuid IS NULL OR id <> $2::uuid)", [normalized, exclude]);
+    return taken.rowCount ? { slug: normalized, normalized, available: false, reason: "taken" } : { slug: normalized, normalized, available: true };
+  }
+
+  private readonly lookupHits = new Map<string, { count: number; resetAt: number }>();
+  private throttleLookup(userId: string): void {
+    const now = Date.now();
+    for (const [key, hit] of this.lookupHits) if (hit.resetAt <= now) this.lookupHits.delete(key);
+    const hit = this.lookupHits.get(userId) ?? { count: 0, resetAt: now + 60_000 };
+    hit.count += 1;
+    this.lookupHits.set(userId, hit);
+    if (hit.count > 60) throw new HttpError(429, "rate_limited", "Too many lookups, try again in a minute");
   }
 
   // --- organization lifecycle ---
@@ -275,12 +322,69 @@ export class OrganizationsService {
     return (await this.list(userId)).find((org) => org.id === organizationId)!;
   }
 
-  async rename(userId: string, organizationId: string, rawName: unknown): Promise<void> {
-    const name = cleanName(rawName);
-    const role = await this.requireMember(this.pool, userId, organizationId);
-    if (role !== "owner") throw forbidden("Only the owner can rename the organization");
-    await this.assertNotPersonal(this.pool, organizationId);
-    await this.pool.query("UPDATE collaboration.organizations SET name = $2 WHERE id = $1::uuid", [organizationId, name]);
+  /** Owners and admins edit name, URL name and image. Personal organizations have no URL name. */
+  async update(userId: string, organizationId: string, body: Record<string, unknown>): Promise<void> {
+    const name = body.name === undefined ? undefined : cleanName(body.name);
+    const slug = body.slug === undefined ? undefined : cleanSlug(body.slug);
+    if (name === undefined && slug === undefined) throw badRequest("Nothing to change", "nothing_to_change");
+    await this.tx(async (db) => {
+      const role = await this.lockedRole(db, userId, organizationId);
+      if (role === "member") throw forbidden("Only owners and admins can edit the organization");
+      const current = await db.query<{ slug: string | null; personal: boolean }>(
+        "SELECT slug, (personal_owner_id IS NOT NULL) AS personal FROM collaboration.organizations WHERE id = $1::uuid", [organizationId]);
+      const row = current.rows[0];
+      if (!row) throw notFound();
+      if (slug !== undefined && row.personal) throw badRequest("Your personal organization has no URL name", "personal_has_no_slug");
+      const sets: string[] = []; const params: unknown[] = [organizationId];
+      if (name !== undefined) { params.push(name); sets.push(`name = $${params.length}`); }
+      if (slug !== undefined && slug !== row.slug) { params.push(slug); sets.push(`slug = $${params.length}`); }
+      if (sets.length) {
+        try {
+          await db.query(`UPDATE collaboration.organizations SET ${sets.join(", ")} WHERE id = $1::uuid`, params);
+        } catch (error) {
+          if (isUniqueViolation(error, "slug")) throw conflict("That URL name is already taken", "slug_taken");
+          throw error;
+        }
+        await this.audit(db, organizationId, userId, "org.updated", organizationId, { name, slug, previousSlug: slug !== undefined ? row.slug : undefined });
+      }
+    });
+  }
+
+  async image(userId: string, organizationId: string): Promise<OrgImage> {
+    await this.requireMember(this.pool, userId, organizationId);
+    const result = await this.pool.query<{ content_type: OrgImageType; bytes: Buffer; updated_at: Date }>(
+      "SELECT content_type, bytes, updated_at FROM collaboration.organization_images WHERE organization_id = $1::uuid", [organizationId]);
+    const row = result.rows[0];
+    if (!row) throw notFound("This organization has no image");
+    const bytes = Buffer.from(row.bytes);
+    const updatedAt = new Date(row.updated_at);
+    return { contentType: row.content_type, bytes, updatedAt, etag: `"${updatedAt.getTime().toString(36)}-${bytes.length.toString(36)}"` };
+  }
+
+  async setImage(userId: string, organizationId: string, declaredType: string | undefined, bytes: Buffer): Promise<void> {
+    const declared = (declaredType ?? "").split(";")[0].trim().toLowerCase();
+    if (!(IMAGE_TYPES as readonly string[]).includes(declared)) throw new HttpError(415, "unsupported_image_type", "Use a PNG, JPEG or WebP image");
+    if (!bytes.length) throw badRequest("The image is empty", "invalid_image");
+    if (bytes.length > MAX_ORG_IMAGE_BYTES) throw new HttpError(413, "image_too_large", `The image must be ${MAX_ORG_IMAGE_BYTES / 1024} KB or smaller`);
+    if (sniffImageType(bytes) !== declared) throw badRequest("The file is not a valid image of the declared type", "invalid_image");
+    await this.tx(async (db) => {
+      const role = await this.lockedRole(db, userId, organizationId);
+      if (role === "member") throw forbidden("Only owners and admins can change the image");
+      await db.query(
+        `INSERT INTO collaboration.organization_images (organization_id, content_type, bytes, updated_at) VALUES ($1::uuid, $2, $3, now())
+         ON CONFLICT (organization_id) DO UPDATE SET content_type = EXCLUDED.content_type, bytes = EXCLUDED.bytes, updated_at = now()`,
+        [organizationId, declared, bytes]);
+      await this.audit(db, organizationId, userId, "org.image_set", organizationId, { bytes: bytes.length });
+    });
+  }
+
+  async removeImage(userId: string, organizationId: string): Promise<void> {
+    await this.tx(async (db) => {
+      const role = await this.lockedRole(db, userId, organizationId);
+      if (role === "member") throw forbidden("Only owners and admins can change the image");
+      const removed = await db.query("DELETE FROM collaboration.organization_images WHERE organization_id = $1::uuid", [organizationId]);
+      if (removed.rowCount) await this.audit(db, organizationId, userId, "org.image_removed", organizationId);
+    });
   }
 
   async remove(userId: string, organizationId: string, confirm: unknown): Promise<void> {
@@ -636,14 +740,19 @@ export interface OrganizationRouteContext {
   userId: string;
   method: string;
   pathname: string;
+  query?: URLSearchParams;
+  headers?: { contentType?: string; ifNoneMatch?: string };
   readJson: <T>() => Promise<T>;
+  /** Raw request body, rejected with 413 beyond `limit` bytes. */
+  readRaw?: (limit: number) => Promise<Buffer>;
 }
+export interface OrganizationRouteResult { status: number; body: unknown; raw?: { contentType: string; data: Buffer; headers: Record<string, string> } }
 
 /**
  * HTTP surface for organizations. Returns undefined when the path is not an organization-management route
  * (task boards under /v1/organizations/:id/boards stay with the tasks router).
  */
-export async function routeOrganizations(ctx: OrganizationRouteContext): Promise<{ status: number; body: unknown } | undefined> {
+export async function routeOrganizations(ctx: OrganizationRouteContext): Promise<OrganizationRouteResult | undefined> {
   const { service, userId, method, pathname } = ctx;
   const ok = (body: unknown, status = 200) => ({ status, body });
   const body = () => ctx.readJson<Record<string, unknown>>();
@@ -653,8 +762,11 @@ export async function routeOrganizations(ctx: OrganizationRouteContext): Promise
     if (method === "POST") return ok({ organization: await service.create(userId, await body()) }, 201);
     return undefined;
   }
+  if (pathname === "/v1/organizations/slug-available" && method === "GET") {
+    return ok(await service.slugAvailable(ctx.query?.get("slug") ?? "", ctx.query?.get("excludeId") ?? undefined, userId));
+  }
   const slug = /^\/v1\/organization-slugs\/([^/]+)$/.exec(pathname);
-  if (slug && method === "GET") return ok(await service.slugAvailable(decodeURIComponent(slug[1])));
+  if (slug && method === "GET") return ok(await service.slugAvailable(decodeURIComponent(slug[1]), undefined, userId));
   if (pathname === "/v1/me/organization-invitations" && method === "GET") return ok({ invitations: await service.incomingInvitations(userId) });
   if (pathname === "/v1/organization-invitations/accept" && method === "POST") return ok(await service.acceptByToken(userId, (await body()).token));
   const incoming = /^\/v1\/organization-invitations\/([\w-]+)\/(accept|decline)$/.exec(pathname);
@@ -664,13 +776,30 @@ export async function routeOrganizations(ctx: OrganizationRouteContext): Promise
     return ok({ ok: true });
   }
 
-  const match = /^\/v1\/organizations\/([\w-]+)(?:\/(members|invitations|transfer|leave)(?:\/([\w-]+)(?:\/(resend))?)?)?$/.exec(pathname);
+  const match = /^\/v1\/organizations\/([\w-]+)(?:\/(members|invitations|transfer|leave|image)(?:\/([\w-]+)(?:\/(resend))?)?)?$/.exec(pathname);
   if (!match) return undefined;
   const [, organizationId, section, childId, childAction] = match;
   if (!section) {
     if (method === "GET") return ok({ members: await service.members(userId, organizationId) });
-    if (method === "PATCH") { await service.rename(userId, organizationId, (await body()).name); return ok({ ok: true }); }
+    if (method === "PATCH") { await service.update(userId, organizationId, await body()); return ok({ ok: true }); }
     if (method === "DELETE") { await service.remove(userId, organizationId, (await body()).confirm); return ok({ ok: true }); }
+    return undefined;
+  }
+  if (section === "image" && !childId) {
+    if (method === "GET") {
+      const image = await service.image(userId, organizationId);
+      const headers = { ETag: image.etag, "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'", "Content-Disposition": "inline" };
+      if (ctx.headers?.ifNoneMatch && ctx.headers.ifNoneMatch.split(",").map((t) => t.trim().replace(/^W\//, "")).includes(image.etag)) {
+        return { status: 304, body: null, raw: { contentType: image.contentType, data: Buffer.alloc(0), headers } };
+      }
+      return { status: 200, body: null, raw: { contentType: image.contentType, data: image.bytes, headers } };
+    }
+    if (method === "PUT") {
+      if (!ctx.readRaw) throw badRequest("Raw uploads are not available here");
+      await service.setImage(userId, organizationId, ctx.headers?.contentType, await ctx.readRaw(MAX_ORG_IMAGE_BYTES));
+      return ok({ ok: true });
+    }
+    if (method === "DELETE") { await service.removeImage(userId, organizationId); return ok({ ok: true }); }
     return undefined;
   }
   if (section === "leave" && method === "POST" && !childId) { await service.leave(userId, organizationId); return ok({ ok: true }); }

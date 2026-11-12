@@ -5,9 +5,9 @@ import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { errorMessage, useClient, useRuntime } from "@/lib/runtime/store";
-import { isValidSlug, slugify } from "@/lib/organizations";
+import { isValidSlug, NAME_MAX, SLUG_MAX, slugify } from "@/lib/organizations";
 
-type SlugState = "idle" | "invalid" | "checking" | "available" | "taken" | "unknown";
+type SlugState = "idle" | "invalid" | "checking" | "available" | "taken" | "reserved" | "unknown";
 
 export function CreateOrganizationDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
     const client = useClient();
@@ -43,7 +43,7 @@ export function CreateOrganizationDialog({ open, onOpenChange }: { open: boolean
         let current = true;
         const timer = setTimeout(() => {
             client.organizationSlugAvailable(slug)
-                .then((result) => { if (current) setSlugState(result.available ? "available" : "taken"); })
+                .then((result) => { if (current) setSlugState(result.available ? "available" : result.reason === "reserved" ? "reserved" : result.reason === "invalid" ? "invalid" : "taken"); })
                 .catch(() => { if (current) setSlugState("unknown"); });
         }, 300);
         return () => { current = false; clearTimeout(timer); };
@@ -71,10 +71,11 @@ export function CreateOrganizationDialog({ open, onOpenChange }: { open: boolean
 
     const slugMessage: Record<SlugState, string> = {
         idle: "Letters, numbers and hyphens. Filled in from the name.",
-        invalid: "Use 3-48 lowercase letters, numbers or single hyphens (not at the ends).",
+        invalid: "Use 3-40 lowercase letters, numbers or single hyphens (not at the ends).",
         checking: "Checking availability…",
         available: "Available",
         taken: "Already taken. Try another.",
+        reserved: "That name is reserved. Try another.",
         unknown: "Could not check availability. It will be checked when you create.",
     };
 
@@ -96,23 +97,23 @@ export function CreateOrganizationDialog({ open, onOpenChange }: { open: boolean
             <form id="create-organization-form" onSubmit={submit} className="flex flex-col gap-4" noValidate>
                 <div className="flex flex-col gap-1.5">
                     <label htmlFor={ids.name} className="text-sm font-medium">Name</label>
-                    <Input ref={nameRef} id={ids.name} value={name} maxLength={80} autoFocus placeholder="Acme Studio" onChange={(e) => setName(e.target.value)} />
+                    <Input ref={nameRef} id={ids.name} value={name} maxLength={NAME_MAX} autoFocus placeholder="Acme Studio" onChange={(e) => setName(e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5">
                     <label htmlFor={ids.slug} className="text-sm font-medium">URL name</label>
                     <Input
                         id={ids.slug}
                         value={slug}
-                        maxLength={48}
+                        maxLength={SLUG_MAX}
                         spellCheck={false}
                         autoCapitalize="none"
                         aria-invalid={slugState === "invalid" || slugState === "taken" || undefined}
                         aria-describedby={ids.slugStatus}
                         onChange={(e) => { setSlugEdited(true); setSlug(e.target.value.toLowerCase().replace(/\s+/g, "-")); }}
                     />
-                    <p id={ids.slugStatus} role="status" aria-live="polite" className={slugState === "taken" || slugState === "invalid" ? "flex items-center gap-1 text-xs text-destructive" : "flex items-center gap-1 text-xs text-muted-foreground"}>
+                    <p id={ids.slugStatus} role="status" aria-live="polite" className={slugState === "taken" || slugState === "invalid" || slugState === "reserved" ? "flex items-center gap-1 text-xs text-destructive" : "flex items-center gap-1 text-xs text-muted-foreground"}>
                         {slugState === "available" && <IconCheck aria-hidden="true" className="size-3.5 text-emerald-600 dark:text-emerald-400" />}
-                        {(slugState === "taken" || slugState === "invalid") && <IconX aria-hidden="true" className="size-3.5" />}
+                        {(slugState === "taken" || slugState === "invalid" || slugState === "reserved") && <IconX aria-hidden="true" className="size-3.5" />}
                         <span>{slugMessage[slugState]}</span>
                     </p>
                     {slug && isValidSlug(slug) && <p className="text-xs text-muted-foreground">Preview: <span className="font-mono">{slug}</span></p>}

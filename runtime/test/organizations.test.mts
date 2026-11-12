@@ -71,7 +71,7 @@ test("create: owner membership, derived slug, uniqueness, validation, user-wide 
   await rejects(service.create(B, { name: "Other", slug: "Bad Slug!" }), 400, "invalid_slug");
   await rejects(service.create(B, { name: "x".repeat(81) }), 400);
   await rejects(service.create(B, { name: "   " }), 400);
-  assert.deepEqual(await service.slugAvailable("acme-inc"), { slug: "acme-inc", available: false });
+  assert.deepEqual(await service.slugAvailable("acme-inc"), { slug: "acme-inc", normalized: "acme-inc", available: false, reason: "taken" });
   assert.equal((await service.slugAvailable("fresh-one")).available, true);
 
   // Server-side and user-wide: the list comes from the database, keyed by account.
@@ -87,9 +87,9 @@ test("role permission matrix", async (t) => {
   await join(B, "admin");
   await join(C, "member");
 
-  await rejects(service.rename(B, org.id, "Nope"), 403);
-  await rejects(service.rename(C, org.id, "Nope"), 403);
-  await service.rename(A, org.id, "Acme Corp");
+  await service.update(B, org.id, { name: "Admin Edit" });
+  await rejects(service.update(C, org.id, { name: "Nope" }), 403);
+  await service.update(A, org.id, { name: "Acme Corp" });
   await rejects(service.setMemberRole(B, org.id, C, "admin"), 403);
   await rejects(service.transferOwnership(B, org.id, C), 403);
   await rejects(service.remove(B, org.id, "Acme Corp"), 403);
@@ -126,7 +126,7 @@ test("non-members cannot read or act on an organization (404, no existence leak)
   await rejects(service.members(D, org.id), 404);
   await rejects(service.listInvitations(D, org.id), 404);
   await rejects(service.invite(D, org.id, { email: "z@example.com" }), 404);
-  await rejects(service.rename(D, org.id, "Mine"), 404);
+  await rejects(service.update(D, org.id, { name: "Mine" }), 404);
   await rejects(service.remove(D, org.id, "Acme Inc"), 404);
   await rejects(service.leave(D, org.id), 404);
   await rejects(service.removeMember(D, org.id, C), 404);
@@ -315,7 +315,7 @@ test("personal org: created once, listed first, never counted against the limit"
   assert.equal(first[0].slug, "");
   assert.equal((await db.query(`SELECT slug FROM collaboration.organizations WHERE id = $1::uuid`, [first[0].id])).rows[0].slug, null);
   // the old personal-<hash> namespace is reserved, so nobody can squat or collide with it
-  await rejects(service.create(B, { name: "Squat", slug: "personal-0123abcd" }), 400, "invalid_slug");
+  await rejects(service.create(B, { name: "Squat", slug: "personal-0123abcd" }), 400, "reserved_slug");
   assert.equal((await service.create(B, { name: "Personal Stuff" })).slug.startsWith("personal-"), false);
   assert.deepEqual(first[0].members.map((m) => m.id), [A]);
   const id = await service.ensurePersonal(A);
@@ -337,13 +337,12 @@ test("personal org: delete, leave, rename, transfer, invite and member changes r
   const id = await service.ensurePersonal(A);
   await rejects(service.remove(A, id, "Personal"), 409, "personal_org");
   await rejects(service.leave(A, id), 409, "personal_org");
-  await rejects(service.rename(A, id, "Mine"), 409, "personal_org");
-  await rejects(service.transferOwnership(A, id, B), 409, "personal_org");
+    await rejects(service.transferOwnership(A, id, B), 409, "personal_org");
   await rejects(service.invite(A, id, { email: EMAILS[B] }), 409, "personal_org");
   await rejects(service.setMemberRole(A, id, B, "admin"), 409, "personal_org");
   await rejects(service.removeMember(A, id, B), 409, "personal_org");
   // others still cannot see it exists
-  await rejects(service.rename(B, id, "Mine"), 404);
+  await rejects(service.update(B, id, { name: "Mine" }), 404);
   assert.equal((await service.list(A))[0].name, "Personal");
 });
 

@@ -2,23 +2,20 @@ import { useEffect, useState } from "react";
 import { IconLogout, IconMailOpened, IconPlus, IconTrash } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { ConfirmDialog } from "@/components/organization/confirm-dialog";
 import { InvitationsPanel } from "@/components/organization/invitations-panel";
 import { MembersTable } from "@/components/organization/members-table";
-import { OrganizationAvatar } from "@/components/organization/organization-avatar";
+import { OrganizationIdentity } from "./organization-identity";
 import { canManageMembers, organizationUi, ROLE_LABEL, ROLE_SUMMARY, useOrganizationUi } from "@/lib/organizations";
-import { errorMessage, useClient, useRuntime } from "@/lib/runtime/store";
-import { SavedCheck, SettingRow, SettingsGroup, SettingsPage, useSavedFlash } from "./ui";
+import { useClient, useRuntime } from "@/lib/runtime/store";
+import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 
 export default function OrganizationSection() {
     const client = useClient();
     const { organizations, organizationsLoading, organizationsError, activeOrganizationId, refreshOrganizations, user } = useRuntime();
     const { incoming } = useOrganizationUi();
     const org = organizations.find((organization) => organization.id === activeOrganizationId) ?? null;
-    const [name, setName] = useState(org?.name ?? "");
-    const [saved, flash] = useSavedFlash();
     const [leaveOpen, setLeaveOpen] = useState(false);
     const [deleteOpen, setDeleteOpen] = useState(false);
     const [transferTo, setTransferTo] = useState("");
@@ -26,27 +23,13 @@ export default function OrganizationSection() {
     const isOwner = org?.role === "owner";
     const isPersonal = org?.personal === true;
 
-    useEffect(() => setName(org?.name ?? ""), [org?.id, org?.name]);
     useEffect(() => setTransferTo(""), [org?.id]);
-
-    async function saveName() {
-        const next = name.trim();
-        if (!org || !next || next === org.name) { setName(org?.name ?? ""); return; }
-        try {
-            await client.renameOrganization(org.id, next);
-            await refreshOrganizations(org.id);
-            flash();
-        } catch (e) {
-            toast.error("Could not rename the organization", { description: errorMessage(e) });
-            setName(org.name);
-        }
-    }
 
     const otherMembers = org?.members.filter((member) => member.id !== user?.id) ?? [];
     const transferTarget = otherMembers.find((member) => member.id === transferTo);
 
     return (
-        <SettingsPage title="Organization" description="Organizations belong to your account and follow you to every device. Switch the active one from the account menu in the sidebar.">
+        <SettingsPage title="Organization" description="Organizations belong to your account and follow you to every device. Switch the active one from the organization switcher at the top of the sidebar.">
             <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={organizationUi.openCreate}><IconPlus aria-hidden="true" />Create organization</Button>
                 {incoming.length > 0 && (
@@ -63,30 +46,9 @@ export default function OrganizationSection() {
                 </div>
             ) : (
                 <>
-                    <SettingsGroup title="Overview">
-                        <div className="flex items-center gap-3 p-4">
-                            <OrganizationAvatar name={org.name} className="size-10 text-sm" />
-                            <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold">{org.name}</p>
-                                <p className="truncate font-mono text-xs text-muted-foreground">{org.slug}</p>
-                            </div>
-                        </div>
-                        <SettingRow label="Name" description={isPersonal ? "Your personal organization cannot be renamed." : isOwner ? "Shown across the app." : "Only the owner can rename the organization."} htmlFor="org-name">
-                            <SavedCheck show={saved} />
-                            <Input
-                                id="org-name"
-                                className="w-56"
-                                maxLength={80}
-                                value={name}
-                                disabled={!isOwner || isPersonal}
-                                onChange={(e) => setName(e.target.value)}
-                                onBlur={() => void saveName()}
-                                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                            />
-                        </SettingRow>
-                        <SettingRow label="URL name" description="Fixed when the organization is created.">
-                            <span className="font-mono text-sm">{org.slug}</span>
-                        </SettingRow>
+                    <OrganizationIdentity org={org} />
+
+                    <SettingsGroup title="Your access">
                         <SettingRow label="Your role" description={ROLE_SUMMARY[org.role]}>
                             <span className="text-sm">{ROLE_LABEL[org.role]}</span>
                         </SettingRow>
