@@ -419,30 +419,30 @@ export default function HomeView() {
                 </div>
 
                 {/* Continue where you left off. */}
-                <div className="mt-[clamp(40px,8vh,72px)] grid gap-x-8 gap-y-10 @[860px]:grid-cols-2">
+                <div className="mt-[clamp(40px,8vh,72px)] grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-10 @[860px]:grid-cols-[repeat(2,minmax(0,1fr))]">
                     <section aria-labelledby="home-agents-title" className="min-w-0">
                         <div className="mb-3 flex h-7 items-center justify-between">
                             <h2 id="home-agents-title" className="home-caption">Recent agents</h2>
                         </div>
                         {recentAgents.length > 0 ? (
-                            <ul className="grid gap-2">
+                            <ul className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2">
                                 {recentAgents.map((session) => {
                                     const state = STATE_LABEL[session.state];
                                     const when = age(session.startedAt ?? session.createdAt);
                                     return (
-                                        <li key={session.id}>
-                                            <button type="button" className="home-card group flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left" onClick={() => focusOnCanvas(session)}>
+                                        <li key={session.id} className="min-w-0">
+                                            <button type="button" className="home-card group flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left" onClick={() => focusOnCanvas(session)}>
                                                 <AgentAvatar session={session} size={32} />
                                                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                                                    <span className="truncate text-sm font-medium">{session.title || "Untitled agent"}</span>
+                                                    <span className="truncate text-sm font-medium" title={session.title || "Untitled agent"}>{session.title || "Untitled agent"}</span>
                                                     <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                                                         <span className={cn("shrink-0 font-medium", state.className)}>{state.text}</span>
                                                         <span aria-hidden="true">·</span>
-                                                        <span className="truncate">{projectName(session.projectId)}</span>
+                                                        <span className="truncate" title={projectName(session.projectId) ?? undefined}>{projectName(session.projectId)}</span>
                                                         {isOrchestrator(session) && <><span aria-hidden="true">·</span><span className="shrink-0">Orchestrator</span></>}
                                                     </span>
                                                 </span>
-                                                {when && <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground" aria-label={`Started ${when === "now" ? "just now" : `${when} ago`}`}>{when}</span>}
+                                                {when && <span data-home-age className="shrink-0 whitespace-nowrap font-mono text-[11px] tabular-nums text-muted-foreground" aria-label={`Started ${when === "now" ? "just now" : `${when} ago`}`}>{when}</span>}
                                                 <IconArrowRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
                                             </button>
                                         </li>
@@ -471,22 +471,22 @@ export default function HomeView() {
                                 <Skeleton rows={1} className="h-14 w-full rounded-2xl" />
                             </div>
                         ) : projects.length > 0 ? (
-                            <ul className="grid gap-2">
+                            <ul className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2">
                                 {projects.slice(0, 6).map((project) => {
                                     const ws = project.workspaces?.[0];
                                     const count = agentCount(project.id);
                                     return (
-                                        <li key={project.id}>
-                                            <button type="button" aria-current={project.id === activeProjectId ? "true" : undefined} className="home-card group flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left" onClick={() => openCanvas(project.id, ws?.id)}>
+                                        <li key={project.id} className="min-w-0">
+                                            <button type="button" aria-current={project.id === activeProjectId ? "true" : undefined} className="home-card group flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left" onClick={() => openCanvas(project.id, ws?.id)}>
                                                 <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-muted/70"><ProjectMark project={project} className="size-4" /></span>
                                                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                                                    <span className="truncate text-sm font-medium">{project.displayName || project.name}</span>
+                                                    <span className="truncate text-sm font-medium" title={project.displayName || project.name}>{project.displayName || project.name}</span>
                                                     <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
                                                         <IconGitBranch aria-hidden="true" className="size-3 shrink-0" />
-                                                        <span className="truncate font-mono">{ws?.branch || ws?.name || "Project checkout"}</span>
+                                                        <span className="truncate font-mono" title={ws?.branch || ws?.name || "Project checkout"}>{ws?.branch || ws?.name || "Project checkout"}</span>
                                                     </span>
                                                 </span>
-                                                {count > 0 && <span className="shrink-0 text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>}
+                                                {count > 0 && <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>}
                                                 <IconArrowRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
                                             </button>
                                         </li>

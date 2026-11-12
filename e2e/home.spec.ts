@@ -110,3 +110,30 @@ test('backdrop is static and decorative', async ({ page }) => {
   expect(await bd.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
   expect(await page.locator('canvas').count()).toBe(0);
 });
+
+for (const width of [820, 1000, 1280, 1600, 560]) {
+  test(`long titles stay inside their columns at ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await open(page, '?theme=dark&data=long');
+    const agents = page.locator('section[aria-labelledby="home-agents-title"]');
+    const projects = page.locator('section[aria-labelledby="home-projects-title"]');
+    const a = (await agents.boundingBox())!;
+    const p = (await projects.boundingBox())!;
+    const intersects = a.x < p.x + p.width && p.x < a.x + a.width && a.y < p.y + p.height && p.y < a.y + a.height;
+    if (width >= 820 && width !== 560) {
+      // Container breakpoint is 860px of the page, so 820 may still be one column; side by side means no horizontal overlap.
+      if (Math.abs(a.y - p.y) < 4) expect(a.x + a.width).toBeLessThanOrEqual(p.x + 1);
+    }
+    expect(intersects && Math.abs(a.y - p.y) < 4).toBe(false);
+    expect(await noHorizontalScroll(page)).toBe(true);
+    const age = page.locator('[data-home-age]').first();
+    await expect(age).toBeVisible();
+    const ab = (await age.boundingBox())!;
+    expect(ab.x + ab.width).toBeLessThanOrEqual(a.x + a.width + 1);
+    const card = (await agents.locator('.home-card').first().boundingBox())!;
+    expect(card.x + card.width).toBeLessThanOrEqual(a.x + a.width + 1);
+    expect(await age.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect(agents.getByText(/^Haiku exploration/)).toHaveAttribute('title', /Opus advisor/);
+    if (width === 1280 || width === 1000) await page.screenshot({ path: `.tmp/shots/home-long-titles-${width}.png` });
+  });
+}

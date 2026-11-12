@@ -13,21 +13,22 @@ import { Toaster } from "@/components/ui/sonner";
 const q = new URLSearchParams(location.search);
 if (q.get("theme") === "dark") document.documentElement.classList.add("dark");
 if (q.get("material")) document.documentElement.dataset.material = q.get("material")!;
-const filled = q.get("data") === "filled";
+const long = q.get("data") === "long";
+const filled = q.get("data") === "filled" || long;
 const noProviders = q.get("providers") === "none";
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 const ws = (id: string, branch: string) => ({ id, name: branch, branch, isWorktree: false });
 const projects = filled ? [
   { id: "p1", name: "floq", displayName: "Floq", imageUrl: null, iconName: null, iconColor: null, gitUrl: null, cwd: "/p/floq", createdAt: ago(9000), workspaces: [ws("w1", "main")] },
-  { id: "p2", name: "api-gateway", displayName: null, imageUrl: null, iconName: null, iconColor: null, gitUrl: null, cwd: "/p/api", createdAt: ago(9000), workspaces: [ws("w2", "feat/rate-limits")] },
+  { id: "p2", name: "api-gateway", displayName: null, imageUrl: null, iconName: null, iconColor: null, gitUrl: null, cwd: "/p/api", createdAt: ago(9000), workspaces: [ws("w2", long ? "feature/very-long-branch-name-for-the-rate-limiting-rollout-in-the-public-api-gateway-2026" : "feat/rate-limits")] },
   { id: "p3", name: "marketing-site", displayName: "Marketing site", imageUrl: null, iconName: null, iconColor: null, gitUrl: null, cwd: "/p/site", createdAt: ago(9000), workspaces: [ws("w3", "main")] },
 ] : [];
 const session = (id: string, title: string, provider: "claude" | "codex", state: string, projectId: string, min: number, role: string | null = null) =>
   ({ id, title, provider, state, projectId, role, cwd: "/p", cols: 80, rows: 24, createdAt: ago(min), startedAt: ago(min), endedAt: null, exitCode: null, signal: null, pid: 1, seq: 0, bufferedBytes: 0, droppedBytes: 0, resumeCount: 0, sleepReason: null });
 const sessions = filled ? [
   session("3f2c1b9a-7d4e-4a10-9c55-0b1f6e2a8d11", "Orchestrator", "claude", "running", "p1", 3, "orchestrator"),
-  session("a91e5c22-12f0-4b7b-8f3a-6d0c4e9b7a02", "Add rate limiting to the public API", "codex", "running", "p2", 12),
+  session("a91e5c22-12f0-4b7b-8f3a-6d0c4e9b7a02", long ? "Haiku exploration, Sonnet implementer, Opus advisor orchestration across the whole monorepo with a very long title" : "Add rate limiting to the public API", "codex", "running", "p2", 12),
   session("c0de0000-0000-4000-8000-00000000f00d", "Fix flaky login test", "claude", "sleeping", "p1", 95),
   session("b7a1f0e2-3c4d-4e5f-8a9b-0c1d2e3f4a5b", "Redesign pricing page hero", "claude", "exited", "p3", 60 * 26),
 ] : [];
