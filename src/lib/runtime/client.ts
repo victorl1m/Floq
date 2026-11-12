@@ -3,8 +3,6 @@ import type {
   PluginRepoPreview,
   PluginUpdateNotice,
   AgentLink,
-  Keychain,
-  KeychainInput,
   CanvasNote,
   Memory,
   MemoryEvent,
@@ -959,39 +957,6 @@ export class RuntimeClient {
   }
   memoryStatus(): Promise<MemoryStatus> {
     return this.call<MemoryStatus>("GET", "/v1/memory/status");
-  }
-
-  // Keychains (wallets of secrets linked to agents). Values are write-only.
-  /** All of the user's keychains across projects (Secrets screen). */
-  keychains(): Promise<Keychain[]>;
-  /** Keychains of one project (UUID, or "none" for the scratch canvas). */
-  keychains(projectId: string): Promise<Keychain[]>;
-  async keychains(projectId?: string): Promise<Keychain[]> {
-    const path = projectId === undefined ? "/v1/keychains" : `/v1/projects/${encodeURIComponent(projectId)}/keychains`;
-    return (await this.call<{ keychains: Keychain[] }>("GET", path)).keychains;
-  }
-  async createKeychain(projectId: string, input: KeychainInput & { name: string; x: number; y: number }): Promise<Keychain> {
-    return this.call<Keychain>("POST", `/v1/projects/${encodeURIComponent(projectId)}/keychains`, input);
-  }
-  async updateKeychain(id: string, patch: KeychainInput): Promise<Keychain> {
-    return this.call<Keychain>("PATCH", `/v1/keychains/${encodeURIComponent(id)}`, patch);
-  }
-  async deleteKeychain(id: string): Promise<void> {
-    await this.call("DELETE", `/v1/keychains/${encodeURIComponent(id)}`);
-  }
-  /** Create or replace one secret (name A-Z0-9_). */
-  async setKeychainSecret(id: string, name: string, value: string): Promise<Keychain> {
-    return this.call<Keychain>("PUT", `/v1/keychains/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`, { value });
-  }
-  async deleteKeychainSecret(id: string, name: string): Promise<Keychain> {
-    return this.call<Keychain>("DELETE", `/v1/keychains/${encodeURIComponent(id)}/secrets/${encodeURIComponent(name)}`);
-  }
-  /** Idempotent; the agent must be in the keychain's project. */
-  async linkKeychain(id: string, sessionId: string): Promise<Keychain> {
-    return this.call<Keychain>("POST", `/v1/keychains/${encodeURIComponent(id)}/links`, { sessionId });
-  }
-  async unlinkKeychain(id: string, sessionId: string): Promise<Keychain> {
-    return this.call<Keychain>("DELETE", `/v1/keychains/${encodeURIComponent(id)}/links/${encodeURIComponent(sessionId)}`);
   }
 
   /** Mark/unmark an orchestrator ("orchestrator" | null). User-only; returns the updated summary. */

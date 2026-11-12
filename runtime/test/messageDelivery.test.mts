@@ -108,7 +108,7 @@ const row = (id: string, title: string, user: string, projectId: string, project
   id, title, provider: "claude", model: null, state: "running", lead: false, role: null, cwd: projectName, git_url: null, project_cwd: projectName, project_id: projectId, workspace_id: null, project_name: projectName, user_id: user,
 });
 
-async function setup(options: { secrets?: { redact: (u: string, ids: string[], t: string) => Promise<string> } } = {}) {
+async function setup() {
   const db = new PGlite();
   const pool = {
     async query(sql: string, params?: unknown[]) {
@@ -141,7 +141,7 @@ async function setup(options: { secrets?: { redact: (u: string, ids: string[], t
   const manager = { findLive: (id: string) => live(id), readAgentTurn: () => null, resume: async () => undefined };
   const settings = { get: async () => ({ allowCrossProjectAgents: true }), profile: async () => ({}) };
   const links = { record: async () => undefined, upsert: async () => ({ id: "l" }) };
-  const orchestrator = new Orchestrator(fakePool as never, manager as never, settings as never, links as never, options.secrets as never, new CrossProjectGuard(() => Date.now(), { perMinute: 1000, maxChars: 8000, maxHops: 1000, dedupeMs: 0 }), new MessageInbox(fakePool as never));
+  const orchestrator = new Orchestrator(fakePool as never, manager as never, settings as never, links as never, new CrossProjectGuard(() => Date.now(), { perMinute: 1000, maxChars: 8000, maxHops: 1000, dedupeMs: 0 }), new MessageInbox(fakePool as never));
   return { db, pool: fakePool, orchestrator, writes, inbox: new MessageInbox(fakePool as never) };
 }
 
@@ -249,19 +249,6 @@ test("inbox: only the receiving session of the same user can read; list is scope
   assert.deepEqual((await orchestrator.inboxList(U, S3)).messages, []);
   await assert.rejects(orchestrator.inboxRead(U, S2, "../../etc/passwd"), /inbox id/);
   await assert.rejects(orchestrator.inboxRead(U, S2, "0123456789abcdef"), /No such message/);
-});
-
-test("secret values are redacted from the typed preview, the stored body and inbox reads", async (t) => {
-  const SECRET = "tok_live_SUPERSECRET";
-  const secrets = { redact: async (_u: string, _ids: string[], text: string) => text.split(SECRET).join("[redacted]") };
-  const { db, orchestrator, writes, pool } = await setup({ secrets });
-  t.after(() => db.close());
-  const body = SECRET + " " + CONTENT.plain(3_000) + " " + SECRET;
-  const r = await orchestrator.ask(U, S1, S2, body, 10, false) as { delivery: { inboxId: string } };
-  assert.ok(!writes.get(S2)!.join("").includes(SECRET));
-  const stored = (await pool.query("SELECT body FROM agent_inbox WHERE id = $1", [r.delivery.inboxId])).rows[0].body as string;
-  assert.ok(!stored.includes(SECRET) && stored.includes("[redacted]"));
-  assert.ok(!(await orchestrator.inboxRead(U, S2, r.delivery.inboxId)).body.includes(SECRET));
 });
 
 test("inboxPointer previews the head and names the id and size", () => {

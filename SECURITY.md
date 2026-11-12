@@ -20,7 +20,7 @@ Floq is designed for **one owner running their own server**, optionally shared w
 
 - **Sandboxed agents.** Each session runs as an unprivileged user in a bubblewrap sandbox (own PID/IPC/UTS namespaces, only that user's home mounted, read-only system directories, no capabilities, `no-new-privs`). The runtime container is not a hardened boundary by itself: it needs `SYS_ADMIN`, `SETUID`, `/dev/fuse` and relaxed AppArmor for FUSE and bubblewrap, and it uses a custom seccomp profile. Sandboxes share the container's network.
 - **Approval flow.** Auto-approve is on by default for both providers (users can turn it off). Irreversible or outward actions by agents can require a real, user-issued approval in the app.
-- **Encrypted data.** Provider logins, GitHub tokens, vault and keychain secrets are encrypted with AES-256-GCM using `FLOQ_ENCRYPTION_KEY`. Each user's home is a gocryptfs-encrypted volume, mounted only while the user has a terminal open. Secrets are write-only over the API. Secrets exposed to an agent can be read by that agent.
+- **Encrypted data.** Provider logins, GitHub tokens, vault secrets are encrypted with AES-256-GCM using `FLOQ_ENCRYPTION_KEY`. Each user's home is a gocryptfs-encrypted volume, mounted only while the user has a terminal open. Secrets are write-only over the API. Secrets exposed to an agent can be read by that agent.
 - **Accounts.** better-auth with scrypt password hashes, rate limits and 7-day sessions; signup is closed by default.
 - **Known limitations.** The Tauri window currently sets `"csp": null`; Windows installers are unsigned; the isolation has not been independently reviewed.
 

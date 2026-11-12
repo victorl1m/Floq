@@ -40,8 +40,6 @@ export interface SessionSummary {
   /** True once the agent was removed: the conversation is kept and listed under Conversations, not on the canvas. */
   archived?: boolean;
   parentSessionId?: string | null;
-  /** Number of per-agent secrets attached (never their values). Set on the session list. */
-  secretCount?: number;
   /** Turn status of a running agent; only set on the session list (polled), absent otherwise. */
   activity?: "working" | "idle" | "waiting-for-input";
 }

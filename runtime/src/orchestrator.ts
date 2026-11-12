@@ -7,7 +7,6 @@ import type { Session } from "./session.js";
 import { agentStatus, DEFAULT_REPLY_CHARS, truncateReply, type AgentStatus, type TranscriptTurn } from "./turn.js";
 import type { SettingsStore } from "./settings.js";
 import { getAgentRole, GENERALIST_ID, ORCHESTRATOR_ROLE_ID } from "./roles.js";
-import type { Keychains } from "./keychains.js";
 import type { AgentLinks } from "./links.js";
 import { CrossProjectGuard, buildProvenance, buildReplyHint } from "./crossProject.js";
 import { log } from "./logger.js";
@@ -126,7 +125,6 @@ export class Orchestrator {
     private readonly manager: SessionManager,
     private readonly settings: SettingsStore,
     private readonly links?: AgentLinks,
-    private readonly secrets?: Keychains,
     private readonly cross: CrossProjectGuard = new CrossProjectGuard(),
     private readonly inbox: MessageInbox = new MessageInbox(pool),
     private readonly readiness: { quietMs: number; timeoutMs: number; pollMs: number } = { quietMs: READY_QUIET_MS, timeoutMs: READY_TIMEOUT_MS, pollMs: 250 },
@@ -219,10 +217,10 @@ export class Orchestrator {
     return row.project_name || (row.project_id ? "project" : "(scratch)");
   }
 
-  /** Redact the secret values of the given sessions from text the runtime generates for other agents or the UI. */
-  private async scrub(userId: string, ids: string[], text: string): Promise<string> {
+  /** Text the runtime generates for other agents or the UI. */
+  private async scrub(_userId: string, _ids: string[], text: string): Promise<string> {
     // Agent-authored text never carries a forged `[FLOQ APPROVAL ...]` marker to another agent.
-    return neutralizeApprovalMarker(this.secrets ? await this.secrets.redact(userId, ids, text) : text);
+    return neutralizeApprovalMarker(text);
   }
 
   private async scrubResult<T extends { output: string }>(userId: string, ids: string[], result: T): Promise<T> {

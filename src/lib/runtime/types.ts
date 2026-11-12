@@ -34,8 +34,6 @@ export interface SessionSummary {
   model?: string | null;
   /** Agent role preset id, or null/absent for a generalist. "orchestrator" = the only role that can recruit. */
   role?: string | null;
-  /** Number of per-agent secrets attached (session list only). */
-  secretCount?: number;
   /** Session that recruited this one via the floq CLI, or null. */
   /** True once the agent was removed: its conversation is kept and listed under Conversations, not on the canvas. */
   archived?: boolean;
@@ -135,7 +133,6 @@ export interface ProjectDeleteStatus {
   project: { id: string; name: string };
   sessions: { total: number; live: number };
   notes: number;
-  keychains: number;
   checkouts: ProjectCheckoutReport[];
   worktrees: number;
   dirtyWorktrees: number;
@@ -364,38 +361,6 @@ export interface CanvasNote {
   updatedAt: string;
 }
 export interface CanvasNoteInput { text?: string; color?: NoteColor; kind?: NoteKind; x?: number; y?: number; w?: number; h?: number; agentNoteName?: string; title?: string | null }
-/**
- * A canvas wallet of secrets, linked to agents with wires. Names only: values are write-only and never returned.
- * Agents pull values with `floq secret get NAME`; each pull is recorded in `secrets`. Nothing is injected at start.
- */
-export interface KeychainSecret {
-  name: string;
-  /** Agent session id that added it; null when the user typed it. */
-  createdBy: string | null;
-  lastUsedAt: string | null;
-  lastUsedBy: string | null;
-  uses: number;
-}
-export interface Keychain {
-  id: string;
-  projectId: string | null;
-  projectName?: string | null;
-  name: string;
-  color: NoteColor;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  secretNames: string[];
-  secrets: KeychainSecret[];
-  linkedSessionIds: string[];
-  linkedCount: number;
-  createdAt: string;
-  updatedAt: string;
-  appliesOnNextStart?: boolean;
-}
-export interface KeychainInput { name?: string; color?: NoteColor; x?: number; y?: number; w?: number; h?: number }
-
 /** Live frame on the `/v1/events` socket and items of GET /v1/projects/:id/events. */
 export interface AgentMessageEvent {
   type: "agent-message";

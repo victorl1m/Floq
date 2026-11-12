@@ -25,7 +25,7 @@ async function setup() {
 test("collect: memory ON skips kind=memory notes and keeps system notes; OFF has both", async () => {
   const { db, pool, note } = await setup();
   await note("memory", "legacy memory text"); await note("system", "rule text");
-  const wired = new WiredContext(pool, async () => ({}));
+  const wired = new WiredContext(pool);
   const off = await wired.blockFor("u1", S);
   assert.match(off, /legacy memory text/); assert.match(off, /rule text/);
   wired.memories = { enabled: () => true, available: () => true, pinnedFor: async () => [] };
@@ -36,7 +36,7 @@ test("collect: memory ON skips kind=memory notes and keeps system notes; OFF has
 
 test("enabled but unavailable keeps the last pinned items and emits no removed notice", async () => {
   const { db, pool } = await setup();
-  const wired = new WiredContext(pool, async () => ({}));
+  const wired = new WiredContext(pool);
   let up = true;
   wired.memories = { enabled: () => true, available: () => up, pinnedFor: async () => [{ id: "m1", title: "Pkg", text: "use pnpm", author: "Bob" }] };
   const first = await wired.sync("u1", S);

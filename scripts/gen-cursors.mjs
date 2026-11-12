@@ -49,7 +49,6 @@ export const CURSORS = {
   "crosshair":    { hot: [16, 16], fb: "crosshair",   note: "Precision pick, box select", parts: [line("M16 4.5V13M16 19V27.5M4.5 16H13M19 16H27.5")] },
   "connect":      { hot: [16, 16], fb: "crosshair",   note: "Wire drawing and link mode", parts: [line("M16 3.5V8.5M16 23.5V28.5M3.5 16H8.5M23.5 16H28.5"), line(circle(16, 16, 7)), dot(16, 16, 2)] },
   "add-note":     { hot: [6, 4],   fb: "copy",        note: "Add note", parts: [arrow(), fill("M17.6 16.6H27.4V28.4H17.6Z"), mark("M22.5 19.5V25.5M19.5 22.5H25.5")] },
-  "add-keychain": { hot: [6, 4],   fb: "copy",        note: "Add keychain", parts: [arrow(), badgeCircle(), mark(circle(21, 22, 1.7), INK, 1.3), mark("M22.4 23.4L26 27M24.4 25.4L26 23.8", INK, 1.3)] },
   "zoom-in":      { hot: [13, 13], fb: "zoom-in",     note: "Zoom in", parts: [line("M18.5 18.5L27 27"), fill(circle(13, 13, 8)), mark("M13 9V17M9 13H17")] },
   "zoom-out":     { hot: [13, 13], fb: "zoom-out",    note: "Zoom out", parts: [line("M18.5 18.5L27 27"), fill(circle(13, 13, 8)), mark("M9 13H17")] },
   "not-allowed":  { hot: [16, 16], fb: "not-allowed", note: "Disabled or invalid target", parts: [fill(circle(16, 16, 10.5)), mark("M8.6 8.6L23.4 23.4", RED, 2.2)] },
@@ -120,7 +119,7 @@ ${table}
 \`--cursor-none\` is \`none\` (reserved for pointer-lock style cases; unused today).
 
 ## Tailwind mapping
-\`@utility\` overrides in \`src/styles/cursors.css\` remap \`cursor-default|pointer|text|move|grab|grabbing|crosshair|not-allowed|wait|progress|help|copy|context-menu|zoom-in|zoom-out|col-resize|row-resize|ew-resize|ns-resize|nesw-resize|nwse-resize|e-resize|w-resize|none\` plus new \`cursor-connect|add-note|add-keychain\` to the variables; variants (active:, disabled:, hover:) keep working.
+\`@utility\` overrides in \`src/styles/cursors.css\` remap \`cursor-default|pointer|text|move|grab|grabbing|crosshair|not-allowed|wait|progress|help|copy|context-menu|zoom-in|zoom-out|col-resize|row-resize|ew-resize|ns-resize|nesw-resize|nwse-resize|e-resize|w-resize|none\` plus new \`cursor-connect|add-note\` to the variables; variants (active:, disabled:, hover:) keep working.
 
 ## State hooks
 - \`.react-flow__pane\` grab / dragging grabbing / selection crosshair; nodes grab; handles connect; resizers per direction.

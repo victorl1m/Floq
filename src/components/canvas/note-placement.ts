@@ -80,8 +80,3 @@ export function stackNotes(notes: readonly StackNote[], left: number, top: numbe
   }
   return positions;
 }
-
-/** Keychains get their own column(s) one column-gap left of `left` (the leftmost edge of the notes or agents), sorted by name. */
-export function stackKeychains(keychains: readonly { id: string; w: number; h: number; name?: string | null }[], left: number, top: number, gap = COLUMN_GAP * 2) {
-  return stackNotes(keychains.map((kc) => ({ id: kc.id, w: kc.w, h: kc.h, title: kc.name })), left, top, gap);
-}

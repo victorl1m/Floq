@@ -132,7 +132,6 @@ export interface ProjectDeleteStatus {
   project: { id: string; name: string };
   sessions: { total: number; live: number };
   notes: number;
-  keychains: number;
   checkouts: CheckoutReport[];
   worktrees: number;
   /** Worktrees (and the main checkout) with uncommitted work that will be lost. */

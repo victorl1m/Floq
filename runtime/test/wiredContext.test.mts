@@ -20,23 +20,21 @@ class FileStore implements WiredStore {
 }
 
 const note = (id: string, text: string): WireItem => ({ kind: "note", id, title: text.split("\n")[0] || "Untitled note", content: text });
-const keychain = (id: string, name: string, names: string[]): WireItem => ({ kind: "keychain", id, title: name, names });
 const agent = (id: string, title: string): WireItem => ({ kind: "agent", id, title, content: "reviewer, claude" });
 
 test("empty wiring yields no block", () => {
   assert.equal(buildWiredBlock([]), "");
 });
 
-test("block has markers, is ordered (agents, notes, keychains), deduplicated and deterministic", () => {
-  const items = [keychain("k1", "Prod", ["B_TOKEN", "A_TOKEN"]), note("n1", "Use pnpm"), agent("a1", "Reviewer"), note("n1", "Use pnpm")];
+test("block has markers, is ordered (agents, then notes), deduplicated and deterministic", () => {
+  const items = [note("n1", "Use pnpm"), agent("a1", "Reviewer"), note("n1", "Use pnpm")];
   const block = buildWiredBlock(items);
   assert.ok(block.startsWith(WIRED_BEGIN) && block.endsWith(WIRED_END));
   assert.ok(block.indexOf('agent "Reviewer"') < block.indexOf('note "Use pnpm"'));
-  assert.ok(block.indexOf('note "Use pnpm"') < block.indexOf('keychain "Prod"'));
   assert.equal(block.split("Use pnpm").length - 1, 2, "title and body once each, so the duplicate collapsed");
-  assert.equal(normalizeItems(items).length, 3);
+  assert.equal(normalizeItems(items).length, 2);
   assert.equal(buildWiredBlock([...items].reverse()), block);
-  assert.match(block, /secret names B_TOKEN, A_TOKEN|secret names A_TOKEN, B_TOKEN/);
+  assert.doesNotMatch(block, /keychain/i);
 });
 
 test("size cap: total stays under the limit and the overflow is reported", () => {
@@ -46,14 +44,6 @@ test("size cap: total stays under the limit and the overflow is reported", () =>
   assert.match(block, /more wired items? not shown/);
   assert.ok(block.endsWith(WIRED_END));
   assert.match(buildWiredBlock([note("n1", "t\n" + "y".repeat(5000))]), /\[truncated\]/);
-});
-
-test("secret values are redacted from note text and never appear; keychains contribute names only", () => {
-  const value = "sk-live-9f8e7d6c5b4a";
-  const block = buildWiredBlock([note("n1", "token is " + value + " ok"), { ...keychain("k1", "Prod " + value, ["API_KEY"]), content: value }], { secrets: { API_KEY: value } });
-  assert.ok(!block.includes(value));
-  assert.match(block, /\[secret:API_KEY\]/);
-  assert.match(block, /API_KEY/);
 });
 
 test("a note cannot forge the block markers", () => {
@@ -66,21 +56,21 @@ test("memory persists across a restart and is re-injected; removal drops it and 
   const dir = mkdtempSync(join(tmpdir(), "wired-"));
   try {
     const file = join(dir, "memory.json");
-    const first = await reconcileWired(new FileStore(file), "u1", "s1", [note("n1", "Plan A"), keychain("k1", "Prod", ["TOK"])]);
+    const first = await reconcileWired(new FileStore(file), "u1", "s1", [note("n1", "Plan A"), agent("a1", "Reviewer")]);
     assert.ok(first.changed);
-    assert.deepEqual(first.added.map((r) => r.id), ["n1", "k1"]);
+    assert.deepEqual(first.added.map((r) => r.id).sort(), ["a1", "n1"]);
 
     // "Restart": a brand new store over the same file still has the block, even before anything is rebuilt.
     const restarted = new FileStore(file);
     assert.equal((await restarted.get("s1"))?.block, first.block);
 
     // Unchanged wires: nothing to announce.
-    const same = await reconcileWired(restarted, "u1", "s1", [keychain("k1", "Prod", ["TOK"]), note("n1", "Plan A")]);
+    const same = await reconcileWired(restarted, "u1", "s1", [agent("a1", "Reviewer"), note("n1", "Plan A")]);
     assert.equal(same.changed, false);
     assert.deepEqual([same.added, same.removed], [[], []]);
 
     // Remove the note wire: it disappears from the memory and is reported as removed.
-    const after = await reconcileWired(restarted, "u1", "s1", [keychain("k1", "Prod", ["TOK"])]);
+    const after = await reconcileWired(restarted, "u1", "s1", [agent("a1", "Reviewer")]);
     assert.deepEqual(after.removed.map((r) => r.id), ["n1"]);
     assert.ok(!after.block.includes("Plan A"));
     assert.ok(!(await new FileStore(file).get("s1"))?.block.includes("Plan A"));
@@ -120,9 +110,21 @@ test("codex guidance carries the block inside the managed section, replaced on e
 });
 
 test("wired block is byte-identical for the same refs in any input order and carries no revision or timestamp text", () => {
-  const items = [agent("a1", "Reviewer"), note("n1", "Use pnpm"), note("n2", "Run tests"), keychain("k1", "Prod", ["A_TOKEN"])];
+  const items = [agent("a1", "Reviewer"), note("n1", "Use pnpm"), note("n2", "Run tests"), agent("a2", "Tester")];
   const block = buildWiredBlock(items);
   assert.equal(buildWiredBlock([items[3], items[2], items[0], items[1]]), block);
   assert.equal(buildWiredBlock([...items]), block);
   assert.doesNotMatch(block, /updatedAt|\brev\b|\d{4}-\d{2}-\d{2}T/);
+});
+
+test("a wired record persisted before keychains were removed does not report a bogus removed wire", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wired-"));
+  try {
+    const store = new FileStore(join(dir, "memory.json"));
+    const legacy = [{ kind: "keychain", id: "k1", title: "Prod" }, { kind: "note", id: "n1", title: "Plan A" }] as never;
+    await store.put("s1", "u1", { block: "stale", digest: "stale", items: legacy, updatedAt: new Date(0).toISOString() });
+    const sync = await reconcileWired(store, "u1", "s1", [note("n1", "Plan A")]);
+    assert.deepEqual(sync.removed, []);
+    assert.doesNotMatch(buildWiredNotice(sync.added, sync.removed, sync.block), /keychain/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

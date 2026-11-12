@@ -20,10 +20,10 @@ Floq is a Tauri desktop app that connects to a **runtime** you host. The runtime
 
 ## Features
 
-- **Agents on a canvas.** Start Claude Code, Codex or a plain shell in a cloud terminal and arrange agents, notes, keychains, wires and an app window on a canvas (marquee selection included). Agents get robot avatars and role icons. Idle terminals sleep and resume the same conversation.
+- **Agents on a canvas.** Start Claude Code, Codex or a plain shell in a cloud terminal and arrange agents, notes, wires and an app window on a canvas (marquee selection included). Agents get robot avatars and role icons. Idle terminals sleep and resume the same conversation.
 - **Organizations and projects.** Every user has a Personal organization, and projects are scoped to an organization. Clone a repository by URL or from a connected GitHub account, group projects into folders, and review changed files from the titlebar branch pill (Changes). Shared organizations have owner, admin and member roles and invitation tokens.
 - **Files and Artifacts tabs.** Create files inline, open them in a dialog, and preview docx, xlsx, xls, csv and pdf. Each project has an Artifacts folder with its own tab. Right-click to download a file or folder.
-- **Notes, keychains and wires.** Sticky notes, scoped keychains of secrets that reach only the agents wired to them, and a per-user write-only vault.
+- **Notes and wires.** Sticky notes wired to the agents that should read them, and a per-user write-only vault for secrets.
 - **Cross-project and cross-organization messaging, approvals.** Agents message each other with the `floq` CLI. Irreversible or outward actions (push, merge, deploy) can require your explicit approval in the app.
 - **Subagent recruiting with limits.** Lead agents recruit and dismiss other agents, optionally in an isolated Git worktree. By default 6 agents can be awake and 24 exist in total per lead; the limits are configurable in settings up to ceilings of 32 and 200 (operators can lower the ceilings with `FLOQ_SUBAGENT_CEIL_CHILDREN` and `FLOQ_SUBAGENT_CEIL_TOTAL`).
 - **Usage meter.** The footer shows your Claude Pro or Max usage (plan label, windows and extra usage), and says so when usage is unavailable.

@@ -47,7 +47,6 @@ def scene_open(pg, scene):
     elif scene == "picker": pg.get_by_role("button", name="Model").first.click()
     elif scene == "secrets":
         pg.get_by_text("Secrets").first.click(timeout=4000); pg.wait_for_timeout(700)
-        if pg.get_by_text("Keychains").count(): pg.get_by_text("Keychains").first.click()
     elif scene == "clone": pg.get_by_role("button", name="New project").first.click()
     pg.wait_for_timeout(900)
 

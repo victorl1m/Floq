@@ -126,14 +126,6 @@ export function formatSkill(skill: SkillSummary) {
   return skill.provider + "\t" + skill.name + "\t" + skill.source + (skill.description ? "\t" + skill.description.replace(/\s+/g, " ").slice(0, 100) : "");
 }
 
-/** Parses the `secrets add` arguments. The value is never an argument: any extra positional or --value is refused. */
-export function parseSecretsAdd(positional: string[], named: NamedArgs): { name: string; keychain?: string } {
-  if (positional.length !== 1) throw new Error("usage: floq secrets add NAME [--keychain NAME]  (the value is read from stdin or a hidden prompt, never from an argument)");
-  if ("value" in named || "expose" in named) throw new Error("secrets add does not accept --value or --expose; the value comes from stdin or a hidden prompt, and agent-created secrets always live in a keychain");
-  if ("keychain" in named && typeof named.keychain !== "string") throw new Error("--keychain needs a keychain name");
-  return { name: positional[0], keychain: typeof named.keychain === "string" ? named.keychain : undefined };
-}
-
 /** Trims exactly one trailing newline from piped input. */
 export function cleanSecretInput(raw: string) {
   return raw.replace(/\r?\n$/, "");

@@ -38,7 +38,7 @@ async function harness(t) {
     async markDelivered(id) { const r = rows.get(id); if (!r || r.delivered) return false; r.delivered = true; return true; },
     async isDelivered(id) { return rows.get(id)?.delivered ?? false; },
   };
-  const orchestrator = new Orchestrator(pool, manager, {}, undefined, undefined, undefined, undefined, undefined, outbox);
+  const orchestrator = new Orchestrator(pool, manager, {}, undefined, undefined, undefined, undefined, outbox);
   const auth = { handler() {}, api: { getSession: async ({ headers }) => (headers.get("authorization") === "Bearer " + USER_TOKEN ? { user: { id: "owner" } } : null) } };
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "error", databaseUrl: "postgres://x/y" };

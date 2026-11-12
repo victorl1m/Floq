@@ -1,14 +1,12 @@
 import type pg from "pg";
-import { redactSecrets } from "./secrets.js";
 import { log } from "./logger.js";
 import { neutralizeApprovalMarker, foldLookalikes } from "./approvalText.js";
 
 /**
- * Wired context: what the user has wired to an agent on the canvas (notes, keychains, other agents), turned into a
+ * Wired context: what the user has wired to an agent on the canvas (notes, other agents), turned into a
  * block the agent always has. The block is rebuilt from the database and persisted per session (agent_wired_memory), then
  * handed to the provider at every start and resume as system-level instructions, so it survives context compaction,
- * restarts and resume. Secret VALUES never enter it: keychains contribute names only, and note text is redacted against
- * the session's own secret values.
+ * restarts and resume.
  */
 
 export const WIRED_BEGIN = "[FLOQ WIRED CONTEXT v1]";
@@ -20,16 +18,14 @@ export const WIRED_NOTICE_MAX = 1500;
 /** Budget for the project's memory + system notes, on top of WIRED_TOTAL_MAX. */
 export const PROJECT_NOTES_MAX = 8000;
 
-export type WireKind = "agent" | "note" | "keychain" | "memory" | "system" | "pinned";
+export type WireKind = "agent" | "note" | "memory" | "system" | "pinned";
 
 export interface WireItem {
   kind: WireKind;
   id: string;
   title: string;
-  /** note: its text. agent: a one-line description. keychain: unused. */
+  /** note: its text. agent: a one-line description. */
   content?: string;
-  /** keychain: secret names (never values). */
-  names?: string[];
   /** system/memory: name of the agent that created the note; empty when the user did. */
   author?: string | null;
 }
@@ -38,7 +34,7 @@ export interface WireRef { kind: WireKind; id: string; title: string; /** conten
 
 export interface WiredRecord { block: string; digest: string; items: WireRef[]; updatedAt: string }
 
-const KIND_ORDER: Record<WireKind, number> = { system: 0, memory: 1, pinned: 2, agent: 3, note: 4, keychain: 5 };
+const KIND_ORDER: Record<WireKind, number> = { system: 0, memory: 1, pinned: 2, agent: 3, note: 4 };
 const isProject = (k: WireKind) => k === "system" || k === "memory" || k === "pinned";
 
 const oneLine = (text: string, max: number) => {
@@ -60,7 +56,7 @@ function clip(text: string, max: number): string {
   return text.length > max ? text.slice(0, Math.max(0, max - 1)).trimEnd() + "…[truncated]" : text;
 }
 
-/** Order: agents, notes, keychains, then title/id. Duplicates (same kind and id) collapse to the first. */
+/** Order: agents, notes, then title/id. Duplicates (same kind and id) collapse to the first. */
 export function normalizeItems(items: WireItem[]): WireItem[] {
   const seen = new Set<string>();
   const out: WireItem[] = [];
@@ -112,15 +108,13 @@ function projectSection(items: WireItem[], clean: (t: string) => string, budget:
 }
 
 /**
- * The block, or "" when nothing is wired. Deterministic for the same input. `secrets` (name -> value) are redacted from
- * every free-text field, defence in depth on top of keychains only ever contributing names.
+ * The block, or "" when nothing is wired. Deterministic for the same input.
  */
-export function buildWiredBlock(items: WireItem[], options: { secrets?: Record<string, string>; total?: number; projectTotal?: number } = {}): string {
+export function buildWiredBlock(items: WireItem[], options: { total?: number; projectTotal?: number } = {}): string {
   const total = options.total ?? WIRED_TOTAL_MAX;
   const everything = normalizeItems(items);
   if (!everything.length) return "";
-  const secrets = options.secrets ?? {};
-  const clean = (text: string) => defang(redactSecrets(text, secrets));
+  const clean = (text: string) => defang(text);
   const all = everything.filter((i) => !isProject(i.kind));
   const projectLines = projectSection(everything.filter((i) => isProject(i.kind)), clean, options.projectTotal ?? PROJECT_NOTES_MAX);
   if (!all.length) return [WIRED_BEGIN, ...projectLines, WIRED_END].join("\n");
@@ -138,9 +132,6 @@ export function buildWiredBlock(items: WireItem[], options: { secrets?: Record<s
     let line: string;
     if (item.kind === "agent") {
       line = `- agent "${title}"${item.content ? ": " + clean(oneLine(item.content, 160)) : ""} (id ${item.id}; talk to it with \`floq ask ${item.id} "..."\`)`;
-    } else if (item.kind === "keychain") {
-      const names = (item.names ?? []).map((n) => oneLine(n, 64));
-      line = `- keychain "${title}": ${names.length ? "secret names " + names.join(", ") : "no secrets yet"}. Values are never shown or injected: pull one only when you need it with \`floq secret get NAME\` (every pull is logged and the user sees which keys you used).`;
     } else {
       const text = clean((item.content ?? "").trim());
       line = `- note "${title}" (id ${item.id}; \`floq sticky read ${item.id}\` for the live text):\n${text ? text.split("\n").map((l) => "    " + clip(l, 400)).join("\n") : "    (empty)"}`;
@@ -212,15 +203,17 @@ export class PgWiredStore implements WiredStore {
 export interface WiredSync { block: string; changed: boolean; added: WireRef[]; removed: WireRef[]; /** project memory/system notes whose text changed */ updated: WireRef[] }
 
 /** Compare against the persisted memory, store the new block (or drop it when nothing is wired), report what changed. */
-export async function reconcileWired(store: WiredStore, userId: string, sessionId: string, items: WireItem[], secrets: Record<string, string> = {}): Promise<WiredSync> {
-  const block = buildWiredBlock(items, { secrets });
+export async function reconcileWired(store: WiredStore, userId: string, sessionId: string, items: WireItem[]): Promise<WiredSync> {
+  const block = buildWiredBlock(items);
   const refs = refsOf(items);
   const previous = await store.get(sessionId);
   const key = (r: WireRef) => r.kind + ":" + r.id;
-  const before = new Map((previous?.items ?? []).map((r) => [key(r), r]));
+  // Records persisted before keychains were removed may still hold keychain refs: ignore them so no bogus "removed" notice goes out.
+  const previousItems = (previous?.items ?? []).filter((r) => (r.kind as string) !== "keychain");
+  const before = new Map(previousItems.map((r) => [key(r), r]));
   const after = new Map(refs.map((r) => [key(r), r]));
   const added = refs.filter((r) => !before.has(key(r)));
-  const removed = (previous?.items ?? []).filter((r) => !after.has(key(r)));
+  const removed = previousItems.filter((r) => !after.has(key(r)));
   const updated = refs.filter((r) => r.rev !== undefined && before.has(key(r)) && before.get(key(r))!.rev !== r.rev);
   const digest = digestOf(block);
   const changed = (previous?.digest ?? digestOf("")) !== digest;
@@ -233,7 +226,7 @@ export class WiredContext {
   readonly store: WiredStore;
   /** Set when agent memory is enabled; pinned memories ride in the project section. */
   memories?: { enabled?(): boolean; available(): boolean; pinnedFor(userId: string, projectId: string | null): Promise<Array<{ id: string; title: string; text: string; author: string | null }>> };
-  constructor(private readonly pool: pg.Pool, private readonly secretsOf: (userId: string, sessionId: string) => Promise<Record<string, string>>, store?: WiredStore) {
+  constructor(private readonly pool: pg.Pool, store?: WiredStore) {
     this.store = store ?? new PgWiredStore(pool);
   }
 
@@ -263,12 +256,6 @@ export class WiredContext {
       items.push({ kind: n.kind as WireKind, id: n.id as string, title: (n.title as string | null) || oneLine(text.split("\n").find((l) => l.trim()) ?? "", 60) || "Untitled note", content: text, author: (n.author as string | null) ?? null });
     }
     for (const m of await this.pinnedMemories(userId, sessionId)) items.push({ kind: "pinned", id: m.id, title: m.title || oneLine(m.text, 60), content: m.text, author: m.author });
-    const kcs = await this.pool.query(
-      `SELECT k.id, k.name, COALESCE((SELECT array_agg(s.name ORDER BY s.name) FROM keychain_secrets s WHERE s.keychain_id = k.id), '{}') AS names
-       FROM keychains k JOIN keychain_links l ON l.keychain_id = k.id AND l.session_id = $2 WHERE k.user_id = $1 ORDER BY k.created_at`,
-      [userId, sessionId],
-    );
-    for (const k of kcs.rows) items.push({ kind: "keychain", id: k.id as string, title: k.name as string, names: (k.names as string[]) ?? [] });
     const agents = await this.pool.query(
       `SELECT o.id, o.title, o.provider, o.role, o.project_id, me.project_id AS my_project, p.name AS project_name FROM agent_links l
        JOIN agent_sessions o ON o.id = CASE WHEN l.from_session_id = $2 THEN l.to_session_id ELSE l.from_session_id END
@@ -301,9 +288,7 @@ export class WiredContext {
   /** Rebuild from the live tables and persist. Throws only on database failure. */
   async sync(userId: string, sessionId: string): Promise<WiredSync> {
     const items = await this.collect(userId, sessionId);
-    let secrets: Record<string, string> = {};
-    try { secrets = await this.secretsOf(userId, sessionId); } catch { /* names-only content stays safe without it */ }
-    return reconcileWired(this.store, userId, sessionId, items, secrets);
+    return reconcileWired(this.store, userId, sessionId, items);
   }
 
   /** For start/resume: never throws; an empty string means nothing to inject. */

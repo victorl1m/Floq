@@ -10,7 +10,7 @@ Web interface in a Tauri desktop wrapper. React 19, TypeScript, Vite, Tailwind C
 
 ## Workflows
 
-Runtime sign-in, first-administrator setup, invitation registration, project import, agent creation, terminal sessions, task boards, skills and MCP management, secrets and keychains, and account/runtime/organization settings. Preserve authorization, runtime API contracts, credentials handling, session persistence, and terminal scrollback.
+Runtime sign-in, first-administrator setup, invitation registration, project import, agent creation, terminal sessions, task boards, skills and MCP management, secrets, and account/runtime/organization settings. Preserve authorization, runtime API contracts, credentials handling, session persistence, and terminal scrollback.
 
 ## Current request
 

@@ -54,7 +54,7 @@ function harness(allow = true, guard = new CrossProjectGuard()) {
     record: async (...a: unknown[]) => { records.push(a); },
     upsert: async (...a: unknown[]) => { upserts.push(a); return { id: "link1" }; },
   };
-  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, guard, undefined, undefined, new MemoryOutbox());
+  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, guard, undefined, undefined, new MemoryOutbox());
   return { orchestrator, typed, records, upserts };
 }
 

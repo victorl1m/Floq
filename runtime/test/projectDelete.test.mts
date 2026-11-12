@@ -124,6 +124,7 @@ test("delete cascades the project, its sessions, canvas data and links, and remo
   const note = (await s.db.query(`INSERT INTO canvas_notes (user_id, project_id, text, x, y) VALUES ($1,$2,'n',0,0) RETURNING id`, [U1, a.id])).rows[0] as { id: string };
   await s.db.query(`INSERT INTO canvas_notes (user_id, project_id, text, x, y) VALUES ($1,$2,'keep',0,0)`, [U1, b.id]);
   await s.db.query(`INSERT INTO canvas_note_links (note_id, session_id, user_id) VALUES ($1,$2,$3)`, [note.id, sa1, U1]);
+  // Legacy rows from the removed keychain feature (no FK on project_id): deleting the project must not orphan them.
   const kc = (await s.db.query(`INSERT INTO keychains (user_id, project_id, name, x, y) VALUES ($1,$2,'kc',0,0) RETURNING id`, [U1, a.id])).rows[0] as { id: string };
   await s.db.query(`INSERT INTO keychain_secrets (keychain_id, user_id, name, value_enc) VALUES ($1,$2,'K','\\x00')`, [kc.id, U1]);
   await s.db.query(`INSERT INTO agent_links (project_id, from_session_id, to_session_id) VALUES ($1,$2,$3)`, [a.id, sa1, sb]); // cross-project link
@@ -133,7 +134,7 @@ test("delete cascades the project, its sessions, canvas data and links, and remo
   await s.db.query(`INSERT INTO user_project_folders (user_id, organization_id, version, doc) SELECT $1, organization_id, 3, $2::jsonb FROM floq_projects WHERE id = $3`, [U1, JSON.stringify({ folders: [{ id: "f1", name: "F" }], root: [{ kind: "folder", id: "f1" }, { kind: "project", id: b.id }], membership: { f1: [a.id] }, expanded: {} }), a.id]);
 
   const status = await s.manager.projectDeleteStatus(U1, a.id);
-  assert.deepEqual({ total: status.sessions.total, live: status.sessions.live, notes: status.notes, keychains: status.keychains, worktrees: status.worktrees }, { total: 2, live: 1, notes: 1, keychains: 1, worktrees: 1 });
+  assert.deepEqual({ total: status.sessions.total, live: status.sessions.live, notes: status.notes, worktrees: status.worktrees }, { total: 2, live: 1, notes: 1, worktrees: 1 });
   assert.equal(status.dirtyWorktrees, 0);
 
   const result = await s.manager.deleteProject(U1, a.id);

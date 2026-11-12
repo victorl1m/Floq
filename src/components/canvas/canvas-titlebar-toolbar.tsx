@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
-  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitCompare, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
+  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitCompare, IconHandStop, IconLayoutDistributeHorizontal, IconLink,
   IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -28,7 +28,6 @@ export interface CanvasTitlebarToolbarProps {
   linkActive: boolean;
   onToggleLink: () => void;
   onAddNote: () => void;
-  onAddKeychain: () => void;
   onRelayout: () => void;
   onShowNotes: () => void;
   /** Undefined hides the Memory button (memory is off on this runtime). */
@@ -76,7 +75,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
   }, []);
   const wakeLabel = p.sleepingCount ? `Wake all sleeping agents (${p.sleepingCount})` : "No sleeping agents";
-  const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
+  const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note") => (
     <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
   );
   const changeBadge = p.changeCount ? formatChangeCount(p.changeCount) : null;
@@ -118,7 +117,6 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
           {separator}
           <div data-tauri-drag-region role="group" aria-label="Add to canvas" className="flex shrink-0 items-center gap-0.5">
             <ShortcutTip label="Add note" keys="N">{toolButton(false, "Add note (N)", p.onAddNote, <IconNote size={16} />, "add-note")}</ShortcutTip>
-            <ShortcutTip label="Add keychain" keys="K">{toolButton(false, "Add keychain (K)", p.onAddKeychain, <IconKey size={16} />, "add-keychain")}</ShortcutTip>
           </div>
           {separator}
           <div data-tauri-drag-region role="group" aria-label="Agents" className="flex shrink-0 items-center rounded-full border border-border/80 p-0.5">
@@ -153,7 +151,6 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuCheckboxItem checked={p.linkActive} onCheckedChange={p.onToggleLink}><IconLink size={16} />Link mode (L)</DropdownMenuCheckboxItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={p.onAddNote}><IconNote size={16} />Add note (N)</DropdownMenuItem>
-            <DropdownMenuItem onSelect={p.onAddKeychain}><IconKey size={16} />Add keychain (K)</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem disabled={p.sleepingCount === 0} onSelect={p.onWakeAll}><IconPlayerPlay size={16} />{wakeLabel}</DropdownMenuItem>
             <DropdownMenuSeparator />

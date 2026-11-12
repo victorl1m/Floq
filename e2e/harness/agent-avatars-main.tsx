@@ -23,7 +23,7 @@ const ctx = {
   recruits: new Map([[(sessions[0] as { id: string }).id, 1]]), liveIds: new Set(), collapsed: new Set(), linkMode: null, live: {}, reducedMotion: true,
   titleOf: () => "", focus() {}, terminalId: null, sentIds: new Set(), highlightId: null, startLink() {}, toggleCollapse() {}, activate() {}, wake() {},
   sendMessage: async () => true, waking: new Set(), linkInfo: { [(sessions[0] as { id: string }).id]: { count: 2, sides: new Set() } },
-  deleteLink() {}, keychainCounts: {}, noteCounts: { [(sessions[0] as { id: string }).id]: 1 }, hotIds: new Set(), flashIds: new Set(), savePlacement() {},
+  deleteLink() {}, noteCounts: { [(sessions[0] as { id: string }).id]: 1 }, hotIds: new Set(), flashIds: new Set(), savePlacement() {},
 } as never;
 const runtime = { client: {}, sessions } as never;
 const nodes: Node[] = sessions.map((s, i) => ({ id: (s as { id: string }).id, type: "agent", position: { x: 20 + (i % 2) * 480, y: 20 + Math.floor(i / 2) * 200 }, width: 450, height: 180, data: { session: s } }));

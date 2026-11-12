@@ -93,7 +93,7 @@ export default function DeleteProjectDialog({ project, onClose }: { project: Run
             <p className="mb-1 text-xs font-medium">What will be deleted</p>
             <ul aria-label="What will be deleted" className="flex list-disc flex-col gap-1 rounded-md border border-border bg-muted/30 py-2.5 pr-3 pl-7 text-xs">
               <li>{plural(status.sessions.total, "agent and terminal session")}{status.sessions.live ? `, ${status.sessions.live} running and will be stopped` : ""}</li>
-              <li>{plural(status.notes, "canvas note")}, {plural(status.keychains, "keychain")}, links and canvas layout</li>
+              <li>{plural(status.notes, "canvas note")}, links and canvas layout</li>
               <li>
                 {mainCheckout?.managed
                   ? <>The project checkout <span className="font-mono break-all">{mainCheckout.path}</span></>
