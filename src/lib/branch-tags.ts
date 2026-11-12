@@ -57,3 +57,24 @@ export function isOutdatedRuntimeBranchError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === "project_agents_active" || code === "project_worktree_dirty";
 }
+
+/**
+ * Sessions the canvas hides because they are tagged with another branch. Branch names compare case-insensitively
+ * ("Main" vs "main"). A lead and a running session are never hidden, and the canvas is never emptied by this
+ * filter: when every session would be hidden, all of them show.
+ */
+export function hiddenByBranch<S extends { id: string; lead?: boolean; state?: string }>(
+  sessions: S[],
+  currentBranch: string,
+  tags: Record<string, BranchTag>,
+  inGround: (session: S) => boolean,
+): Set<string> {
+  const hidden = new Set<string>();
+  const current = currentBranch.trim().toLowerCase();
+  for (const session of sessions) {
+    if (!inGround(session) || session.lead || session.state === "running") continue;
+    const tag = tags[session.id];
+    if (tag && tag.branch.trim().toLowerCase() !== current) hidden.add(session.id);
+  }
+  return hidden.size >= sessions.length ? new Set() : hidden;
+}
