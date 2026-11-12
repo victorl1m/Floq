@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import CommandPalette from "@/components/sidebar/command-palette";
 import ProjectList from "@/components/sidebar/project-list";
+import OrgSwitcher from "@/components/sidebar/org-switcher";
 import UserCard from "@/components/sidebar/user-card";
 import { useRuntime, type View } from "@/lib/runtime/store";
 import { usePlugins } from "@/plugins/host";
@@ -42,6 +43,7 @@ export function AppSidebar() {
                 className="border-r-0"
             >
                 <SidebarHeader>
+                    <OrgSwitcher />
                     <SidebarMenu>
                         <SidebarMenuItem>
                             <div className="floq-surface sidebar-search min-w-0 rounded-[10px]">

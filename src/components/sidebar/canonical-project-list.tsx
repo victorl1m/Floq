@@ -32,7 +32,7 @@ import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuButton, Side
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import CloneDialog from "@/components/home/clone-dialog";
 import WorktreeDeleteDialog, { type WorktreeDeleteTarget } from "@/components/sidebar/worktree-delete-dialog";
-import { ProviderIcon } from "@/components/agents/provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { advanceMemory, countByProject, projectStatus, type ProjectMemory, type ProjectStatus } from "@/lib/project-status";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { canonicalProjectPrefsMigrationKey, legacyPrefsForProject, loadProjectFolders, projectScope, saveProjectFolders, updateCanonicalProjectMeta, useCanonicalProjectMeta, useProjectFolders, useRecentRepos, useWorkspaceProjectMeta, type ProjectFolder } from "@/lib/prefs";
@@ -68,8 +68,8 @@ function ProjectStatusSlot({ status }: { status: ProjectStatus | null }) {
 }
 
 export default function CanonicalProjectList() {
-  const { loaded, sessions, projects, projectsLoading, projectsError, retryProjects, canvasProjectId, openCanvas, client, upsertSession, deleteSession, setNewAgentOpen, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, setProjectNavExpanded } = useRuntime();
-  const scope = projectScope(baseUrl, user?.id ?? null);
+  const { loaded, sessions, projects, projectsLoading, projectsError, retryProjects, canvasProjectId, openCanvas, client, upsertSession, deleteSession, setNewAgentOpen, selectProject, createProject, updateProject, refreshProjects, baseUrl, user, setProjectNavExpanded, activeOrganizationId } = useRuntime();
+  const scope = projectScope(baseUrl, user?.id ?? null, activeOrganizationId);
   const folders = useProjectFolders(scope);
   useProjectFoldersSync();
   const folderExpanded = useFolderExpanded(scope);
@@ -428,7 +428,7 @@ export default function CanonicalProjectList() {
       </form>
     </AppDialog>
 
-    <AppDialog size="sm" open={renaming !== null} onOpenChange={(open) => { if (!open && !renameSaving) { setRenaming(null); setRenameError(null); } }} icon={renaming ? <ProviderIcon provider={renaming.provider} /> : <IconPencil />} title="Rename conversation" description="The agent ID and terminal session stay the same." footer={<><Button variant="outline" disabled={renameSaving} onClick={() => setRenaming(null)}>Cancel</Button><Button type="submit" form="rename-agent-form" disabled={renameSaving}>{renameSaving ? "Saving…" : "Save title"}</Button></>}>
+    <AppDialog size="sm" open={renaming !== null} onOpenChange={(open) => { if (!open && !renameSaving) { setRenaming(null); setRenameError(null); } }} icon={renaming ? <AgentAvatar session={renaming} size={20} /> : <IconPencil />} title="Rename conversation" description="The agent ID and terminal session stay the same." footer={<><Button variant="outline" disabled={renameSaving} onClick={() => setRenaming(null)}>Cancel</Button><Button type="submit" form="rename-agent-form" disabled={renameSaving}>{renameSaving ? "Saving…" : "Save title"}</Button></>}>
       <form id="rename-agent-form" noValidate onSubmit={(event) => void saveRename(event)} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2"><Label htmlFor="rename-agent-title">Conversation title</Label><Input id="rename-agent-title" autoFocus maxLength={120} value={renameTitle} onChange={(event) => { setRenameTitle(event.target.value); setRenameError(null); }} /></div>
         {renameError && <ErrorBanner>{renameError}</ErrorBanner>}

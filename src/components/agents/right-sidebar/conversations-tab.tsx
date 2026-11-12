@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "cn";
 import { useRuntime } from "@/lib/runtime/store";
 import type { RuntimeProject, SessionSummary } from "@/lib/runtime/types";
-import { ProviderIcon, isLive } from "../provider";
+import { isLive } from "../provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { STATE_DOT } from "../session-terminal";
 import { PanelEmpty, RowSkeletons } from "./panel-states";
 
@@ -71,7 +72,7 @@ function Row({ session, project, showWorkspace, active, open, closed, onActivate
           closed && !active && "text-muted-foreground hover:text-foreground",
         )}
       >
-        <ProviderIcon provider={session.provider} className={cn("size-3.5", closed && "opacity-60")} />
+        <AgentAvatar session={session} size={18} className={cn(closed && "opacity-60")} />
         <span className="min-w-0 flex-1">
           <span className={cn("block truncate", !closed && "font-medium")}>{session.title}</span>
           <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
@@ -135,7 +136,7 @@ export default function ConversationsTab({ projectId, project }: { projectId: st
             />
           ) : groups.map((group) => (
             <section key={group.key} aria-label={group.label} className="mb-1">
-              <h3 className="sticky top-0 z-[1] flex items-center justify-between bg-background/85 px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+              <h3 className="floq-sticky-head sticky top-0 z-[1] flex items-center justify-between px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                 {group.label}
                 <span className="tabular-nums normal-case">{group.items.length}</span>
               </h3>

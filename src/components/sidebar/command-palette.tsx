@@ -11,7 +11,7 @@ import {
     CommandList,
     CommandShortcut,
 } from "@/components/ui/command";
-import { ProviderIcon } from "@/components/agents/provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { projectLabel } from "@/lib/runtime/projects";
 import { useRuntime } from "@/lib/runtime/store";
 
@@ -107,7 +107,7 @@ export default function CommandPalette() {
                                     onSelect={run(() => openSession(session))}
                                     className="min-w-0"
                                 >
-                                    <ProviderIcon provider={session.provider} />
+                                    <AgentAvatar session={session} size={20} />
                                     <span className="min-w-0 flex-1 truncate" title={session.title}>{session.title}</span>
                                     <CommandShortcut className="max-w-[40%] truncate" title={projectLabel(session.cwd)}>{projectLabel(session.cwd)}</CommandShortcut>
                                 </CommandItem>

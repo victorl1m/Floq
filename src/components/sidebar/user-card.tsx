@@ -19,7 +19,7 @@ import { useIsAdmin } from "@/components/settings/use-admin";
 import { useRuntime } from "@/lib/runtime/store";
 import { OrganizationAvatar } from "@/components/organization/organization-avatar";
 import { OrganizationHost } from "@/components/organization/organization-host";
-import { organizationUi, ROLE_LABEL, useOrganizationUi } from "@/lib/organizations";
+import { organizationLabel, organizationUi, sortOrganizations, ROLE_LABEL, useOrganizationUi } from "@/lib/organizations";
 
 function initials(label: string): string {
     const parts = label.split(/[\s@._-]+/).filter(Boolean);
@@ -35,7 +35,7 @@ export default function UserCard() {
     const name = user.name?.trim() || user.email.split("@")[0];
     const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId);
     const roleLabel = isAdmin ? "Administrator" : activeOrganization ? ROLE_LABEL[activeOrganization.role] : "Member";
-    const organizationSubtitle = activeOrganization?.name ?? (organizationsLoading ? "Loading organization…" : organizationsError ? "Organizations unavailable" : "No organization yet");
+    const organizationSubtitle = (activeOrganization ? organizationLabel(activeOrganization) : null) ?? (organizationsLoading ? "Loading organization…" : organizationsError ? "Organizations unavailable" : "No organization yet");
 
     return (
         <SidebarMenu>
@@ -81,7 +81,7 @@ export default function UserCard() {
                                 {organizationsLoading && <DropdownMenuItem disabled>Loading organizations…</DropdownMenuItem>}
                                 {!organizationsLoading && organizationsError && <DropdownMenuItem onSelect={() => void refreshOrganizations()}><IconRefresh />Retry loading organizations</DropdownMenuItem>}
                                 {!organizationsLoading && !organizationsError && organizations.length > 0 && <DropdownMenuRadioGroup value={activeOrganizationId ?? ""} onValueChange={selectOrganization}>
-                                    {organizations.map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organization.name} className="min-w-0"><OrganizationAvatar name={organization.name} className="size-5 rounded-md text-[0.6rem]" /><span className="truncate">{organization.name}</span></DropdownMenuRadioItem>)}
+                                    {sortOrganizations(organizations).map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organizationLabel(organization)} className="min-w-0"><OrganizationAvatar name={organizationLabel(organization)} className="size-5 rounded-md text-[0.6rem]" /><span className="truncate">{organizationLabel(organization)}</span></DropdownMenuRadioItem>)}
                                 </DropdownMenuRadioGroup>}
                                 {!organizationsLoading && !organizationsError && organizations.length === 0 && <DropdownMenuItem disabled>No organizations yet</DropdownMenuItem>}
                                 <DropdownMenuSeparator />
