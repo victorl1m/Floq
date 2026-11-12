@@ -83,9 +83,11 @@ export interface RuntimeProject {
 export interface TaskCard { id: string; title: string; description: string; position: number; assigneeId: string | null; dueAt: string | null; createdAt: string; updatedAt: string }
 export interface TaskList { id: string; title: string; position: number; cards: TaskCard[] }
 export interface TaskBoard { id: string; organizationId: string; title: string; createdAt: string; lists: TaskList[] }
+export type SlugReason = "invalid" | "reserved" | "taken";
+export interface SlugAvailability { slug: string; normalized: string; available: boolean; reason?: SlugReason }
 export type OrganizationRole = "owner" | "admin" | "member";
 export interface OrganizationMember { id: string; name: string; email: string; role: OrganizationRole }
-export interface Organization { id: string; name: string; slug: string; role: OrganizationRole; /** The user's own always-present organization: cannot be deleted, left or invited to. */ personal?: boolean; createdAt?: string; members: OrganizationMember[] }
+export interface Organization { id: string; name: string; slug: string; role: OrganizationRole; /** The user's own always-present organization: cannot be deleted, left or invited to. */ personal?: boolean; /** Relative runtime URL of the uploaded image (versioned), or null. Fetch it with RuntimeClient.organizationImage. */ imageUrl?: string | null; createdAt?: string; members: OrganizationMember[] }
 /** Pending invitation as the organization's owners and admins see it. */
 export interface OrganizationInvitation { id: string; email: string; role: "admin" | "member"; invitedBy: string; createdAt: string; expiresAt: string; status: "pending" | "expired" }
 /** Returned once when an invitation is created or resent. The runtime has no email transport, so delivery is always "manual". */

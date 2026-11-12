@@ -18,8 +18,20 @@ model Organization {
   members   OrganizationMember[]
   invites   OrganizationInvitation[]
   boards    TaskBoard[]
+  image     OrganizationImage?
 
   @@map("organizations")
+  @@schema("collaboration")
+}
+
+model OrganizationImage {
+  organizationId String   @id @map("organization_id") @db.Uuid
+  contentType    String   @map("content_type") @db.VarChar(32)
+  bytes          Bytes
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_images")
   @@schema("collaboration")
 }
 

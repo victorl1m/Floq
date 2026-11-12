@@ -12,14 +12,16 @@ import type { IncomingOrganizationInvitation, OrganizationRole } from "@/lib/run
 export const ROLE_LABEL: Record<OrganizationRole, string> = { owner: "Owner", admin: "Admin", member: "Member" };
 
 export const ROLE_SUMMARY: Record<OrganizationRole, string> = {
-    owner: "Can do everything: rename, change roles, transfer ownership and delete the organization.",
-    admin: "Can invite members and remove members.",
+    owner: "Can do everything: edit the organization, change roles, transfer ownership and delete the organization.",
+    admin: "Can edit the organization's name, URL name and image, invite members and remove members.",
     member: "Can see the organization and leave it.",
 };
 
 export const canManageMembers = (role: OrganizationRole | undefined) => role === "owner" || role === "admin";
 
-const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,46})[a-z0-9]$/;
+export const SLUG_MAX = 40;
+export const NAME_MAX = 64;
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38})[a-z0-9]$/;
 
 /** Mirrors the runtime's slug rules so the preview matches what will be stored. */
 export function slugify(name: string): string {
@@ -93,7 +95,7 @@ export function sortOrganizations<T extends { personal?: boolean }>(organization
   return [...organizations.filter((o) => o.personal), ...organizations.filter((o) => !o.personal)];
 }
 
-/** Display name: the Personal organization is always labelled "Personal". */
+/** Display name. The personal organization starts as "Personal" and can be renamed like any other. */
 export function organizationLabel(organization: { name: string; personal?: boolean }): string {
-  return organization.personal ? "Personal" : organization.name;
+  return organization.name.trim() || (organization.personal ? "Personal" : "Organization");
 }
