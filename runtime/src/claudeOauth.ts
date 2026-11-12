@@ -127,8 +127,7 @@ export class ClaudeOAuth {
       refreshToken: payload.refresh_token,
       expiresAt: Date.now() + (Number(payload.expires_in) || 3600) * 1000,
       scopes: typeof payload.scope === "string" && payload.scope ? payload.scope.split(" ") : CLAUDE_SCOPES,
-      subscriptionType: await this.subscriptionType(payload.access_token),
-      rateLimitTier: null,
+      ...(await this.profile(payload.access_token)),
     };
     await this.credentials.save(userId, "claude", data);
     this.onConnected(userId, data);
@@ -137,24 +136,31 @@ export class ClaudeOAuth {
   }
 
   /** Best effort: the CLI reads the plan from the profile endpoint after login. */
-  private async subscriptionType(accessToken: string): Promise<string | null> {
+  private async profile(accessToken: string): Promise<{ subscriptionType: string | null; rateLimitTier: string | null }> {
+    const subscriptionType = await this.subscriptionType(accessToken);
+    return { subscriptionType: subscriptionType.type, rateLimitTier: subscriptionType.tier };
+  }
+
+  private async subscriptionType(accessToken: string): Promise<{ type: string | null; tier: string | null }> {
+    const none = { type: null, tier: null };
     try {
       const response = await fetch(PROFILE_URL, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", "User-Agent": "floq-runtime" },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) return null;
-      const profile = (await response.json()) as { organization?: { organization_type?: string }; account?: Record<string, unknown> };
+      if (!response.ok) return none;
+      const profile = (await response.json()) as { organization?: { organization_type?: string; rate_limit_tier?: string }; account?: Record<string, unknown> };
       const type = profile.organization?.organization_type;
-      if (type === "claude_max") return "max";
-      if (type === "claude_pro") return "pro";
-      if (type === "claude_enterprise") return "enterprise";
-      if (type === "claude_team") return "team";
-      if (profile.account?.has_claude_max) return "max";
-      if (profile.account?.has_claude_pro) return "pro";
-      return null;
+      const tier = typeof profile.organization?.rate_limit_tier === "string" ? profile.organization.rate_limit_tier : null;
+      if (type === "claude_max") return { type: "max", tier };
+      if (type === "claude_pro") return { type: "pro", tier };
+      if (type === "claude_enterprise") return { type: "enterprise", tier };
+      if (type === "claude_team") return { type: "team", tier };
+      if (profile.account?.has_claude_max) return { type: "max", tier };
+      if (profile.account?.has_claude_pro) return { type: "pro", tier };
+      return none;
     } catch {
-      return null;
+      return none;
     }
   }
 }

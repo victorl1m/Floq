@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProvidersUsage } from "@/hooks/use-providers-usage";
 import { useRuntime } from "@/lib/runtime/store";
-import type { LoginProviderId, ProviderUsage, UsageWindow } from "@/lib/runtime/types";
+import type { LoginProviderId, ProviderUsage, ProvidersUsage, UsageWindow } from "@/lib/runtime/types";
 
 const NAME: Record<LoginProviderId, string> = { claude: "Claude", codex: "Codex" };
 
@@ -23,7 +23,9 @@ function tone(percent: number) {
 }
 
 /** The window that will block you first: highest used %, ties go to the one resetting soonest. */
-function mostConstraining(windows: UsageWindow[]): UsageWindow | null {
+export function mostConstraining(windows: UsageWindow[]): UsageWindow | null {
+    // Extra usage (overage credits) is a spend cap, not a plan window: it never drives the footer percent.
+    windows = windows.filter((w) => w.id !== "extra_usage");
     const time = (w: UsageWindow) => (w.resetsAt ? new Date(w.resetsAt).getTime() : Infinity);
     return windows.reduce<UsageWindow | null>((top, w) => {
         if (!top || w.usedPercent > top.usedPercent) return w;
@@ -33,6 +35,7 @@ function mostConstraining(windows: UsageWindow[]): UsageWindow | null {
 
 /** Tiny tag for the footer: "5h" for session windows, "w" (or "w·opus") for weekly ones. */
 function windowTag(w: UsageWindow): string {
+    if (w.id === "extra_usage") return "extra";
     const hours = /(\d+)h/.exec(w.label);
     if (/weekly/i.test(w.label) || /seven_day|secondary/.test(w.id)) {
         const model = /weekly\s*\S\s*(\w+)/i.exec(w.label)?.[1] ?? /seven_day_(\w+)/.exec(w.id)?.[1];
@@ -101,6 +104,7 @@ function WindowRow({ window }: { window: UsageWindow }) {
             <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div className={cn("h-full rounded-full transition-all", bar)} style={{ width: `${percent}%` }} />
             </div>
+            {window.detail && <p className="text-[10px] text-muted-foreground tabular-nums">{window.detail}</p>}
             {reset && <p className="text-[10px] text-muted-foreground tabular-nums">{reset}</p>}
         </div>
     );
@@ -145,7 +149,7 @@ function UsagePopoverContent({
                 {data.windows.length > 0 ? (
                     data.windows.map((w) => <WindowRow key={w.id} window={w} />)
                 ) : data.error ? (
-                    <p className="text-[11px] text-muted-foreground">{data.error}</p>
+                    <p className="text-[11px] text-muted-foreground">Usage unavailable: {data.error}</p>
                 ) : (
                     <Skeleton className="h-9 w-full" />
                 )}
@@ -188,7 +192,7 @@ function UsageItem({
             <PopoverTrigger asChild>
                 <Button variant="ghost" size="xs"
                     type="button"
-                    title={top ? tooltip(id, top) : NAME[id] + " usage"}
+                    title={top ? tooltip(id, top) : data.error ? `${NAME[id]} usage unavailable: ${data.error}` : NAME[id] + " usage"}
                     aria-label={`Show ${NAME[id]} usage details`}
                     className={cn("gap-1.5 px-2 text-[11px] leading-none text-muted-foreground tabular-nums", open && "bg-muted text-foreground")}
                 >
@@ -197,6 +201,7 @@ function UsageItem({
                         <span className={cn("block h-full rounded-full transition-all", bar)} style={{ width: `${percent ?? 0}%` }} />
                     </span>
                     <span className={cn("leading-none", text)}>{percent === null ? "—" : `${Math.round(percent)}%`}</span>
+                    {!top && data.error && <span className="leading-none text-muted-foreground/80">unavailable</span>}
                     {top && (
                         <span className="leading-none text-muted-foreground/80">
                             {windowTag(top)}
@@ -215,6 +220,10 @@ export function UsageMeters() {
     const { client } = useRuntime();
     const { usage, unsupported, isRefreshing, refresh } = useProvidersUsage();
     if (!client || unsupported || !usage) return null;
+    return <UsageMetersView usage={usage} isRefreshing={isRefreshing} refresh={refresh} />;
+}
+
+export function UsageMetersView({ usage, isRefreshing, refresh }: { usage: ProvidersUsage; isRefreshing: boolean; refresh: () => Promise<void> }) {
 
     const stamps = (["claude", "codex"] as const)
         .map((id) => usage[id]?.fetchedAt)
