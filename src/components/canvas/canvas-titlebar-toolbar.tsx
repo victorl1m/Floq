@@ -1,5 +1,6 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import {
-  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitBranch, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
+  IconActivity, IconArrowsMaximize, IconBrain, IconDots, IconGitCompare, IconHandStop, IconKey, IconLayoutDistributeHorizontal, IconLink,
   IconNote, IconNotes, IconPlayerPlay, IconPointer,
 } from "@tabler/icons-react";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -44,10 +45,32 @@ export interface CanvasTitlebarToolbarProps {
 
 /**
  * The project canvas toolbar, rendered into the app titlebar slot. Presentational: all state and handlers come from AgentCanvas.
- * Width collapse is CSS-only (container queries in index.css): name hides, then the tool groups fold into the "Canvas tools" menu,
+ * Width collapse is CSS-only (container queries in index.css): the tool groups fold into the "Canvas tools" menu,
  * and Wake all moves into that menu too. Wake all sits in the middle of the tools, in a rounded pill.
  */
 export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+  // The identity is centred on the window, not on the leftover titlebar slot: measure where the slot sits and offset into it.
+  const [centre, setCentre] = useState<{ left: number | string; maxWidth: number | string }>({ left: "50%", maxWidth: "40%" });
+  useLayoutEffect(() => {
+    const layout = layoutRef.current;
+    const right = rightRef.current;
+    if (!layout || !right) return;
+    const measure = () => {
+      const l = layout.getBoundingClientRect();
+      const r = right.getBoundingClientRect();
+      const cx = window.innerWidth / 2;
+      const half = Math.max(0, Math.min(cx - l.left, r.left - cx) - 12);
+      setCentre((prev) => (prev.left === cx - l.left && prev.maxWidth === half * 2 ? prev : { left: cx - l.left, maxWidth: half * 2 }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(layout);
+    ro.observe(right);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
   const wakeLabel = p.sleepingCount ? `Wake all sleeping agents (${p.sleepingCount})` : "No sleeping agents";
   const toolButton = (active: boolean, label: string, onClick: () => void, icon: React.ReactNode, cursor?: "add-note" | "add-keychain") => (
     <Button type="button" data-cursor={cursor} variant={active ? "secondary" : "ghost"} size="icon-sm" aria-label={label} aria-pressed={active} onClick={onClick}>{icon}</Button>
@@ -59,24 +82,28 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
 
   return (
     <div role="toolbar" aria-label="Canvas toolbar" data-tauri-drag-region className="canvas-titlebar-toolbar flex h-full min-w-0 flex-1 items-center" onKeyDown={p.onKeyDown}>
-      <div data-tauri-drag-region className="canvas-titlebar-layout grid h-full min-w-0 flex-1 items-center gap-1">
-        <div data-tauri-drag-region title={p.cwd ? `${p.name} — ${p.cwd}` : p.name} className="canvas-titlebar-identity flex min-w-0 items-center gap-2 pl-1">
+      <div ref={layoutRef} data-tauri-drag-region className="canvas-titlebar-layout relative flex h-full min-w-0 flex-1 items-center gap-1">
+        <div
+          data-tauri-drag-region
+          title={p.cwd ? `${p.name} — ${p.cwd}` : p.name}
+          className="canvas-titlebar-identity pointer-events-none absolute top-0 flex h-full min-w-0 items-center justify-center gap-2"
+          style={{ left: centre.left, maxWidth: centre.maxWidth }}
+        >
           <span aria-hidden data-tauri-drag-region className="flex size-[18px] shrink-0 items-center justify-center">
             <ProjectMark key={p.projectKey} project={p.project} className="pointer-events-none size-[18px] text-muted-foreground" />
           </span>
           <span aria-hidden data-tauri-drag-region className="canvas-titlebar-name min-w-0 truncate text-sm font-medium">{p.name}</span>
+          {p.branch && <span aria-hidden data-tauri-drag-region className="canvas-titlebar-branch min-w-0 max-w-40 truncate text-xs text-muted-foreground">{p.branch}</span>}
           <span className="sr-only">{p.name}</span>
         </div>
 
-        <div data-tauri-drag-region className="canvas-titlebar-changes flex min-w-0 items-center justify-center">
-          <ShortcutTip label="Review agents' changes">
-            <button type="button" aria-label={changesLabel} onClick={p.onOpenChanges} className="flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-xs font-medium text-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">
-              <IconGitBranch size={14} aria-hidden className="shrink-0 text-muted-foreground" />
-              <span className="min-w-0 max-w-40 truncate">{branchName}</span>
-              {changeBadge && <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] leading-4 font-medium text-primary-foreground tabular-nums">{changeBadge}</span>}
-            </button>
-          </ShortcutTip>
-        </div>
+        <div ref={rightRef} data-tauri-drag-region className="canvas-titlebar-right ml-auto flex min-w-0 items-center gap-1">
+        <ShortcutTip label={changeBadge ? `Changes (${changeBadge})` : "Changes"}>
+          <Button type="button" variant="ghost" size="icon-sm" className="canvas-titlebar-changes relative shrink-0" aria-label={changesLabel} onClick={p.onOpenChanges}>
+            <IconGitCompare size={16} />
+            {changeBadge && <span className="absolute -top-1 -right-2 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">{changeBadge}</span>}
+          </Button>
+        </ShortcutTip>
 
         <div data-tauri-drag-region role="group" aria-label="Canvas tools" className="canvas-titlebar-tools flex min-w-0 items-center gap-1">
           <div data-tauri-drag-region role="group" aria-label="Canvas modes" className="flex shrink-0 items-center gap-0.5">
@@ -133,6 +160,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
             <DropdownMenuCheckboxItem checked={p.activityOpen} onCheckedChange={p.onToggleActivity}><IconActivity size={16} />Activity</DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
 
       </div>
     </div>

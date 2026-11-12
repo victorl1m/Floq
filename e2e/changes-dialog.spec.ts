@@ -2,18 +2,23 @@ import { expect, test } from '@playwright/test';
 
 test.use({ viewport: { width: 1400, height: 900 } });
 
-test('titlebar pill shows branch icon, branch name and a capped count, and opens the review dialog', async ({ page }) => {
+test('Changes is its own toolbar button, identity is centred without a branch icon, and it opens the review dialog', async ({ page }) => {
   await page.goto('/e2e/harness/changes.html');
   const button = page.getByRole('button', { name: /^Changes on .* \(99\+\)$/ });
   await expect(button).toBeVisible();
-  await expect(button).toContainText('feature/very-long-branch-name-here');
   await expect(button).toContainText('99+');
   await expect(button.locator('svg')).toBeVisible();
-  const pill = (await button.boundingBox())!;
-  const bar = (await page.getByRole('toolbar', { name: 'Canvas toolbar' }).boundingBox())!;
-  expect(Math.abs(pill.x + pill.width / 2 - (bar.x + bar.width / 2))).toBeLessThan(2);
-  await expect(page.locator('.canvas-titlebar-changes')).toHaveAttribute('data-tauri-drag-region', 'true');
-  await expect(page.getByRole('toolbar').getByRole('button', { name: 'Changes', exact: true })).toHaveCount(0);
+  await expect(button.locator('svg.tabler-icon-git-branch')).toHaveCount(0);
+  await expect(page.locator('svg.tabler-icon-git-branch')).toHaveCount(0);
+  const identity = page.locator('.canvas-titlebar-identity');
+  await expect(identity).toContainText('Proj');
+  await expect(identity).toContainText('feature/very-long-branch-name-here');
+  const id = (await identity.boundingBox())!;
+  const vw = page.viewportSize()!.width;
+  expect(Math.abs(id.x + id.width / 2 - vw / 2)).toBeLessThan(2);
+  const btn = (await button.boundingBox())!;
+  expect(btn.x).toBeGreaterThan(id.x + id.width);
+  await expect(identity).toHaveAttribute('data-tauri-drag-region', 'true');
   await button.click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
