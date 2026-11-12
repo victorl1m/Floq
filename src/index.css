@@ -1165,14 +1165,21 @@
 .floq-sticky-head[data-tone="section"] { --sticky-base: color-mix(in oklab, var(--muted) 100%, var(--background)); }
 .floq-sticky-head[data-tone="group"] { --sticky-base: color-mix(in oklab, var(--muted) 70%, var(--background)); }
 :root:not([data-material="solid"]) .floq-sticky-head {
+  /* Tint from the pane colour (--card), not --background: in dark --background is pure black, which over the grey sidebar
+     reads as an opaque black bar even at partial alpha. */
+  --sticky-base: var(--card);
   --sticky-alpha: 52%;
-  background-color: color-mix(in oklab, var(--sticky-base, var(--background)) var(--sticky-alpha), transparent);
+  background-color: color-mix(in oklab, var(--sticky-base) var(--sticky-alpha), transparent);
   -webkit-backdrop-filter: blur(10px) saturate(1.3);
   backdrop-filter: blur(10px) saturate(1.3);
 }
-:root:not([data-material="solid"]) .floq-sticky-head[data-tone="section"] { --sticky-alpha: 62%; }
-:root:not([data-material="solid"]) .floq-sticky-head[data-tone="group"] { --sticky-alpha: 55%; }
+:root:not([data-material="solid"]) .floq-sticky-head[data-tone="section"] { --sticky-base: color-mix(in oklab, var(--muted) 100%, var(--card)); --sticky-alpha: 62%; }
+:root:not([data-material="solid"]) .floq-sticky-head[data-tone="group"] { --sticky-base: color-mix(in oklab, var(--muted) 70%, var(--card)); --sticky-alpha: 55%; }
 :root:not([data-material="solid"]) .floq-sticky-head:hover { background-color: var(--glass-row-active); }
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root:not([data-material="solid"]) .floq-sticky-head { background-color: var(--sticky-base); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  :root:not([data-material="solid"]) .floq-sticky-head:hover { background-color: color-mix(in oklab, var(--muted) 100%, var(--sticky-base)); }
+}
 
 /* Account menu (UserCard) in the sidebar footer: open trigger and its dropdown follow the same acrylic wash. */
 :root:not([data-material="solid"]) [data-slot="sidebar-footer"] [data-sidebar="menu-button"][data-state="open"] { background-color: var(--glass-row-active); }
