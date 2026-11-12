@@ -100,7 +100,6 @@ class Fixture:
         elif path == "/v1/projects": body = {"projects": [] if self.empty else PROJECTS}
         elif path == "/v1/sessions": body = {"sessions": [] if self.empty else SESSIONS}
         elif path.endswith("/notes"): body = {"notes": []}
-        elif path.endswith("/keychains"): body = {"keychains": []}
         elif path.endswith("/links"): body = {"links": []}
         elif path.endswith("/events"): body = {"events": []}
         elif path == "/v1/settings":

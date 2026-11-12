@@ -20,7 +20,6 @@
   --cursor-crosshair: crosshair;
   --cursor-connect: crosshair;
   --cursor-add-note: copy;
-  --cursor-add-keychain: copy;
   --cursor-zoom-in: zoom-in;
   --cursor-zoom-out: zoom-out;
   --cursor-not-allowed: not-allowed;
@@ -50,7 +49,6 @@
     --cursor-crosshair: url("../assets/cursors/crosshair.svg") 16 16, crosshair;
     --cursor-connect: url("../assets/cursors/connect.svg") 16 16, crosshair;
     --cursor-add-note: url("../assets/cursors/add-note.svg") 6 4, copy;
-    --cursor-add-keychain: url("../assets/cursors/add-keychain.svg") 6 4, copy;
     --cursor-zoom-in: url("../assets/cursors/zoom-in.svg") 13 13, zoom-in;
     --cursor-zoom-out: url("../assets/cursors/zoom-out.svg") 13 13, zoom-out;
     --cursor-not-allowed: url("../assets/cursors/not-allowed.svg") 16 16, not-allowed;

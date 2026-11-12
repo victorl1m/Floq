@@ -41,7 +41,7 @@ function makeOrch(pool: unknown, state: { live?: unknown; resumeFails?: boolean;
   };
   const settings = { get: async () => ({ allowCrossProjectAgents: true }), profile: async () => ({}) };
   const links = { record: async () => undefined, upsert: async () => ({ id: "l" }) };
-  return new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, new CrossProjectGuard(), new MessageInbox(pool as never), { quietMs: 0, timeoutMs: 500, pollMs: 5 });
+  return new Orchestrator(pool as never, manager as never, settings as never, links as never, new CrossProjectGuard(), new MessageInbox(pool as never), { quietMs: 0, timeoutMs: 500, pollMs: 5 });
 }
 
 test("a message to an asleep agent is queued, then typed once when the agent is live and ready", async (t) => {

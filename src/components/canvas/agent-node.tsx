@@ -2,7 +2,7 @@ import { memo, useRef } from "react";
 import { Handle, NodeResizer, Position, useConnection, type Node, type NodeProps } from "@xyflow/react";
 import { RoleGlyph, roleLabel } from "@/lib/role-icons";
 import { ORCHESTRATOR_TEXT, orchestratorLabel } from "@/lib/runtime/orchestrator";
-import { IconChevronDown, IconChevronRight, IconKey, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronRight, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -121,11 +121,6 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
             <Button type="button" variant="secondary" size="icon-xs" className="nodrag nopan size-7" aria-label={`${sleeping ? "Wake" : "Restart"} ${session.title}`} aria-busy={waking} title={sleeping ? "Wake agent" : "Restart agent"} disabled={waking} onClick={() => ctx.wake(session)}>
               {waking ? <Spinner /> : sleeping ? <IconPlayerPlay size={14} /> : <IconRefresh size={14} />}
             </Button>
-          )}
-          {(ctx.keychainCounts[id] ?? 0) > 0 && (
-            <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-amber-600 tabular-nums dark:text-amber-400" title={`${ctx.keychainCounts[id]} keychain${ctx.keychainCounts[id] === 1 ? "" : "s"} in this agent's context (names only, never values)`} aria-label={`${ctx.keychainCounts[id]} keychain${ctx.keychainCounts[id] === 1 ? "" : "s"} in context`}>
-              <IconKey size={12} />{ctx.keychainCounts[id]}
-            </span>
           )}
           {(ctx.noteCounts[id] ?? 0) > 0 && (
             <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground tabular-nums" title={`${ctx.noteCounts[id]} note${ctx.noteCounts[id] === 1 ? "" : "s"} in this agent's context`} aria-label={`${ctx.noteCounts[id]} note${ctx.noteCounts[id] === 1 ? "" : "s"} in context`}>

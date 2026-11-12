@@ -303,6 +303,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS canvas_notes_user_project_idx ON canvas_notes(user_id, project_id);
+    -- UNUSED: the canvas keychain feature was removed. These tables are kept so existing installs lose no data (nothing reads or writes them
+    -- except the legacy per-project cleanup in manager.deleteProject).
     CREATE TABLE IF NOT EXISTS keychains (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,

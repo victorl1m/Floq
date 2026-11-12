@@ -356,7 +356,7 @@ const sameNote = (a: CanvasNote, b: CanvasNote) => a.updatedAt === b.updatedAt &
 
 /** Notes of one project: polled every 5s, optimistic edits with rollback, never clobbering a note being edited or dragged. */
 export interface NotePlacement {
-  /** Rects of everything on the canvas (agents, notes, keychains), in flow coordinates. */
+  /** Rects of everything on the canvas (agents, notes), in flow coordinates. */
   occupied: () => Rect[];
   agentRect: (sessionId: string) => Rect | undefined;
   /** False until the agent nodes are on the canvas, so placement can anchor next to the creating agent. */

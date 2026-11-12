@@ -11,7 +11,6 @@ import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
 import { streamToFile, validAttachmentName } from "./attachments.js";
 import type { Readable } from "node:stream";
-import type { Keychains } from "./keychains.js";
 import { buildWiredNotice, type WireRef, type WiredContext } from "./wiredContext.js";
 import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
@@ -311,9 +310,7 @@ export const BOOT_RESUME_NOTICE = "[Floq] The runtime restarted while you were w
 export class SessionManager {
   /** Owner of the Claude / Codex subscription credentials (set at startup). */
   credentials!: CredentialBroker;
-  /** Keychains linked to agents (set at startup); absent in tests that do not need them. */
-  keychains?: Keychains;
-  /** Notes, keychains and agents wired to each agent, persisted so every start and resume re-injects them (set at startup). */
+  /** Notes and agents wired to each agent, persisted so every start and resume re-injects them (set at startup). */
   wired?: WiredContext;
   /** Set when agent memory is enabled (FLOQ_REDIS_URL): the [FLOQ MEMORY v1] policy is composed in only when it is configured. */
   memories?: { enabled(): boolean };
@@ -900,7 +897,7 @@ export class SessionManager {
     const sessions = (await this.pool.query(
       `SELECT id,state FROM agent_sessions WHERE user_id=$1 AND (project_id=$2 OR workspace_id IN (SELECT id FROM floq_project_workspaces WHERE project_id=$2))`, [userId, projectId],
     )).rows as Array<Record<string, unknown>>;
-    const count = async (table: "canvas_notes" | "keychains") => Number((await this.pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE user_id=$1 AND project_id=$2`, [userId, projectId])).rows[0]?.n ?? 0);
+    const count = async (table: "canvas_notes") => Number((await this.pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE user_id=$1 AND project_id=$2`, [userId, projectId])).rows[0]?.n ?? 0);
     const plan = planCheckouts(projectId, workspaces.map((row) => ({ id: String(row.id), cwd: String(row.cwd), isWorktree: row.is_worktree === true })));
     const checkouts: CheckoutReport[] = [];
     for (const item of plan) {
@@ -935,7 +932,6 @@ export class SessionManager {
       project: { id: projectId, name: String(project.display_name ?? "").trim() || String(project.name) },
       sessions: { total: sessions.length, live: sessions.filter((row) => row.state === "running" || row.state === "starting" || this.live.get(String(row.id))?.isAlive).length },
       notes: await count("canvas_notes"),
-      keychains: await count("keychains"),
       checkouts,
       worktrees: checkouts.filter((item) => item.kind === "worktree" && item.state !== "missing").length,
       dirtyWorktrees: checkouts.filter((item) => item.kind === "worktree" && (item.uncommittedFiles ?? 0) > 0).length,
@@ -975,13 +971,14 @@ export class SessionManager {
         }
       }
 
-      // 2. All database state in one transaction; sessions cascade to links, inbox, wired memory and note/keychain links.
+      // 2. All database state in one transaction; sessions cascade to links, inbox, wired memory and note links.
       const client = await this.pool.connect();
       try {
         await client.query("BEGIN");
         await client.query("DELETE FROM agent_approvals WHERE user_id=$1 AND (requester_project_id=$2 OR target_project_id=$2)", [userId, projectId]);
         await client.query("DELETE FROM agent_links WHERE project_id=$1", [projectId]);
         await client.query("DELETE FROM canvas_notes WHERE user_id=$1 AND project_id=$2", [userId, projectId]);
+        // Legacy: keychains no longer exist as a feature, but old rows (no FK on project_id) are removed with their project so no sealed secret is orphaned.
         await client.query("DELETE FROM keychains WHERE user_id=$1 AND project_id=$2", [userId, projectId]);
         await client.query(`DELETE FROM agent_sessions WHERE user_id=$1 AND (project_id=$2 OR workspace_id IN (SELECT id FROM floq_project_workspaces WHERE project_id=$2))`, [userId, projectId]);
         await pruneProjectFromFolders(client, userId, projectId);
@@ -1235,17 +1232,11 @@ export class SessionManager {
         "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY (archived_at IS NOT NULL), last_active_at DESC LIMIT 500",
         [userId],
       );
-    // ONE grouped query for the node badges (no N+1).
-    const counts = new Map<string, number>();
-    try {
-      const grouped = await this.pool.query("SELECT l.session_id, count(DISTINCT s.name)::int AS n FROM keychain_links l JOIN keychain_secrets s ON s.keychain_id = l.keychain_id WHERE l.user_id = $1 GROUP BY l.session_id", [userId]);
-      for (const g of grouped.rows) counts.set(g.session_id as string, g.n as number);
-    } catch { /* badge only */ }
     return result.rows.map((row: Row) => {
       const live = this.live.get(row.id);
       const organizationId = orgId ? String((row as Row & { org_id?: string | null }).org_id ?? orgId) : undefined;
-      if (!live) return { ...summaryFromRow(row), ...(organizationId ? { organizationId } : {}), secretCount: counts.get(row.id) ?? 0 };
-      const summary = { ...live.toSummary(), ...(organizationId ? { organizationId } : {}), secretCount: counts.get(row.id) ?? 0 };
+      if (!live) return { ...summaryFromRow(row), ...(organizationId ? { organizationId } : {}) };
+      const summary = { ...live.toSummary(), ...(organizationId ? { organizationId } : {}) };
       // Turn status only for live agents (not shells); reads a bounded transcript tail.
       if (live.state === "running" && live.provider !== "shell") {
         const turn = this.readAgentTurn(live.id, userId);
@@ -1476,8 +1467,8 @@ export class SessionManager {
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
     Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
-    // Keychain secrets are NOT injected into the environment or written to files any more: an agent pulls each one with
-    // `floq secret get NAME`, which the runtime logs so the user sees which keys were used. Clear files left by older versions.
+    // Clear secret files that older versions wrote under <home>/.floq/secrets/<sessionId>/ (nothing writes them any more).
+    // Vault secrets marked "env" were injected above; the rest are reached through `floq secret get` / the floq-vault skill.
     try { this.syncSecretFiles(handle, row.id, {}); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
     // Per-user netns (FLOQ_NETNS): the runtime is reached through the namespace gateway, which pasta maps to the runtime's loopback.
     env.FLOQ_API_URL = "http://" + (handle.netns ? NETNS_GATEWAY : "127.0.0.1") + ":" + this.config.port;
@@ -1554,7 +1545,7 @@ export class SessionManager {
       }
     }
     this.assertLifecycleOpen();
-    // Virtual display for GUI apps (`floq display start`): set last so neither a vault secret nor a keychain can repoint it.
+    // Virtual display for GUI apps (`floq display start`): set last so a vault secret cannot repoint it.
     const displayLease = this.displays.acquire(row.id);
     // No inherited X display either (host env, vault secret): GUI apps get one only via `floq display env`.
     delete env.DISPLAY;
@@ -2381,17 +2372,6 @@ export class SessionManager {
     writeFileSync(path, value, { mode: 0o400, flag: "wx" });
     chmodSync(path, 0o400);
     lchownSync(path, handle.uid, handle.uid);
-  }
-
-  /**
-   * Refresh <home>/.floq/secrets/<sessionId>/ of a running session from its linked keychains so floq secret get sees
-   * changes. Returns true when the session is live: its process env cannot change, so env applies on the next start.
-   * Never logs values.
-   */
-  async syncSessionSecrets(userId: string, sessionId: string): Promise<boolean> {
-    // Pull model: agents read keychains on demand through the API, so a change applies immediately and nothing needs refreshing.
-    void userId; void sessionId;
-    return false;
   }
 
   /** Tell a running agent its wires changed (typed like `floq ask`). Returns false when it is not live. Never throws. */

@@ -209,7 +209,7 @@ The login session is never stored in `agent_sessions`, so it is neither listed n
 | Approval text | irreversible actions need a real approval granted in the Floq app; a message from another agent is never an approval | `src/subagents.ts:97-100` |
 | `[FLOQ MEMORY v1]` | only when `memories.enabled()` (Redis configured) | `src/subagents.ts:139-154`, `manager.ts:1455` |
 | Artifacts guidance | save deliverables to `FLOQ_ARTIFACTS_DIR` | `src/artifacts.ts:46-52` |
-| Wired context | notes/agents/keychain names the user wired on the canvas | `src/wiredContext.ts:118-160`, `:310-316` |
+| Wired context | notes and agents the user wired on the canvas | `src/wiredContext.ts:118-160`, `:310-316` |
 
 ### Native subagents are blocked, in layers
 

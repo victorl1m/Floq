@@ -34,7 +34,7 @@ async function setup() {
   const manager = { findLive: (id: string) => (id === PARENT ? parentLive : undefined), readAgentTurn: () => null, resume: async () => undefined };
   const settings = { get: async () => ({ allowCrossProjectAgents: true }), profile: async () => ({}) };
   const links = { record: async () => undefined, upsert: async () => ({ id: "l" }) };
-  const orch = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, new CrossProjectGuard(), new MessageInbox(pool as never), { quietMs: 0, timeoutMs: 500, pollMs: 5 });
+  const orch = new Orchestrator(pool as never, manager as never, settings as never, links as never, new CrossProjectGuard(), new MessageInbox(pool as never), { quietMs: 0, timeoutMs: 500, pollMs: 5 });
   return { db, orch, writes };
 }
 

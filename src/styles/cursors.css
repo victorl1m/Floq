@@ -34,7 +34,6 @@
 /* Floq-only additions */
 @utility cursor-connect { cursor: var(--cursor-connect); }
 @utility cursor-add-note { cursor: var(--cursor-add-note); }
-@utility cursor-add-keychain { cursor: var(--cursor-add-keychain); }
 
 /* Base */
 html { cursor: var(--cursor-default); }
@@ -111,7 +110,6 @@ html :is(button, [role="button"], [role="status"], [role="progressbar"])[aria-bu
 :root [data-canvas-tool="link"] .react-flow__node.draggable { cursor: var(--cursor-connect); }
 /* Placement buttons: hovering shows what a click will add. */
 html button[data-cursor="add-note"]:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { cursor: var(--cursor-add-note); }
-html button[data-cursor="add-keychain"]:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { cursor: var(--cursor-add-keychain); }
 
 /* Global drag states (sidebar project drag and drop). */
 html[data-dnd-dragging], html[data-dnd-dragging] * { cursor: var(--cursor-grabbing) !important; }

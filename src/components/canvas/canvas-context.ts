@@ -35,8 +35,6 @@ export interface CanvasCtxValue {
   /** Link count and the node sides wires leave from, per session. */
   linkInfo: Record<string, { count: number; sides: Set<string> }>;
   deleteLink: (link: CanvasLink) => void;
-  /** Number of keychains linked to each agent. */
-  keychainCounts: Record<string, number>;
   /** Number of canvas notes linked to each agent. */
   noteCounts: Record<string, number>;
   /** Both ends of the wire being hovered or selected (halo highlight). */

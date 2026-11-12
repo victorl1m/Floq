@@ -44,17 +44,15 @@ import AgentNodeCard, { HEADER_HEIGHT, MAX_SIZE, MIN_SIZE, type AgentNode } from
 import ActivityPanel from "./activity-panel";
 import { CanvasTitlebarToolbar } from "./canvas-titlebar-toolbar";
 import { ShortcutTip } from "./shortcut-tip";
-import KeychainDialog from "./keychain-dialog";
 import MemoryDialog from "./memory-dialog";
-import { KC_DEFAULT, KC_AMBER, KC_PREFIX, KeychainProvider, KeychainWireCtx, isKeychainId, isKeychainLinkId, kcLinkId, keychainEdgeTypes, keychainNodeTypes, useCanvasKeychains, type KeychainWireEdge } from "./canvas-keychains";
-import { stackKeychains, stackNotes } from "./note-placement";
+import { stackNotes } from "./note-placement";
 import { NOTE_DEFAULT, NOTE_PREFIX, NOTE_TEAL, NoteProvider, NoteWireCtx, isNoteId, isNoteLinkId, noteEdgeTypes, noteLinkId, noteNodeTypes, useCanvasNotes, type NoteWireEdge } from "./canvas-notes";
 import CanvasComposer from "./canvas-composer";
 import TerminalDialog from "./terminal-dialog";
 import { sendToTargets, type Attachment } from "./canvas-send";
 import CanvasMenuContent, { type MenuApi, type MenuTarget, type SizePreset } from "./canvas-menu";
 import { CanvasCtx, type CanvasCtxValue, type LiveWire } from "./canvas-context";
-import { takeKeychainFocus, createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
+import { createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, type AgentMessageEvent, type CanvasLink } from "./canvas-data";
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
@@ -104,8 +102,8 @@ function EmptyCanvasViewport({ empty, projectId }: { empty: boolean; projectId: 
   return null;
 }
 
-const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...keychainNodeTypes, ...appWindowNodeTypes };
-const edgeTypes = { wire: WireEdgeView, ...keychainEdgeTypes, ...noteEdgeTypes };
+const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...appWindowNodeTypes };
+const edgeTypes = { wire: WireEdgeView, ...noteEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
   small: { width: 360, height: 220 },
@@ -255,7 +253,6 @@ function AgentCanvas() {
   savedViewportRef.current = savedViewport;
 
   // ---- notes ----
-  const keychains = useCanvasKeychains(client, activeProjectId, titleOf);
 
   // ---- links ----
   const { links: runtimeLinks, loaded: linksLoaded, refresh: refreshLinks } = useProjectLinks(client, activeProjectId);
@@ -429,7 +426,6 @@ function AgentCanvas() {
     ready: linksLoaded,
     occupied: () => [
       ...nodesRef.current.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? node.measured?.width ?? 360, h: node.height ?? node.measured?.height ?? 220 })),
-      ...keychains.nodes.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? KC_DEFAULT.width, h: node.height ?? KC_DEFAULT.height })),
       ...notesNodesRef.current.filter((node) => node.data.note.placed !== false).map((node) => ({ x: node.position.x, y: node.position.y, w: node.width ?? NOTE_DEFAULT.width, h: node.height ?? NOTE_DEFAULT.height })),
     ],
     agentRect: (sessionId) => {
@@ -555,18 +551,6 @@ function AgentCanvas() {
     markerEnd: { type: MarkerType.ArrowClosed, color: link.id === selectedEdgeId ? "var(--primary-text)" : KIND_COLOR[link.kind], width: 18, height: 18 },
   })), [allLinks, selectedEdgeId]);
 
-  const kcEdges = useMemo(() => {
-    const ids = new Set(projectSessions.map((session) => session.id));
-    return keychains.keychains.flatMap((kc) => kc.linkedSessionIds.filter((sid) => ids.has(sid)).map<KeychainWireEdge>((sid) => ({
-      id: kcLinkId(kc.id, sid),
-      type: "keychain-wire",
-      source: KC_PREFIX + kc.id,
-      target: sid,
-      data: { keychainId: kc.id, sessionId: sid, name: kc.name },
-      selected: kcLinkId(kc.id, sid) === selectedEdgeId,
-      markerEnd: { type: MarkerType.ArrowClosed, color: KC_AMBER, width: 16, height: 16 },
-    })));
-  }, [keychains.keychains, projectSessions, selectedEdgeId]);
   const noteEdges = useMemo(() => {
     const ids = new Set(projectSessions.map((session) => session.id));
     return notes.notes.flatMap((note) => note.linkedSessionIds.filter((sid) => ids.has(sid)).map<NoteWireEdge>((sid) => ({
@@ -579,7 +563,7 @@ function AgentCanvas() {
       markerEnd: { type: MarkerType.ArrowClosed, color: NOTE_TEAL, width: 16, height: 16 },
     })));
   }, [notes.notes, projectSessions, selectedEdgeId]);
-  const allEdges = useMemo(() => [...edges, ...kcEdges, ...noteEdges] as Edge[], [edges, kcEdges, noteEdges]);
+  const allEdges = useMemo(() => [...edges, ...noteEdges] as Edge[], [edges, noteEdges]);
   const hotIds = useMemo(() => {
     const edge = allEdges.find((item) => item.id === (hoverEdgeId ?? selectedEdgeId));
     return edge ? new Set([edge.source, edge.target]) : new Set<string>();
@@ -589,19 +573,6 @@ function AgentCanvas() {
     for (const note of notes.notes) for (const sid of note.linkedSessionIds) counts[sid] = (counts[sid] ?? 0) + 1;
     return counts;
   }, [notes.notes]);
-  const keychainCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const kc of keychains.keychains) for (const sid of kc.linkedSessionIds) counts[sid] = (counts[sid] ?? 0) + 1;
-    return counts;
-  }, [keychains.keychains]);
-
-  // Focus requested from the Secrets screen ("Open on canvas").
-  useEffect(() => {
-    const id = takeKeychainFocus((value) => keychains.keychains.some((kc) => kc.id === value));
-    if (!id) return;
-    keychains.onNodesChange([{ type: "select", id: KC_PREFIX + id, selected: true }]);
-    setTimeout(() => void fitView({ nodes: [{ id: KC_PREFIX + id }], duration: 300, padding: 0.5, maxZoom: 1 }), 120);
-  }, [keychains.keychains]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startLink = useCallback((id: string | null) => { setLinkMode({ from: id }); setSelectedEdgeId(null); }, []);
   const toggleCollapse = useCallback((id: string) => {
@@ -672,9 +643,6 @@ function AgentCanvas() {
 
   // Re-layout changes POSITIONS only: sizes and collapsed state stay, and the result is persisted for every agent right away.
   const notePatch = notes.patch;
-  const keychainPatch = keychains.patch;
-  const keychainNodesRef = useRef(keychains.nodes);
-  keychainNodesRef.current = keychains.nodes;
   const relayout = useCallback(() => {
     const current = nodesRef.current;
     const widest = current.reduce((max, node) => Math.max(max, node.width ?? DEFAULT_NODE_SIZE.width), DEFAULT_NODE_SIZE.width);
@@ -686,31 +654,20 @@ function AgentCanvas() {
     savedRef.current = { ...savedRef.current, positions: { ...savedRef.current.positions, ...layout } };
     setNodes((items) => items.map((node) => layout[node.id] ? { ...node, position: layout[node.id] } : node));
     persistMany(layout);
-    // Notes, then keychains: stack them in tidy columns to the left of the agents, top-aligned with the first row.
+    // Notes: stack them in tidy columns to the left of the agents, top-aligned with the first row.
     const noteNodes = notesNodesRef.current;
     const points = Object.values(layout);
-    let left = points.length ? Math.min(...points.map((point) => point.x)) : 0;
+    const left = points.length ? Math.min(...points.map((point) => point.x)) : 0;
     const top = points.length ? Math.min(...points.map((point) => point.y)) : 0;
-    let gap = 80;
     if (noteNodes.length) {
       const stacked = stackNotes(noteNodes.map((node) => ({ id: node.data.note.id, w: node.width ?? NOTE_DEFAULT.width, h: node.height ?? NOTE_DEFAULT.height, kind: node.data.note.kind, title: node.data.note.title })), left, top);
       for (const node of noteNodes) {
         const spot = stacked[node.data.note.id];
         if (spot && (Math.round(node.position.x) !== spot.x || Math.round(node.position.y) !== spot.y)) notePatch(node.data.note.id, { x: spot.x, y: spot.y });
       }
-      left = Math.min(...Object.values(stacked).map((spot) => spot.x), left);
-      gap = 40;
-    }
-    const kcNodes = keychainNodesRef.current;
-    if (kcNodes.length) {
-      const stacked = stackKeychains(kcNodes.map((node) => ({ id: node.data.keychain.id, w: node.width ?? KC_DEFAULT.width, h: node.height ?? KC_DEFAULT.height, name: node.data.keychain.name })), left, top, gap);
-      for (const node of kcNodes) {
-        const spot = stacked[node.data.keychain.id];
-        if (spot && (Math.round(node.position.x) !== spot.x || Math.round(node.position.y) !== spot.y)) keychainPatch(node.data.keychain.id, { x: spot.x, y: spot.y });
-      }
     }
     requestAnimationFrame(() => void fitView({ duration: 200, ...fitOptsRef.current }));
-  }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback, notePatch, keychainPatch]);
+  }, [setNodes, persistMany, fitView, floorOf, floorOrder, floorFallback, notePatch]);
 
   // ---- branch canvases ----
   type BranchTag = { branch: string; resume?: boolean };
@@ -878,7 +835,7 @@ function AgentCanvas() {
 
   // xyflow's marquee replaces the selection; with Shift/Cmd/Ctrl held we union it with what was selected when the drag started.
   const marqueeBase = useRef<Set<string> | null>(null);
-  // Notes, keychains and app windows live in their own stores, so selection reaches them as xyflow select changes.
+  // Notes and app windows live in their own stores, so selection reaches them as xyflow select changes.
   const otherNodesRef = useRef<{ nodes: Node[]; apply: Array<(changes: NodeChange<Node>[]) => void> }>({ nodes: [], apply: [] });
   const selectNodes = useCallback((ids: Set<string> | "all") => {
     setNodes((current) => current.map((node) => ({ ...node, selected: ids === "all" || ids.has(node.id) })));
@@ -903,7 +860,6 @@ function AgentCanvas() {
   }
 
   // ---- notes, secrets, deleting agents ----
-  const [kcDeleteAsk, setKcDeleteAsk] = useState<{ id: string; name: string } | null>(null);
   const [deleteAsk, setDeleteAsk] = useState<SessionSummary | null>(null);
   const floors = useMemo<FloorInfo[]>(() => {
     const list: FloorInfo[] = orderedWorkspaces.map((workspace) => ({
@@ -925,38 +881,30 @@ function AgentCanvas() {
   const appAnchor = useMemo(() => ({ x: nodes.reduce((max, node) => Math.max(max, node.position.x + (node.width ?? DEFAULT_NODE_SIZE.width)), 0) + 80, y: nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0 }), [nodes]);
   const appWindows = useCanvasAppWindows(client, projectSessions, appAnchor);
   otherNodesRef.current = {
-    nodes: [...notes.nodes, ...keychains.nodes, ...appWindows.nodes] as Node[],
-    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => keychains.onNodesChange(c.filter((x) => "id" in x && isKeychainId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id)))],
+    nodes: [...notes.nodes, ...appWindows.nodes] as Node[],
+    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id)))],
   };
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
-    ...notes.nodes, ...keychains.nodes, ...appWindows.nodes, ...nodes,
+    ...notes.nodes, ...appWindows.nodes, ...nodes,
     ...(emptyCanvas ? [{ id: EMPTY_CANVAS_ID, type: "empty", position: { x: 0, y: 0 },
       width: 360, height: 208, style: { width: 360, height: 208 },
       draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
       data: { projectName, disabled: !activeProjectId, onCreate: openNewAgent },
     }] : []),
-  ] as Node[], [notes.nodes, keychains.nodes, appWindows.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
+  ] as Node[], [notes.nodes, appWindows.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
-    const forKeychain = (change: NodeChange<Node>) => "id" in change && isKeychainId(change.id);
     const forApp = (change: NodeChange<Node>) => "id" in change && isAppWindowId(change.id);
     const appChanges = changes.filter(forApp);
     if (appChanges.length) appWindows.onNodesChange(appChanges);
-    const agentChanges = changes.filter((change) => !forNote(change) && !forKeychain(change) && !forApp(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
+    const agentChanges = changes.filter((change) => !forNote(change) && !forApp(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
     const noteChanges = changes.filter(forNote);
-    const keychainChanges = changes.filter(forKeychain);
-    if (keychainChanges.length) keychains.onNodesChange(keychainChanges);
     if (agentChanges.length) onNodesChange(agentChanges as NodeChange<AgentNode>[]);
     if (noteChanges.length) notes.onNodesChange(noteChanges);
-  }, [onNodesChange, notes.onNodesChange, keychains.onNodesChange, appWindows.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onNodesChange, notes.onNodesChange, appWindows.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addNoteAt = notes.add;
-  const addKeychainCenter = useCallback(() => {
-    const rect = wrapRef.current?.getBoundingClientRect();
-    const center = screenToFlowPosition({ x: (rect?.left ?? 0) + (rect?.width ?? 600) / 2, y: (rect?.top ?? 0) + (rect?.height ?? 400) / 2 });
-    void keychains.add({ x: Math.round(center.x - KC_DEFAULT.width / 2), y: Math.round(center.y - KC_DEFAULT.height / 2) });
-  }, [keychains.add, screenToFlowPosition]); // eslint-disable-line react-hooks/exhaustive-deps
   const addNoteCenter = useCallback(() => {
     const rect = wrapRef.current?.getBoundingClientRect();
     const center = screenToFlowPosition({ x: (rect?.left ?? 0) + (rect?.width ?? 600) / 2, y: (rect?.top ?? 0) + (rect?.height ?? 400) / 2 });
@@ -970,7 +918,6 @@ function AgentCanvas() {
     deleteSessions(ids);
   }, [deleteSessions]);
 
-  const KCLINK_PREFIX_LEN = kcLinkId("", "").length - 1;
   const NOTELINK_PREFIX_LEN = noteLinkId("", "").length - 1;
   const menuApi: MenuApi = {
     sessionById,
@@ -983,18 +930,6 @@ function AgentCanvas() {
     linkMode: linkMode !== null,
     nodeCount: nodes.length,
     addNoteHere: (flow) => void addNoteAt({ x: Math.round(flow.x), y: Math.round(flow.y) }),
-    keychainName: (id) => keychains.keychains.find((kc) => KC_PREFIX + kc.id === id)?.name,
-    addKeychainHere: (flow) => void keychains.add({ x: Math.round(flow.x), y: Math.round(flow.y) }),
-    renameKeychain: (id) => keychains.rename(id.slice(KC_PREFIX.length)),
-    manageKeychain: (id) => keychains.setManaging(id.slice(KC_PREFIX.length)),
-    deleteKeychain: (id) => { const kc = keychains.keychains.find((item) => KC_PREFIX + item.id === id); if (kc) setKcDeleteAsk({ id: kc.id, name: kc.name }); },
-    recolorKeychain: (id, color) => keychains.patch(id.slice(KC_PREFIX.length), { color }),
-    keychainEdge: (edgeId) => {
-      const [kcId, sid] = edgeId.slice(KCLINK_PREFIX_LEN).split(":");
-      const kc = keychains.keychains.find((item) => item.id === kcId);
-      return kc ? { keychain: kc.name, agent: titleOf(sid) } : undefined;
-    },
-    unlinkKeychain: (edgeId) => { const [kcId, sid] = edgeId.slice(KCLINK_PREFIX_LEN).split(":"); keychains.unlink(kcId, sid); },
     noteInfo: (id) => { const note = notes.notes.find((item) => NOTE_PREFIX + item.id === id); return note ? { linked: note.linkedSessionIds.length } : undefined; },
     deleteNote: (id) => notes.remove(id.slice(NOTE_PREFIX.length)),
     unlinkNoteAgents: (id) => notes.unlinkAll(id.slice(NOTE_PREFIX.length)),
@@ -1034,7 +969,6 @@ function AgentCanvas() {
     recruits,
     liveIds, collapsed, linkMode, live, reducedMotion, titleOf, focus: openTerminal, terminalId, sentIds, highlightId, sendMessage, startLink, toggleCollapse, activate, savePlacement, wake: (session) => void wake(session), waking, linkInfo,
     deleteLink: (link) => void deleteLink(link),
-    keychainCounts,
     noteCounts,
     hotIds,
     flashIds,
@@ -1058,24 +992,21 @@ function AgentCanvas() {
     return () => { /* timers intentionally outlive the effect: the request is already consumed */ void timers; };
   }, [canvasFocus, nodes, sessionById, consumeCanvasFocus, selectNodes, fitView]);
 
-  // Agent-to-agent drags create AgentLinks; a keychain or note and an agent create that kind of link (either direction); anything else is refused.
+  // Agent-to-agent drags create AgentLinks; a note and an agent create that kind of link (either direction); anything else is refused.
   const connectNodes = useCallback((a: string, b: string) => {
     // One-shot halo pulse on both ends (cleared after the animation).
     setFlashIds(new Set([a, b]));
     clearTimeout(flashTimer.current);
     flashTimer.current = setTimeout(() => setFlashIds(new Set()), 600);
-    const aKey = isKeychainId(a), bKey = isKeychainId(b);
     const aNote = isNoteId(a), bNote = isNoteId(b);
-    if (aKey || bKey || aNote || bNote) {
-      const kind = aKey || bKey ? "Keychains" : "Notes";
-      const agent = aKey || aNote ? b : a;
-      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error(`${kind} can only be linked to agents`, { description: "Drop the wire on an agent instead." }); return; }
-      if (aKey || bKey) keychains.link((aKey ? a : b).slice(KC_PREFIX.length), agent);
-      else notes.link((aNote ? a : b).slice(NOTE_PREFIX.length), agent);
+    if (aNote || bNote) {
+      const agent = aNote ? b : a;
+      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error("Notes can only be linked to agents", { description: "Drop the wire on an agent instead." }); return; }
+      notes.link((aNote ? a : b).slice(NOTE_PREFIX.length), agent);
       return;
     }
     void createLink(a, b);
-  }, [createLink, keychains.link, notes.link]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [createLink, notes.link]); // eslint-disable-line react-hooks/exhaustive-deps
   const onConnect = useCallback((connection: Connection) => {
     if (connection.source && connection.target) connectNodes(connection.source, connection.target);
   }, [connectNodes]);
@@ -1099,16 +1030,12 @@ function AgentCanvas() {
     if (event.key === "Delete" || event.key === "Backspace") {
       const agentIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
       const noteIds = notes.nodes.filter((node) => node.selected).map((node) => node.data.note.id);
-      const kcSelected = keychains.keychains.find((kc) => keychains.nodes.some((node) => node.selected && node.data.keychain.id === kc.id));
-      const anyNodeSelected = agentIds.length > 0 || noteIds.length > 0 || !!kcSelected;
+      const anyNodeSelected = agentIds.length > 0 || noteIds.length > 0;
       // A selected node (e.g. box-selected after clicking a wire) wins over a stale edge selection.
       if (selectedEdgeId && !anyNodeSelected) {
         event.preventDefault();
         setSelectedEdgeId(null);
-        if (isKeychainLinkId(selectedEdgeId)) {
-          const [kcId, sid] = selectedEdgeId.slice(KCLINK_PREFIX_LEN).split(":");
-          keychains.unlink(kcId, sid);
-        } else if (isNoteLinkId(selectedEdgeId)) {
+        if (isNoteLinkId(selectedEdgeId)) {
           const [noteId, sid] = selectedEdgeId.slice(NOTELINK_PREFIX_LEN).split(":");
           notes.unlink(noteId, sid);
         } else {
@@ -1122,7 +1049,6 @@ function AgentCanvas() {
         event.preventDefault();
         for (const id of noteIds) notes.remove(id);
         void deleteAgents(agentIds);
-        if (kcSelected) setKcDeleteAsk({ id: kcSelected.id, name: kcSelected.name });
       }
       return;
     }
@@ -1139,7 +1065,6 @@ function AgentCanvas() {
     if (event.key === "/") { event.preventDefault(); composerFocus.current?.(); return; }
     if (event.key.toLowerCase() === "l") setLinkMode((mode) => mode ? null : { from: null });
     else if (event.key.toLowerCase() === "n") addNoteCenter();
-    else if (event.key.toLowerCase() === "k") addKeychainCenter();
     else if (event.key.toLowerCase() === "f") void fitView({ padding: 0.2, duration: 300, ...fitOptsRef.current });
   }
 
@@ -1170,8 +1095,6 @@ function AgentCanvas() {
     <CanvasCtx.Provider value={ctx}>
       <NoteProvider value={noteCtxValue}>
       <AppWindowProvider value={appWindowCtx}>
-      <KeychainProvider value={keychains.ctxValue}>
-      <KeychainWireCtx.Provider value={{ unlink: keychains.unlink }}>
       <NoteWireCtx.Provider value={{ unlink: notes.unlink }}>
       <TooltipProvider>
       <ContextMenu>
@@ -1191,10 +1114,10 @@ function AgentCanvas() {
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               onNodesChange={onNodesChangeAll}
-              onNodeDragStart={(_, node) => { if (isNoteId(node.id)) notes.dragStart(node); else if (isKeychainId(node.id)) keychains.dragStart(node); }}
+              onNodeDragStart={(_, node) => { if (isNoteId(node.id)) notes.dragStart(node); }}
               onMoveEnd={(_, view) => { if (!emptyCanvas) saveViewport(view); }}
               defaultViewport={emptyCanvas ? undefined : savedViewport}
-              onNodeDragStop={(_, node) => { if (isNoteId(node.id)) { notes.dragEnd(node); return; } if (isKeychainId(node.id)) { keychains.dragEnd(node); return; } persistNode(node.id, { position: { x: node.position.x, y: node.position.y } }); computeLive(); }}
+              onNodeDragStop={(_, node) => { if (isNoteId(node.id)) { notes.dragEnd(node); return; } persistNode(node.id, { position: { x: node.position.x, y: node.position.y } }); computeLive(); }}
               onNodeDoubleClick={(_, node) => { if (node.type === "agent") openTerminal((node as AgentNode).data.session); }}
               onNodeClick={(_, node) => {
                 setSelectedEdgeId(null);
@@ -1293,7 +1216,6 @@ function AgentCanvas() {
           linkActive={linkMode !== null}
           onToggleLink={() => setLinkMode((mode) => mode ? null : { from: null })}
           onAddNote={addNoteCenter}
-          onAddKeychain={addKeychainCenter}
           onRelayout={relayout}
           onShowNotes={showAllNotes}
           onOpenMemory={memoryEnabled ? () => setMemoryOpen(true) : undefined}
@@ -1322,23 +1244,6 @@ function AgentCanvas() {
         <MemoryDialog projectId={activeProjectId} projectName={projectName} client={client} onClose={() => setMemoryOpen(false)} />
       )}
 
-      {keychains.managing && keychains.keychains.find((kc) => kc.id === keychains.managing) && (
-        <KeychainDialog key={keychains.managing} keychain={keychains.keychains.find((kc) => kc.id === keychains.managing)!} client={client} onClose={() => keychains.setManaging(null)} onChanged={keychains.refresh} />
-      )}
-
-      <AlertDialog open={kcDeleteAsk !== null} onOpenChange={(open) => { if (!open) setKcDeleteAsk(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete keychain {kcDeleteAsk?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>This permanently destroys its secrets and unlinks it from every agent.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => { const target = kcDeleteAsk; setKcDeleteAsk(null); if (target) keychains.remove(target.id); }}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <AlertDialog open={deleteAsk !== null} onOpenChange={(open) => { if (!open) setDeleteAsk(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1366,8 +1271,6 @@ function AgentCanvas() {
         </DialogContent>
       </Dialog>
       </NoteWireCtx.Provider>
-      </KeychainWireCtx.Provider>
-      </KeychainProvider>
       </AppWindowProvider>
       </NoteProvider>
     </CanvasCtx.Provider>

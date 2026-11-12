@@ -8,7 +8,6 @@ import { createRuntimeServer } from "../dist/server.js";
 import { migrateApp } from "../dist/db.js";
 import { SessionManager } from "../dist/manager.js";
 import { CanvasNotes } from "../dist/notes.js";
-import { Keychains } from "../dist/keychains.js";
 import { OrganizationsService } from "../dist/organizations.js";
 
 const TOKENS: Record<string, string> = { ta: "u-a", tb: "u-b" };
@@ -55,7 +54,7 @@ async function harness(t: test.TestContext) {
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "error", databaseUrl: "postgres://x/y", encryptionKey: Buffer.alloc(32, 7) };
   const server = createRuntimeServer({
     config, manager, auth, settings: { async profile() { return {}; } }, github: {}, vault: {}, orchestrator: {}, pool,
-    notes: new CanvasNotes(pool as never), keychains: new Keychains(pool as never, config as never),
+    notes: new CanvasNotes(pool as never),
     credentials: {}, claudeOauth: {}, usage: {}, skills: {}, gitReview: {},
   } as never);
   await server.listen();
@@ -105,9 +104,9 @@ test("a header for an organization the user is not in is 404 organization_not_fo
   assert.equal((await call("tb", "GET", `/v1/projects/${PA}/notes`)).status, 404);
 });
 
-test("a projectId from another organization is 404 on notes, keychains, workspaces and skills; the right org works", async (t) => {
+test("a projectId from another organization is 404 on notes, workspaces and skills; the right org works", async (t) => {
   const { call, personalA, teamA } = await harness(t);
-  const routes: Array<[string, string]> = [["GET", `/v1/projects/${PB}/notes`], ["GET", `/v1/projects/${PB}/keychains`], ["PATCH", `/v1/projects/${PB}/workspaces`], ["GET", `/v1/projects/${PB}/delete-status`], ["GET", `/v1/projects/${PB}/skills`], ["DELETE", `/v1/projects/${PB}`], ["GET", `/v1/mcp?scope=project&projectId=${PB}`]];
+  const routes: Array<[string, string]> = [["GET", `/v1/projects/${PB}/notes`], ["PATCH", `/v1/projects/${PB}/workspaces`], ["GET", `/v1/projects/${PB}/delete-status`], ["GET", `/v1/projects/${PB}/skills`], ["DELETE", `/v1/projects/${PB}`], ["GET", `/v1/mcp?scope=project&projectId=${PB}`]];
   for (const [method, path] of routes) {
     const wrong = await call("ta", method, path, method === "PATCH" ? { navExpanded: true } : undefined, personalA);
     assert.equal(wrong.status, 404, `${method} ${path} with the wrong org`);
@@ -116,7 +115,6 @@ test("a projectId from another organization is 404 on notes, keychains, workspac
     assert.equal(none.status, 404, `${method} ${path} with no header (personal)`);
   }
   assert.equal((await call("ta", "GET", `/v1/projects/${PB}/notes`, undefined, teamA)).status, 200);
-  assert.equal((await call("ta", "GET", `/v1/projects/${PB}/keychains`, undefined, teamA)).status, 200);
   assert.equal((await call("ta", "PATCH", `/v1/projects/${PB}/workspaces`, { navExpanded: true }, teamA)).status, 200);
   // the project still exists afterwards (the wrong-org DELETE did nothing)
   assert.deepEqual(ids((await call("ta", "GET", "/v1/projects", undefined, teamA)).json.projects), [PB]);

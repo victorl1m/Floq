@@ -1,7 +1,7 @@
 import {
   IconArrowsExchange, IconArrowsMaximize, IconCopy, IconLayoutDistributeHorizontal, IconLink, IconLinkOff,
   IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconRefresh, IconWindowMaximize, IconTextResize,
-  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconKey, IconNote, IconLock, IconCrown, IconCrownOff,
+  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconNote, IconCrown, IconCrownOff,
 } from "@tabler/icons-react";
 import {
   ContextMenuCheckboxItem, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuSub,
@@ -11,9 +11,7 @@ import { Keys } from "./canvas-kbd";
 import { isLive } from "@/components/agents/provider";
 import { isOrchestrator } from "@/lib/runtime/orchestrator";
 import type { SessionSummary } from "@/lib/runtime/types";
-import type { CanvasLink, NoteColor } from "./canvas-data";
-import { COLORS, COLOR_KEYS } from "./canvas-notes";
-import { isKeychainId, isKeychainLinkId } from "./canvas-keychains";
+import type { CanvasLink } from "./canvas-data";
 import { isNoteId, isNoteLinkId } from "./canvas-notes";
 
 export type MenuTarget =
@@ -34,14 +32,6 @@ export interface MenuApi {
   linkMode: boolean;
   newAgentHere: (flow: { x: number; y: number }) => void;
   addNoteHere: (flow: { x: number; y: number }) => void;
-  keychainName: (nodeId: string) => string | undefined;
-  addKeychainHere: (flow: { x: number; y: number }) => void;
-  renameKeychain: (nodeId: string) => void;
-  manageKeychain: (nodeId: string) => void;
-  deleteKeychain: (nodeId: string) => void;
-  recolorKeychain: (nodeId: string, color: NoteColor) => void;
-  keychainEdge: (edgeId: string) => { keychain: string; agent: string } | undefined;
-  unlinkKeychain: (edgeId: string) => void;
   noteInfo: (nodeId: string) => { linked: number } | undefined;
   deleteNote: (nodeId: string) => void;
   unlinkNoteAgents: (nodeId: string) => void;
@@ -76,8 +66,6 @@ export default function CanvasMenuContent({ target, api }: { target: MenuTarget;
   if (target.kind === "pane") return <PaneMenu flow={target.flow} api={api} />;
   if (target.kind === "node" && isNoteId(target.id)) return <NoteMenu id={target.id} api={api} />;
   if (target.kind === "edge" && isNoteLinkId(target.id)) return <NoteLinkMenu id={target.id} api={api} />;
-  if (target.kind === "node" && isKeychainId(target.id)) return <KeychainMenu id={target.id} api={api} />;
-  if (target.kind === "edge" && isKeychainLinkId(target.id)) return <KeychainLinkMenu id={target.id} api={api} />;
   if (target.kind === "node") {
     const session = api.sessionById(target.id);
     return session ? <NodeMenu session={session} api={api} /> : null;
@@ -92,7 +80,6 @@ function PaneMenu({ flow, api }: { flow: { x: number; y: number }; api: MenuApi 
     <ContextMenuContent className="min-w-56">
       <ContextMenuItem onSelect={() => api.newAgentHere(flow)}><IconPlus />New agent here</ContextMenuItem>
       <ContextMenuItem onSelect={() => api.addNoteHere(flow)}><IconNote />Add note here<Keys keys="N" /></ContextMenuItem>
-      <ContextMenuItem onSelect={() => api.addKeychainHere(flow)}><IconKey />Add keychain here<Keys keys="K" /></ContextMenuItem>
       {hasNodes && (
         <>
           <ContextMenuSeparator />
@@ -178,26 +165,6 @@ function EdgeMenu({ link, api }: { link: CanvasLink; api: MenuApi }) {
   );
 }
 
-function KeychainMenu({ id, api }: { id: string; api: MenuApi }) {
-  const name = api.keychainName(id);
-  if (name === undefined) return null;
-  return (
-    <ContextMenuContent className="min-w-56">
-      <ContextMenuLabel className="truncate">{name}</ContextMenuLabel>
-      <ContextMenuItem onSelect={() => api.manageKeychain(id)}><IconLock />Manage secrets</ContextMenuItem>
-      <ContextMenuItem onSelect={() => api.renameKeychain(id)}><IconPencil />Rename</ContextMenuItem>
-      <ContextMenuSub>
-        <ContextMenuSubTrigger><IconKey />Color</ContextMenuSubTrigger>
-        <ContextMenuSubContent className="w-36">
-          {COLOR_KEYS.map((key) => <ContextMenuItem key={key} onSelect={() => api.recolorKeychain(id, key)}><span className={`size-3 rounded-full ${COLORS[key].dot}`} />{COLORS[key].label}</ContextMenuItem>)}
-        </ContextMenuSubContent>
-      </ContextMenuSub>
-      <ContextMenuSeparator />
-      <ContextMenuItem className={danger} onSelect={() => api.deleteKeychain(id)}><IconTrash />Delete keychain<Keys keys="Del" /></ContextMenuItem>
-    </ContextMenuContent>
-  );
-}
-
 function NoteMenu({ id, api }: { id: string; api: MenuApi }) {
   const info = api.noteInfo(id);
   if (!info) return null;
@@ -217,17 +184,6 @@ function NoteLinkMenu({ id, api }: { id: string; api: MenuApi }) {
     <ContextMenuContent className="min-w-56">
       <ContextMenuLabel className="truncate">Note → {info.agent}</ContextMenuLabel>
       <ContextMenuItem className={danger} onSelect={() => api.unlinkNote(id)}><IconLinkOff />Unlink<Keys keys="Del" /></ContextMenuItem>
-    </ContextMenuContent>
-  );
-}
-
-function KeychainLinkMenu({ id, api }: { id: string; api: MenuApi }) {
-  const info = api.keychainEdge(id);
-  if (!info) return null;
-  return (
-    <ContextMenuContent className="min-w-56">
-      <ContextMenuLabel className="truncate">{info.keychain} → {info.agent}</ContextMenuLabel>
-      <ContextMenuItem className={danger} onSelect={() => api.unlinkKeychain(id)}><IconLinkOff />Unlink<Keys keys="Del" /></ContextMenuItem>
     </ContextMenuContent>
   );
 }

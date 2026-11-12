@@ -34,7 +34,7 @@ function harness(allowCross = true, personal: string | null = OA, rows: typeof R
   const manager = { findLive: () => live, readAgentTurn: () => null, resume: async () => undefined };
   const settings = { get: async () => ({ allowCrossProjectAgents: allowCross }), profile: async () => ({}) };
   const links = { record: async () => undefined, upsert: async () => ({ id: "link1" }) };
-  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, undefined, undefined, undefined, new MemoryOutbox());
+  const orchestrator = new Orchestrator(pool as never, manager as never, settings as never, links as never, undefined, undefined, undefined, new MemoryOutbox());
   return { orchestrator, typed };
 }
 

@@ -18,7 +18,6 @@ import { CanvasNotes } from "./notes.js";
 import { MemoryService } from "./memories.js";
 import { startMemoryImport } from "./memoryImport.js";
 import { createEmbedder } from "./embeddings.js";
-import { Keychains } from "./keychains.js";
 import { WiredContext } from "./wiredContext.js";
 import { Orchestrator } from "./orchestrator.js";
 import { SubagentService } from "./subagents.js";
@@ -77,10 +76,8 @@ claudeOauth.onConnected = (userId, data) => void manager.distribute(userId, "cla
 credentials.start();
 const usage = new UsageService(credentials);
 const agentLinks = new AgentLinks(pool);
-const keychains = new Keychains(pool, config);
-manager.keychains = keychains;
 const canvasNotes = new CanvasNotes(pool);
-const wired = new WiredContext(pool, (userId, sessionId) => keychains.resolve(userId, sessionId));
+const wired = new WiredContext(pool);
 manager.wired = wired;
 // Agent memory is on only when FLOQ_REDIS_URL is set. It connects in the background and never delays boot.
 const memories = new MemoryService(pool, { url: config.redisUrl ?? undefined, embedder: createEmbedder({ ...process.env, FLOQ_EMBEDDINGS: config.embeddings }, { cacheDir: process.env.FLOQ_EMBEDDINGS_CACHE?.trim() || join(dirname(config.shardRoot), "embeddings") }) });
@@ -91,7 +88,7 @@ if (memories.enabled()) {
   const rawCmd = memories.marker;
   startMemoryImport(pool, memories, rawCmd);
 }
-const orchestrator = new Orchestrator(pool, manager, settings, agentLinks, keychains);
+const orchestrator = new Orchestrator(pool, manager, settings, agentLinks);
 const subagents = new SubagentService(pool, orchestrator, manager, settings);
 manager.subagents = subagents;
 subagents.memoryOn = memories.enabled();
@@ -120,7 +117,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins });
 
 await server.listen();
 log.info("runtime.listening", {

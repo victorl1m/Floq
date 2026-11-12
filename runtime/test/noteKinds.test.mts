@@ -28,7 +28,7 @@ async function setup() {
   for (const id of [P1, P2]) await db.query(`INSERT INTO floq_projects (id, user_id, name, cwd) VALUES ($1,$2,'p',$3)`, [id, U, "/w/" + id]);
   const mk = (id: string, project: string, title: string) => db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows, project_id) VALUES ($1,$2,'claude',$3,'/w','running',80,24,$4)`, [id, U, title, project]);
   await mk(S1, P1, "Alice"); await mk(S2, P1, "Bob"); await mk(S3, P2, "Other");
-  return { db, pool, notes: new CanvasNotes(pool as never), wired: new WiredContext(pool as never, async () => ({})) };
+  return { db, pool, notes: new CanvasNotes(pool as never), wired: new WiredContext(pool as never) };
 }
 
 test("kind validation", () => {

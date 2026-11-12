@@ -159,7 +159,7 @@ test("WiredContext injects pinned memories only when memory is available", async
   const P = "11111111-1111-4111-8111-111111111111", S = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   await db.query(`INSERT INTO floq_projects (id, user_id, name, cwd) VALUES ($1,'u1','p','/w')`, [P]);
   await db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows, project_id) VALUES ($1,'u1','claude','A','/w','running',80,24,$2)`, [S, P]);
-  const wired = new WiredContext(pool as never, async () => ({}));
+  const wired = new WiredContext(pool as never);
   assert.equal(await wired.blockFor("u1", S), "");
   let asked: unknown[] = [];
   wired.memories = { available: () => true, pinnedFor: async (...a) => { asked = a; return [{ id: "m1", title: "Pkg", text: "use pnpm", author: null }]; } };

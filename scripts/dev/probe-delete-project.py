@@ -20,7 +20,7 @@ NAME = "AGI Paulo - SARAH"
 
 STATUS = {
     "project": {"id": "project-agi", "name": NAME},
-    "sessions": {"total": 3, "live": 2}, "notes": 4, "keychains": 1,
+    "sessions": {"total": 3, "live": 2}, "notes": 4,
     "checkouts": [
         {"workspaceId": "agi-main", "path": ".floq/projects/project-agi", "kind": "project", "branch": "main", "managed": True, "state": "ok", "uncommittedFiles": 0},
         {"workspaceId": "agi-research", "path": ".floq/worktrees/0f0f0f0f-0000-4000-8000-000000000001", "kind": "worktree", "branch": "floq/research-pass", "managed": True, "state": "ok", "uncommittedFiles": 5},
@@ -86,7 +86,7 @@ def run(p, theme):
     check("dialog title names the project", dlg.get_by_role("heading", name=re.compile(re.escape(NAME))).count() == 1)
     text = dlg.inner_text()
     check("lists session counts", "3 agent and terminal sessions" in text and "2 running" in text, text[:200].replace("\n", " | "))
-    check("lists notes/keychains", "4 canvas notes" in text and "1 keychain" in text)
+    check("lists notes", "4 canvas notes" in text and "keychain" not in text)
     check("lists checkout + worktree", ".floq/projects/project-agi" in text and "1 worktree" in text)
     check("dirty worktree warning", "1 worktree has uncommitted changes that will be lost" in text, text)
     check("remote untouched statement", "original remote repository" in text)

@@ -21,7 +21,6 @@ import { AGENT_ROLES, describeRole, getAgentRole, listAgentRoles } from "./roles
 import type { AgentLinks } from "./links.js";
 import type { CanvasNotes } from "./notes.js";
 import { defangMemories, type MemoryService, type MemoryCtx } from "./memories.js";
-import type { Keychain, Keychains } from "./keychains.js";
 import type { WiredContext } from "./wiredContext.js";
 import { selectableAgentModels, type Orchestrator, type PendingCounts } from "./orchestrator.js";
 import { buildSubagentInstruction, TOOL_SPECS, type SubagentService } from "./subagents.js";
@@ -73,7 +72,6 @@ interface Deps {
   orchestrator: Orchestrator;
   links: AgentLinks;
   notes: CanvasNotes;
-  keychains: Keychains;
   /** Optional so existing callers keep working; absent = no wired-context feature. */
   wired?: WiredContext;
   subagents?: SubagentService;
@@ -94,7 +92,7 @@ interface Deps {
   plugins?: PluginHost;
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -109,7 +107,6 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   // User approvals for irreversible actions. Agents can request/verify; ONLY the user's app session (GET/POST /v1/approvals) can grant.
   const approvals = new Approvals({
     pool,
-    scrub: (userId, ids, text) => (keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text)),
     isAlive: (userId, sessionId) => { try { manager.getLive(sessionId, userId); return true; } catch { return false; } },
     // The runtime itself types the user's decision into the agent's terminal (trusted marker; agent text can never carry it).
     // Persisted first (agent_outbox): a target that is asleep or restarting gets the decision on its next ready.
@@ -131,7 +128,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     };
   }
   const memoryOff = () => new HttpError(503, "memory_disabled", "Memory is disabled on this Floq server (set FLOQ_REDIS_URL)");
-  const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text), scrub: (userId, ids, text) => keychains ? keychains.redact(userId, ids, text) : Promise.resolve(text) });
+  const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text) });
   const decisionsReady = decisions.init();
   plugins?.setAttention({ approvals, decisions });
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
@@ -600,27 +597,6 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const me = await orchestrator.toolkitCaller(userId, sessionId, true);
           const target = await toolkitScope(userId, body, me);
           return send(res, 200, { ...target, ...(await skills.removeMcp(userId, { ...target, provider: body.provider ?? me.provider, name: body.name })) });
-        }
-        case "secrets/add": {
-          const me = await orchestrator.toolkitCaller(userId, sessionId, true);
-          if (!keychains) throw badRequest("Keychains are not available", "keychains_unavailable");
-          // Agents store secrets in a keychain (never in the global vault). The value is readable by the agents linked to it.
-          if (body.expose !== undefined) throw badRequest("Agent-created secrets always live in a keychain; exposure is not configurable.", "invalid_secret");
-          const result = await keychains.agentAddSecret(userId, { id: me.id, name: me.name, projectId: me.projectId }, { name: body.name, value: body.value, keychain: body.keychain });
-          await manager.syncSessionSecrets(userId, me.id);
-          await touchSessions([me.id]);
-          return send(res, 201, result);
-        }
-        // Keychain secrets are pulled on demand (never injected), so each use is recorded for the user to see.
-        case "secrets/names": {
-          await orchestrator.toolkitCaller(userId, sessionId, false);
-          return send(res, 200, { secrets: keychains ? await keychains.pullableNames(userId, sessionId) : [] });
-        }
-        case "secrets/pull": {
-          await orchestrator.toolkitCaller(userId, sessionId, false);
-          const pulled = keychains ? await keychains.pull(userId, sessionId, body.name, body.keychain) : null;
-          if (!pulled) throw notFound("No keychain linked to this agent holds a secret with that name");
-          return send(res, 200, { value: pulled.value, keychain: pulled.keychain.name });
         }
         case "wired/get": {
           if (!wired) return send(res, 200, { block: "" });
@@ -1135,46 +1111,6 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       const note = await notes.unlink(userId, noteLink[1], noteLink[2]);
       await wiredTouch([noteLink[2]], true);
       return send(res, 200, note);
-    }
-
-    // Keychains: write-only wallets linked to agents. No endpoint returns a secret value.
-    const touch = async (kc: Keychain, sessionIds: string[], notify = false) => {
-      await wiredTouch(sessionIds, notify);
-      let live = false;
-      for (const id of new Set(sessionIds)) live = (await manager.syncSessionSecrets(userId, id)) || live;
-      return { ...kc, appliesOnNextStart: live };
-    };
-    if (url.pathname === "/v1/keychains" && method === "GET") return send(res, 200, { keychains: await keychains.listAll(userId) });
-    const kcList = /^\/v1\/projects\/([\w-]+)\/keychains$/.exec(url.pathname);
-    if (kcList && method === "GET") return send(res, 200, { keychains: await keychains.list(userId, kcList[1]) });
-    if (kcList && method === "POST") return send(res, 200, await keychains.create(userId, kcList[1], await readJson(req)));
-    const kcOne = /^\/v1\/keychains\/([\w-]+)$/.exec(url.pathname);
-    if (kcOne && method === "PATCH") return send(res, 200, await keychains.patch(userId, kcOne[1], await readJson(req)));
-    if (kcOne && method === "DELETE") {
-      const sessions = await keychains.remove(userId, kcOne[1]);
-      for (const id of sessions) await manager.syncSessionSecrets(userId, id);
-      await wiredTouch(sessions, true);
-      return send(res, 200, { ok: true });
-    }
-    const kcSecret = /^\/v1\/keychains\/([\w-]+)\/secrets\/([^/]{1,64})$/.exec(url.pathname);
-    if (kcSecret && method === "PUT") {
-      const body = await readJson<{ value?: unknown }>(req, 64 * 1024);
-      const kc = await keychains.putSecret(userId, kcSecret[1], kcSecret[2], body.value);
-      return send(res, 200, await touch(kc, kc.linkedSessionIds));
-    }
-    if (kcSecret && method === "DELETE") {
-      const kc = await keychains.removeSecret(userId, kcSecret[1], kcSecret[2]);
-      return send(res, 200, await touch(kc, kc.linkedSessionIds));
-    }
-    const kcLink = /^\/v1\/keychains\/([\w-]+)\/links(?:\/([\w-]+))?$/.exec(url.pathname);
-    if (kcLink && method === "POST" && !kcLink[2]) {
-      const body = await readJson<{ sessionId?: unknown }>(req);
-      const kc = await keychains.link(userId, kcLink[1], body.sessionId);
-      return send(res, 200, await touch(kc, [body.sessionId as string], true));
-    }
-    if (kcLink && method === "DELETE" && kcLink[2]) {
-      const kc = await keychains.unlink(userId, kcLink[1], kcLink[2]);
-      return send(res, 200, await touch(kc, [kcLink[2]], true));
     }
 
     // Marking an orchestrator is a user decision: only reachable with the user's own auth (/v1), never with an agent's
