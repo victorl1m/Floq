@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { toast } from "sonner";
-import { IconChevronRight, IconCopy, IconDownload, IconFiles, IconFolderOpen, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
+import { IconChevronRight, IconCopy, IconDownload, IconFilePlus, IconFiles, IconFolderOpen, IconFolderPlus, IconFoldersOff, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,7 @@ type Listing = { state: "loading" } | { state: "error"; message: string } | { st
 
 type Row =
   | { kind: "node"; item: FileEntry; depth: number }
+  | { kind: "create"; key: string; depth: number }
   | { kind: "status"; key: string; depth: number; tone: "loading" | "error" | "empty" | "more"; text: string; retry?: string };
 
 /** Tree paths are namespaced per project folder: "<target id>", a newline, then the path relative to that folder. */
@@ -28,6 +29,72 @@ const treePath = (targetId: string, rel: string) => `${targetId}\n${rel}`;
 function splitTreePath(full: string): { id: string; rel: string } {
   const index = full.indexOf("\n");
   return { id: full.slice(0, index), rel: full.slice(index + 1) };
+}
+
+const MAX_NAME_BYTES = 255;
+
+/** Inline validation of a new file/folder name; null when it is acceptable. Mirrors the runtime's checks. */
+// Mirrors HIDDEN_NAMES in runtime/src/workspaceFiles.ts: the server rejects these names.
+const HIDDEN_NAMES = new Set([".git", "node_modules"]);
+
+function nameProblem(name: string, siblings: readonly string[]): string | null {
+  if (name.trim() === "") return "Enter a name.";
+  if (name === "." || name === "..") return "That name is not allowed.";
+  if (name.includes("/") || name.includes("\\")) return "A name cannot contain / or \\.";
+  if (/[\u0000-\u001f\u007f]/.test(name)) return "That name has invalid characters.";
+  if (new TextEncoder().encode(name).length > MAX_NAME_BYTES) return "That name is too long.";
+  if (HIDDEN_NAMES.has(name)) return "That name is not allowed.";
+  if (siblings.includes(name)) return `"${name}" already exists here.`;
+  return null;
+}
+
+/** VS Code-style inline name field. Enter creates, Escape cancels, an empty blur cancels; errors stay under the field. */
+function CreateRow({ kind, depth, siblings, onSubmit, onCancel }: { kind: "file" | "dir"; depth: number; siblings: readonly string[]; onSubmit: (name: string) => Promise<void>; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus({ preventScroll: true }); inputRef.current?.scrollIntoView({ block: "nearest" }); }, []);
+  const problem = name === "" && !touched ? null : nameProblem(name, siblings);
+  const error = problem ?? serverError;
+  async function submit() {
+    setTouched(true);
+    if (busy || nameProblem(name, siblings)) return;
+    setBusy(true);
+    setServerError(null);
+    try { await onSubmit(name); } catch (cause) { setServerError(errorMessage(cause)); setBusy(false); inputRef.current?.focus(); }
+  }
+  const pad = BASE_PAD + depth * INDENT;
+  const label = kind === "dir" ? "New folder name" : "New file name";
+  return (
+    <div role="presentation" data-create-row>
+      <div style={{ paddingLeft: pad }} className="flex h-6 items-center gap-1 pr-2 text-xs">
+        <span aria-hidden className="size-3 shrink-0" />
+        {kind === "dir" ? <FolderIcon /> : <FileIcon name={name || "file"} />}
+        <input
+          ref={inputRef}
+          aria-label={label}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "files-create-error" : undefined}
+          value={name}
+          disabled={busy}
+          spellCheck={false}
+          autoComplete="off"
+          autoCapitalize="off"
+          onChange={(event) => { setName(event.target.value); setServerError(null); }}
+          onKeyDown={(event) => {
+            event.stopPropagation(); // the tree's arrow/Enter/Space navigation must not see typing
+            if (event.key === "Enter") { event.preventDefault(); void submit(); }
+            else if (event.key === "Escape") { event.preventDefault(); onCancel(); }
+          }}
+          onBlur={() => { if (!busy && name === "") onCancel(); }}
+          className={cn("h-5 min-w-0 flex-1 rounded-sm border bg-background px-1 text-xs outline-none focus-visible:ring-1", error ? "border-destructive focus-visible:ring-destructive" : "border-ring focus-visible:ring-ring")}
+        />
+      </div>
+      {error && <div id="files-create-error" role="alert" style={{ paddingLeft: pad + 16 }} className="pr-2 pb-1 text-[11px] break-words text-destructive">{error}</div>}
+    </div>
+  );
 }
 
 const INDENT = 12;
@@ -60,6 +127,9 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
   const [menuItem, setMenuItem] = useState<FileEntry | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTarget = useRef<FileEntry | null>(null);
+  const [creating, setCreating] = useState<{ parent: string; kind: "file" | "dir" } | null>(null);
+  const creatingRef = useRef(creating);
+  creatingRef.current = creating;
   const treeRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -103,6 +173,7 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
     setDialogPath(null);
     setCursor(null);
     setQuery("");
+    setCreating(null);
     const roots = targetsRef.current.map((target) => treePath(target.id, ""));
     // Several project folders: each is a top-level node, opened by default.
     setExpanded(roots.length > 1 ? Object.fromEntries(roots.map((root) => [root, true])) : {});
@@ -126,6 +197,49 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
     for (const target of targets) client.gitChanges(target.sessionId).then((result) => publishGitChanges(target.id, result)).catch(() => {});
   }
 
+  /** The folder a new item goes into: the folder itself, or the parent of a file. */
+  const parentOf = (item: FileEntry) => {
+    if (item.type === "dir") return item.path;
+    const { id, rel } = splitTreePath(item.path);
+    return treePath(id, rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
+  };
+
+  function startCreate(kind: "file" | "dir", anchor?: FileEntry | null) {
+    const base = anchor ?? nodes.find((node) => node.item.path === (cursor ?? selected))?.item ?? (selected ? { name: "", path: selected, type: "file" as const } : undefined);
+    const parent = base ? parentOf(base) : treePath(targets[0]?.id ?? "", "");
+    if (!targets.some((target) => target.id === splitTreePath(parent).id)) return;
+    creatingRef.current = { parent, kind }; // set now so the closing context menu does not steal focus back
+    setQuery("");
+    setCreating({ parent, kind });
+    if (splitTreePath(parent).rel !== "" || multi) setExpanded((current) => ({ ...current, [parent]: true }));
+    if (dirs[parent]?.state !== "ready") load(parent);
+  }
+
+  function cancelCreate() {
+    creatingRef.current = null;
+    setCreating(null);
+    window.setTimeout(() => treeRef.current?.focus({ preventScroll: true }), 0);
+  }
+
+  async function submitCreate(name: string) {
+    const pending = creating;
+    if (!pending) return;
+    const { id, rel } = splitTreePath(pending.parent);
+    const target = targets.find((candidate) => candidate.id === id);
+    if (!target) throw new Error("This folder is no longer available");
+    const made = await client.createFileEntry(target.sessionId, rel, name, pending.kind);
+    const path = treePath(id, made.path);
+    creatingRef.current = null;
+    setCreating(null);
+    setExpanded((current) => ({ ...current, [pending.parent]: true }));
+    load(pending.parent, true);
+    client.gitChanges(target.sessionId).then((result) => publishGitChanges(id, result)).catch(() => {});
+    setCursor(path);
+    setSelected(path);
+    if (made.type === "file") setDialogPath(path);
+    else window.setTimeout(() => treeRef.current?.focus({ preventScroll: true }), 0);
+  }
+
   function openFile(path: string) {
     setSelected(path);
     setDialogPath(path);
@@ -140,7 +254,9 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
         return;
       }
       if (entry.state === "error") { result.push({ kind: "status", key: `${path}:error`, depth, tone: "error", text: entry.message, retry: path }); return; }
-      if (entry.listing.entries.length === 0 && splitTreePath(path).rel !== "") { result.push({ kind: "status", key: `${path}:empty`, depth, tone: "empty", text: "Empty folder" }); return; }
+      const here = creating?.parent === path;
+      if (here) result.push({ kind: "create", key: `${path}:create`, depth });
+      if (!here && entry.listing.entries.length === 0 && splitTreePath(path).rel !== "") { result.push({ kind: "status", key: `${path}:empty`, depth, tone: "empty", text: "Empty folder" }); return; }
       for (const item of entry.listing.entries) {
         result.push({ kind: "node", item, depth });
         if (item.type === "dir" && expanded[item.path]) walk(item.path, depth + 1);
@@ -154,7 +270,7 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
       if (expanded[rootPath]) walk(rootPath, 1);
     }
     return result;
-  }, [dirs, expanded, targets, multi]);
+  }, [dirs, expanded, targets, multi, creating]);
 
   const needle = query.trim().toLowerCase();
   const filtered = useMemo<FileEntry[]>(() => {
@@ -190,6 +306,11 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
     const { target, rel } = itemTarget(item);
     if (!target) return;
     void downloadWorkspacePath(client, target.sessionId, rel, item.type === "dir" ? "dir" : "file", rel ? rel.split("/").pop()! : target.label);
+  }
+
+  function explorerItem(item: FileEntry) {
+    const { target, rel } = itemTarget(item);
+    return target ? { label: target.label, rel, isDir: item.type === "dir" } : undefined;
   }
 
   function copyItemPath(item: FileEntry, relative: boolean) {
@@ -261,13 +382,15 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
           <Input aria-label="Filter loaded files" placeholder="Filter files" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setQuery(""); if (event.key === "ArrowDown") { event.preventDefault(); treeRef.current?.focus(); } }} className="h-7 pr-6 pl-7 text-xs" />
           {query && <Button variant="ghost" size="icon-xs" type="button" aria-label="Clear filter" onClick={() => setQuery("")} className="absolute inset-y-0 right-1.5 my-auto size-5 text-muted-foreground"><IconX className="size-3" /></Button>}
         </div>
+        <Button type="button" variant="ghost" size="icon-xs" aria-label="New file" title="New file" disabled={targets.length === 0} onClick={() => startCreate("file")}><IconFilePlus /></Button>
+        <Button type="button" variant="ghost" size="icon-xs" aria-label="New folder" title="New folder" disabled={targets.length === 0} onClick={() => startCreate("dir")}><IconFolderPlus /></Button>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Collapse all folders" title="Collapse all" onClick={() => setExpanded({})}><IconFoldersOff /></Button>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh files" title="Refresh files" onClick={refresh}><IconRefresh /></Button>
       </div>
       <ContextMenu open={menuOpen} onOpenChange={(open) => {
         if (open && !menuTarget.current) return;
         setMenuOpen(open);
-        if (!open) { menuTarget.current = null; window.setTimeout(() => treeRef.current?.focus({ preventScroll: true }), 0); }
+        if (!open) { menuTarget.current = null; window.setTimeout(() => { if (!creatingRef.current) treeRef.current?.focus({ preventScroll: true }); }, 0); }
       }}>
       <ContextMenuTrigger asChild>
       <div
@@ -303,6 +426,11 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
             let nodeIndex = -1;
             return rows.map((row) => {
               const pad = BASE_PAD + row.depth * INDENT;
+              if (row.kind === "create") {
+                const listing = dirs[creating!.parent];
+                const siblings = listing?.state === "ready" ? listing.listing.entries.map((entry) => entry.name) : [];
+                return <CreateRow key={row.key} kind={creating!.kind} depth={row.depth} siblings={siblings} onSubmit={submitCreate} onCancel={cancelCreate} />;
+              }
               if (row.kind === "status") {
                 return (
                   <div key={row.key} style={{ paddingLeft: pad + 16 }} className={cn("flex h-6 items-center gap-2 pr-2 text-xs", row.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
@@ -340,9 +468,12 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
           })()}
       </div>
       </ContextMenuTrigger>
-      <ContextMenuContent className="min-w-48">
+      <ContextMenuContent className="min-w-48" onCloseAutoFocus={(event) => { if (creatingRef.current) event.preventDefault(); }}>
         {menuItem && (
           <>
+            <ContextMenuItem onSelect={() => startCreate("file", menuItem)}><IconFilePlus />New file…</ContextMenuItem>
+            <ContextMenuItem onSelect={() => startCreate("dir", menuItem)}><IconFolderPlus />New folder…</ContextMenuItem>
+            <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => downloadItem(menuItem)}><IconDownload />{menuItem.type === "dir" ? "Download as zip" : "Download"}</ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => copyItemPath(menuItem, false)}><IconCopy />Copy path</ContextMenuItem>
@@ -352,8 +483,8 @@ export default function FilesTab({ client, targets, projectId }: { client: Runti
             {projectId && canOpenInExplorer(client) && (
               <>
                 <ContextMenuSeparator />
-                <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId)}><IconFolderOpen />Open in Explorer</ContextMenuItem>
-                {navigator.userAgent.includes("Windows") && <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId, true)}><IconFolderOpen />Map as network drive</ContextMenuItem>}
+                <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId, false, explorerItem(menuItem))}><IconFolderOpen />Open in Explorer</ContextMenuItem>
+                {navigator.userAgent.includes("Windows") && <ContextMenuItem onSelect={() => void openProjectInExplorer(client, projectId, true, explorerItem(menuItem))}><IconFolderOpen />Map as network drive</ContextMenuItem>}
                 {hasOpenMount(projectId) && <ContextMenuItem onSelect={() => void ejectProjectMount(client, projectId)}><IconX />Stop Explorer access</ContextMenuItem>}
               </>
             )}

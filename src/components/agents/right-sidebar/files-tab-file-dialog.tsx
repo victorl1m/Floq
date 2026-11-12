@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconCheck, IconChevronRight, IconCopy, IconDownload, IconFiles, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { FloqSurface } from "@/components/ui/floq-surface";
@@ -10,6 +10,8 @@ import type { FileContent } from "@/lib/runtime/workspace-files";
 import { errorMessage } from "@/lib/runtime/store";
 import { useHighlighter } from "@/hooks/use-highlighter";
 import { languageForPath } from "@/lib/runtime/language";
+import { DocumentPreview, docKindForPath } from "./files-tab-preview";
+import { isTauri } from "@tauri-apps/api/core";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 
 const MAX_PREVIEW_LINES = 5000;
@@ -19,6 +21,15 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)$/i;
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Hand the signed link to the system browser / default handler (a plain browser opens a new tab). */
+async function openExternally(getUrl: () => Promise<string>): Promise<void> {
+  try {
+    const url = await getUrl();
+    if (isTauri()) { const { openUrl } = await import("@tauri-apps/plugin-opener"); await openUrl(url); }
+    else window.open(url, "_blank", "noopener");
+  } catch { /* the link could not be issued; Download surfaces the error */ }
 }
 
 function Breadcrumb({ path }: { path: string }) {
@@ -39,9 +50,12 @@ function Breadcrumb({ path }: { path: string }) {
 }
 
 /** Modal read-only viewer for a file picked in the Files tab (text with highlighting, or an image). */
-export default function FileDialog({ client, sessionId, path, label, onClose }: { client: RuntimeClient; sessionId: string; path: string; label?: string; onClose: () => void }) {
+export default function FileDialog({ client, sessionId, path, label, source = "workspace", onClose }: { client: RuntimeClient; sessionId: string; path: string; label?: string; source?: "workspace" | "artifacts"; onClose: () => void }) {
   const isImage = IMAGE_EXT.test(path);
   const [file, setFile] = useState<FileContent | null>(null);
+  const docKind = docKindForPath(path);
+  const linkUrl = useCallback(() => (source === "artifacts" ? client.artifactDownloadUrl(sessionId, path) : client.fileDownloadUrl(sessionId, path)), [client, sessionId, path, source]);
+  const getDocUrl = linkUrl;
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -53,12 +67,13 @@ export default function FileDialog({ client, sessionId, path, label, onClose }: 
     setImageUrl(null);
     setError(null);
     // Images load through the signed download link (an <img> cannot carry auth headers); everything else is read as text.
+    if (docKind) return; // documents load themselves in DocumentPreview
     const request = isImage
-      ? client.fileDownloadUrl(sessionId, path).then((url) => { if (!cancelled) setImageUrl(url); })
-      : client.readFile(sessionId, path).then((result) => { if (!cancelled) setFile(result); });
+      ? linkUrl().then((url) => { if (!cancelled) setImageUrl(url); })
+      : (source === "artifacts" ? client.readArtifact(sessionId, path) : client.readFile(sessionId, path)).then((result) => { if (!cancelled) setFile(result); });
     request.catch((cause) => { if (!cancelled) setError(errorMessage(cause)); });
     return () => { cancelled = true; };
-  }, [client, sessionId, path, version, isImage]);
+  }, [client, sessionId, path, version, isImage, docKind, linkUrl, source]);
 
   useEffect(() => {
     if (!copied) return;
@@ -90,12 +105,13 @@ export default function FileDialog({ client, sessionId, path, label, onClose }: 
           <DialogTitle asChild><div className="flex min-w-0 flex-1"><Breadcrumb path={label ? `${label}/${path}` : path} /></div></DialogTitle>
           <DialogDescription className="sr-only">Read-only contents of {path}</DialogDescription>
           {file && !error && <span className="shrink-0 pr-1 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
-          <Button type="button" variant="ghost" size="icon-sm" aria-label="Download file" title="Download file" onClick={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path)}><IconDownload size={16} /></Button>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label="Download file" title="Download file" onClick={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path, source)}><IconDownload size={16} /></Button>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck size={16} className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy size={16} />}</Button>
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" title="Close (Esc)" onClick={onClose}><IconX size={16} /></Button>
         </FloqSurface>
         <div className="min-h-0 flex-1 overflow-auto bg-muted/10">
-          {error ? <PanelError message={error} onRetry={() => setVersion((value) => value + 1)} />
+          {docKind ? <DocumentPreview kind={docKind} path={path} getUrl={getDocUrl} onDownload={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path, source)} onOpenExternally={() => void openExternally(getDocUrl)} />
+            : error ? <PanelError message={error} onRetry={() => setVersion((value) => value + 1)} />
             : isImage ? (imageUrl
               ? <div className="flex min-h-full items-center justify-center p-4"><img src={imageUrl} alt={path} className="max-h-full max-w-full object-contain" onError={() => setError("The image could not be loaded.")} /></div>
               : <RowSkeletons count={10} rowClass="h-3.5" />)

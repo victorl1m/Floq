@@ -2,17 +2,18 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
+import { mountSegments, type MountItem } from "@/lib/mount-path";
 
 /**
  * Download a workspace file, or a folder as a zip. The runtime streams it (no size cap, Range, shard kept awake); the desktop app
  * saves it into the Downloads folder through the Rust downloader (same behaviour on every OS webview), a plain browser navigates
  * to the signed link and lets the browser's download manager take over.
  */
-export async function downloadWorkspacePath(client: RuntimeClient, sessionId: string, path: string, kind: "file" | "dir", name: string): Promise<void> {
+export async function downloadWorkspacePath(client: RuntimeClient, sessionId: string, path: string, kind: "file" | "dir", name: string, source: "workspace" | "artifacts" = "workspace"): Promise<void> {
   const fallback = kind === "dir" ? `${name || "workspace"}.zip` : name || "download";
   const id = toast.loading(kind === "dir" ? `Preparing ${fallback}…` : `Downloading ${fallback}…`);
   try {
-    const url = await client.fileDownloadUrl(sessionId, path);
+    const url = source === "artifacts" ? await client.artifactDownloadUrl(sessionId, path) : await client.fileDownloadUrl(sessionId, path);
     if (isTauri()) {
       const saved = await invoke<string>("download_to_downloads", { url, fallbackName: fallback });
       toast.success(`Saved ${saved.split(/[\\/]/).pop() ?? fallback} to Downloads`, { id, description: saved });
@@ -46,13 +47,15 @@ function mountError(cause: unknown): string {
 }
 
 /** Create a read-only share of the project's folders and open it in the OS file manager (or map it as a drive on Windows). */
-export async function openProjectInExplorer(client: RuntimeClient, projectId: string, mapDrive = false): Promise<void> {
+export async function openProjectInExplorer(client: RuntimeClient, projectId: string, mapDrive = false, item?: MountItem & { isDir: boolean }): Promise<void> {
   const id = toast.loading("Opening your project files…");
   try {
     const mount = await client.createFileMount(projectId);
     const davUrl = `${client.baseUrl.replace(/\/+$/, "")}${mount.path}`;
     MOUNTS.set(projectId, mount.token);
-    const message = await invoke<string>("open_dav_mount", { davUrl, mapDrive });
+    // The item's folder inside the share: the file manager opens there (and selects a file) instead of at the share root.
+    const sub = mountSegments(mount.folders ?? [], item);
+    const message = await invoke<string>("open_dav_mount", { davUrl, mapDrive, sub, isFile: !!item && !item.isDir && sub.length > 1 });
     toast.success(message, { id, description: "Read-only, available for 8 hours or until you eject it. Files over 50 MB: use Download." });
   } catch (cause) {
     // Do not leave a live share behind when the OS could not open it.
