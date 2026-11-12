@@ -251,14 +251,21 @@ export default function TerminalPanel() {
     function addNewTerminal() {
         const projectId = primarySession ? primarySession.projectId : activeProjectId;
         const workspaceId = primarySession ? primarySession.worktreeId : activeWorkspaceId;
-        // The Terminal view only creates home terminals; with no project in context also open in the user's home.
-        if (view === "terminal" || !projectId) {
+        // One click, a plain shell: in the current project's workspace, or the scratch (home) workspace with none.
+        if (!projectId) {
             void newShell({ home: true });
             return;
         }
-        selectProject(projectId, workspaceId);
+        if (view !== "terminal") selectProject(projectId, workspaceId);
         void newShell({ projectId, workspaceId });
     }
+
+    // The Terminal view's + creates a shell directly: no provider, role or model choice.
+    const addTerminalButton = (
+        <Button variant="ghost" size="icon-xs" aria-label="New terminal" title="New terminal" onClick={addNewTerminal}>
+            <IconPlus />
+        </Button>
+    );
 
     const addSessionMenu = (
         <DropdownMenu>
@@ -331,7 +338,7 @@ export default function TerminalPanel() {
                                 </div>
                             );
                         })}
-                        {addSessionMenu}
+                        {addTerminalButton}
                         {splitControl}
                     </div>,
                     slot,
