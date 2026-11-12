@@ -15,7 +15,8 @@ import { createPortal } from "react-dom";
 import { cn } from "cn";
 import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { canReadClipboard, copyText, readClipboardImagePng, readClipboardText } from "@/lib/clipboard";
+import { canReadClipboard, copyText, readClipboardText } from "@/lib/clipboard";
+import { classifyPaste, readNativeImage } from "@/lib/paste";
 import { parseOsc52 } from "@/lib/osc52";
 import { HeldInput } from "@/lib/held-input";
 import { MAX_UPLOAD_COUNT, browserUploadItems, shellQuote, tauriDropItems, uploadBatch, type UploadItem } from "./upload-toast";
@@ -320,34 +321,33 @@ export default function SessionTerminal({ sessionId, active, titlebarActions = t
         // Claude Code and Codex read images from the clipboard of the machine they run on, which is the
         // runtime host, not this one. So an image on the local clipboard is uploaded and its path pasted.
         const imagePasteProvider = () => providerRef.current === "claude" || providerRef.current === "codex";
-        const uploadClipboardImage = (bytes: Uint8Array) => {
-            uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.png`, size: bytes.byteLength, blob: new Blob([bytes as BlobPart], { type: "image/png" }) }]);
-        };
         const pasteFromClipboard = async () => {
+            let text: string | null = null;
             try {
-                const text = await readClipboardText();
-                if (text) { term.paste(text); return; }
+                text = await readClipboardText();
             } catch {
                 // An image-only clipboard can make the text read fail; fall through to the image read.
             }
+            if (text) { term.paste(text); return; }
             if (!imagePasteProvider()) return;
-            const png = await readClipboardImagePng();
-            if (png) uploadClipboardImage(png);
+            const image = await readNativeImage();
+            if (image) uploadFilesRef.current([image]);
         };
         // Browser: the native paste event decides. Image file and no text => upload; otherwise xterm pastes text.
         const onPasteCapture = (event: ClipboardEvent) => {
             if (!imagePasteProvider()) return;
             const clip = event.clipboardData;
-            if (!clip || clip.getData("text/plain")) return;
-            const item = Array.from(clip.items ?? []).find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
-            const file = item?.getAsFile();
-            if (!file) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void file.arrayBuffer().then((buffer) => {
-                const extension = file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
-                uploadFilesRef.current([{ name: `pasted-image-${Date.now()}.${extension}`, size: buffer.byteLength, blob: new Blob([buffer], { type: file.type }) }]);
-            });
+            const decision = classifyPaste(clip);
+            if (decision.images.length) {
+                if (!decision.pasteText) { event.preventDefault(); event.stopPropagation(); }
+                void Promise.all(decision.images.map(async (file) => {
+                    const buffer = await file.arrayBuffer();
+                    return { name: file.name, size: buffer.byteLength, blob: new Blob([buffer], { type: file.type }) };
+                })).then((items) => uploadFilesRef.current(items), (e) => toast.error("Could not read the pasted image", { description: errorMessage(e) }));
+            } else if (decision.empty && canReadClipboard()) {
+                // WebView2 can expose a screenshot only natively; a clipboard without an image stays silent.
+                void readNativeImage().then((item) => { if (item) uploadFilesRef.current([item]); });
+            }
         };
         host.addEventListener("paste", onPasteCapture, true);
         const copySelection = async (text: string): Promise<boolean> => {

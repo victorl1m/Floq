@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { handlePaste } from "@/lib/paste";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Mention from "@tiptap/extension-mention";
@@ -13,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { STATE_DOT } from "@/components/agents/session-terminal";
-import { pastedTauriImage, pastedFiles, AttachmentChips, useAttachments, useTauriDrop } from "./canvas-attachments";
+import { AttachmentChips, useAttachments, useTauriDrop } from "./canvas-attachments";
 import { sendToTargets } from "./canvas-send";
 import { orchestratorIds } from "@/lib/runtime/orchestrator";
 import type { RuntimeClient } from "@/lib/runtime/client";
@@ -156,10 +157,8 @@ export default function CanvasComposer({ projectId, client, sessions, selectedId
         return false;
       },
       handlePaste: (_view, event) => {
-        const files = pastedFiles(event);
-        if (files) { event.preventDefault(); addFilesRef.current(files); return true; }
-        if (!event.clipboardData?.getData("text/plain")) void pastedTauriImage().then((items) => items.length && addItemsRef.current(items));
-        return false;
+        const decision = handlePaste(event, addFilesRef.current, (item) => addItemsRef.current([item]));
+        return decision.images.length > 0 && !decision.pasteText;
       },
     },
     onUpdate: ({ editor: instance }) => {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { handlePaste } from "@/lib/paste";
 import ModelSelect, { normalizeModels } from "@/components/agents/model-select";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
@@ -29,7 +30,7 @@ import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE, isOrchestrator } from "@/lib/runt
 import type { CreateSessionInput, LoginProviderId, ProviderId, SessionState, SessionSummary } from "@/lib/runtime/types";
 import ProjectPicker from "@/components/projects/project-picker";
 import { ProjectMark } from "@/components/projects/project-identity";
-import { AttachmentChips, pastedFiles, pastedTauriImage, useAttachments, useTauriDrop } from "@/components/canvas/canvas-attachments";
+import { AttachmentChips, useAttachments, useTauriDrop } from "@/components/canvas/canvas-attachments";
 import { deliverMessage, uploadAttachments, withPaths } from "@/components/canvas/canvas-send";
 import { cn } from "cn";
 import "./home.css";
@@ -280,9 +281,7 @@ export default function HomeView() {
                             onChange={(e) => { stopTyping(); setPrompt(e.target.value); }}
                             onKeyDown={onKeyDown}
                             onPaste={(event) => {
-                                const files = pastedFiles(event.nativeEvent);
-                                if (files) { event.preventDefault(); attachments.addFiles(files); return; }
-                                if (!event.clipboardData.getData("text/plain")) void pastedTauriImage().then((items) => items.length && attachments.add(items));
+                                handlePaste(event.nativeEvent, attachments.addFiles, (item) => attachments.add([item]));
                             }}
                             aria-describedby="home-help"
                             placeholder="Describe what you want to build, change, or fix…"

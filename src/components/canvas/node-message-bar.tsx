@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { handlePaste } from "@/lib/paste";
 import { IconArrowUp, IconCheck, IconPaperclip, IconPlayerPlay } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { SessionSummary } from "@/lib/runtime/types";
-import { AttachmentChips, pastedFiles, pastedTauriImage, useAttachments, useTauriDrop } from "./canvas-attachments";
+import { AttachmentChips, useAttachments, useTauriDrop } from "./canvas-attachments";
 import type { Attachment } from "./canvas-send";
 import { matchSlash } from "./slash-commands";
 import { isControlKey, keyToSequence } from "./terminal-keys";
@@ -104,9 +105,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
             else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
           }}
           onPaste={(event) => {
-            const files = pastedFiles(event.nativeEvent);
-            if (files) { event.preventDefault(); attachments.addFiles(files); return; }
-            if (!event.clipboardData.getData("text/plain")) void pastedTauriImage().then((items) => items.length && attachments.add(items));
+            handlePaste(event.nativeEvent, attachments.addFiles, (item) => attachments.add([item]));
           }}
         />
         {sleeping ? (
