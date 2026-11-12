@@ -23,7 +23,7 @@ export default function OrgSwitcher() {
     const pendingInvites = incoming.length;
     const active = organizations.find((organization) => organization.id === activeOrganizationId);
     const name = (active ? organizationLabel(active) : null) ?? (organizationsLoading ? "Loading…" : organizationsError ? "Organizations unavailable" : "No organization");
-    const subline = active ? `${ROLE_LABEL[active.role]} · ${organizations.length} organization${organizations.length === 1 ? "" : "s"}` : "Choose an organization";
+    const subline = active ? ROLE_LABEL[active.role] : "Choose an organization";
 
     return (
         <SidebarMenu>
