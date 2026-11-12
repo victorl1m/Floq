@@ -6,7 +6,7 @@
 
 [![Build Windows](https://github.com/victorl1m/Floq/actions/workflows/build-windows.yml/badge.svg)](https://github.com/victorl1m/Floq/actions/workflows/build-windows.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: early 0.x](https://img.shields.io/badge/status-early%200.x-orange)
+![Version 1.0.1 pre-release](https://img.shields.io/badge/version-1.0.1%20pre--release-orange)
 
 </div>
 
@@ -16,18 +16,19 @@
 
 Floq is a Tauri desktop app that connects to a **runtime** you host. The runtime starts [Claude Code](https://docs.claude.com/en/docs/claude-code) and [Codex CLI](https://github.com/openai/codex) sessions inside a container, each behind a PTY and a per-user sandbox, and streams the terminals to the app over WebSocket. Agents sign in with **your own Claude or ChatGPT subscription**, not with API keys.
 
-> **Status:** early (`0.x`) software. Expect rough edges and breaking changes. The Windows installers are **unsigned**, so SmartScreen will warn when you run them. macOS binaries are not published yet (building from source on macOS works). Read the [security model](#security-model) before you deploy a runtime.
+> **Status:** v1.0.1, still published as a pre-release. Expect rough edges and breaking changes. The Windows installers are **unsigned**, so SmartScreen will warn when you run them. macOS binaries are not published yet (building from source on macOS works). Read the [security model](#security-model) before you deploy a runtime.
 
 ## Features
 
-- **Agents on a canvas.** Start Claude Code, Codex or a plain shell in a cloud terminal and arrange agents, notes, keychains and wires on a canvas. Idle terminals sleep and resume the same conversation.
-- **Projects, folders and organizations.** Clone a repository by URL or from a connected GitHub account, group projects into folders, review changed files, and share a runtime with an organization (owner, admin and member roles, invitation tokens).
-- **Notes, keychains and wires.** Sticky notes on the canvas, scoped keychains of secrets that are delivered only to the agents wired to them, and a per-user write-only vault.
-- **Cross-project agent messaging and approvals.** Agents can message each other across your projects with the `floq` CLI. Irreversible or outward actions (push, merge, deploy) can require an explicit approval from you in the app.
-- **Subagent recruiting.** Lead agents recruit and dismiss other agents through Floq, optionally in an isolated Git worktree.
-- **Port forwarding.** Forward ports from an agent's sandbox to your machine from the right sidebar.
-- **Skills and MCP servers.** Browse, add and remove skills; install MCP servers from the app or the `floq` CLI, with credentials taken from your vault.
-- **Light and dark themes**, a command palette and a custom window frame.
+- **Agents on a canvas.** Start Claude Code, Codex or a plain shell in a cloud terminal and arrange agents, notes, keychains, wires and an app window on a canvas (marquee selection included). Agents get robot avatars and role icons. Idle terminals sleep and resume the same conversation.
+- **Organizations and projects.** Every user has a Personal organization, and projects are scoped to an organization. Clone a repository by URL or from a connected GitHub account, group projects into folders, and review changed files from the titlebar branch pill (Changes). Shared organizations have owner, admin and member roles and invitation tokens.
+- **Files and Artifacts tabs.** Create files inline, open them in a dialog, and preview docx, xlsx, xls, csv and pdf. Each project has an Artifacts folder with its own tab. Right-click to download a file or folder.
+- **Notes, keychains and wires.** Sticky notes, scoped keychains of secrets that reach only the agents wired to them, and a per-user write-only vault.
+- **Cross-project and cross-organization messaging, approvals.** Agents message each other with the `floq` CLI. Irreversible or outward actions (push, merge, deploy) can require your explicit approval in the app.
+- **Subagent recruiting with limits.** Lead agents recruit and dismiss other agents, optionally in an isolated Git worktree. By default 6 agents can be awake and 24 exist in total per lead; the limits are configurable in settings up to ceilings of 32 and 200 (operators can lower the ceilings with `FLOQ_SUBAGENT_CEIL_CHILDREN` and `FLOQ_SUBAGENT_CEIL_TOTAL`).
+- **Usage meter.** The footer shows your Claude Pro or Max usage (plan label, windows and extra usage), and says so when usage is unavailable.
+- **Port forwarding, skills and MCP servers.** Forward sandbox ports to your machine, browse and manage skills, and install MCP servers from the app or the `floq` CLI with credentials from your vault.
+- **Light and dark themes**, acrylic surfaces, a command palette and a custom window frame.
 
 ## Install
 
@@ -69,14 +70,27 @@ Inside a Floq session, `floq setup --dry-run --agents` previews exporting the ag
 
 ## Downloading files and "Open in Explorer"
 
-In the right sidebar's **Files** tab, right-click a file or folder to **Download** it (a folder is streamed as a zip; `.git` and `node_modules` are left out). Downloads use a signed link that is valid for 60 seconds and works once.
+In the right sidebar's **Files** tab, right-click a file or folder to **Download** it (a folder is streamed as a zip; `.git` and `node_modules` are left out). Downloads use a signed link that is valid for 60 seconds, works once and is bound to its audience.
 
-**Open in Explorer** (desktop app, HTTPS runtimes only) mounts the project's folders as a **read-only** WebDAV share that Windows Explorer, Finder and Linux file managers can browse like a network drive. Nothing needs installing on Windows.
+**Open in Explorer** (desktop app, HTTPS runtimes only) mounts the project's folders as a **read-write** WebDAV share that Windows Explorer, Finder and Linux file managers can use like a network drive. Nothing needs installing on Windows. Anyone who holds the share URL can change files, so treat it as a credential. Revealing a mounted item opens its folder in the platform file manager.
 
 - **Use HTTPS.** The Windows WebDAV client cannot send our bearer header, so the share is addressed by an unguessable token in the URL path (`/dav/<token>/`). The action is hidden when the runtime URL is plain `http://`.
 - **Token lifetime.** A share lasts 8 hours, until you choose **Stop Explorer access**, until you sign out (or the sign-in session ends), or until the runtime restarts. It only works while your workspace is awake and you are using Floq; it never wakes a sleeping workspace.
-- **Reverse proxy.** Forward `OPTIONS`, `PROPFIND`, `GET`, `HEAD` and `Range` requests for `/dav/` untouched, do not buffer responses, and **redact `/dav/` paths from access logs** (the token is the credential). The token also shows up in Explorer's recent places and `net use` listings.
+- **Reverse proxy.** Forward `OPTIONS`, `PROPFIND`, `GET`, `HEAD`, `PUT`, `DELETE` and `Range` requests (and the other WebDAV write methods) for `/dav/` untouched, do not buffer responses, and **redact `/dav/` paths from access logs** (the token is the credential). The token also shows up in Explorer's recent places and `net use` listings.
 - **Windows limits.** Needs the WebClient service (absent on Windows Server, and Microsoft lists the WebDAV client as deprecated, so treat this as best effort). WebClient refuses files larger than 50 MB by default; use **Download** for those. Folders over about 2,000 entries are truncated in listings.
+
+## Testing
+
+```bash
+npx tsc --noEmit                              # type-check the app
+npm run test:e2e                              # Playwright specs in e2e/ (starts npm run dev, Tauri APIs mocked)
+bash e2e/run-local.sh                         # same suite on a host without Chromium system libraries
+cd runtime && npm test                        # build, then the runtime tests (node --test)
+cd runtime && npm run typecheck               # runtime and image type-check
+cd src-tauri && cargo test                    # Rust tests
+```
+
+On a fresh checkout run `npx playwright install chromium` once before the Playwright suite. The runtime tests need `cd runtime && npm ci` first.
 
 ## Architecture
 
