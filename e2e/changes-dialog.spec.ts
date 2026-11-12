@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.use({ viewport: { width: 1400, height: 900 } });
 
-test('Changes is its own toolbar button, identity is centred without a branch icon, and it opens the review dialog', async ({ page }) => {
+test('Changes is its own toolbar button, identity sits left and the toolbar is window-centred, and it opens the review dialog', async ({ page }) => {
   await page.goto('/e2e/harness/changes.html');
   const button = page.getByRole('button', { name: /^Changes on .* \(99\+\)$/ });
   await expect(button).toBeVisible();
@@ -14,10 +14,11 @@ test('Changes is its own toolbar button, identity is centred without a branch ic
   await expect(identity).toContainText('Proj');
   await expect(identity).toContainText('feature/very-long-branch-name-here');
   const id = (await identity.boundingBox())!;
+  const tb = (await page.locator('.canvas-titlebar-center').boundingBox())!;
   const vw = page.viewportSize()!.width;
-  expect(Math.abs(id.x + id.width / 2 - vw / 2)).toBeLessThan(2);
-  const btn = (await button.boundingBox())!;
-  expect(btn.x).toBeGreaterThan(id.x + id.width);
+  expect(Math.abs(tb.x + tb.width / 2 - vw / 2)).toBeLessThan(2);
+  expect(id.x + id.width).toBeLessThanOrEqual(tb.x);
+  expect(id.x).toBeLessThan(vw / 4);
   await expect(identity).toHaveAttribute('data-tauri-drag-region', 'true');
   await button.click();
   const dialog = page.getByRole('dialog');
@@ -62,3 +63,16 @@ test('titlebar toolbar does not overflow at 820px', async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(0);
   await page.screenshot({ path: '.tmp/shots/toolbar-820.png', clip: { x: 0, y: 0, width: 820, height: 60 } });
 });
+
+for (const width of [1280, 820]) {
+  test(`toolbar is window-centred and never overlaps the identity at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 600 });
+    await page.goto('/e2e/harness/changes.html');
+    await expect(page.getByRole('button', { name: /^Changes on / })).toBeVisible();
+    await page.waitForTimeout(200);
+    const tb = (await page.locator('.canvas-titlebar-center').boundingBox())!;
+    const id = (await page.locator('.canvas-titlebar-identity').boundingBox())!;
+    expect(Math.abs(tb.x + tb.width / 2 - width / 2)).toBeLessThan(2);
+    expect(id.x + id.width).toBeLessThanOrEqual(tb.x + 0.5);
+  });
+}

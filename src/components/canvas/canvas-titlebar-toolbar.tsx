@@ -12,6 +12,7 @@ import {
 import { formatChangeCount } from "@/lib/changes-dialog";
 import { ShortcutTip } from "./shortcut-tip";
 
+
 type ToolbarProject = Parameters<typeof ProjectMark>[0]["project"];
 
 export interface CanvasTitlebarToolbarProps {
@@ -50,24 +51,27 @@ export interface CanvasTitlebarToolbarProps {
  */
 export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
   const layoutRef = useRef<HTMLDivElement>(null);
-  const rightRef = useRef<HTMLDivElement>(null);
-  // The identity is centred on the window, not on the leftover titlebar slot: measure where the slot sits and offset into it.
-  const [centre, setCentre] = useState<{ left: number | string; maxWidth: number | string }>({ left: "50%", maxWidth: "40%" });
+  const centerRef = useRef<HTMLDivElement>(null);
+  // The toolbar is centred on the window, not on the leftover titlebar slot: measure where the slot sits and offset into it.
+  // The identity stays on the left and its max width is whatever is left before the toolbar starts.
+  const [pos, setPos] = useState<{ left: number | string; maxWidth: number | string; idMax: number | string }>({ left: "50%", maxWidth: "60%", idMax: "25%" });
   useLayoutEffect(() => {
     const layout = layoutRef.current;
-    const right = rightRef.current;
-    if (!layout || !right) return;
+    const center = centerRef.current;
+    if (!layout || !center) return;
     const measure = () => {
       const l = layout.getBoundingClientRect();
-      const r = right.getBoundingClientRect();
       const cx = window.innerWidth / 2;
-      const half = Math.max(0, Math.min(cx - l.left, r.left - cx) - 12);
-      setCentre((prev) => (prev.left === cx - l.left && prev.maxWidth === half * 2 ? prev : { left: cx - l.left, maxWidth: half * 2 }));
+      const left = cx - l.left;
+      const maxWidth = Math.max(0, Math.min(cx - l.left, l.right - cx) * 2);
+      const width = Math.min(center.getBoundingClientRect().width, maxWidth);
+      const idMax = Math.max(0, left - width / 2 - 12);
+      setPos((prev) => (prev.left === left && prev.maxWidth === maxWidth && prev.idMax === idMax ? prev : { left, maxWidth, idMax }));
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(layout);
-    ro.observe(right);
+    ro.observe(center);
     window.addEventListener("resize", measure);
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
   }, []);
@@ -86,8 +90,8 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
         <div
           data-tauri-drag-region
           title={p.cwd ? `${p.name} — ${p.cwd}` : p.name}
-          className="canvas-titlebar-identity pointer-events-none absolute top-0 flex h-full min-w-0 items-center justify-center gap-2"
-          style={{ left: centre.left, maxWidth: centre.maxWidth }}
+          className="canvas-titlebar-identity pointer-events-none flex h-full min-w-0 items-center gap-2"
+          style={{ maxWidth: pos.idMax }}
         >
           <span aria-hidden data-tauri-drag-region className="flex size-[18px] shrink-0 items-center justify-center">
             <ProjectMark key={p.projectKey} project={p.project} className="pointer-events-none size-[18px] text-muted-foreground" />
@@ -97,7 +101,7 @@ export function CanvasTitlebarToolbar(p: CanvasTitlebarToolbarProps) {
           <span className="sr-only">{p.name}</span>
         </div>
 
-        <div ref={rightRef} data-tauri-drag-region className="canvas-titlebar-right ml-auto flex min-w-0 items-center gap-1">
+        <div ref={centerRef} data-tauri-drag-region className="canvas-titlebar-center absolute top-0 flex h-full min-w-0 items-center gap-1" style={{ left: pos.left, maxWidth: pos.maxWidth }}>
         <ShortcutTip label={changeBadge ? `Changes (${changeBadge})` : "Changes"}>
           <Button type="button" variant="ghost" size="icon-sm" className="canvas-titlebar-changes relative shrink-0" aria-label={changesLabel} onClick={p.onOpenChanges}>
             <IconGitCompare size={16} />

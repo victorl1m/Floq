@@ -287,9 +287,9 @@
 
 /* Canvas toolbar in the titlebar. Collapse is driven by the toolbar's own width (the sidebar is resizable). */
 .canvas-titlebar-toolbar { container: canvas-titlebar / inline-size; }
-/* The identity (project mark, name, muted branch) is absolutely positioned on the window centre by the toolbar (JS-measured)
-   and truncates before it can touch the right cluster. Changes + tools sit in the right cluster, aligned to the end. */
-.canvas-titlebar-identity { transform: translateX(-50%); }
+/* The identity (project mark, name, muted branch) sits at the left and truncates before it can touch the toolbar.
+   The toolbar cluster (Changes + tools + overflow) is absolutely positioned on the window centre (JS-measured). */
+.canvas-titlebar-center { transform: translateX(-50%); }
 /* Setting overflow-x alone makes overflow-y compute to auto, so a focus ring or 1px rounding produced a vertical scrollbar.
    Vertical overflow is clipped instead; the block padding (cancelled by the negative margin) keeps focus rings inside the clip box. */
 .canvas-titlebar-tools {
