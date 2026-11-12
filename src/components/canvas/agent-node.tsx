@@ -69,6 +69,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
   return (
     <div
       {...providerThemeProps(session.provider)}
+      role="group" aria-label={`${session.title}, ${STATE_LABEL[session.state].text}`}
       data-link-state={linkState}
       data-selected={selected ? "true" : undefined}
       className="canvas-node-wrap group/node relative size-full"
@@ -94,10 +95,10 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
           <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7 shrink-0" aria-label={collapsed ? "Expand" : "Collapse"} title={collapsed ? "Expand mirror" : "Collapse mirror"} onClick={() => ctx.toggleCollapse(id)}>
             {collapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
           </Button>
-          <AgentAvatar session={session} size={20} />
+          <span className="inline-flex shrink-0" title={STATE_LABEL[session.state].text}><AgentAvatar session={session} size={20} /></span>
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
           <ActivityIndicator session={session} />
-          <Badge variant="outline" data-testid="agent-state" className={cn("h-4 shrink-0 px-1.5 text-[10px] font-normal", STATE_LABEL[session.state].className, session.state === "starting" && "animate-pulse motion-reduce:animate-none", session.state !== "failed" && session.state !== "starting" && "hidden @[300px]/head:inline-flex")}>{STATE_LABEL[session.state].text}</Badge>
+          {session.state === "failed" && <span data-testid="agent-state" className="shrink-0 text-[10px] font-medium text-destructive">Failed</span>}
           {session.parentSessionId && (
             <Badge variant="outline" className="h-4 shrink-0 gap-0.5 px-1.5 text-[10px] font-normal text-muted-foreground" title={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`} aria-label={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`}>
               <RoleGlyph roleId="subagent" size={10} />{roleLabel("subagent")}

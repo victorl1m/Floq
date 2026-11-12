@@ -1237,12 +1237,15 @@
 .workspace-frame .canvas-node-message-bar .canvas-node-message-input:focus,
 .workspace-frame .canvas-node-message-bar .canvas-node-message-input:focus-visible {
   border: 0;
-  border-radius: 0;
+  border-radius: 6px;
   background: transparent;
   box-shadow: none;
   outline: none;
 }
-/* No focus ring on the node message input (user request); the caret shows focus. */
+/* Transparent input: no fill or border box. Keyboard focus still shows a ring. */
+.workspace-frame .canvas-node-message-bar .canvas-node-message-input:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 55%, transparent);
+}
 [data-slot="kbd"]:not([data-slot="kbd-group"]) {
   border-radius: 5px;
   font-size: 11px;

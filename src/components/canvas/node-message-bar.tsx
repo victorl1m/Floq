@@ -3,7 +3,6 @@ import { IconArrowUp, IconCheck, IconPaperclip, IconPlayerPlay } from "@tabler/i
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { ActivityIndicator } from "@/components/agents/activity-indicator";
 import type { SessionSummary } from "@/lib/runtime/types";
 import { AttachmentChips, pastedFiles, pastedTauriImage, useAttachments, useTauriDrop } from "./canvas-attachments";
 import type { Attachment } from "./canvas-send";
@@ -87,7 +86,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
           value={text}
           placeholder={`Message ${session.title}…`}
           aria-label={`Message ${session.title}`}
-          className="canvas-node-message-input max-h-22 min-h-6 min-w-0 flex-1 resize-none bg-transparent py-0.5 leading-5 outline-none placeholder:text-muted-foreground/70"
+          className="canvas-node-message-input max-h-22 min-h-6 min-w-0 flex-1 resize-none bg-transparent py-0.5 leading-5 outline-none px-1 placeholder:text-muted-foreground"
           onChange={(event) => { setText(event.target.value); setSlashDismissed(false); setSlashIndex(0); }}
           onKeyDown={(event) => {
             event.stopPropagation();
@@ -110,7 +109,6 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
             if (!event.clipboardData.getData("text/plain")) void pastedTauriImage().then((items) => items.length && attachments.add(items));
           }}
         />
-        <ActivityIndicator session={session} className="mb-2" />
         {sleeping ? (
           <Button type="button" size="xs" variant="secondary" className="shrink-0" disabled={phase === "sending"} onClick={() => void submit()}>
             {phase === "sending" ? <Spinner /> : <IconPlayerPlay size={12} />}
