@@ -7,7 +7,6 @@ import { cn } from "cn";
 import { browserUploadItems, formatBytes, tauriDropItems, type UploadItem } from "@/components/agents/upload-toast";
 import { FileIcon } from "@/components/agents/right-sidebar/file-icons";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { readClipboardImagePng } from "@/lib/clipboard";
 import type { Attachment } from "./canvas-send";
 
 let counter = 0;
@@ -43,27 +42,6 @@ export function useAttachments() {
   const resetProgress = useCallback(() => setProgress({}), []);
   useEffect(() => () => { for (const item of itemsRef.current) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl); }, []);
   return { items, progress, add, addFiles, remove, clear, setFraction, resetProgress };
-}
-
-/** Files (or a pasted image) from a paste event. Returns null when the clipboard holds text: that stays a text paste. */
-export function pastedFiles(event: ClipboardEvent): File[] | null {
-  const clip = event.clipboardData;
-  if (!clip || clip.getData("text/plain")) return null;
-  const files = Array.from(clip.files ?? []);
-  if (!files.length) return null;
-  return files.map((file, index) => (file.name && file.name !== "image.png" ? file : new File([file], `pasted-image-${Date.now()}${index ? `-${index}` : ""}.${file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png"}`, { type: file.type })));
-}
-
-/** Tauri has no browser clipboard files: read an image from the OS clipboard when the paste carried no text. */
-export async function pastedTauriImage(): Promise<UploadItem[]> {
-  if (!isTauri()) return [];
-  try {
-    const png = await readClipboardImagePng();
-    if (!png) return [];
-    return [{ name: `pasted-image-${Date.now()}.png`, size: png.byteLength, blob: new Blob([png as BlobPart], { type: "image/png" }) }];
-  } catch {
-    return [];
-  }
 }
 
 /** Tauri swallows browser drops and reports paths for the whole window: accept the ones landing inside `ref`. */
