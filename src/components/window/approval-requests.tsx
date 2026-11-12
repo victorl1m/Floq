@@ -6,7 +6,7 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { ProjectMark } from "@/components/projects/project-identity";
-import { ProviderIcon } from "@/components/agents/provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { providerThemeProps } from "@/lib/provider-theme";
 import {
   actorLabel, announceBucket, describeAnnouncement, detailIsLong, RISK_LABEL, riskLevel,
@@ -42,7 +42,7 @@ function AgentChip({ agent, projectLookup }: { agent: ApprovalAgentRef; projectL
   const project = projectLookup(agent.projectId);
   return (
     <span {...providerThemeProps(agent.provider)} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-(--provider-rim,var(--border)) bg-(--provider-tint,var(--muted)) px-2 py-1 text-xs">
-      <ProviderIcon provider={agent.provider} className="size-3.5" />
+      <AgentAvatar session={agent} size={18} />
       <span className="truncate font-medium text-foreground">{actorLabel(agent)}</span>
       {agent.projectName && (
         <>

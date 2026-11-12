@@ -49,6 +49,9 @@ async function fixture(limits?: Partial<OrganizationLimits>) {
   return { ...ctx, org, join };
 }
 
+/** Team organizations only: every user also has a personal one (covered by its own tests). */
+const teams = async (service: OrganizationsService, userId: string) => (await service.list(userId)).filter((o) => !o.personal);
+
 const rejects = (promise: Promise<unknown>, status: number, code?: string) =>
   assert.rejects(promise, (error: { status?: number; code?: string }) => error.status === status && (!code || error.code === code));
 
@@ -72,8 +75,8 @@ test("create: owner membership, derived slug, uniqueness, validation, user-wide 
   assert.equal((await service.slugAvailable("fresh-one")).available, true);
 
   // Server-side and user-wide: the list comes from the database, keyed by account.
-  assert.equal((await service.list(A)).length, 1);
-  assert.equal((await service.list(D)).length, 0);
+  assert.equal((await teams(service, A)).length, 1);
+  assert.equal((await teams(service, D)).length, 0);
   const audit = await db.query<{ event: string }>("SELECT event FROM collaboration.organization_audit_events");
   assert.deepEqual(audit.rows.map((r) => r.event), ["org.created", "org.created"]);
 });
@@ -129,7 +132,7 @@ test("non-members cannot read or act on an organization (404, no existence leak)
   await rejects(service.removeMember(D, org.id, C), 404);
   await rejects(service.cancelInvitation(D, org.id, invite.id), 404);
   await rejects(service.members(D, "not-a-uuid"), 404);
-  assert.deepEqual(await service.list(D), []);
+  assert.deepEqual(await teams(service, D), []);
 });
 
 test("invite then accept by id; the inbox is bound to the signed-in email", async (t) => {
@@ -155,7 +158,7 @@ test("invite then accept by id; the inbox is bound to the signed-in email", asyn
   assert.equal((await service.incomingInvitations(C)).length, 1);
 
   await service.acceptById(C, invite.id);
-  const mine = await service.list(C);
+  const mine = await teams(service, C);
   assert.equal(mine[0].role, "admin");
   assert.equal((await service.incomingInvitations(C)).length, 0);
   await rejects(service.acceptById(C, invite.id), 404);
@@ -189,7 +192,7 @@ test("codes are single-use; decline, cancel and expiry remove access; resend rei
   assert.notEqual(resent.token, expiring.token);
   await rejects(service.acceptByToken(D, expiring.token), 404);
   await service.acceptByToken(D, resent.token);
-  assert.equal((await service.list(D)).length, 1);
+  assert.equal((await teams(service, D)).length, 1);
 });
 
 test("duplicate pending invitations, existing members and bad input are rejected", async (t) => {
@@ -236,7 +239,7 @@ test("caps: invitations per day, members per organization, organizations per use
   await perUser.service.create(B, { name: "B own" });
   const other = await perUser.service.create(A, { name: "Three" }).catch(() => null);
   assert.equal(other, null);
-  const bOrg = (await perUser.service.list(B)).find((o) => o.name === "B own")!;
+  const bOrg = (await teams(perUser.service, B)).find((o) => o.name === "B own")!;
   const invite = await perUser.service.invite(B, bOrg.id, { email: EMAILS[C] });
   await perUser.service.acceptByToken(C, invite.token);
   const cOrg = await perUser.service.create(C, { name: "C own" });
@@ -251,7 +254,7 @@ test("owner cannot leave without transferring; transfer swaps roles; delete need
   await join(C, "member");
   await rejects(service.leave(A, org.id), 409, "owner_must_transfer");
   await service.leave(C, org.id);
-  assert.equal((await service.list(C)).length, 0);
+  assert.equal((await teams(service, C)).length, 0);
   await rejects(service.transferOwnership(A, org.id, C), 404);
   await service.transferOwnership(A, org.id, B);
   const roles = Object.fromEntries((await service.members(B, org.id)).map((m) => [m.id, m.role]));
@@ -260,7 +263,7 @@ test("owner cannot leave without transferring; transfer swaps roles; delete need
   await rejects(service.remove(A, org.id, "Acme Inc"), 404);
   await rejects(service.remove(B, org.id, "wrong"), 400, "confirmation_mismatch");
   await service.remove(B, org.id, "Acme Inc");
-  assert.deepEqual(await service.list(B), []);
+  assert.deepEqual(await teams(service, B), []);
   const events = (await db.query<{ event: string }>("SELECT event FROM collaboration.organization_audit_events")).rows.map((r) => r.event);
   for (const expected of ["org.created", "org.invited", "org.accepted", "org.left", "org.transferred", "org.deleted"]) assert.ok(events.includes(expected), expected);
 });
@@ -299,4 +302,59 @@ test("HTTP router maps endpoints and leaves task-board routes alone", async (t) 
   assert.equal(await call(A, "GET", `/v1/organizations/${id}/boards`), undefined);
   assert.equal(await call(A, "GET", "/v1/task-boards/x"), undefined);
   assert.equal((await call(A, "DELETE", `/v1/organizations/${id}`, { confirm: "Routed" }))?.status, 200);
+});
+
+test("personal org: created once, listed first, never counted against the limit", async (t) => {
+  const { db, service } = await setup({ maxOrganizationsPerUser: 1 });
+  t.after(() => db.close());
+  const first = await service.list(A);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].personal, true);
+  assert.equal(first[0].name, "Personal");
+  assert.equal(first[0].role, "owner");
+  assert.equal(first[0].slug, "");
+  assert.equal((await db.query(`SELECT slug FROM collaboration.organizations WHERE id = $1::uuid`, [first[0].id])).rows[0].slug, null);
+  // the old personal-<hash> namespace is reserved, so nobody can squat or collide with it
+  await rejects(service.create(B, { name: "Squat", slug: "personal-0123abcd" }), 400, "invalid_slug");
+  assert.equal((await service.create(B, { name: "Personal Stuff" })).slug.startsWith("personal-"), false);
+  assert.deepEqual(first[0].members.map((m) => m.id), [A]);
+  const id = await service.ensurePersonal(A);
+  assert.equal(id, first[0].id);
+  assert.equal(await service.ensurePersonal(A), id);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM collaboration.organizations WHERE personal_owner_id = $1`, [A])).rows[0].n, 1);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM collaboration.organization_members WHERE user_id = $1`, [A])).rows[0].n, 1);
+  // the limit of 1 still allows one team org on top of the personal one, and personal stays first
+  const team = await service.create(A, { name: "Acme Inc" });
+  await rejects(service.create(A, { name: "Second" }), 409, "organization_limit");
+  const all = await service.list(A);
+  assert.deepEqual(all.map((o) => [o.id, o.personal]), [[id, true], [team.id, false]]);
+  assert.notEqual((await service.list(B))[0].id, id, "personal orgs are per user");
+});
+
+test("personal org: delete, leave, rename, transfer, invite and member changes return 409 personal_org", async (t) => {
+  const { db, service } = await setup();
+  t.after(() => db.close());
+  const id = await service.ensurePersonal(A);
+  await rejects(service.remove(A, id, "Personal"), 409, "personal_org");
+  await rejects(service.leave(A, id), 409, "personal_org");
+  await rejects(service.rename(A, id, "Mine"), 409, "personal_org");
+  await rejects(service.transferOwnership(A, id, B), 409, "personal_org");
+  await rejects(service.invite(A, id, { email: EMAILS[B] }), 409, "personal_org");
+  await rejects(service.setMemberRole(A, id, B, "admin"), 409, "personal_org");
+  await rejects(service.removeMember(A, id, B), 409, "personal_org");
+  // others still cannot see it exists
+  await rejects(service.rename(B, id, "Mine"), 404);
+  assert.equal((await service.list(A))[0].name, "Personal");
+});
+
+test("resolveActive: header must be a membership, no header means personal", async (t) => {
+  const { db, service, org } = await fixture();
+  t.after(() => db.close());
+  const personal = await service.ensurePersonal(A);
+  assert.equal(await service.resolveActive(A, undefined), personal);
+  assert.equal(await service.resolveActive(A, ""), personal);
+  assert.equal(await service.resolveActive(A, org.id), org.id);
+  await rejects(service.resolveActive(D, org.id), 404, "organization_not_found");
+  await rejects(service.resolveActive(D, "not-a-uuid"), 404, "organization_not_found");
+  await rejects(service.resolveActive(D, await service.ensurePersonal(A)), 404, "organization_not_found");
 });

@@ -14,6 +14,7 @@ model Organization {
   createdBy String             @map("created_by")
   createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz
   slug      String?            @unique @db.VarChar(48)
+  personalOwnerId String?      @unique @map("personal_owner_id")
   members   OrganizationMember[]
   invites   OrganizationInvitation[]
   boards    TaskBoard[]

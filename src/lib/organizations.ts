@@ -87,3 +87,13 @@ export function useOrganizationUi(): UiState {
         () => state,
     );
 }
+
+/** Display order: the user's Personal organization first, the rest as the runtime returned them. */
+export function sortOrganizations<T extends { personal?: boolean }>(organizations: T[]): T[] {
+  return [...organizations.filter((o) => o.personal), ...organizations.filter((o) => !o.personal)];
+}
+
+/** Display name: the Personal organization is always labelled "Personal". */
+export function organizationLabel(organization: { name: string; personal?: boolean }): string {
+  return organization.personal ? "Personal" : organization.name;
+}

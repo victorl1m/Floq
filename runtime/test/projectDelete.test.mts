@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -36,6 +36,9 @@ async function setup(t: test.TestContext) {
   };
   const pool = { query, connect: async () => ({ query, release() {} }) };
   await db.exec(`CREATE TABLE "user" (id TEXT PRIMARY KEY)`);
+  // Folder layouts are per organization, so deleting a project prunes them through collaboration.*.
+  const migrations = join(import.meta.dirname, "..", "prisma", "migrations");
+  for (const name of readdirSync(migrations).filter((n) => /^\d+_/.test(n)).sort()) await db.exec(readFileSync(join(migrations, name, "migration.sql"), "utf8"));
   await migrateApp(pool as never);
   await db.exec(`INSERT INTO "user" (id) VALUES ('${U1}'), ('${U2}')`);
   const home = realpathSync(mkdtempSync(join(tmpdir(), `floq-projdel-${process.pid}-`)));
@@ -127,7 +130,7 @@ test("delete cascades the project, its sessions, canvas data and links, and remo
   await s.db.query(`INSERT INTO agent_wired_memory (session_id,user_id,block,digest) VALUES ($1,$2,'b','d')`, [sa2, U1]);
   await s.db.query(`INSERT INTO agent_approvals (id,user_id,requester_session_id,target_session_id,requester_project_id,target_project_id,action,action_hash,status,expires_at) VALUES ('ap1',$1,$2,$3,$4,$5,'x','h','pending', now() + interval '1 hour')`, [U1, sa1, sb, a.id, b.id]);
   // folder layout that references both projects
-  await s.db.query(`INSERT INTO user_project_folders (user_id, version, doc) VALUES ($1, 3, $2::jsonb)`, [U1, JSON.stringify({ folders: [{ id: "f1", name: "F" }], root: [{ kind: "folder", id: "f1" }, { kind: "project", id: b.id }], membership: { f1: [a.id] }, expanded: {} })]);
+  await s.db.query(`INSERT INTO user_project_folders (user_id, organization_id, version, doc) SELECT $1, organization_id, 3, $2::jsonb FROM floq_projects WHERE id = $3`, [U1, JSON.stringify({ folders: [{ id: "f1", name: "F" }], root: [{ kind: "folder", id: "f1" }, { kind: "project", id: b.id }], membership: { f1: [a.id] }, expanded: {} }), a.id]);
 
   const status = await s.manager.projectDeleteStatus(U1, a.id);
   assert.deepEqual({ total: status.sessions.total, live: status.sessions.live, notes: status.notes, keychains: status.keychains, worktrees: status.worktrees }, { total: 2, live: 1, notes: 1, keychains: 1, worktrees: 1 });

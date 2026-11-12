@@ -25,6 +25,7 @@ import { SubagentService } from "./subagents.js";
 import { Vault } from "./vault.js";
 import { SkillsService } from "./skills.js";
 import { GitReview } from "./gitReview.js";
+import { Artifacts } from "./artifacts.js";
 import { WorkspaceFiles } from "./workspaceFiles.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
@@ -96,6 +97,7 @@ manager.subagents = subagents;
 subagents.memoryOn = memories.enabled();
 const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
+const artifacts = new Artifacts(manager, shards);
 const tasks = new TasksService(prisma);
 const plugins = new PluginHost(pool, { plugins: BUILTIN_PLUGINS, encryptionKey: config.encryptionKey });
 // Installed packages (Settings > Plugins > Browse plugins) load next to the built-ins; a broken one is listed as invalid and boot goes on.
@@ -118,7 +120,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins });
 
 await server.listen();
 log.info("runtime.listening", {

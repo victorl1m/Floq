@@ -24,6 +24,7 @@ export default function OrganizationSection() {
     const [transferTo, setTransferTo] = useState("");
     const [transferOpen, setTransferOpen] = useState(false);
     const isOwner = org?.role === "owner";
+    const isPersonal = org?.personal === true;
 
     useEffect(() => setName(org?.name ?? ""), [org?.id, org?.name]);
     useEffect(() => setTransferTo(""), [org?.id]);
@@ -70,14 +71,14 @@ export default function OrganizationSection() {
                                 <p className="truncate font-mono text-xs text-muted-foreground">{org.slug}</p>
                             </div>
                         </div>
-                        <SettingRow label="Name" description={isOwner ? "Shown across the app." : "Only the owner can rename the organization."} htmlFor="org-name">
+                        <SettingRow label="Name" description={isPersonal ? "Your personal organization cannot be renamed." : isOwner ? "Shown across the app." : "Only the owner can rename the organization."} htmlFor="org-name">
                             <SavedCheck show={saved} />
                             <Input
                                 id="org-name"
                                 className="w-56"
                                 maxLength={80}
                                 value={name}
-                                disabled={!isOwner}
+                                disabled={!isOwner || isPersonal}
                                 onChange={(e) => setName(e.target.value)}
                                 onBlur={() => void saveName()}
                                 onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
@@ -95,13 +96,15 @@ export default function OrganizationSection() {
                         <div className="p-2"><MembersTable organization={org} /></div>
                     </SettingsGroup>
 
-                    {canManageMembers(org.role) ? (
+                    {isPersonal ? (
+                        <p className="px-1 text-xs text-muted-foreground">Projects you create here belong to you alone. Create an organization to group projects and invite people.</p>
+                    ) : canManageMembers(org.role) ? (
                         <SettingsGroup title="Invitations"><InvitationsPanel organization={org} /></SettingsGroup>
                     ) : (
                         <p className="px-1 text-xs text-muted-foreground">Only owners and admins can invite people.</p>
                     )}
 
-                    <SettingsGroup title="Leave or delete">
+                    {!isPersonal && <SettingsGroup title="Leave or delete">
                         {isOwner ? (
                             <>
                                 <SettingRow label="Transfer ownership" description="Owners cannot leave without handing the organization over. You become an admin." stack>
@@ -120,7 +123,7 @@ export default function OrganizationSection() {
                                 <Button variant="destructive" onClick={() => setLeaveOpen(true)}>Leave organization</Button>
                             </SettingRow>
                         )}
-                    </SettingsGroup>
+                    </SettingsGroup>}
 
                     <ConfirmDialog
                         open={leaveOpen}

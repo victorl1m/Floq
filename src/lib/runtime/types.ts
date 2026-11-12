@@ -10,6 +10,7 @@ export interface SessionSummary {
   title: string;
   state: SessionState;
   cwd: string;
+  organizationId?: string;
   /** Isolated project worktree's underlying checkout, when this session uses one. */
   projectCwd?: string | null;
   projectId?: string | null;
@@ -74,6 +75,7 @@ export interface RuntimeProject {
   iconColor: string | null;
   gitUrl: string | null;
   cwd: string;
+  organizationId?: string;
   createdAt: string;
   workspaces: ProjectWorkspace[];
 }
@@ -83,7 +85,7 @@ export interface TaskList { id: string; title: string; position: number; cards: 
 export interface TaskBoard { id: string; organizationId: string; title: string; createdAt: string; lists: TaskList[] }
 export type OrganizationRole = "owner" | "admin" | "member";
 export interface OrganizationMember { id: string; name: string; email: string; role: OrganizationRole }
-export interface Organization { id: string; name: string; slug: string; role: OrganizationRole; createdAt?: string; members: OrganizationMember[] }
+export interface Organization { id: string; name: string; slug: string; role: OrganizationRole; /** The user's own always-present organization: cannot be deleted, left or invited to. */ personal?: boolean; createdAt?: string; members: OrganizationMember[] }
 /** Pending invitation as the organization's owners and admins see it. */
 export interface OrganizationInvitation { id: string; email: string; role: "admin" | "member"; invitedBy: string; createdAt: string; expiresAt: string; status: "pending" | "expired" }
 /** Returned once when an invitation is created or resent. The runtime has no email transport, so delivery is always "manual". */
@@ -275,6 +277,12 @@ export interface UserSettings {
   alwaysRecruitSubagents?: boolean;
   /** Absent on older runtimes (treated as on). */
   allowCrossProjectAgents?: boolean;
+  /** Max direct subagents per agent; null/absent = default (6). Absent on older runtimes. */
+  subagentMaxChildren?: number | null;
+  /** Max subagents in total; null/absent = default (24). Absent on older runtimes. */
+  subagentMaxTotal?: number | null;
+  /** Operator ceilings the two limits are clamped to. Absent on older runtimes (UI falls back to 32 / 200). */
+  subagentCeilings?: { maxChildren: number; maxTotal: number };
   /** Absent on older runtimes (treated as acknowledged). */
   autoApproveAcknowledged?: boolean;
 }
@@ -287,6 +295,8 @@ export interface SettingsPatch {
   gitCoauthor?: boolean;
   alwaysRecruitSubagents?: boolean;
   allowCrossProjectAgents?: boolean;
+  subagentMaxChildren?: number | null;
+  subagentMaxTotal?: number | null;
   autoApproveAcknowledged?: true;
 }
 

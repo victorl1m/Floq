@@ -183,7 +183,7 @@ interface RuntimeContextValue {
   goForward: () => void;
 }
 
-const RuntimeContext = createContext<RuntimeContextValue | null>(null);
+export const RuntimeContext = createContext<RuntimeContextValue | null>(null);
 
 export function useRuntime(): RuntimeContextValue {
   const value = useContext(RuntimeContext);
@@ -196,6 +196,11 @@ export function useClient(): RuntimeClient {
   const { client } = useRuntime();
   if (!client) throw new Error("Not signed in");
   return client;
+}
+
+function withOrgCanvas(map: Record<string, string>, orgId: string, projectId: string | null): Record<string, string> {
+  const { [orgId]: _old, ...rest } = map;
+  return projectId ? { ...rest, [orgId]: projectId } : rest;
 }
 
 export function errorMessage(error: unknown): string {
@@ -232,6 +237,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [organizationsLoading, setOrganizationsLoading] = useState(() => connection !== null);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
   const organizationsRequest = useRef(0);
+  const selectOrganizationRef = useRef<(organizationId: string) => void>(() => {});
+  const refreshProjectsRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const refreshRef = useRef<() => Promise<boolean>>(async () => true);
+  const canvasRestored = useRef(false);
+  const refreshOrganizationsRef = useRef<(preferredOrganizationId?: string) => Promise<void>>(async () => {});
   const [activeOrganizationId, setActiveOrganizationId] = useState<string | null>(null);
   const activeOrganizationIdRef = useRef(activeOrganizationId);
   activeOrganizationIdRef.current = activeOrganizationId;
@@ -390,10 +400,13 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const refreshProjects = useCallback(async (force = false) => {
     if (!client) { setProjects([]); return; }
+    // Project lists are per organization: wait until the active one is known so the first fetch is not the wrong org's.
+    const organizationId = activeOrganizationIdRef.current;
+    if (!organizationId) return;
     await projectsRefresh.current.refresh({
       client,
       force,
-      isCurrentClient: (requestClient) => clientRef.current === requestClient,
+      isCurrentClient: (requestClient) => clientRef.current === requestClient && activeOrganizationIdRef.current === organizationId,
       fetch: () => client.projects(),
       onStart: () => { if (!projectsLoaded.current) setProjectsLoading(true); },
       onSuccess: (list) => {
@@ -406,16 +419,47 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           ? workspaceId
           : selectedProject?.workspaces.find((workspace) => !workspace.isWorktree)?.id ?? selectedProject?.workspaces[0]?.id ?? null);
       },
-      onError: (error) => setProjectsError(errorMessage(error)),
+      onError: (error) => {
+        setProjectsError(errorMessage(error));
+        // Org deleted or membership removed while it was active: re-resolve (falls back to the personal org).
+        if ((error as { code?: string } | null)?.code === "organization_not_found") void refreshOrganizationsRef.current();
+      },
       onSettled: () => setProjectsLoading(false),
     });
   }, [client]);
 
+  refreshProjectsRef.current = refreshProjects;
   const retryProjects = useCallback(() => refreshProjects(true), [refreshProjects]);
 
   const createProject = useCallback(async (input: { gitUrl?: string; name?: string }) => {
     if (!client) throw new Error("Not signed in");
-    const project = await client.createProject(input);
+    let project: RuntimeProject;
+    try {
+      project = await client.createProject(input);
+    } catch (error) {
+      const conflict = error instanceof RuntimeError && error.code === "project_in_other_org" ? error.details : null;
+      const existingId = typeof conflict?.projectId === "string" ? conflict.projectId : null;
+      const otherOrgId = typeof conflict?.organizationId === "string" ? conflict.organizationId : null;
+      const current = activeOrganizationIdRef.current;
+      if (existingId && otherOrgId && current) {
+        const otherName = typeof conflict?.organizationName === "string" ? conflict.organizationName : "another organization";
+        let acted = false;
+        const toastId = toast("This repository is already in " + otherName, {
+          description: "Each repository has one checkout per account. Switch there or move it here.",
+          duration: 15_000,
+          action: { label: "Switch to " + otherName, onClick: () => { if (acted) return; acted = true; selectOrganizationRef.current(otherOrgId); } },
+          cancel: { label: "Move here", onClick: () => {
+            if (acted) return;
+            acted = true;
+            toast.dismiss(toastId);
+            client.moveProject(existingId, current)
+              .then(() => refreshProjectsRef.current(true))
+              .catch((reason) => toast.error("Could not move the project", { description: errorMessage(reason) }));
+          } },
+        });
+      }
+      throw error;
+    }
     projectsRefresh.current.markMutation();
     projectsLoaded.current = true;
     setProjectsLoading(false);
@@ -511,16 +555,22 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, [selectProject, navigate]);
 
   // Restore the canvas that was open before a reload (once projects are known), then keep the preference in sync.
-  const canvasRestored = useRef(false);
   useEffect(() => {
     if (canvasRestored.current || projects.length === 0) return;
     canvasRestored.current = true;
-    const id = userPreferencesRef.current.lastCanvasProjectId;
+    const orgId = activeOrganizationIdRef.current;
+    const byOrg = userPreferencesRef.current.lastCanvasProjectIdByOrg;
+    const id = orgId && Object.prototype.hasOwnProperty.call(byOrg, orgId) ? byOrg[orgId] : userPreferencesRef.current.lastCanvasProjectId;
     if (id && historyRef.current.stack[historyRef.current.index].view === "home" && projects.some((project) => project.id === id)) openCanvas(id);
   }, [projects, openCanvas]);
   useEffect(() => {
     if (!canvasRestored.current) return;
-    if (userPreferencesRef.current.lastCanvasProjectId !== canvasProjectId) updateUserPreferences({ lastCanvasProjectId: canvasProjectId });
+    const prefs = userPreferencesRef.current;
+    const orgId = activeOrganizationIdRef.current;
+    const patch: UserPreferencePatch = {};
+    if (prefs.lastCanvasProjectId !== canvasProjectId) patch.lastCanvasProjectId = canvasProjectId;
+    if (orgId && (prefs.lastCanvasProjectIdByOrg[orgId] ?? null) !== canvasProjectId) patch.lastCanvasProjectIdByOrg = withOrgCanvas(prefs.lastCanvasProjectIdByOrg, orgId, canvasProjectId);
+    if (Object.keys(patch).length) updateUserPreferences(patch);
   }, [canvasProjectId, updateUserPreferences]);
 
   const refresh = useCallback(async (): Promise<boolean> => {
@@ -540,7 +590,47 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     }
   }, [client, applySessions, refreshProjects]);
 
+  refreshRef.current = refresh;
   const signedIn = client !== null && ready;
+
+  /**
+   * The one place the active organization changes (switcher, account menu, Tasks, invitation accept, fallback after a
+   * 404). Projects, sessions and every view that points at them belong to the old org, so drop them, invalidate
+   * in-flight responses, send the user home and refetch for the new org.
+   */
+  const resetForOrganization = useCallback((target: RuntimeClient, previousId: string | null, nextId: string | null) => {
+    target.setOrganization(nextId);
+    activeOrganizationIdRef.current = nextId;
+    setActiveOrganizationId(nextId);
+    if (!nextId) return;
+    if (previousId) {
+      // Remember the outgoing org's canvas before the history rewrite clears it.
+      const prefs = userPreferencesRef.current;
+      const open = historyRef.current.stack[historyRef.current.index];
+      if (canvasRestored.current && previousId) {
+        updateUserPreferences({ lastCanvasProjectIdByOrg: withOrgCanvas(prefs.lastCanvasProjectIdByOrg, previousId, open.view === "canvas" ? open.arg : null) });
+      }
+    }
+    mutation.current++;
+    projectsRefresh.current.reset();
+    projectsLoaded.current = false;
+    canvasRestored.current = false;
+    setProjects([]);
+    setProjectsError(null);
+    setProjectsLoading(true);
+    setActiveProjectId(null);
+    setActiveWorkspaceId(null);
+    setSelectedId(null);
+    setShellId(null);
+    setOpenedIds([]);
+    setAgentTabIds([]);
+    setTerminalTabIds([]);
+    setSessions([]);
+    setLoaded(false);
+    setHistory((h) => ({ ...h, stack: h.stack.map((entry) => entry.view === "canvas" || entry.view === "session" ? { view: "home" as const, arg: null } : entry) }));
+    void refreshProjectsRef.current(true).catch(() => {});
+    void refreshRef.current();
+  }, [updateUserPreferences]);
 
   const refreshOrganizations = useCallback(async (preferredOrganizationId?: string) => {
     const requestedClient = client;
@@ -566,23 +656,25 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           ? currentOrganizationId
           : loaded.some((organization) => organization.id === savedOrganizationId)
             ? savedOrganizationId
-            : loaded[0]?.id ?? null;
-      activeOrganizationIdRef.current = nextOrganizationId;
-      setActiveOrganizationId(nextOrganizationId);
+            : (loaded.find((organization) => organization.personal) ?? loaded[0])?.id ?? null;
+      if (nextOrganizationId !== currentOrganizationId) resetForOrganization(requestedClient, currentOrganizationId, nextOrganizationId);
+      else requestedClient.setOrganization(nextOrganizationId);
       if (nextOrganizationId !== savedOrganizationId) updateUserPreferences({ activeOrganizationId: nextOrganizationId });
     } catch (reason) {
       if (organizationsRequest.current === requestId && clientRef.current === requestedClient) setOrganizationsError(errorMessage(reason));
     } finally {
       if (organizationsRequest.current === requestId && clientRef.current === requestedClient) setOrganizationsLoading(false);
     }
-  }, [client, preferenceBaseUrl, preferenceUserId, signedIn, updateUserPreferences]);
+  }, [client, preferenceBaseUrl, preferenceUserId, signedIn, updateUserPreferences, resetForOrganization]);
+  refreshOrganizationsRef.current = refreshOrganizations;
 
   const selectOrganization = useCallback((organizationId: string) => {
-    if (!organizations.some((organization) => organization.id === organizationId)) return;
-    activeOrganizationIdRef.current = organizationId;
-    setActiveOrganizationId(organizationId);
+    if (!client || !organizations.some((organization) => organization.id === organizationId)) return;
+    if (organizationId === activeOrganizationIdRef.current) return;
+    resetForOrganization(client, activeOrganizationIdRef.current, organizationId);
     updateUserPreferences({ activeOrganizationId: organizationId });
-  }, [organizations, updateUserPreferences]);
+  }, [client, organizations, updateUserPreferences, resetForOrganization]);
+  selectOrganizationRef.current = selectOrganization;
 
   useEffect(() => {
     if (!signedIn) {
@@ -708,6 +800,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   }, [signOut]);
 
   const upsertSession = useCallback((session: SessionSummary) => {
+    // A create/resume that resolves after an organization switch must not land in the new organization's list.
+    const activeOrg = activeOrganizationIdRef.current;
+    if (session.organizationId && activeOrg && session.organizationId !== activeOrg) return;
     mutation.current++;
     setSessions((list) =>
       list.some((s) => s.id === session.id) ? list.map((s) => (s.id === session.id ? { ...session, activity: session.activity ?? (session.state === "running" ? s.activity : undefined) } : s)) : [session, ...list],

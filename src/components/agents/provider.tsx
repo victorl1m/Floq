@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { IconTerminal2 } from "@tabler/icons-react";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
@@ -12,9 +13,9 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
     shell: "Terminal",
 };
 
-export function ProviderIcon({ provider, className }: { provider: ProviderId; className?: string }) {
+export function ProviderIcon({ provider, className, style }: { provider: ProviderId; className?: string; style?: CSSProperties }) {
     const Icon = provider === "claude" ? IconBrandClaude : provider === "shell" ? IconTerminal2 : IconBrandCodex;
-    return <Icon {...providerThemeProps(provider)} className={cn("size-4 shrink-0", providerClass.text, className)} aria-label={PROVIDER_LABEL[provider]} />;
+    return <Icon {...providerThemeProps(provider)} style={style} className={cn("size-4 shrink-0", providerClass.text, className)} aria-label={PROVIDER_LABEL[provider]} />;
 }
 
 export function isLive(state: SessionState): boolean {

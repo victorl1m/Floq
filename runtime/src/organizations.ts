@@ -3,6 +3,7 @@ import type pg from "pg";
 import type { QueryResultRow } from "pg";
 import { badRequest, conflict, forbidden, HttpError, notFound } from "./errors.js";
 import { log } from "./logger.js";
+import { moveProjectsInFolders } from "./projectFolders.js";
 
 /**
  * User-wide organizations. Everything lives in the server database (collaboration.*), keyed by the
@@ -10,8 +11,9 @@ import { log } from "./logger.js";
  * which organization is active. Authorization is decided here from the stored membership, never from
  * anything the client sends.
  *
- * Extension point: projects/agents are NOT owned by or shared with organizations yet. When that lands,
- * add an `organization_id` to the shared resource and check `requireMember()` before reading it.
+ * An organization is a partition of each user's OWN projects (floq_projects.organization_id); members do not
+ * see each other's projects yet because sandboxes and files are per user. Every user also has one personal
+ * organization (created lazily by ensurePersonal) that cannot be deleted, left, renamed or invited to.
  *
  * Invitation delivery: the runtime has no email transport. Invitations are delivered in-app (the invited
  * address sees them in its account menu after signing in) and the inviter also gets a single-use code
@@ -52,8 +54,10 @@ export interface OrganizationMemberView { id: string; name: string; email: strin
 export interface OrganizationView {
   id: string;
   name: string;
+  /** Empty for personal organizations. */
   slug: string;
   role: OrganizationRole;
+  personal: boolean;
   createdAt: string;
   members: OrganizationMemberView[];
 }
@@ -84,6 +88,9 @@ type Queryable = Pick<pg.Pool, "query">;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,46})[a-z0-9]$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+/** Personal organizations have no slug (NULL): nothing to squat or collide with. The prefix stays reserved for old rows. */
+const RESERVED_SLUG_PREFIX = "personal-";
+const PERSONAL_NAME = "Personal";
 
 export function slugify(name: string): string {
   const base = name
@@ -94,7 +101,8 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/g, "");
-  return base.length >= 3 ? base : `${base || "org"}-org`.slice(0, 40);
+  const safe = base.length >= 3 ? base : `${base || "org"}-org`.slice(0, 40);
+  return safe.startsWith(RESERVED_SLUG_PREFIX) ? `team-${safe}`.slice(0, 40).replace(/-+$/g, "") : safe;
 }
 
 export function normalizeEmail(raw: unknown): string {
@@ -120,6 +128,7 @@ function cleanSlug(value: unknown): string {
   if (!SLUG_RE.test(slug) || slug.includes("--")) {
     throw badRequest("Use 3-48 lowercase letters, numbers or single hyphens (not at the ends)", "invalid_slug");
   }
+  if (slug.startsWith(RESERVED_SLUG_PREFIX)) throw badRequest("The \"personal-\" prefix is reserved", "invalid_slug");
   return slug;
 }
 
@@ -166,9 +175,11 @@ export class OrganizationsService {
   // --- reads ---
 
   async list(userId: string): Promise<OrganizationView[]> {
-    const orgs = await this.pool.query<{ id: string; name: string; slug: string; role: OrganizationRole; created_at: Date }>(
-      `SELECT o.id, o.name, o.slug, m.role, o.created_at FROM collaboration.organization_members m
-       JOIN collaboration.organizations o ON o.id = m.organization_id WHERE m.user_id = $1 ORDER BY m.created_at, o.id`,
+    await this.ensurePersonal(userId);
+    const orgs = await this.pool.query<{ id: string; name: string; slug: string; role: OrganizationRole; created_at: Date; personal: boolean }>(
+      `SELECT o.id, o.name, o.slug, m.role, o.created_at, (o.personal_owner_id IS NOT NULL) AS personal FROM collaboration.organization_members m
+       JOIN collaboration.organizations o ON o.id = m.organization_id WHERE m.user_id = $1
+       ORDER BY (o.personal_owner_id IS NULL), m.created_at, o.id`,
       [userId],
     );
     if (!orgs.rows.length) return [];
@@ -178,9 +189,42 @@ export class OrganizationsService {
       [orgs.rows.map((row) => row.id)],
     );
     return orgs.rows.map((row) => ({
-      id: row.id, name: row.name, slug: row.slug, role: row.role, createdAt: new Date(row.created_at).toISOString(),
+      id: row.id, name: row.name, slug: row.slug ?? "", role: row.role, personal: row.personal, createdAt: new Date(row.created_at).toISOString(),
       members: members.rows.filter((member) => member.organization_id === row.id).map(({ id, name, email, role }) => ({ id, name, email, role })),
     }));
+  }
+
+  /** Idempotent: returns the id of the user's personal organization, creating it (and the owner membership) when missing. */
+  async ensurePersonal(userId: string, db: Queryable = this.pool): Promise<string> {
+    await db.query(
+      `INSERT INTO collaboration.organizations (id, name, slug, created_by, personal_owner_id)
+       VALUES ($1::uuid, $2, NULL, $3, $3) ON CONFLICT (personal_owner_id) DO NOTHING`,
+      [randomUUID(), PERSONAL_NAME, userId],
+    );
+    const found = await db.query<{ id: string }>("SELECT id FROM collaboration.organizations WHERE personal_owner_id = $1", [userId]);
+    const id = found.rows[0]?.id;
+    if (!id) throw new HttpError(500, "personal_org_missing", "Could not create the personal organization");
+    await db.query(
+      "INSERT INTO collaboration.organization_members (organization_id, user_id, role) VALUES ($1::uuid, $2, 'owner') ON CONFLICT DO NOTHING",
+      [id, userId],
+    );
+    return id;
+  }
+
+  /**
+   * Resolves the organization a request acts in. A header value must name an organization the user belongs to
+   * (404 organization_not_found otherwise); no header means the personal organization.
+   */
+  async resolveActive(userId: string, headerValue: string | null | undefined): Promise<string> {
+    const value = typeof headerValue === "string" ? headerValue.trim() : "";
+    if (!value) return this.ensurePersonal(userId);
+    try {
+      await this.requireMember(this.pool, userId, value);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) throw new HttpError(404, "organization_not_found", "Organization not found");
+      throw error;
+    }
+    return value.toLowerCase();
   }
 
   async members(userId: string, organizationId: string): Promise<OrganizationMemberView[]> {
@@ -208,7 +252,9 @@ export class OrganizationsService {
     let slug = explicitSlug ?? slugify(name);
     await this.tx(async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`floq.org.user.${userId}`]);
-      const count = await db.query<{ n: string }>("SELECT count(*) AS n FROM collaboration.organization_members WHERE user_id = $1", [userId]);
+      const count = await db.query<{ n: string }>(
+        `SELECT count(*) AS n FROM collaboration.organization_members m JOIN collaboration.organizations o ON o.id = m.organization_id
+         WHERE m.user_id = $1 AND o.personal_owner_id IS NULL`, [userId]);
       if (Number(count.rows[0]?.n ?? 0) >= this.limits.maxOrganizationsPerUser) {
         throw conflict(`You can belong to at most ${this.limits.maxOrganizationsPerUser} organizations`, "organization_limit");
       }
@@ -233,6 +279,7 @@ export class OrganizationsService {
     const name = cleanName(rawName);
     const role = await this.requireMember(this.pool, userId, organizationId);
     if (role !== "owner") throw forbidden("Only the owner can rename the organization");
+    await this.assertNotPersonal(this.pool, organizationId);
     await this.pool.query("UPDATE collaboration.organizations SET name = $2 WHERE id = $1::uuid", [organizationId, name]);
   }
 
@@ -240,19 +287,25 @@ export class OrganizationsService {
     await this.tx(async (db) => {
       const role = await this.lockedRole(db, userId, organizationId);
       if (role !== "owner") throw forbidden("Only the owner can delete the organization");
+      await this.assertNotPersonal(db, organizationId);
       const org = await db.query<{ name: string; slug: string }>("SELECT name, slug FROM collaboration.organizations WHERE id = $1::uuid", [organizationId]);
       const row = org.rows[0];
       if (!row) throw notFound();
       if (typeof confirm !== "string" || confirm.trim() !== row.name) throw badRequest("Type the organization name to confirm deletion", "confirmation_mismatch");
       await this.audit(db, organizationId, userId, "org.deleted", organizationId, { name: row.name, slug: row.slug });
+      // Every member's projects in this organization return to their own personal organization (no files or agents are touched).
+      const returned = await this.reassignProjects(db, organizationId);
       await db.query("DELETE FROM collaboration.organizations WHERE id = $1::uuid", [organizationId]);
+      if (returned) log.info("org.projects_returned", { organizationId, projects: returned });
     });
   }
 
   async leave(userId: string, organizationId: string): Promise<void> {
     await this.tx(async (db) => {
       const role = await this.lockedRole(db, userId, organizationId);
+      await this.assertNotPersonal(db, organizationId);
       if (role === "owner") throw conflict("Transfer ownership to another member (or delete the organization) before leaving", "owner_must_transfer");
+      await this.reassignProjects(db, organizationId, userId);
       await db.query("DELETE FROM collaboration.organization_members WHERE organization_id = $1::uuid AND user_id = $2", [organizationId, userId]);
       await this.audit(db, organizationId, userId, "org.left", userId);
     });
@@ -265,6 +318,7 @@ export class OrganizationsService {
     await this.tx(async (db) => {
       const actor = await this.lockedRole(db, actorId, organizationId);
       if (actor !== "owner") throw forbidden("Only the owner can change roles");
+      await this.assertNotPersonal(db, organizationId);
       if (targetId === actorId) throw badRequest("Transfer ownership instead of changing your own role", "invalid_role");
       const target = await this.targetRole(db, organizationId, targetId);
       if (target === "owner") throw forbidden("The owner's role can only change by transferring ownership");
@@ -277,10 +331,12 @@ export class OrganizationsService {
     await this.tx(async (db) => {
       const actor = await this.lockedRole(db, actorId, organizationId);
       if (actor === "member") throw forbidden("Only owners and admins can remove members");
+      await this.assertNotPersonal(db, organizationId);
       if (targetId === actorId) throw badRequest("Use Leave organization to remove yourself", "use_leave");
       const target = await this.targetRole(db, organizationId, targetId);
       if (target === "owner") throw forbidden("The owner cannot be removed");
       if (actor === "admin" && target !== "member") throw forbidden("Admins can only remove members");
+      await this.reassignProjects(db, organizationId, targetId);
       await db.query("DELETE FROM collaboration.organization_members WHERE organization_id = $1::uuid AND user_id = $2", [organizationId, targetId]);
       await this.audit(db, organizationId, actorId, "org.removed", targetId, { role: target });
     });
@@ -291,6 +347,7 @@ export class OrganizationsService {
     await this.tx(async (db) => {
       const actor = await this.lockedRole(db, actorId, organizationId);
       if (actor !== "owner") throw forbidden("Only the owner can transfer ownership");
+      await this.assertNotPersonal(db, organizationId);
       if (targetId === actorId) throw badRequest("You already own this organization");
       await this.targetRole(db, organizationId, targetId);
       await db.query("UPDATE collaboration.organization_members SET role = 'owner' WHERE organization_id = $1::uuid AND user_id = $2", [organizationId, targetId]);
@@ -320,6 +377,7 @@ export class OrganizationsService {
     return this.tx(async (db) => {
       const actor = await this.lockedRole(db, actorId, organizationId);
       if (actor === "member") throw forbidden("Only owners and admins can invite people");
+      await this.assertNotPersonal(db, organizationId);
       if (actor === "admin" && role !== "member") throw forbidden("Only the owner can invite admins");
       await this.assertInviteQuota(db, organizationId);
       await this.assertRoom(db, organizationId, 1);
@@ -436,7 +494,9 @@ export class OrganizationsService {
       if (!org.rowCount) throw notFound("Invitation is invalid or has expired");
       const already = await db.query("SELECT 1 FROM collaboration.organization_members WHERE organization_id = $1::uuid AND user_id = $2", [invite.organization_id, userId]);
       if (!already.rowCount) {
-        const joined = await db.query<{ n: string }>("SELECT count(*) AS n FROM collaboration.organization_members WHERE user_id = $1", [userId]);
+        const joined = await db.query<{ n: string }>(
+          `SELECT count(*) AS n FROM collaboration.organization_members m JOIN collaboration.organizations o ON o.id = m.organization_id
+           WHERE m.user_id = $1 AND o.personal_owner_id IS NULL`, [userId]);
         if (Number(joined.rows[0]?.n ?? 0) >= this.limits.maxOrganizationsPerUser) {
           throw conflict(`You can belong to at most ${this.limits.maxOrganizationsPerUser} organizations`, "organization_limit");
         }
@@ -494,7 +554,37 @@ export class OrganizationsService {
     return invite;
   }
 
-  private async requireMember(db: Queryable, userId: string, organizationId: string): Promise<OrganizationRole> {
+  /**
+   * Moves the projects (of `onlyUserId`, or of every member) that live in `organizationId` to their owner's personal
+   * organization, and their folder-layout entries with them. Runs inside the caller's transaction, before the membership
+   * or organization row is removed. Returns the number of projects moved. Skipped when the app tables do not exist.
+   */
+  private async reassignProjects(db: Queryable, organizationId: string, onlyUserId?: string): Promise<number> {
+    const present = await db.query("SELECT to_regclass('public.floq_projects') IS NOT NULL AS ok");
+    if (!present.rows[0]?.ok) return 0;
+    const owners = await db.query<{ user_id: string }>(
+      "SELECT DISTINCT user_id FROM floq_projects WHERE organization_id = $1::uuid" + (onlyUserId ? " AND user_id = $2" : ""),
+      onlyUserId ? [organizationId, onlyUserId] : [organizationId],
+    );
+    let moved = 0;
+    for (const { user_id: owner } of owners.rows) {
+      const personal = await this.ensurePersonal(owner, db);
+      const rows = await db.query<{ id: string }>(
+        "UPDATE floq_projects SET organization_id = $3::uuid WHERE organization_id = $1::uuid AND user_id = $2 RETURNING id",
+        [organizationId, owner, personal],
+      );
+      moved += rows.rows.length;
+      await moveProjectsInFolders(db, owner, rows.rows.map((r) => r.id), organizationId, personal);
+    }
+    return moved;
+  }
+
+  private async assertNotPersonal(db: Queryable, organizationId: string): Promise<void> {
+    const result = await db.query("SELECT 1 FROM collaboration.organizations WHERE id = $1::uuid AND personal_owner_id IS NOT NULL", [organizationId]);
+    if (result.rowCount) throw conflict("Your personal organization cannot be changed this way", "personal_org");
+  }
+
+  async requireMember(db: Queryable, userId: string, organizationId: string): Promise<OrganizationRole> {
     const result = await db.query<{ role: OrganizationRole }>(
       "SELECT role FROM collaboration.organization_members WHERE organization_id = $1::uuid AND user_id = $2", [organizationId, userId],
     ).catch(() => ({ rows: [] as { role: OrganizationRole }[] }));

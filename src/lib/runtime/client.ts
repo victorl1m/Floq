@@ -70,7 +70,7 @@ import type {
   PluginCatalogItem,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
-import type { FileContent, FileListing } from "./workspace-files";
+import type { ArtifactListing, FileContent, FileListing } from "./workspace-files";
 import type { AdminUser, UpdateResult, UpdatesStatus, UpdateTarget, UserRole } from "./admin-types";
 
 function skillFileParams(skill: { scope: string; projectId?: string | null; provider: string; source: string; location: string }, path?: string): URLSearchParams {
@@ -81,12 +81,15 @@ function skillFileParams(skill: { scope: string; projectId?: string | null; prov
 }
 
 export class RuntimeError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
+  readonly status: number;
+  readonly code: string;
+  /** Extra fields the runtime sent with the error (e.g. project_in_other_org carries the existing project's org). */
+  readonly details?: Record<string, unknown>;
+  constructor(status: number, code: string, message: string, details?: Record<string, unknown>) {
     super(message);
+    this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -112,19 +115,28 @@ function registerRuntimeOrigin(baseUrl: string): void {
 export class RuntimeClient {
   private readonly createSessionKeys = new Map<string, string>();
 
-  constructor(
-    readonly baseUrl: string,
-    readonly token: string | null = null,
-    /** Called when an authenticated request comes back 401 (token expired/revoked). */
-    readonly onUnauthorized?: () => void,
-  ) {
+  readonly baseUrl: string;
+  readonly token: string | null;
+  /** Called when an authenticated request comes back 401 (token expired/revoked). */
+  readonly onUnauthorized?: () => void;
+
+  constructor(baseUrl: string, token: string | null = null, onUnauthorized?: () => void) {
+    this.baseUrl = baseUrl;
+    this.token = token;
+    this.onUnauthorized = onUnauthorized;
     // Only an authenticated client (after sign-in or a restored session) becomes the runtime the shell trusts.
     if (token) registerRuntimeOrigin(baseUrl);
   }
 
   withToken(token: string | null): RuntimeClient {
-    return new RuntimeClient(this.baseUrl, token, this.onUnauthorized);
+    const next = new RuntimeClient(this.baseUrl, token, this.onUnauthorized);
+    next.organizationId = this.organizationId;
+    return next;
   }
+
+  /** Active organization: sent as X-Floq-Organization on every request so project-scoped lists follow the switcher. */
+  private organizationId: string | null = null;
+  setOrganization(id: string | null): void { this.organizationId = id; }
 
   private async request<T>(
     method: string,
@@ -135,6 +147,7 @@ export class RuntimeClient {
     const headers: Record<string, string> = {};
     if (this.token) headers.Authorization = "Bearer " + this.token;
     if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (this.organizationId) headers["X-Floq-Organization"] = this.organizationId;
     Object.assign(headers, options.headers);
     let response: Response;
     let text: string;
@@ -167,12 +180,14 @@ export class RuntimeClient {
     }
     if (!response.ok) {
       if (response.status === 401 && this.token) this.onUnauthorized?.();
-      const payload = data as { error?: { code?: string; message?: string } | string; message?: string; code?: string } | null;
+      const payload = data as { error?: { code?: string; message?: string; details?: Record<string, unknown> } | string; message?: string; code?: string } | null;
       const error = typeof payload?.error === "object" ? payload.error : null;
       throw new RuntimeError(
         response.status,
         error?.code ?? payload?.code ?? "http_" + response.status,
         error?.message ?? payload?.message ?? (typeof payload?.error === "string" ? payload.error : response.statusText || "Request failed"),
+        // Both shapes: top-level fields, or {error:{code,message,details:{...}}} as the runtime sends.
+        { ...(data && typeof data === "object" ? data : {}), ...(error ?? {}), ...(error && typeof error.details === "object" && error.details ? error.details : {}) } as Record<string, unknown>,
       );
     }
     return { data: data as T, headers: response.headers };
@@ -397,6 +412,11 @@ export class RuntimeClient {
     return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, patch)).project;
   }
 
+  /** Move a project to another organization the user belongs to. */
+  async moveProject(id: string, organizationId: string): Promise<RuntimeProject> {
+    return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, { organizationId })).project;
+  }
+
   projectBranches(projectId: string, workspaceId: string): Promise<{ currentBranch: string | null; branches: string[] }> {
     return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branches`, undefined, { timeoutMs: 30_000 });
   }
@@ -607,8 +627,23 @@ export class RuntimeClient {
   listFiles = (sessionId: string, path = "") =>
     this.call<FileListing>("GET", `/v1/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`);
 
+  /** The project's shared Artifacts folder (agent deliverables), newest first; created on demand. */
+  listArtifacts = (sessionId: string) => this.call<ArtifactListing>("GET", `/v1/sessions/${sessionId}/artifacts`);
+
+  readArtifact = (sessionId: string, path: string) =>
+    this.call<FileContent>("GET", `/v1/sessions/${sessionId}/artifacts/content?path=${encodeURIComponent(path)}`);
+
+  async artifactDownloadUrl(sessionId: string, path: string): Promise<string> {
+    const result = await this.call<{ url: string; expiresAt: number }>("POST", `/v1/sessions/${sessionId}/artifacts/link`, { path });
+    return this.baseUrl + result.url;
+  }
+
   readFile = (sessionId: string, path: string) =>
     this.call<FileContent>("GET", `/v1/sessions/${sessionId}/files/content?path=${encodeURIComponent(path)}`);
+
+  /** Create an empty file or folder named `name` inside the workspace folder `path` ("" = root). Rejects with 409 if it exists. */
+  createFileEntry = (sessionId: string, path: string, name: string, kind: "file" | "dir") =>
+    this.call<{ path: string; type: "file" | "dir" }>("POST", `/v1/sessions/${sessionId}/files`, { path, name, kind });
 
   /**
    * Short-lived, single-use download URL for a file, or for a folder as a zip. Navigations and the Tauri downloader cannot send

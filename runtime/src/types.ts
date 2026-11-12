@@ -13,6 +13,8 @@ export interface SessionSummary {
   /** Logical project root used to group and connect sessions with different working trees. */
   projectCwd?: string | null;
   projectId?: string | null;
+  /** Organization of the session's project (personal organization for scratch sessions); set by the session list. */
+  organizationId?: string | null;
   worktreeId?: string | null;
   branch?: string | null;
   /** Source URL for sessions created by cloning a repository, if any. */
@@ -65,6 +67,8 @@ export interface RuntimeProject {
   gitUrl: string | null;
   cwd: string;
   createdAt: string;
+  /** Organization the project belongs to (a partition of the owner's own projects). */
+  organizationId: string;
   workspaces: ProjectWorkspace[];
 }
 

@@ -4,7 +4,7 @@ import { badRequest, conflict } from "./errors.js";
 /**
  * Sidebar project folders, stored per USER (not per device) so they survive clearing site data or reinstalling the app.
  *
- * One versioned JSON document per user. Writers send the version they last saw; a stale version is rejected with
+ * One versioned JSON document per user and organization. Writers send the version they last saw; a stale version is rejected with
  * 409 `version_conflict` and the client re-reads, merges and retries (see src/lib/project-folders-sync.ts).
  */
 
@@ -119,24 +119,50 @@ function rowToState(row: { version: number; doc: unknown; updated_at: Date | str
   return { version: Number(row.version), doc: row.doc as FolderDoc, updatedAt: new Date(row.updated_at).toISOString() };
 }
 
-/** Remove a deleted project from a stored document. `db` may be a pool or a transaction client. */
-export async function pruneProjectFromFolders(db: Pick<pg.Pool, "query">, userId: string, projectId: string): Promise<void> {
-  const current = (await db.query("SELECT version, doc FROM user_project_folders WHERE user_id=$1 FOR UPDATE", [userId])).rows[0] as { version: number; doc: FolderDoc } | undefined;
-  if (!current) return;
-  const doc = current.doc;
-  const root = doc.root.filter((entry) => !(entry.kind === "project" && entry.id === projectId));
-  const membership = Object.fromEntries(Object.entries(doc.membership ?? {}).map(([folderId, list]) => [folderId, list.filter((item) => item !== projectId)]));
-  const children = doc.children && Object.fromEntries(Object.entries(doc.children).map(([folderId, list]) => [folderId, list.filter((entry) => entry.kind !== "project" || entry.id !== projectId)]));
+/** Pure: the document without any of `ids`, or null when nothing changed. */
+function withoutProjects(doc: FolderDoc, ids: ReadonlySet<string>): FolderDoc | null {
+  const root = doc.root.filter((entry) => !(entry.kind === "project" && ids.has(entry.id)));
+  const membership = Object.fromEntries(Object.entries(doc.membership ?? {}).map(([folderId, list]) => [folderId, list.filter((item) => !ids.has(item))]));
+  const children = doc.children && Object.fromEntries(Object.entries(doc.children).map(([folderId, list]) => [folderId, list.filter((entry) => entry.kind !== "project" || !ids.has(entry.id))]));
   const changed = root.length !== doc.root.length || Object.entries(doc.membership ?? {}).some(([folderId, list]) => list.length !== membership[folderId].length) || Object.entries(doc.children ?? {}).some(([folderId, list]) => list.length !== children![folderId].length);
-  if (!changed) return;
-  await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1", [userId, JSON.stringify({ ...doc, root, membership, ...(children ? { children } : {}) })]);
+  return changed ? { ...doc, root, membership, ...(children ? { children } : {}) } : null;
+}
+
+/** Remove a deleted project from every stored document of the user (one per organization). `db` may be a pool or a transaction client. */
+export async function pruneProjectFromFolders(db: Pick<pg.Pool, "query">, userId: string, projectId: string): Promise<void> {
+  const rows = (await db.query("SELECT organization_id, version, doc FROM user_project_folders WHERE user_id=$1 FOR UPDATE", [userId])).rows as Array<{ organization_id: string; version: number; doc: FolderDoc }>;
+  for (const current of rows) {
+    const next = withoutProjects(current.doc, new Set([projectId]));
+    if (!next) continue;
+    await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1 AND organization_id IS NOT DISTINCT FROM $3::uuid", [userId, JSON.stringify(next), current.organization_id]);
+  }
+}
+
+/**
+ * Move projects between the user's organizations in the folder layout: they leave the source document (folders
+ * included) and are appended to the root of the target document. A target without a stored layout needs nothing
+ * (unlisted projects already show at the root). `db` may be a pool or a transaction client.
+ */
+export async function moveProjectsInFolders(db: Pick<pg.Pool, "query">, userId: string, projectIds: string[], fromOrgId: string, toOrgId: string): Promise<void> {
+  if (!projectIds.length || fromOrgId === toOrgId) return;
+  const ids = new Set(projectIds);
+  const source = (await db.query("SELECT version, doc FROM user_project_folders WHERE user_id=$1 AND organization_id=$2 FOR UPDATE", [userId, fromOrgId])).rows[0] as { doc: FolderDoc } | undefined;
+  const pruned = source && withoutProjects(source.doc, ids);
+  if (pruned) await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1 AND organization_id=$3", [userId, JSON.stringify(pruned), fromOrgId]);
+  const target = (await db.query("SELECT version, doc FROM user_project_folders WHERE user_id=$1 AND organization_id=$2 FOR UPDATE", [userId, toOrgId])).rows[0] as { doc: FolderDoc } | undefined;
+  if (!target) return;
+  const present = new Set([...target.doc.root.filter((entry) => entry.kind === "project").map((entry) => entry.id), ...Object.values(target.doc.membership ?? {}).flat(), ...Object.values(target.doc.children ?? {}).flat().filter((entry) => entry.kind === "project").map((entry) => entry.id)]);
+  const add = projectIds.filter((id) => !present.has(id));
+  if (!add.length) return;
+  const doc = { ...target.doc, root: [...target.doc.root, ...add.map((id) => ({ kind: "project" as const, id }))] };
+  await db.query("UPDATE user_project_folders SET version=version+1, doc=$2::jsonb, updated_at=now() WHERE user_id=$1 AND organization_id=$3", [userId, JSON.stringify(doc), toOrgId]);
 }
 
 export class ProjectFolders {
   constructor(private readonly pool: Pick<pg.Pool, "query">) {}
 
-  async get(userId: string): Promise<FolderState> {
-    const result = await this.pool.query("SELECT version, doc, updated_at FROM user_project_folders WHERE user_id=$1", [userId]);
+  async get(userId: string, orgId: string): Promise<FolderState> {
+    const result = await this.pool.query("SELECT version, doc, updated_at FROM user_project_folders WHERE user_id=$1 AND organization_id=$2", [userId, orgId]);
     return rowToState(result.rows[0] as never);
   }
 
@@ -144,7 +170,7 @@ export class ProjectFolders {
    * Replace the document. `baseVersion` is the version the caller last read (0 = "the server has nothing yet").
    * A different current version is a 409 `version_conflict`; the client then fetches, merges and retries.
    */
-  async put(userId: string, body: unknown): Promise<FolderState> {
+  async put(userId: string, orgId: string, body: unknown): Promise<FolderState> {
     if (!isRecord(body)) throw badRequest("Request body must be an object", "invalid_project_folders");
     const baseVersion = body.version;
     if (typeof baseVersion !== "number" || !Number.isInteger(baseVersion) || baseVersion < 0) throw badRequest("version must be a non-negative integer", "invalid_project_folders");
@@ -154,15 +180,15 @@ export class ProjectFolders {
 
     if (baseVersion === 0) {
       const inserted = await this.pool.query(
-        "INSERT INTO user_project_folders(user_id, version, doc) VALUES($1, 1, $2::jsonb) ON CONFLICT (user_id) DO NOTHING RETURNING version, doc, updated_at",
-        [userId, json],
+        "INSERT INTO user_project_folders(user_id, organization_id, version, doc) VALUES($1, $3, 1, $2::jsonb) ON CONFLICT (user_id, organization_id) DO NOTHING RETURNING version, doc, updated_at",
+        [userId, json, orgId],
       );
       if (!inserted.rows[0]) throw conflict("Your folders changed on another device.", "version_conflict");
       return rowToState(inserted.rows[0] as never);
     }
     const updated = await this.pool.query(
-      "UPDATE user_project_folders SET version=version+1, doc=$3::jsonb, updated_at=now() WHERE user_id=$1 AND version=$2 RETURNING version, doc, updated_at",
-      [userId, baseVersion, json],
+      "UPDATE user_project_folders SET version=version+1, doc=$3::jsonb, updated_at=now() WHERE user_id=$1 AND version=$2 AND organization_id=$4 RETURNING version, doc, updated_at",
+      [userId, baseVersion, json, orgId],
     );
     if (!updated.rows[0]) throw conflict("Your folders changed on another device.", "version_conflict");
     return rowToState(updated.rows[0] as never);

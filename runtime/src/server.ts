@@ -31,6 +31,7 @@ import { IdempotencyCache } from "./idempotency.js";
 import type { SettingsPatch, SettingsStore } from "./settings.js";
 import type { Session } from "./session.js";
 import type { GitReview } from "./gitReview.js";
+import type { Artifacts } from "./artifacts.js";
 import type { WorkspaceFiles } from "./workspaceFiles.js";
 import { DownloadLinks } from "./downloadLinks.js";
 import { DavMounts, mountLocations } from "./davMounts.js";
@@ -85,14 +86,15 @@ interface Deps {
   skills: SkillsService;
   gitReview: GitReview;
   workspaceFiles?: WorkspaceFiles;
-  /** Enables the read-only WebDAV mounts (Open in Explorer). */
+  artifacts?: Artifacts;
+  /** Enables the WebDAV mounts (Open in Explorer). */
   shards?: ShardService;
   tasks: TasksService;
   /** Optional so existing callers keep working; absent = /v1/plugins is not served. */
   plugins?: PluginHost;
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, tasks, shards, plugins }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, keychains, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -187,7 +189,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Floq-Organization");
     res.setHeader("Access-Control-Expose-Headers", "set-auth-token, X-Floq-Plugin-Sha256");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Max-Age", "600");
@@ -265,12 +267,14 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   });
 
   /** `--project`/`--global` for `floq mcp`: an explicit choice wins; otherwise the calling session's own project, else global. */
-  function toolkitScope(body: Record<string, unknown>, callerProjectId: string | null): { scope: "global" | "project"; projectId?: string } {
+  async function toolkitScope(userId: string, body: Record<string, unknown>, me: { projectId: string | null; orgId: string | null }): Promise<{ scope: "global" | "project"; projectId?: string }> {
+    const callerProjectId = me.projectId;
     if (body.scope !== undefined && body.scope !== "global" && body.scope !== "project") throw badRequest("scope must be global or project");
     const scope = (body.scope as "global" | "project" | undefined) ?? (typeof body.projectId === "string" || callerProjectId ? "project" : "global");
     if (scope === "global") return { scope };
     const projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : callerProjectId;
     if (!projectId) throw badRequest("This session is not in a registered project; pass --project <ID> or use --global", "no_project");
+    await orchestrator.assertProjectInCallerOrg(userId, me, projectId);
     return { scope, projectId };
   }
 
@@ -399,9 +403,10 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         }
         case "projects/create": {
           if (method !== "POST") return send(res, 405, { error: { code: "method_not_allowed", message: "Use POST" } });
-          await orchestrator.toolkitCaller(userId, sessionId, true);
+          const me = await orchestrator.toolkitCaller(userId, sessionId, true);
           const input = projectCreateInput(body);
-          const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name);
+          // A project an agent creates lands in the caller's own organization (personal for scratch sessions).
+          const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name, me.orgId ?? undefined);
           return send(res, 201, { project });
         }
         case "agents/link": {
@@ -551,6 +556,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           if (body.scope === "project" || (body.scope === undefined && typeof body.projectId === "string")) {
             const projectId = typeof body.projectId === "string" ? body.projectId : me.projectId;
             if (!projectId) throw badRequest("This session is not in a registered project; pass --project <ID>", "no_project");
+            await orchestrator.assertProjectInCallerOrg(userId, me, projectId);
             return send(res, 200, { scope: "project", projectId, ...(await skills.listProject(userId, projectId)) });
           }
           return send(res, 200, { scope: "global", ...(await skills.list(userId)) });
@@ -563,14 +569,14 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           return send(res, 200, await previewCatalogSkill({ source: body.source, skillId: body.skillId, url: body.url }));
         case "skills/add": {
           const me = await orchestrator.toolkitCaller(userId, sessionId, true);
-          const target = toolkitScope(body, me.projectId);
+          const target = await toolkitScope(userId, body, me);
           const result = await importCatalogSkill(userId, target, { provider: body.provider ?? me.provider, source: body.source, skillId: body.skillId, url: body.url });
           return send(res, 200, { ...result, ...target });
         }
         case "skills/create": {
           // A dry run only validates and describes, so any agent session may do it; creating needs a lead.
           const me = await orchestrator.toolkitCaller(userId, sessionId, body.dryRun !== true);
-          const target = toolkitScope(body, me.projectId);
+          const target = await toolkitScope(userId, body, me);
           const result = await skills.createSkill(userId, { ...target, provider: body.provider ?? me.provider, name: body.name, description: body.description, instructions: body.instructions, files: body.files, dryRun: body.dryRun });
           return send(res, 200, { ...result, ...target });
         }
@@ -579,7 +585,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           return send(res, 200, await skills.removeSkillByName(userId, body.name, body.provider));
         case "mcp/list": {
           const me = await orchestrator.toolkitCaller(userId, sessionId, false);
-          const target = toolkitScope(body, me.projectId);
+          const target = await toolkitScope(userId, body, me);
           const provider = body.provider;
           if (provider !== undefined && provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex");
           return send(res, 200, { ...target, ...(await skills.listMcp(userId, target.scope, target.projectId, provider)) });
@@ -587,12 +593,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         case "mcp/add": {
           // A dry run only validates and describes what would run, so it needs no lead.
           const me = await orchestrator.toolkitCaller(userId, sessionId, body.dryRun !== true);
-          const target = toolkitScope(body, me.projectId);
+          const target = await toolkitScope(userId, body, me);
           return send(res, 200, { ...target, ...(await installMcp(userId, sessionId, { ...target, providers: body.providers ?? me.provider, config: body.config, name: body.name, dryRun: body.dryRun, allowPlaintext: body.allowPlaintext }, false)) });
         }
         case "mcp/remove": {
           const me = await orchestrator.toolkitCaller(userId, sessionId, true);
-          const target = toolkitScope(body, me.projectId);
+          const target = await toolkitScope(userId, body, me);
           return send(res, 200, { ...target, ...(await skills.removeMcp(userId, { ...target, provider: body.provider ?? me.provider, name: body.name })) });
         }
         case "secrets/add": {
@@ -743,9 +749,17 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     const downloadMatch = /^\/v1\/sessions\/([\w-]+)\/files\/download$/.exec(url.pathname);
     if (downloadMatch && method === "GET") {
       if (!workspaceFiles) throw notFound();
-      const claims = downloadLinks.redeem(url.searchParams.get("t"));
+      const claims = downloadLinks.redeem(url.searchParams.get("t"), "ws");
       if (!claims || claims.s !== downloadMatch[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
       return workspaceFiles.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
+    }
+
+    const artifactDownload = /^\/v1\/sessions\/([\w-]+)\/artifacts\/download$/.exec(url.pathname);
+    if (artifactDownload && method === "GET") {
+      if (!artifacts) throw notFound();
+      const claims = downloadLinks.redeem(url.searchParams.get("t"), "art");
+      if (!claims || claims.s !== artifactDownload[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
+      return artifacts.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
     }
 
     const hookMatch = plugins && method === "POST" ? /^\/v1\/plugins\/([a-z][a-z0-9-]*)\/hooks\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_-]{16,128})$/.exec(url.pathname) : null;
@@ -766,6 +780,11 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
 
     const { userId, authSessionId } = await authFor(req.headers);
     davMounts.touch(userId);
+    // The organization this app request acts in (X-Floq-Organization, default: personal). Resolved lazily so organization
+    // routes still work with a stale header; agent/CLI bearer-token routes never read it.
+    const orgHeader = req.headers["x-floq-organization"];
+    let activeOrgPromise: Promise<string> | undefined;
+    const activeOrg = () => (activeOrgPromise ??= organizations.resolveActive(userId, Array.isArray(orgHeader) ? orgHeader[0] : orgHeader));
 
     if (plugins && (url.pathname === "/v1/plugins" || url.pathname.startsWith("/v1/plugins/") || url.pathname === "/v1/task-sources" || url.pathname.startsWith("/v1/task-sources/"))) {
       const result = await plugins.handle({
@@ -816,7 +835,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
 
     // Read-only preview of the fixed subagent policy for Settings (the text is not editable by design).
     if (method === "GET" && url.pathname === "/v1/subagents/policy") {
-      const limits = requireSubagents().limits;
+      const limits = await requireSubagents().limitsFor(userId);
       return send(res, 200, { enabled: (await settings.get(userId)).alwaysRecruitSubagents, limits, tools: TOOL_SPECS, instruction: buildSubagentInstruction({ enabled: true, depth: 0, limits, crossProject: (await settings.get(userId)).allowCrossProjectAgents }) });
     }
     if (url.pathname === "/v1/settings") {
@@ -883,6 +902,15 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       }
     }
 
+    // Org scoping for every user route that names a project: a project of another organization is a 404, never a 403.
+    // PATCH /v1/projects/:id is exempt: a move is allowed from any of the owner's organizations and checks itself.
+    const scopedProject = /^\/v1\/projects\/([\w-]+)(?:\/|$)/.exec(url.pathname);
+    if (scopedProject && scopedProject[1] !== "none" && !(method === "PATCH" && url.pathname === `/v1/projects/${scopedProject[1]}`)) {
+      await manager.requireProject(userId, await activeOrg(), scopedProject[1]);
+    }
+    const queryProject = url.searchParams.get("projectId");
+    if (queryProject && url.pathname.startsWith("/v1/") && !url.pathname.startsWith("/v1/agent/")) await manager.requireProject(userId, await activeOrg(), queryProject);
+
     if (url.pathname === "/v1/skills" && method === "GET") {
       const userId = await userFor(req.headers);
       return send(res, 200, await skills.list(userId));
@@ -924,7 +952,9 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         return send(res, 201, await importCatalogSkill(userId, projectSkillImport[1], await readJson(req)));
       }
     if (url.pathname === "/v1/mcp" && method === "POST") {
-      return send(res, 201, await installMcp(userId, null, await readJson<Record<string, unknown>>(req), true));
+      const body = await readJson<Record<string, unknown>>(req);
+      if (typeof body.projectId === "string" && body.projectId) await manager.requireProject(userId, await activeOrg(), body.projectId);
+      return send(res, 201, await installMcp(userId, null, body, true));
     }
     if (url.pathname === "/v1/mcp" && method === "DELETE") {
       const q = url.searchParams;
@@ -1154,24 +1184,31 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     }
 
     if (url.pathname === "/v1/projects") {
-      if (method === "GET") return send(res, 200, { projects: await manager.listProjects(userId) });
+      if (method === "GET") return send(res, 200, { projects: await manager.listProjects(userId, await activeOrg()) });
       if (method === "POST") {
         const input = projectCreateInput(await readJson<Record<string, unknown>>(req));
-        const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name);
+        const project = await manager.createProject(userId, await settings.profile(userId), input.gitUrl, input.name, await activeOrg());
         return send(res, 201, { project });
       }
     }
     const projectMatch = /^\/v1\/projects\/([\w-]+)$/.exec(url.pathname);
     if (projectMatch && method === "PATCH") {
-      const body = await readJson<{ displayName?: unknown; imageUrl?: unknown; iconName?: unknown; iconColor?: unknown }>(req);
+      const body = await readJson<{ displayName?: unknown; imageUrl?: unknown; iconName?: unknown; iconColor?: unknown; organizationId?: unknown }>(req);
+      if (body.organizationId !== undefined) {
+        // Move to another organization of the same owner; the caller must belong to the target.
+        if (typeof body.organizationId !== "string" || !body.organizationId) throw badRequest("organizationId must be an organization id", "invalid_project");
+        const target = await organizations.resolveActive(userId, body.organizationId);
+        return send(res, 200, { project: await manager.moveProject(userId, projectMatch[1], target) });
+      }
+      await manager.requireProject(userId, await activeOrg(), projectMatch[1]);
       return send(res, 200, { project: await manager.updateProject(userId, projectMatch[1], body) });
     }
     if (projectMatch && method === "DELETE") return send(res, 200, await manager.deleteProject(userId, projectMatch[1]));
     const projectDeleteStatus = /^\/v1\/projects\/([\w-]+)\/delete-status$/.exec(url.pathname);
     if (projectDeleteStatus && method === "GET") return send(res, 200, await manager.projectDeleteStatus(userId, projectDeleteStatus[1]));
     if (url.pathname === "/v1/project-folders") {
-      if (method === "GET") return send(res, 200, await projectFolders.get(userId));
-      if (method === "PUT") return send(res, 200, await projectFolders.put(userId, await readJson<unknown>(req, 512 * 1024)));
+      if (method === "GET") return send(res, 200, await projectFolders.get(userId, await activeOrg()));
+      if (method === "PUT") return send(res, 200, await projectFolders.put(userId, await activeOrg(), await readJson<unknown>(req, 512 * 1024)));
     }
     const projectNav = /^\/v1\/projects\/([\w-]+)\/workspaces$/.exec(url.pathname);
     if (projectNav && method === "PATCH") {
@@ -1213,7 +1250,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     }
 
     if (url.pathname === "/v1/sessions") {
-      if (method === "GET") return send(res, 200, { sessions: await manager.list(userId) });
+      if (method === "GET") return send(res, 200, { sessions: await manager.list(userId, await activeOrg()) });
       if (method === "POST") {
         const body = await readJson<CreateSessionInput>(req);
         if (body.isolated !== undefined && typeof body.isolated !== "boolean") throw badRequest("isolated must be a boolean", "invalid_worktree_project");
@@ -1226,7 +1263,8 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         const key = Array.isArray(keyHeader) ? keyHeader[0] : keyHeader;
         if (key && !/^[\w-]{16,128}$/.test(key)) throw badRequest("invalid idempotency key", "invalid_idempotency_key");
         const profile = await settings.profile(userId);
-        const create = () => manager.create(userId, profile, body, { isolated: body.isolated === true });
+        const orgId = await activeOrg();
+        const create = () => manager.create(userId, profile, body, { isolated: body.isolated === true, orgId });
         let session;
         if (key) {
           try {
@@ -1257,6 +1295,25 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, filesMatch[2] ? await workspaceFiles.read(userId, filesMatch[1], path) : await workspaceFiles.list(userId, filesMatch[1], path));
     }
 
+    if (filesMatch && !filesMatch[2] && method === "POST") {
+      if (!workspaceFiles) throw notFound();
+      const body = await readJson<{ path?: unknown; name?: unknown; kind?: unknown }>(req, 16 * 1024);
+      return send(res, 201, await workspaceFiles.create(userId, filesMatch[1], body));
+    }
+
+    const artifactsMatch = /^\/v1\/sessions\/([\w-]+)\/artifacts(\/content|\/link)?$/.exec(url.pathname);
+    if (artifactsMatch) {
+      if (!artifacts) throw notFound();
+      if (method === "GET" && !artifactsMatch[2]) return send(res, 200, await artifacts.list(userId, artifactsMatch[1]));
+      if (method === "GET" && artifactsMatch[2] === "/content") return send(res, 200, await artifacts.read(userId, artifactsMatch[1], url.searchParams.get("path")));
+      if (method === "POST" && artifactsMatch[2] === "/link") {
+        const body = await readJson<{ path?: unknown }>(req);
+        const path = await artifacts.authorizeDownload(userId, artifactsMatch[1], body.path);
+        const { token, expiresAt } = downloadLinks.issue({ userId, authSessionId, sessionId: artifactsMatch[1], path, audience: "art" });
+        return send(res, 200, { url: `/v1/sessions/${artifactsMatch[1]}/artifacts/download?t=${token}`, expiresAt });
+      }
+    }
+
     const mountMatch = /^\/v1\/projects\/([\w-]+)\/files\/mount$/.exec(url.pathname);
     if (mountMatch && (method === "POST" || method === "DELETE")) {
       if (!webdav) throw notFound();
@@ -1278,7 +1335,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (!workspaceFiles) throw notFound();
       const body = await readJson<{ path?: unknown }>(req);
       const path = await workspaceFiles.authorizeDownload(userId, fileLinkMatch[1], body.path);
-      const { token, expiresAt } = downloadLinks.issue({ userId, authSessionId, sessionId: fileLinkMatch[1], path });
+      const { token, expiresAt } = downloadLinks.issue({ userId, authSessionId, sessionId: fileLinkMatch[1], path, audience: "ws" });
       return send(res, 200, { url: `/v1/sessions/${fileLinkMatch[1]}/files/download?t=${token}`, expiresAt });
     }
 
@@ -1397,7 +1454,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     route(req, res).catch((error: unknown) => {
       const errno = (error as NodeJS.ErrnoException)?.code;
       if (error instanceof HttpError) {
-        send(res, error.status, { error: { code: error.code, message: error.message } });
+        send(res, error.status, { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } });
       } else if (errno === "ENOTCONN" || errno === "ECONNABORTED" || errno === "EIO") {
         log.error("http.shard_io", { error: String((error as Error).message) });
         send(res, 503, { error: { code: "shard_unavailable", message: "Your workspace is not available right now. Try again shortly." } });

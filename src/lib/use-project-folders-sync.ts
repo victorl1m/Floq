@@ -15,11 +15,11 @@ const MIN_PULL_GAP_MS = 5_000;
  * regains focus so changes made on another device show up.
  */
 export function useProjectFoldersSync(): void {
-  const { client, baseUrl, user } = useRuntime();
+  const { client, baseUrl, user, activeOrganizationId } = useRuntime();
   const userId = user?.id ?? null;
   useEffect(() => {
     if (!client || !baseUrl || !userId) return;
-    const scope = projectScope(baseUrl, userId);
+    const scope = projectScope(baseUrl, userId, activeOrganizationId);
     // First time on this device for this account: keep what is here before anything can replace it.
     if (loadSyncMeta(scope) === null) {
       const existing = readLocalDoc(scope, baseUrl, userId);
@@ -68,5 +68,5 @@ export function useProjectFoldersSync(): void {
       void sync.flush({ keepalive: true });
       sync.dispose();
     };
-  }, [client, baseUrl, userId]);
+  }, [client, baseUrl, userId, activeOrganizationId]);
 }

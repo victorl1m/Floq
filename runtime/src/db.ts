@@ -140,6 +140,9 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS git_coauthor BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS always_recruit_subagents BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS allow_cross_project_agents BOOLEAN NOT NULL DEFAULT TRUE;
+    -- User-raised subagent limits; NULL = the built-in default (6 direct, 24 total).
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS subagent_max_children INTEGER;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS subagent_max_total INTEGER;
     -- Set when the user answered the one-time auto-approve confirmation before their first agent session.
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_approve_ack_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS provider_credentials (
@@ -438,5 +441,112 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       dismissed_at TIMESTAMPTZ,
       PRIMARY KEY (plugin_id, owner_id, name)
     );
+  `);
+  await migrateOrganizations(pool);
+}
+
+/**
+ * Projects belong to one of the owner's organizations. Needs collaboration.* (Prisma deploy runs first in
+ * production); skipped when that schema is absent (unit tests that only exercise app tables). Idempotent.
+ * Personal organizations have a NULL slug, so they can neither collide with nor be squatted by team slugs.
+ */
+async function migrateOrganizations(pool: pg.Pool): Promise<void> {
+  const present = await pool.query("SELECT to_regclass('collaboration.organizations') IS NOT NULL AS ok");
+  if (!present.rows[0]?.ok) {
+    // No collaboration schema: org-aware queries still select organization_id, so keep a plain nullable column (no FK, always NULL).
+    await pool.query(`
+      ALTER TABLE floq_projects ADD COLUMN IF NOT EXISTS organization_id UUID;
+      ALTER TABLE user_project_folders ADD COLUMN IF NOT EXISTS organization_id UUID;
+    `);
+    return;
+  }
+  await pool.query(`
+    ALTER TABLE floq_projects ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES collaboration.organizations(id) ON DELETE RESTRICT;
+    ALTER TABLE user_project_folders ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES collaboration.organizations(id) ON DELETE CASCADE;
+    -- A column added earlier without collaboration.* (plain UUID) gets its foreign key once the schema exists.
+    DO $fk$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'floq_projects'::regclass AND contype = 'f' AND confrelid = 'collaboration.organizations'::regclass) THEN
+        ALTER TABLE floq_projects ADD FOREIGN KEY (organization_id) REFERENCES collaboration.organizations(id) ON DELETE RESTRICT;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'user_project_folders'::regclass AND contype = 'f' AND confrelid = 'collaboration.organizations'::regclass) THEN
+        ALTER TABLE user_project_folders ADD FOREIGN KEY (organization_id) REFERENCES collaboration.organizations(id) ON DELETE CASCADE;
+      END IF;
+    END
+    $fk$;
+    INSERT INTO collaboration.organizations (id, name, slug, created_by, personal_owner_id)
+      SELECT gen_random_uuid(), 'Personal', NULL, x.uid, x.uid
+      FROM (SELECT user_id AS uid FROM floq_projects WHERE organization_id IS NULL
+            UNION SELECT user_id FROM user_project_folders WHERE organization_id IS NULL) x
+      ON CONFLICT (personal_owner_id) DO NOTHING;
+    UPDATE collaboration.organizations SET slug = NULL WHERE personal_owner_id IS NOT NULL AND slug LIKE 'personal-%';
+    INSERT INTO collaboration.organization_members (organization_id, user_id, role)
+      SELECT o.id, o.personal_owner_id, 'owner' FROM collaboration.organizations o
+      WHERE o.personal_owner_id IN (SELECT user_id FROM floq_projects WHERE organization_id IS NULL
+                                    UNION SELECT user_id FROM user_project_folders WHERE organization_id IS NULL)
+      ON CONFLICT DO NOTHING;
+    UPDATE floq_projects p SET organization_id = o.id FROM collaboration.organizations o
+      WHERE p.organization_id IS NULL AND o.personal_owner_id = p.user_id;
+    UPDATE user_project_folders f SET organization_id = o.id FROM collaboration.organizations o
+      WHERE f.organization_id IS NULL AND o.personal_owner_id = f.user_id;
+    -- Guarded: skip the (locking) ALTER once the column is already NOT NULL.
+    DO $nn$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'floq_projects'::regclass AND attname = 'organization_id' AND NOT attnotnull) THEN
+        ALTER TABLE floq_projects ALTER COLUMN organization_id SET NOT NULL;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'user_project_folders'::regclass AND attname = 'organization_id' AND NOT attnotnull) THEN
+        ALTER TABLE user_project_folders ALTER COLUMN organization_id SET NOT NULL;
+      END IF;
+    END
+    $nn$;
+    CREATE INDEX IF NOT EXISTS floq_projects_user_org_idx ON floq_projects(user_id, organization_id, created_at DESC);
+    DO $do$
+    DECLARE pk TEXT;
+    BEGIN
+      SELECT conname INTO pk FROM pg_constraint
+        WHERE conrelid = 'user_project_folders'::regclass AND contype = 'p' AND array_length(conkey, 1) = 1;
+      IF pk IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE user_project_folders DROP CONSTRAINT %I', pk);
+        ALTER TABLE user_project_folders ADD PRIMARY KEY (user_id, organization_id);
+      END IF;
+    END
+    $do$;
+    -- Any insert path that does not name an organization (older code, tools) lands in the owner's personal organization.
+    -- floq_personal_org() creates it on demand. Personal organizations have a NULL slug, so nothing can collide.
+    CREATE OR REPLACE FUNCTION floq_personal_org(uid TEXT) RETURNS UUID LANGUAGE plpgsql AS $fn$
+    DECLARE oid UUID;
+    BEGIN
+      INSERT INTO collaboration.organizations (id, name, slug, created_by, personal_owner_id)
+        VALUES (gen_random_uuid(), 'Personal', NULL, uid, uid) ON CONFLICT (personal_owner_id) DO NOTHING;
+      SELECT id INTO oid FROM collaboration.organizations WHERE personal_owner_id = uid;
+      INSERT INTO collaboration.organization_members (organization_id, user_id, role) VALUES (oid, uid, 'owner') ON CONFLICT DO NOTHING;
+      RETURN oid;
+    END
+    $fn$;
+    CREATE OR REPLACE FUNCTION floq_projects_default_org() RETURNS trigger LANGUAGE plpgsql AS $fn$
+    BEGIN
+      IF NEW.organization_id IS NULL THEN NEW.organization_id := floq_personal_org(NEW.user_id); END IF;
+      RETURN NEW;
+    END
+    $fn$;
+    -- An older runtime inserts folder docs by (user_id) alone: fill the personal org so it does not hit a NOT NULL violation.
+    -- (Its ON CONFLICT (user_id) still has no matching constraint; downgrading needs manual SQL for folders, see docs/DESIGN.md.)
+    CREATE OR REPLACE FUNCTION user_project_folders_default_org() RETURNS trigger LANGUAGE plpgsql AS $fn$
+    BEGIN
+      IF NEW.organization_id IS NULL THEN NEW.organization_id := floq_personal_org(NEW.user_id); END IF;
+      RETURN NEW;
+    END
+    $fn$;
+    DO $tg$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'floq_projects'::regclass AND tgname = 'floq_projects_default_org' AND NOT tgisinternal) THEN
+        CREATE TRIGGER floq_projects_default_org BEFORE INSERT ON floq_projects FOR EACH ROW EXECUTE FUNCTION floq_projects_default_org();
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'user_project_folders'::regclass AND tgname = 'user_project_folders_default_org' AND NOT tgisinternal) THEN
+        CREATE TRIGGER user_project_folders_default_org BEFORE INSERT ON user_project_folders FOR EACH ROW EXECUTE FUNCTION user_project_folders_default_org();
+      END IF;
+    END
+    $tg$;
   `);
 }
