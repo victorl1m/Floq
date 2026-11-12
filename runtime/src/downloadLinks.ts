@@ -2,6 +2,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const DOWNLOAD_LINK_TTL_MS = 60_000;
 
+export type DownloadAudience = "ws" | "art";
+
 export interface DownloadClaims {
   /** Floq user id. */
   u: string;
@@ -14,6 +16,8 @@ export interface DownloadClaims {
   /** Issued-at and expiry, epoch ms. */
   iat: number;
   exp: number;
+  /** Audience: which download route the link is for, so a link cannot be replayed against the other route. */
+  k: DownloadAudience;
   /** Single-use id. */
   j: string;
 }
@@ -38,16 +42,16 @@ export class DownloadLinks {
     return createHmac("sha256", this.key).update(payload).digest();
   }
 
-  issue(input: { userId: string; authSessionId: string; sessionId: string; path: string }): { token: string; expiresAt: number } {
+  issue(input: { userId: string; authSessionId: string; sessionId: string; path: string; audience: DownloadAudience }): { token: string; expiresAt: number } {
     if (!input.authSessionId) throw new Error("A download link needs an auth session");
     const iat = this.now();
-    const claims: DownloadClaims = { u: input.userId, sid: input.authSessionId, s: input.sessionId, p: input.path, iat, exp: iat + DOWNLOAD_LINK_TTL_MS, j: randomBytes(12).toString("hex") };
+    const claims: DownloadClaims = { u: input.userId, sid: input.authSessionId, s: input.sessionId, p: input.path, k: input.audience, iat, exp: iat + DOWNLOAD_LINK_TTL_MS, j: randomBytes(12).toString("hex") };
     const payload = b64(Buffer.from(JSON.stringify(claims)));
     return { token: `${payload}.${b64(this.sign(payload))}`, expiresAt: claims.exp };
   }
 
   /** Verify signature, expiry, revocation and single use. Returns null for any failure (no detail leaks). */
-  redeem(token: unknown): DownloadClaims | null {
+  redeem(token: unknown, audience: DownloadAudience): DownloadClaims | null {
     if (typeof token !== "string" || token.length > 2048) return null;
     const dot = token.indexOf(".");
     if (dot < 1 || token.indexOf(".", dot + 1) !== -1) return null;
@@ -57,7 +61,7 @@ export class DownloadLinks {
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
     let claims: DownloadClaims;
     try { claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as DownloadClaims; } catch { return null; }
-    if (!claims || typeof claims.u !== "string" || typeof claims.sid !== "string" || typeof claims.s !== "string" || typeof claims.p !== "string" || typeof claims.j !== "string" || typeof claims.exp !== "number" || typeof claims.iat !== "number") return null;
+    if (!claims || typeof claims.u !== "string" || typeof claims.sid !== "string" || typeof claims.s !== "string" || typeof claims.p !== "string" || typeof claims.j !== "string" || claims.k !== audience || typeof claims.exp !== "number" || typeof claims.iat !== "number") return null;
     const now = this.now();
     if (claims.exp <= now) return null;
     const revokedUser = this.revokedUsers.get(claims.u);

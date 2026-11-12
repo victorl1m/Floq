@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type CoreRightSidebarTab = "files" | "conversations" | "app";
+export type CoreRightSidebarTab = "files" | "conversations" | "artifacts";
 /** Plugin tabs are `plugin:<pluginId>/<tabId>`. */
 export type RightSidebarTab = CoreRightSidebarTab | `plugin:${string}`;
 export const RIGHT_SIDEBAR_MIN = 260;
@@ -16,7 +16,7 @@ interface RightSidebarState {
 }
 
 const KEY = "floq.right-sidebar.v1";
-export const CORE_TABS: CoreRightSidebarTab[] = ["files", "conversations", "app"];
+export const CORE_TABS: CoreRightSidebarTab[] = ["files", "conversations", "artifacts"];
 const PLUGIN_TAB = /^plugin:[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
 
 /**

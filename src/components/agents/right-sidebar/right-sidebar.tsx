@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { IconAppWindow, IconChevronRight, IconFiles, IconMessages, IconX } from "@tabler/icons-react";
+import { IconChevronRight, IconFiles, IconMessages, IconPackage, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { useRuntime } from "@/lib/runtime/store";
@@ -16,7 +16,8 @@ import {
   type RightSidebarTab,
 } from "@/lib/right-sidebar";
 import { usePanelContext } from "./use-panel-context";
-import AppWindowTab, { useDisplayAnnouncements } from "./app-window-tab";
+import { useDisplayAnnouncements } from "./app-window-tab";
+import ArtifactsTab from "./artifacts-tab";
 import ConversationsTab from "./conversations-tab";
 import FilesTab from "./files-tab";
 import { PanelEmpty } from "./panel-states";
@@ -26,7 +27,7 @@ import { resolvePluginIcon } from "@/plugins/icons";
 const CORE_TAB_DEFS: Array<{ id: RightSidebarTab; label: string; icon: typeof IconFiles }> = [
   { id: "files", label: "Files", icon: IconFiles },
   { id: "conversations", label: "Conversations", icon: IconMessages },
-  { id: "app", label: "App window", icon: IconAppWindow },
+  { id: "artifacts", label: "Artifacts", icon: IconPackage },
 ];
 
 function useNarrow(): boolean {
@@ -158,6 +159,7 @@ export default function RightSidebar() {
       aria-hidden={!open}
       inert={!open}
       data-state={open ? "open" : "closed"}
+      data-overlay={narrow ? "true" : undefined}
       style={{ width: narrow ? `min(${width}px, calc(100vw - 2rem))` : width }}
       className={cn(
         "floq-right-sidebar flex shrink-0 flex-col overflow-hidden border border-border/70 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
@@ -219,7 +221,8 @@ export default function RightSidebar() {
               aria-controls="right-sidebar-panel"
               tabIndex={tab === id ? 0 : -1}
               onClick={() => setRightSidebarTab(id)}
-              className={cn("flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tab === id ? "bg-muted/90 text-foreground" : "text-muted-foreground hover:bg-muted/55 hover:text-foreground")}
+              data-active={tab === id ? "true" : undefined}
+              className={cn("floq-right-tab flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tab === id ? "bg-muted/90 text-foreground" : "text-muted-foreground hover:bg-muted/55 hover:text-foreground")}
             >
               <Icon className="size-3.5 shrink-0" />
               <span className="truncate">{label}</span>
@@ -236,14 +239,14 @@ export default function RightSidebar() {
         <div className={cn("h-full", tab !== "conversations" && "hidden")}>
           <ConversationsTab projectId={projectId} project={project} />
         </div>
+        <div className={cn("h-full", tab !== "artifacts" && "hidden")}>
+          {session ? <ArtifactsTab client={client} sessionId={session.id} active={tab === "artifacts"} /> : <PanelEmpty icon={<IconPackage />} title="No agent in this project" hint="Start an agent to see the files it saves to Artifacts." />}
+        </div>
         {pluginTabs.filter((t) => tab === `plugin:${t.pluginId}/${t.tabId}`).map((t) => (
           <div key={`${t.pluginId}/${t.tabId}`} className="relative h-full">
             <PluginBoundary pluginId={t.pluginId}><t.Component plugin={t.plugin} tab={t.decl} /></PluginBoundary>
           </div>
         ))}
-        <div className={cn("h-full", tab !== "app" && "hidden")}>
-          <AppWindowTab client={client} session={activeSession ?? session} active={open && tab === "app"} />
-        </div>
       </div>
     </aside>
   );
