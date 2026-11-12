@@ -120,6 +120,7 @@ docs/            orchestration, secrets, plugins, release notes and UI notes (se
 ## Documentation
 
 - [`docs/ORCHESTRATION.md`](docs/ORCHESTRATION.md): how agents recruit and coordinate other agents
+- [`docs/runtime-agents.md`](docs/runtime-agents.md): how Claude Code and Codex run inside the runtime image and sandboxes
 - [`docs/SECRETS.md`](docs/SECRETS.md): the secrets vault
 - [`docs/ENCRYPTED-HOME-CONCURRENCY.md`](docs/ENCRYPTED-HOME-CONCURRENCY.md): known EPERM issue on encrypted homes
 - [`docs/plugins/`](docs/plugins/README.md): plugin authoring
