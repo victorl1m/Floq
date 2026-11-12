@@ -34,7 +34,7 @@ export default function OrgSwitcher() {
                             size="lg"
                             tooltip={`${name} · ${subline}`}
                             data-testid="org-switcher"
-                            className="org-switcher h-14 rounded-[12px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
+                            className="h-14 rounded-[12px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
                         >
                             <OrganizationAvatar name={active ? organizationLabel(active) : "?"} className="size-9 rounded-[10px]" />
                             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">

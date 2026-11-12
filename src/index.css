@@ -1094,8 +1094,8 @@
 :root[data-native-material] { --sidebar-pixel: rgb(32 38 51 / 0.17); }
 :root[data-native-material].dark { --sidebar-pixel: rgb(255 255 255 / 0.15); }
 [data-slot="sidebar-inner"] { position: relative; isolation: isolate; }
-[data-slot="sidebar-inner"]::after,
-.org-switcher::before {
+[data-slot="sidebar-inner"]::before,
+[data-slot="sidebar-inner"]::after {
   content: "";
   position: absolute;
   z-index: -1;
@@ -1104,10 +1104,10 @@
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
-/* Header ornament belongs to the organization block only: clipped to its rounded bounds, densest top-right. */
-.org-switcher { position: relative; isolation: isolate; overflow: hidden; }
-.org-switcher::before {
-  inset: 0;
+/* Header ornament: the top strip of the sidebar panel, densest at the top-right corner, clipped to the panel's rounded corners.
+   The switcher itself carries no dots and no special fill. */
+[data-slot="sidebar-inner"]::before {
+  top: 0; right: 0; width: 240px; height: 56px;
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='56'%3E%3Cpath fill='%23000' fill-opacity='.55' d='M49 1h2v2h-2zM57 1h2v2h-2zM65 1h2v2h-2zM73 1h2v2h-2zM81 1h2v2h-2zM89 1h2v2h-2zM97 1h2v2h-2zM105 1h2v2h-2zM113 1h2v2h-2zM121 1h2v2h-2zM129 1h2v2h-2zM133 1h2v2h-2zM137 1h2v2h-2zM141 1h2v2h-2zM145 1h2v2h-2zM149 1h2v2h-2zM157 1h2v2h-2zM161 1h2v2h-2zM165 1h2v2h-2zM169 1h2v2h-2zM173 1h2v2h-2zM177 1h2v2h-2zM181 1h2v2h-2zM185 1h2v2h-2zM189 1h2v2h-2zM193 1h2v2h-2zM197 1h2v2h-2zM201 1h2v2h-2zM205 1h2v2h-2zM209 1h2v2h-2zM213 1h2v2h-2zM217 1h2v2h-2zM221 1h2v2h-2zM225 1h2v2h-2zM229 1h2v2h-2zM233 1h2v2h-2zM237 1h2v2h-2zM85 5h2v2h-2zM101 5h2v2h-2zM109 5h2v2h-2zM125 5h2v2h-2zM133 5h2v2h-2zM141 5h2v2h-2zM149 5h2v2h-2zM157 5h2v2h-2zM165 5h2v2h-2zM177 5h2v2h-2zM181 5h2v2h-2zM189 5h2v2h-2zM193 5h2v2h-2zM197 5h2v2h-2zM201 5h2v2h-2zM205 5h2v2h-2zM209 5h2v2h-2zM213 5h2v2h-2zM217 5h2v2h-2zM221 5h2v2h-2zM225 5h2v2h-2zM229 5h2v2h-2zM233 5h2v2h-2zM237 5h2v2h-2zM57 9h2v2h-2zM73 9h2v2h-2zM81 9h2v2h-2zM89 9h2v2h-2zM97 9h2v2h-2zM105 9h2v2h-2zM113 9h2v2h-2zM121 9h2v2h-2zM129 9h2v2h-2zM137 9h2v2h-2zM145 9h2v2h-2zM153 9h2v2h-2zM157 9h2v2h-2zM161 9h2v2h-2zM169 9h2v2h-2zM173 9h2v2h-2zM177 9h2v2h-2zM181 9h2v2h-2zM185 9h2v2h-2zM193 9h2v2h-2zM197 9h2v2h-2zM205 9h2v2h-2zM209 9h2v2h-2zM213 9h2v2h-2zM217 9h2v2h-2zM221 9h2v2h-2zM225 9h2v2h-2zM229 9h2v2h-2zM233 9h2v2h-2zM237 9h2v2h-2zM109 13h2v2h-2zM125 13h2v2h-2zM133 13h2v2h-2zM141 13h2v2h-2zM149 13h2v2h-2zM165 13h2v2h-2zM189 13h2v2h-2zM197 13h2v2h-2zM205 13h2v2h-2zM213 13h2v2h-2zM217 13h2v2h-2zM221 13h2v2h-2zM229 13h2v2h-2zM233 13h2v2h-2zM237 13h2v2h-2zM33 17h2v2h-2zM49 17h2v2h-2zM65 17h2v2h-2zM81 17h2v2h-2zM89 17h2v2h-2zM97 17h2v2h-2zM113 17h2v2h-2zM121 17h2v2h-2zM129 17h2v2h-2zM137 17h2v2h-2zM145 17h2v2h-2zM153 17h2v2h-2zM161 17h2v2h-2zM165 17h2v2h-2zM169 17h2v2h-2zM181 17h2v2h-2zM185 17h2v2h-2zM189 17h2v2h-2zM193 17h2v2h-2zM201 17h2v2h-2zM205 17h2v2h-2zM209 17h2v2h-2zM213 17h2v2h-2zM217 17h2v2h-2zM225 17h2v2h-2zM229 17h2v2h-2zM233 17h2v2h-2zM237 17h2v2h-2zM117 21h2v2h-2zM133 21h2v2h-2zM141 21h2v2h-2zM149 21h2v2h-2zM157 21h2v2h-2zM165 21h2v2h-2zM173 21h2v2h-2zM181 21h2v2h-2zM189 21h2v2h-2zM197 21h2v2h-2zM205 21h2v2h-2zM213 21h2v2h-2zM221 21h2v2h-2zM229 21h2v2h-2zM237 21h2v2h-2zM73 25h2v2h-2zM89 25h2v2h-2zM105 25h2v2h-2zM113 25h2v2h-2zM121 25h2v2h-2zM129 25h2v2h-2zM137 25h2v2h-2zM145 25h2v2h-2zM153 25h2v2h-2zM161 25h2v2h-2zM169 25h2v2h-2zM177 25h2v2h-2zM185 25h2v2h-2zM193 25h2v2h-2zM201 25h2v2h-2zM205 25h2v2h-2zM209 25h2v2h-2zM217 25h2v2h-2zM221 25h2v2h-2zM225 25h2v2h-2zM233 25h2v2h-2zM237 25h2v2h-2zM157 29h2v2h-2zM173 29h2v2h-2zM189 29h2v2h-2zM197 29h2v2h-2zM213 29h2v2h-2zM221 29h2v2h-2zM229 29h2v2h-2zM237 29h2v2h-2zM49 33h2v2h-2zM65 33h2v2h-2zM81 33h2v2h-2zM97 33h2v2h-2zM113 33h2v2h-2zM121 33h2v2h-2zM129 33h2v2h-2zM137 33h2v2h-2zM145 33h2v2h-2zM153 33h2v2h-2zM169 33h2v2h-2zM177 33h2v2h-2zM185 33h2v2h-2zM193 33h2v2h-2zM209 33h2v2h-2zM225 33h2v2h-2zM197 37h2v2h-2zM213 37h2v2h-2zM229 37h2v2h-2zM237 37h2v2h-2zM121 41h2v2h-2zM137 41h2v2h-2zM153 41h2v2h-2zM169 41h2v2h-2zM185 41h2v2h-2zM193 41h2v2h-2zM201 41h2v2h-2zM209 41h2v2h-2zM217 41h2v2h-2zM225 41h2v2h-2zM161 49h2v2h-2zM177 49h2v2h-2zM193 49h2v2h-2zM209 49h2v2h-2zM225 49h2v2h-2z'/%3E%3Cpath fill='%23000' d='M33 1h2v2h-2zM153 1h2v2h-2zM117 5h2v2h-2zM173 5h2v2h-2zM189 9h2v2h-2zM201 9h2v2h-2zM157 13h2v2h-2zM173 13h2v2h-2zM181 13h2v2h-2zM73 17h2v2h-2zM105 17h2v2h-2zM177 17h2v2h-2zM197 17h2v2h-2zM221 17h2v2h-2zM205 29h2v2h-2zM105 33h2v2h-2zM161 33h2v2h-2zM201 33h2v2h-2zM217 33h2v2h-2zM233 33h2v2h-2zM181 37h2v2h-2zM233 41h2v2h-2z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='56'%3E%3Cpath fill='%23000' fill-opacity='.55' d='M49 1h2v2h-2zM57 1h2v2h-2zM65 1h2v2h-2zM73 1h2v2h-2zM81 1h2v2h-2zM89 1h2v2h-2zM97 1h2v2h-2zM105 1h2v2h-2zM113 1h2v2h-2zM121 1h2v2h-2zM129 1h2v2h-2zM133 1h2v2h-2zM137 1h2v2h-2zM141 1h2v2h-2zM145 1h2v2h-2zM149 1h2v2h-2zM157 1h2v2h-2zM161 1h2v2h-2zM165 1h2v2h-2zM169 1h2v2h-2zM173 1h2v2h-2zM177 1h2v2h-2zM181 1h2v2h-2zM185 1h2v2h-2zM189 1h2v2h-2zM193 1h2v2h-2zM197 1h2v2h-2zM201 1h2v2h-2zM205 1h2v2h-2zM209 1h2v2h-2zM213 1h2v2h-2zM217 1h2v2h-2zM221 1h2v2h-2zM225 1h2v2h-2zM229 1h2v2h-2zM233 1h2v2h-2zM237 1h2v2h-2zM85 5h2v2h-2zM101 5h2v2h-2zM109 5h2v2h-2zM125 5h2v2h-2zM133 5h2v2h-2zM141 5h2v2h-2zM149 5h2v2h-2zM157 5h2v2h-2zM165 5h2v2h-2zM177 5h2v2h-2zM181 5h2v2h-2zM189 5h2v2h-2zM193 5h2v2h-2zM197 5h2v2h-2zM201 5h2v2h-2zM205 5h2v2h-2zM209 5h2v2h-2zM213 5h2v2h-2zM217 5h2v2h-2zM221 5h2v2h-2zM225 5h2v2h-2zM229 5h2v2h-2zM233 5h2v2h-2zM237 5h2v2h-2zM57 9h2v2h-2zM73 9h2v2h-2zM81 9h2v2h-2zM89 9h2v2h-2zM97 9h2v2h-2zM105 9h2v2h-2zM113 9h2v2h-2zM121 9h2v2h-2zM129 9h2v2h-2zM137 9h2v2h-2zM145 9h2v2h-2zM153 9h2v2h-2zM157 9h2v2h-2zM161 9h2v2h-2zM169 9h2v2h-2zM173 9h2v2h-2zM177 9h2v2h-2zM181 9h2v2h-2zM185 9h2v2h-2zM193 9h2v2h-2zM197 9h2v2h-2zM205 9h2v2h-2zM209 9h2v2h-2zM213 9h2v2h-2zM217 9h2v2h-2zM221 9h2v2h-2zM225 9h2v2h-2zM229 9h2v2h-2zM233 9h2v2h-2zM237 9h2v2h-2zM109 13h2v2h-2zM125 13h2v2h-2zM133 13h2v2h-2zM141 13h2v2h-2zM149 13h2v2h-2zM165 13h2v2h-2zM189 13h2v2h-2zM197 13h2v2h-2zM205 13h2v2h-2zM213 13h2v2h-2zM217 13h2v2h-2zM221 13h2v2h-2zM229 13h2v2h-2zM233 13h2v2h-2zM237 13h2v2h-2zM33 17h2v2h-2zM49 17h2v2h-2zM65 17h2v2h-2zM81 17h2v2h-2zM89 17h2v2h-2zM97 17h2v2h-2zM113 17h2v2h-2zM121 17h2v2h-2zM129 17h2v2h-2zM137 17h2v2h-2zM145 17h2v2h-2zM153 17h2v2h-2zM161 17h2v2h-2zM165 17h2v2h-2zM169 17h2v2h-2zM181 17h2v2h-2zM185 17h2v2h-2zM189 17h2v2h-2zM193 17h2v2h-2zM201 17h2v2h-2zM205 17h2v2h-2zM209 17h2v2h-2zM213 17h2v2h-2zM217 17h2v2h-2zM225 17h2v2h-2zM229 17h2v2h-2zM233 17h2v2h-2zM237 17h2v2h-2zM117 21h2v2h-2zM133 21h2v2h-2zM141 21h2v2h-2zM149 21h2v2h-2zM157 21h2v2h-2zM165 21h2v2h-2zM173 21h2v2h-2zM181 21h2v2h-2zM189 21h2v2h-2zM197 21h2v2h-2zM205 21h2v2h-2zM213 21h2v2h-2zM221 21h2v2h-2zM229 21h2v2h-2zM237 21h2v2h-2zM73 25h2v2h-2zM89 25h2v2h-2zM105 25h2v2h-2zM113 25h2v2h-2zM121 25h2v2h-2zM129 25h2v2h-2zM137 25h2v2h-2zM145 25h2v2h-2zM153 25h2v2h-2zM161 25h2v2h-2zM169 25h2v2h-2zM177 25h2v2h-2zM185 25h2v2h-2zM193 25h2v2h-2zM201 25h2v2h-2zM205 25h2v2h-2zM209 25h2v2h-2zM217 25h2v2h-2zM221 25h2v2h-2zM225 25h2v2h-2zM233 25h2v2h-2zM237 25h2v2h-2zM157 29h2v2h-2zM173 29h2v2h-2zM189 29h2v2h-2zM197 29h2v2h-2zM213 29h2v2h-2zM221 29h2v2h-2zM229 29h2v2h-2zM237 29h2v2h-2zM49 33h2v2h-2zM65 33h2v2h-2zM81 33h2v2h-2zM97 33h2v2h-2zM113 33h2v2h-2zM121 33h2v2h-2zM129 33h2v2h-2zM137 33h2v2h-2zM145 33h2v2h-2zM153 33h2v2h-2zM169 33h2v2h-2zM177 33h2v2h-2zM185 33h2v2h-2zM193 33h2v2h-2zM209 33h2v2h-2zM225 33h2v2h-2zM197 37h2v2h-2zM213 37h2v2h-2zM229 37h2v2h-2zM237 37h2v2h-2zM121 41h2v2h-2zM137 41h2v2h-2zM153 41h2v2h-2zM169 41h2v2h-2zM185 41h2v2h-2zM193 41h2v2h-2zM201 41h2v2h-2zM209 41h2v2h-2zM217 41h2v2h-2zM225 41h2v2h-2zM161 49h2v2h-2zM177 49h2v2h-2zM193 49h2v2h-2zM209 49h2v2h-2zM225 49h2v2h-2z'/%3E%3Cpath fill='%23000' d='M33 1h2v2h-2zM153 1h2v2h-2zM117 5h2v2h-2zM173 5h2v2h-2zM189 9h2v2h-2zM201 9h2v2h-2zM157 13h2v2h-2zM173 13h2v2h-2zM181 13h2v2h-2zM73 17h2v2h-2zM105 17h2v2h-2zM177 17h2v2h-2zM197 17h2v2h-2zM221 17h2v2h-2zM205 29h2v2h-2zM105 33h2v2h-2zM161 33h2v2h-2zM201 33h2v2h-2zM217 33h2v2h-2zM233 33h2v2h-2zM181 37h2v2h-2zM233 41h2v2h-2z'/%3E%3C/svg%3E");
   -webkit-mask-position: right top; mask-position: right top;
 }
@@ -1118,7 +1118,7 @@
   -webkit-mask-position: left bottom; mask-position: left bottom;
 }
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  .org-switcher::before, [data-slot="sidebar-inner"]::after { display: none; }
+  [data-slot="sidebar-inner"]::before, [data-slot="sidebar-inner"]::after { display: none; }
 }
 
 [data-slot="sidebar"][data-state="expanded"] ~ .workspace-frame { margin-left: 0; }
@@ -1151,58 +1151,37 @@
   background: var(--sidebar-accent);
   box-shadow: none;
 }
-.sidebar-nav [data-sidebar="menu-button"][data-active="true"] {
-  background: transparent;
-}
 [data-sidebar="menu-button"][data-active="true"] > svg {
   color: var(--muted-foreground);
 }
 
-/* Project rows sit directly on the acrylic sidebar, so their states stay translucent instead of becoming opaque tiles. */
-.canonical-project-row [data-sidebar="menu-button"] {
-  border: 1px solid transparent;
-}
-.canonical-project-row [data-sidebar="menu-button"]:hover {
-  background-color: color-mix(in oklab, var(--sidebar-accent) 62%, transparent);
-}
-.canonical-project-row [data-sidebar="menu-button"][data-active="true"] {
-  background-color: color-mix(in oklab, var(--sidebar-accent) 46%, transparent);
-  border-color: color-mix(in oklab, var(--sidebar-ring) 30%, transparent);
-}
-.canonical-project-row [data-sidebar="menu-button"][data-active="true"]:hover {
-  background-color: color-mix(in oklab, var(--sidebar-accent) 68%, transparent);
-}
-
-/* Acrylic states for glass/system materials: active and hover rows in both sidebars are translucent washes, never
-   opaque tiles. The solid material keeps the opaque --sidebar-accent / muted fills above. */
+/* Sidebar row states: native-sidebar subtle. Hover is a faint neutral wash, the selected row a slightly stronger one:
+   no border, no shadow, no accent outline. Expanded folders and open menus get no fill of their own. */
 :root {
-  --glass-row-hover: rgb(28 38 54 / 0.07);
-  --glass-row-active: rgb(28 38 54 / 0.12);
+  --glass-row-hover: rgb(28 38 54 / 0.04);
+  --glass-row-active: rgb(28 38 54 / 0.055);
   --glass-row-edge: rgb(28 38 54 / 0.10);
 }
 :root.dark {
-  --glass-row-hover: rgb(255 255 255 / 0.07);
-  --glass-row-active: rgb(255 255 255 / 0.13);
+  --glass-row-hover: rgb(255 255 255 / 0.04);
+  --glass-row-active: rgb(255 255 255 / 0.07);
   --glass-row-edge: rgb(255 255 255 / 0.10);
 }
-:root:not([data-material="solid"]) [data-slot="sidebar-inner"] [data-sidebar="menu-button"]:hover,
-:root:not([data-material="solid"]) .floq-right-tab:not([data-active="true"]):hover {
-  background-color: var(--glass-row-hover);
+[data-slot="sidebar-inner"] [data-sidebar="menu-button"]:hover { background-color: var(--glass-row-hover); }
+[data-slot="sidebar-inner"] [data-sidebar="menu-button"][data-active="true"],
+[data-slot="sidebar-inner"] [data-sidebar="menu-button"][data-active="true"]:hover {
+  background-color: var(--glass-row-active);
+  border-color: transparent;
+  box-shadow: none;
 }
-:root:not([data-material="solid"]) [data-slot="sidebar-inner"] [data-sidebar="menu-button"][data-active="true"],
+.canonical-project-row [data-sidebar="menu-button"] { border: 1px solid transparent; }
+:root:not([data-material="solid"]) .floq-right-tab:not([data-active="true"]):hover { background-color: var(--glass-row-hover); }
 :root:not([data-material="solid"]) .floq-right-tab[data-active="true"] {
   background-color: var(--glass-row-active);
   box-shadow: inset 0 0 0 1px var(--glass-row-edge), inset 0 1px 0 var(--glass-highlight, transparent);
   -webkit-backdrop-filter: saturate(1.4);
   backdrop-filter: saturate(1.4);
 }
-:root:not([data-material="solid"]) .canonical-project-row [data-sidebar="menu-button"]:hover { background-color: var(--glass-row-hover); }
-:root:not([data-material="solid"]) .canonical-project-row [data-sidebar="menu-button"][data-active="true"],
-:root:not([data-material="solid"]) .canonical-project-row [data-sidebar="menu-button"][data-active="true"]:hover {
-  background-color: var(--glass-row-active);
-  border-color: color-mix(in oklab, var(--sidebar-ring) 30%, transparent);
-}
-:root:not([data-material="solid"]) .sidebar-nav [data-sidebar="menu-button"][data-active="true"] { background-color: var(--glass-row-active); }
 @media (forced-colors: active) {
   .floq-right-tab[data-active="true"], [data-sidebar="menu-button"][data-active="true"] { background: Highlight; color: HighlightText; }
 }
@@ -1224,7 +1203,7 @@
 :root:not([data-material="solid"]) .floq-sticky-head:hover { background-color: var(--glass-row-active); }
 
 /* Account menu (UserCard) in the sidebar footer: open trigger and its dropdown follow the same acrylic wash. */
-:root:not([data-material="solid"]) [data-slot="sidebar-inner"] [data-sidebar="menu-button"][data-state="open"] { background-color: var(--glass-row-active); }
+:root:not([data-material="solid"]) [data-slot="sidebar-footer"] [data-sidebar="menu-button"][data-state="open"] { background-color: var(--glass-row-active); }
 :root:not([data-material="solid"]) .floq-frosted-menu {
   background-color: color-mix(in oklab, var(--popover) 66%, transparent);
   -webkit-backdrop-filter: blur(10px) saturate(1.4);
