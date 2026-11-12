@@ -616,6 +616,7 @@ fn valid_dav_url(url: &reqwest::Url) -> bool {
 /// Windows WebClient UNC form: \\host@SSL@port\DavWWWRoot\dav\<token> or \\host@port\... (no trailing backslash).
 /// The port is ALWAYS explicit: without @SSL/@port Windows tries SMB (445) first and would send NTLM credentials to the host.
 /// IPv6 literals are not valid UNC host names, so they are refused.
+#[cfg(windows)]
 fn dav_unc(url: &reqwest::Url) -> Result<String, String> {
     let host = match url.host_str() {
         Some(host) if !host.starts_with('[') => host.to_string(),
@@ -652,26 +653,111 @@ fn check_webclient() -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the item location inside the share (`[folder, ...path]`, from the UI) as plain path segments.
+/// Anything that could escape the share or be misread by Explorer / a URL is refused.
+fn clean_sub(sub: &[String]) -> Result<Vec<String>, String> {
+    if sub.len() > 64 {
+        return Err("Invalid path".into());
+    }
+    sub.iter()
+        .map(|part| {
+            let bad = part.is_empty()
+                || part == "."
+                || part == ".."
+                || part.len() > 255
+                || part.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | '"' | ':' | '*' | '?' | '<' | '>' | '|'));
+            if bad { Err("Invalid path".to_string()) } else { Ok(part.clone()) }
+        })
+        .collect()
+}
+
+/// `base` (a UNC share root or a drive like `Z:`) plus the segments, Windows separators, no trailing backslash.
+#[cfg(any(windows, test))]
+fn windows_item_path(base: &str, sub: &[String]) -> String {
+    let mut path = base.trim_end_matches('\\').to_string();
+    for part in sub {
+        path.push('\\');
+        path.push_str(part);
+    }
+    path
+}
+
+/// Explorer command line for a path: `/select,"<path>"` for a file (opens the parent and highlights it), the bare path for a folder.
+#[cfg(any(windows, test))]
+fn explorer_args(path: &str, select: bool) -> String {
+    if select { format!("/select,\"{path}\"") } else { format!("\"{path}\"") }
+}
+
+/// `Z:` out of the `net use *` output ("Drive Z: is now connected to ..."), localized text included.
+#[cfg(any(windows, test))]
+fn parse_drive_letter(text: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    (0..chars.len().saturating_sub(1)).find_map(|i| {
+        let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+        (boundary && chars[i].is_ascii_uppercase() && chars[i + 1] == ':').then(|| format!("{}:", chars[i]))
+    })
+}
+
+/// The share URL pointing at the item (percent-encoded per segment); `sub` is already validated.
+/// No segments: the share root unchanged. `dir` keeps the trailing slash file managers expect on a collection.
+#[cfg(any(not(any(windows, target_os = "macos")), test))]
+fn dav_item_url(url: &reqwest::Url, sub: &[String], dir: bool) -> reqwest::Url {
+    let mut item = url.clone();
+    if sub.is_empty() {
+        return item;
+    }
+    if let Ok(mut segments) = item.path_segments_mut() {
+        segments.pop_if_empty().extend(sub.iter());
+        if dir {
+            segments.push("");
+        }
+    }
+    item
+}
+
+/// Wait (short retry) until the OS shows the path: a WebClient / gvfs mount appears a moment after the first access.
+#[cfg(any(windows, target_os = "macos"))]
+fn wait_for_path(path: &std::path::Path) -> bool {
+    for _ in 0..40 {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
+}
+
 /// Blocking part of "Open in Explorer"; run on a blocking thread so sc.exe / net.exe never stall the async runtime.
 /// Arguments are always passed as argv items, never through a shell or script text.
-fn open_dav_blocking(url: reqwest::Url, map_drive: bool) -> Result<String, String> {
+/// `sub` is `[folder, ...path]` inside the share; with `is_file` the file is selected in its parent folder.
+fn open_dav_blocking(url: reqwest::Url, map_drive: bool, sub: Vec<String>, is_file: bool) -> Result<String, String> {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let unc = dav_unc(&url)?;
         check_webclient()?;
+        let mut base = unc.clone();
         if map_drive {
             let output = run_hidden("net.exe", &["use", "*", &unc, "/persistent:no"])?;
             let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
             if !output.status.success() {
                 return Err(format!("webclient_unreachable: Windows could not connect to the share ({}). Check that the runtime uses HTTPS and the WebClient service is running.", text.trim().lines().next().unwrap_or("unknown error")));
             }
-            return Ok(text.trim().lines().find(|line| line.contains(':')).unwrap_or("Connected").to_string());
+            match parse_drive_letter(&text) {
+                Some(drive) => base = drive,
+                None if sub.is_empty() => return Ok(text.trim().lines().find(|line| line.contains(':')).unwrap_or("Connected").to_string()),
+                None => {}
+            }
         }
+        let target = windows_item_path(&base, &sub);
+        // Opening a WebClient share can take seconds; the item path only resolves once the mount is up.
+        let ready = wait_for_path(std::path::Path::new(&target));
+        let (shown, select) = if ready { (target, is_file && !sub.is_empty()) } else { (windows_item_path(&base, &[]), false) };
         std::process::Command::new("explorer.exe")
-            .arg(format!("{unc}\\"))
+            .raw_arg(explorer_args(&shown, select))
             .spawn()
             .map_err(|error| format!("Could not start Explorer: {error}"))?;
-        return Ok("Opened in Explorer".into());
+        return Ok(if map_drive { format!("Connected as {base}") } else { "Opened in Explorer".to_string() });
     }
     #[cfg(target_os = "macos")]
     {
@@ -687,30 +773,64 @@ fn open_dav_blocking(url: reqwest::Url, map_drive: bool) -> Result<String, Strin
         if !output.status.success() {
             return Err(format!("Finder could not connect: {}", String::from_utf8_lossy(&output.stderr).trim()));
         }
+        if !sub.is_empty() {
+            // Finder names the volume after the last path component of the share URL (the token).
+            let token = url.path().trim_matches('/').rsplit('/').next().unwrap_or("").to_string();
+            let mut path = std::path::PathBuf::from("/Volumes").join(token);
+            for part in &sub {
+                path.push(part);
+            }
+            if wait_for_path(&path) {
+                let mut command = std::process::Command::new("open");
+                if is_file { command.arg("-R"); }
+                command.arg(&path).spawn().map_err(|error| format!("Could not start Finder: {error}"))?;
+            }
+        }
         return Ok("Mounted in Finder".into());
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         let _ = map_drive;
         let scheme = if url.scheme() == "https" { "davs" } else { "dav" };
-        let target = url.as_str().replacen(url.scheme(), scheme, 1);
+        let to_dav = |u: &reqwest::Url| u.as_str().replacen(u.scheme(), scheme, 1);
+        // Item folder: the parent for a file, the folder itself otherwise.
+        let folder_sub: &[String] = if is_file && !sub.is_empty() { &sub[..sub.len() - 1] } else { &sub };
+        let folder = to_dav(&dav_item_url(&url, folder_sub, true));
+        if is_file && !sub.is_empty() {
+            // Mount first (anonymous share, no prompt), then ask the file manager to show the file selected (FileManager1).
+            let _ = std::process::Command::new("gio").args(["mount", &to_dav(&url)]).output();
+            let file = to_dav(&dav_item_url(&url, &sub, false));
+            let shown = std::process::Command::new("gdbus")
+                .args(["call", "--session", "--dest", "org.freedesktop.FileManager1", "--object-path", "/org/freedesktop/FileManager1", "--method", "org.freedesktop.FileManager1.ShowItems"])
+                .arg(format!("['{file}']"))
+                .arg("")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            if shown {
+                return Ok("Opened in the file manager".into());
+            }
+        }
         std::process::Command::new("xdg-open")
-            .arg(target)
+            .arg(folder)
             .spawn()
             .map_err(|error| format!("Could not open the file manager: {error}"))?;
         return Ok("Opened in the file manager".into());
     }
 }
 
-/// Open the project's read-only WebDAV share in the OS file manager. `map_drive` (Windows) maps the first free drive letter instead.
+/// Open the project's WebDAV share in the OS file manager, at `sub` (`[folder, ...path]`) when given, selecting the file when
+/// `is_file`. `map_drive` (Windows) maps the first free drive letter and opens the item through it.
 #[tauri::command]
-async fn open_dav_mount(window: WebviewWindow, runtime_origin: tauri::State<'_, RuntimeOrigin>, dav_url: String, map_drive: bool) -> Result<String, String> {
+async fn open_dav_mount(window: WebviewWindow, runtime_origin: tauri::State<'_, RuntimeOrigin>, dav_url: String, map_drive: bool, sub: Option<Vec<String>>, is_file: Option<bool>) -> Result<String, String> {
     require_main(&window)?;
     let url = same_origin_url(&dav_url, &current_origin(&runtime_origin)?)?;
     if !valid_dav_url(&url) {
         return Err("Invalid share address".into());
     }
-    tauri::async_runtime::spawn_blocking(move || open_dav_blocking(url, map_drive))
+    let sub = clean_sub(&sub.unwrap_or_default())?;
+    let is_file = is_file.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || open_dav_blocking(url, map_drive, sub, is_file))
         .await
         .map_err(|_| "The file manager request failed".to_string())?
 }
@@ -1026,5 +1146,46 @@ pub fn run() {
     if let Err(error) = result {
         eprintln!("Failed to start Floq: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod dav_item_tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> { items.iter().map(|s| s.to_string()).collect() }
+
+    #[test]
+    fn clean_sub_rejects_traversal_and_separators() {
+        assert!(clean_sub(&v(&["app", "src", "a b", "ñ.txt"])).is_ok());
+        for bad in ["..", ".", "", "a/b", "a\\b", "a\"b", "c:", "x*"] {
+            assert!(clean_sub(&v(&["app", bad])).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn windows_paths_use_backslashes_and_keep_spaces_and_unicode() {
+        let unc = "\\\\host@SSL@443\\DavWWWRoot\\dav\\abc";
+        assert_eq!(windows_item_path(unc, &v(&["app", "my dir", "ação.txt"])), format!("{unc}\\app\\my dir\\ação.txt"));
+        assert_eq!(windows_item_path("Z:", &v(&["app"])), "Z:\\app");
+        assert_eq!(windows_item_path("Z:\\", &[]), "Z:");
+        assert_eq!(explorer_args("Z:\\a b\\c.txt", true), "/select,\"Z:\\a b\\c.txt\"");
+        assert_eq!(explorer_args("Z:\\a b", false), "\"Z:\\a b\"");
+    }
+
+    #[test]
+    fn drive_letter_is_parsed_from_net_use_output() {
+        assert_eq!(parse_drive_letter("Drive Z: is now connected to \\\\h\\x.\r\nThe command completed"), Some("Z:".into()));
+        assert_eq!(parse_drive_letter("A unidade Y: est\u{e1} agora conectada"), Some("Y:".into()));
+        assert_eq!(parse_drive_letter("no drive here"), None);
+    }
+
+    #[test]
+    fn dav_item_url_percent_encodes_each_segment() {
+        let base = reqwest::Url::parse("https://host.example:8443/dav/0123456789abcdef0123456789abcdef/").unwrap();
+        let url = dav_item_url(&base, &v(&["app", "a b", "ação#1.txt"]), false);
+        assert_eq!(url.as_str(), "https://host.example:8443/dav/0123456789abcdef0123456789abcdef/app/a%20b/a%C3%A7%C3%A3o%231.txt");
+        assert_eq!(dav_item_url(&base, &[], true).as_str(), base.as_str());
+        assert_eq!(dav_item_url(&base, &v(&["app", "a b"]), true).as_str(), "https://host.example:8443/dav/0123456789abcdef0123456789abcdef/app/a%20b/");
     }
 }

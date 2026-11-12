@@ -1255,7 +1255,8 @@ mod tests {
     #[test]
     fn radius_tracks_physical_height_and_scale() {
         assert_eq!(corner_radius(60, 1.5, false), 30.0);
-        assert_eq!(corner_radius(300, 1.5, true), 39.0);
+        // Expanded corners are 34 logical px (Dynamic Island design, 92d8476); the test still held the older 26 px value.
+        assert_eq!(corner_radius(300, 1.5, true), 51.0);
         assert_eq!(corner_radius(40, 2.0, true), 20.0);
     }
 
