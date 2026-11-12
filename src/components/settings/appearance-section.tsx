@@ -4,6 +4,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useTerminalPrefs, type CursorStyle } from "@/lib/prefs";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { useAvatarPreference } from "@/lib/avatar-preference";
 import { useCursorPreference } from "@/lib/cursor-preference";
 import { useMaterialPreference, type MaterialPreference } from "@/lib/material-preference";
 import { useNativeMaterialSupport } from "@/lib/native-material";
@@ -13,6 +14,7 @@ export default function AppearanceSection() {
     const [terminal, setTerminal] = useTerminalPrefs();
     const [material, setMaterial] = useMaterialPreference();
     const [cursors, setCursors] = useCursorPreference();
+    const [avatars, setAvatars] = useAvatarPreference();
     const support = useNativeMaterialSupport() ?? [];
     // macOS has one translucent material (vibrancy), stored as "mica". Windows lists what the build supports.
     const materialOptions: { value: MaterialPreference; label: string }[] = support.includes("vibrancy")
@@ -54,6 +56,9 @@ export default function AppearanceSection() {
                 </SettingRow>
                 <SettingRow label="Custom cursors" htmlFor="appearance-custom-cursors" description="Floq’s own pointer set inside this window only. Turn off to use your system cursors. Terminals always keep the native cursor.">
                     <Switch id="appearance-custom-cursors" checked={cursors === "custom"} onCheckedChange={(v) => setCursors(v ? "custom" : "system")} />
+                </SettingRow>
+                <SettingRow label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated robot, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
+                    <Switch id="appearance-robot-avatars" checked={avatars === "on"} onCheckedChange={(v) => setAvatars(v ? "on" : "off")} />
                 </SettingRow>
             </SettingsGroup>
 

@@ -305,8 +305,8 @@ export function canonicalProjectPrefsMigrationKey(scope: string): string {
     return `floq.canonicalProjectPrefsMigrated.${encodeURIComponent(scope)}`;
 }
 
-export function projectScope(baseUrl: string | null, userId: string | null): string {
-    return `${baseUrl ?? "offline"}:${userId ?? "anonymous"}`;
+export function projectScope(baseUrl: string | null, userId: string | null, organizationId?: string | null): string {
+    return `${baseUrl ?? "offline"}:${userId ?? "anonymous"}${organizationId ? `:org:${organizationId}` : ""}`;
 }
 
 const RECENT_KEY = "floq.recentRepos";

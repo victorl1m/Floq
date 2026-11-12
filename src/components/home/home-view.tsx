@@ -245,7 +245,7 @@ export default function HomeView() {
                                                     <DropdownMenuSeparator />
                                                     <DropdownMenuItem onClick={() => setConnecting(true)}>
                                                         <IconPlus className="text-muted-foreground" />
-                                                        Connect another agent
+                                                        Connect another provider
                                                     </DropdownMenuItem>
                                                 </>
                                             )}
@@ -313,7 +313,7 @@ export default function HomeView() {
                                         {" "}
                                         &middot;{" "}
                                         <button type="button" className="underline" onClick={() => setConnecting(true)}>
-                                            + Connect another agent
+                                            + Connect another provider
                                         </button>
                                     </>
                                 )}

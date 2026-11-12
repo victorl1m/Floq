@@ -18,11 +18,16 @@ export interface UserPreferences {
     canvasViewports: Record<string, { x: number; y: number; zoom: number }>;
     /** Project whose Agent Canvas was open last; restored after a reload. */
     lastCanvasProjectId: string | null;
+    /** Same, remembered per organization so switching back restores that organization's canvas. */
+    lastCanvasProjectIdByOrg: Record<string, string>;
     /** Ports last forwarded by hand, per session id (most recent first), offered as one-click chips. */
     recentForwardPorts: Record<string, number[]>;
 }
 
 export type UserPreferencePatch = Partial<Omit<UserPreferences, "version">>;
+
+/** Bumped when activeOrganizationId started scoping projects/sessions; older saved values are ignored once. */
+export const ORGANIZATION_SCOPE_VERSION = 2;
 
 export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     version: 1,
@@ -37,8 +42,14 @@ export const USER_PREFERENCE_DEFAULTS: UserPreferences = {
     canvasViewports: {},
     canvasBranchSessions: {},
     lastCanvasProjectId: null,
+    lastCanvasProjectIdByOrg: {},
     recentForwardPorts: {},
 };
+
+function stringMap(value: unknown): Record<string, string> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
 
 function portListMap(value: unknown): Record<string, number[]> {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -130,7 +141,10 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
         const legacy = value as { activeTeamId?: unknown }; // pre-rename persisted key
         return {
             version: 1,
-            activeOrganizationId: typeof parsed.activeOrganizationId === "string" ? parsed.activeOrganizationId : typeof legacy.activeTeamId === "string" ? legacy.activeTeamId : null,
+            // Before organization scoping this id only picked the Tasks org; every project migrated to Personal, so an unstamped value is dropped once.
+            activeOrganizationId: (parsed as { organizationScopeVersion?: unknown }).organizationScopeVersion === ORGANIZATION_SCOPE_VERSION
+                ? typeof parsed.activeOrganizationId === "string" ? parsed.activeOrganizationId : typeof legacy.activeTeamId === "string" ? legacy.activeTeamId : null
+                : null,
             sidebarOpen: typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : true,
             taskNavigatorOpen: typeof parsed.taskNavigatorOpen === "boolean" ? parsed.taskNavigatorOpen : true,
             workspaceNavExpanded: booleanMap(parsed.workspaceNavExpanded),
@@ -141,6 +155,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
             canvasViewports: viewportMap(parsed.canvasViewports),
             canvasBranchSessions: branchSessionMaps(parsed.canvasBranchSessions),
             lastCanvasProjectId: typeof parsed.lastCanvasProjectId === "string" ? parsed.lastCanvasProjectId : null,
+            lastCanvasProjectIdByOrg: stringMap(parsed.lastCanvasProjectIdByOrg),
             recentForwardPorts: portListMap(parsed.recentForwardPorts),
         };
     } catch { return USER_PREFERENCE_DEFAULTS; }
@@ -149,7 +164,7 @@ export function loadUserPreferences(baseUrl: string | null, userId: string | nul
 export function saveUserPreferences(baseUrl: string | null, userId: string | null, patch: UserPreferencePatch, fallback?: UserPreferences): UserPreferences {
     const local = storage();
     const current = fallback ?? loadUserPreferences(baseUrl, userId);
-    const next: UserPreferences = { ...current, ...patch, version: 1 };
+    const next = { ...current, ...patch, version: 1, organizationScopeVersion: ORGANIZATION_SCOPE_VERSION } as UserPreferences;
     const key = userPreferenceKey(baseUrl, userId);
     if (!key || !local) return next;
     try { local.setItem(key, JSON.stringify(next)); } catch { /* Preferences are optional when storage is blocked or full. */ }

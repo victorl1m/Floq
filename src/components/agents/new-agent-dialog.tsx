@@ -13,6 +13,7 @@ import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { AgentRole, CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RoleGlyph, roleLabel } from "@/lib/role-icons";
 import ModelSelect, { normalizeModels } from "./model-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { loadComposerPrefs } from "@/lib/prefs";
@@ -179,7 +180,7 @@ export default function NewAgentDialog() {
                                 className="self-start px-0 text-muted-foreground"
                                 onClick={() => setSetupOpen(true)}
                             >
-                                + Connect another agent
+                                + Connect another provider
                             </Button>
                         )}
                     </div>
@@ -218,17 +219,27 @@ export default function NewAgentDialog() {
                 {roles.length > 0 && usable.length > 0 && (
                     <div className="flex flex-col gap-2">
                         <Label htmlFor="agent-role">Role</Label>
-                        <Select value={role || GENERALIST} disabled={busy} onValueChange={(value) => setRole(value === GENERALIST ? "" : value)}>
+                        <Select value={!role || role === ORCHESTRATOR_ROLE ? GENERALIST : role} disabled={busy} onValueChange={(value) => setRole(value === GENERALIST ? "" : value)}>
                             <SelectTrigger id="agent-role" className="w-full">
-                                <SelectValue>{roles.find((r) => r.id === role)?.label ?? "Generalist"}</SelectValue>
+                                <SelectValue>
+                                    {(() => {
+                                        const shown = !role || role === ORCHESTRATOR_ROLE ? "generalist" : role;
+                                        return <span className="flex items-center gap-2"><RoleGlyph roleId={shown} className="text-muted-foreground" />{roleLabel(shown, roles.find((r) => r.id === shown)?.label)}</span>;
+                                    })()}
+                                </SelectValue>
                             </SelectTrigger>
                             <SelectContent className="max-w-[min(var(--radix-select-content-available-width),28rem)]">
-                                <SelectItem value={GENERALIST}>Generalist</SelectItem>
-                                {roles.map((r) => (
+                                <SelectItem value={GENERALIST} textValue="Generalist">
+                                    <span className="flex items-center gap-2"><RoleGlyph roleId="generalist" className="text-muted-foreground" />Generalist</span>
+                                </SelectItem>
+                                {roles.filter((r) => r.id !== ORCHESTRATOR_ROLE).map((r) => (
                                     <SelectItem key={r.id} value={r.id} textValue={r.label}>
-                                        <span className="flex min-w-0 flex-col items-start gap-0.5">
-                                            <span>{r.label}</span>
-                                            <span className="text-xs font-normal text-muted-foreground">{r.summary}</span>
+                                        <span className="flex min-w-0 items-start gap-2">
+                                            <RoleGlyph roleId={r.id} className="mt-0.5 shrink-0 text-muted-foreground" />
+                                            <span className="flex min-w-0 flex-col items-start gap-0.5">
+                                                <span>{roleLabel(r.id, r.label)}</span>
+                                                <span className="text-xs font-normal text-muted-foreground">{r.summary}</span>
+                                            </span>
                                         </span>
                                     </SelectItem>
                                 ))}

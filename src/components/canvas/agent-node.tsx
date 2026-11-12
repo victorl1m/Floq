@@ -1,13 +1,14 @@
 import { memo, useRef } from "react";
 import { Handle, NodeResizer, Position, useConnection, type Node, type NodeProps } from "@xyflow/react";
-import { orchestratorLabel } from "@/lib/runtime/orchestrator";
-import { IconChevronDown, IconChevronRight, IconCrown, IconSubtask, IconKey, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
+import { RoleGlyph, roleLabel } from "@/lib/role-icons";
+import { ORCHESTRATOR_TEXT, orchestratorLabel } from "@/lib/runtime/orchestrator";
+import { IconChevronDown, IconChevronRight, IconKey, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ActivityIndicator } from "@/components/agents/activity-indicator";
-import { ProviderIcon } from "@/components/agents/provider";
+import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { providerThemeProps } from "@/lib/provider-theme";
 import type { SessionState, SessionSummary } from "@/lib/runtime/types";
 import { useRuntime } from "@/lib/runtime/store";
@@ -16,7 +17,14 @@ import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "./wire-edge";
 import NodeMessageBar from "./node-message-bar";
 import SessionMirror, { getMirrorTail } from "./session-mirror";
 
-const DOT: Record<SessionState, string> = { running: "bg-emerald-500", starting: "bg-amber-400 animate-pulse", sleeping: "bg-muted-foreground/40", exited: "bg-muted-foreground/40", failed: "bg-destructive" };
+/** State label (replaces the old status dot): colored text so running, starting and failed stay distinguishable. */
+const STATE_LABEL: Record<SessionState, { text: string; className: string }> = {
+  running: { text: "Running", className: "text-emerald-700 dark:text-emerald-400" },
+  starting: { text: "Starting", className: "text-amber-700 dark:text-amber-400" },
+  sleeping: { text: "Sleeping", className: "text-muted-foreground" },
+  exited: { text: "Exited", className: "text-muted-foreground" },
+  failed: { text: "Failed", className: "border-destructive/50 text-destructive" },
+};
 
 
 export interface AgentNodeData extends Record<string, unknown> {
@@ -86,22 +94,21 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
           <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7 shrink-0" aria-label={collapsed ? "Expand" : "Collapse"} title={collapsed ? "Expand mirror" : "Collapse mirror"} onClick={() => ctx.toggleCollapse(id)}>
             {collapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
           </Button>
-          <ProviderIcon provider={session.provider} className="size-4 shrink-0" />
-          <span className={cn("size-2 shrink-0 rounded-full", DOT[session.state])} title={session.state} />
+          <AgentAvatar session={session} size={20} />
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
           <ActivityIndicator session={session} />
-          {isLead && (
-            <span role="img" aria-label={`Lead orchestrator, ${lead} ${lead === 1 ? "agent" : "agents"}`} title={orchestratorLabel(lead)} className="grid size-6 shrink-0 place-items-center text-muted-foreground">
-              <IconCrown size={14} aria-hidden="true" />
-            </span>
-          )}
-          {sleeping && <Badge variant="outline" className="hidden h-4 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground @[300px]/head:inline-flex">Sleeping</Badge>}
+          <Badge variant="outline" data-testid="agent-state" className={cn("h-4 shrink-0 px-1.5 text-[10px] font-normal", STATE_LABEL[session.state].className, session.state === "starting" && "animate-pulse motion-reduce:animate-none", session.state !== "failed" && session.state !== "starting" && "hidden @[300px]/head:inline-flex")}>{STATE_LABEL[session.state].text}</Badge>
           {session.parentSessionId && (
             <Badge variant="outline" className="h-4 shrink-0 gap-0.5 px-1.5 text-[10px] font-normal text-muted-foreground" title={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`} aria-label={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`}>
-              <IconSubtask size={10} aria-hidden="true" />Subagent
+              <RoleGlyph roleId="subagent" size={10} />{roleLabel("subagent")}
             </Badge>
           )}
-          {session.role && <Badge variant="secondary" className="hidden h-4 shrink-0 px-1.5 text-[10px] font-normal @[420px]/head:inline-flex">{session.role}</Badge>}
+          {isLead && (
+            <Badge variant="outline" className={cn("h-4 shrink-0 gap-0.5 px-1.5 text-[10px] font-normal", ORCHESTRATOR_TEXT)} title={orchestratorLabel(lead)} aria-label={`Orchestrator (lead), ${orchestratorLabel(lead)}`}>
+              <RoleGlyph roleId="orchestrator" size={10} />{roleLabel("orchestrator")}
+            </Badge>
+          )}
+          {session.role && !isLead && <Badge variant="secondary" className="hidden h-4 shrink-0 gap-0.5 px-1.5 text-[10px] font-normal @[420px]/head:inline-flex"><RoleGlyph roleId={session.role} size={10} />{roleLabel(session.role)}</Badge>}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {links && links.count > 0 && (
@@ -114,9 +121,6 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
               {waking ? <Spinner /> : sleeping ? <IconPlayerPlay size={14} /> : <IconRefresh size={14} />}
             </Button>
           )}
-          <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Link ${session.title} to another agent`} title="Link to…" onClick={() => ctx.startLink(id)}>
-            <IconLink size={14} />
-          </Button>
           {(ctx.keychainCounts[id] ?? 0) > 0 && (
             <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-amber-600 tabular-nums dark:text-amber-400" title={`${ctx.keychainCounts[id]} keychain${ctx.keychainCounts[id] === 1 ? "" : "s"} in this agent's context (names only, never values)`} aria-label={`${ctx.keychainCounts[id]} keychain${ctx.keychainCounts[id] === 1 ? "" : "s"} in context`}>
               <IconKey size={12} />{ctx.keychainCounts[id]}
@@ -126,9 +130,6 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
             <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground tabular-nums" title={`${ctx.noteCounts[id]} note${ctx.noteCounts[id] === 1 ? "" : "s"} in this agent's context`} aria-label={`${ctx.noteCounts[id]} note${ctx.noteCounts[id] === 1 ? "" : "s"} in context`}>
               <IconNote size={12} />{ctx.noteCounts[id]}
             </span>
-          )}
-          {((ctx.noteCounts[id] ?? 0) + (ctx.keychainCounts[id] ?? 0) + (links?.count ?? 0)) > 0 && (
-            <span className="hidden shrink-0 rounded-sm border border-border/60 px-1 text-[10px] leading-4 text-muted-foreground @[420px]/head:inline" data-testid="in-context-badge">in context</span>
           )}
           <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Open ${session.title}`} title="Open terminal" onClick={() => ctx.focus(session)}>
             <IconWindowMaximize size={14} />
