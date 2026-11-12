@@ -57,7 +57,7 @@ export default function AppearanceSection() {
                 <SettingRow label="Custom cursors" htmlFor="appearance-custom-cursors" description="Floq’s own pointer set inside this window only. Turn off to use your system cursors. Terminals always keep the native cursor.">
                     <Switch id="appearance-custom-cursors" checked={cursors === "custom"} onCheckedChange={(v) => setCursors(v ? "custom" : "system")} />
                 </SettingRow>
-                <SettingRow label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated robot, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
+                <SettingRow label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated Floq avatar, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
                     <Switch id="appearance-robot-avatars" checked={avatars === "on"} onCheckedChange={(v) => setAvatars(v ? "on" : "off")} />
                 </SettingRow>
             </SettingsGroup>

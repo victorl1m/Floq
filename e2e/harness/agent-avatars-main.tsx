@@ -28,6 +28,7 @@ const ctx = {
 const runtime = { client: {}, sessions } as never;
 const nodes: Node[] = sessions.map((s, i) => ({ id: (s as { id: string }).id, type: "agent", position: { x: 20 + (i % 2) * 480, y: 20 + Math.floor(i / 2) * 200 }, width: 450, height: 180, data: { session: s } }));
 const nodeTypes = { agent: AgentNodeCard };
+const grid = Array.from({ length: 24 }, (_, i) => ({ id: `${(0x9e3779b1 * (i + 1) >>> 0).toString(16).padStart(8, "0")}-4c1d-4e2a-9b7f-${String(i).padStart(12, "0")}`, provider: (["claude", "codex", "shell"] as const)[i % 3] }));
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <RuntimeContext.Provider value={runtime}><CanvasCtx.Provider value={ctx}><TooltipProvider>
@@ -37,5 +38,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <div id="avatars" style={{ display: "flex", gap: 12, padding: 12 }}>
       {(sessions as { id: string; provider: "claude" | "codex" }[]).map((s) => <AgentAvatar key={s.id} session={s} size={32} />)}
     </div>
+    {q.get("grid") && <div id="grid" className="bg-background p-4 text-foreground">
+      {[40, 20, 16].map((size) => <div key={size} data-size={size} style={{ display: "flex", flexWrap: "wrap", gap: size / 2, marginBottom: 14, maxWidth: 24 * (size * 1.5) }}>
+        {grid.map((s) => <AgentAvatar key={s.id} session={s} size={size} />)}
+      </div>)}
+      <div id="chip" className="inline-flex h-7 items-center gap-1.5 rounded-full border bg-card pl-1 pr-2.5 text-xs"><span className="text-muted-foreground">To:</span><AgentAvatar session={grid[3]} size={18} /><span>Builder</span></div>
+    </div>}
   </TooltipProvider></CanvasCtx.Provider></RuntimeContext.Provider>,
 );

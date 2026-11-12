@@ -1,23 +1,40 @@
+import { useLayoutEffect, useRef } from "react";
 import { ProviderIcon } from "@/components/agents/provider";
 import { useAvatarPreference } from "@/lib/avatar-preference";
-import { useRobotAvatar } from "@/lib/robot-avatar";
+import { robotAvatarSvg } from "@/lib/robot-avatar";
 import { cn } from "cn";
 import type { ProviderId } from "@/lib/runtime/types";
 
+/** First opaque background behind `el`, so the badge ring matches whatever surface the avatar sits on. */
+function surfaceColor(el: HTMLElement | null): string | null {
+    for (let node = el?.parentElement; node; node = node.parentElement) {
+        const bg = getComputedStyle(node).backgroundColor;
+        if (bg && bg !== "transparent" && !/rgba\(.*,\s*0\)$/.test(bg)) return bg;
+    }
+    return null;
+}
+
 /**
- * Agent identity: a generated robot (seeded by the session UUID) in a rounded square, with the provider
- * as a tiny corner badge. Settings > Appearance > Robot avatars off, or a still-loading avatar, shows the provider logo.
+ * Agent identity: a seeded Floq blob with eyes (from the session UUID) and the provider as a small badge
+ * tucked fully inside the bottom-right corner, ringed in the surrounding surface colour so it never smudges
+ * the eyes. Settings > Appearance > Robot avatars off shows the provider logo alone.
  */
 export function AgentAvatar({ session, size = 20, className }: { session: { id: string; provider: ProviderId }; size?: number; className?: string }) {
     const [pref] = useAvatarPreference();
-    const uri = useRobotAvatar(session.id, pref === "on");
-    if (!uri) return <ProviderIcon provider={session.provider} className={className} style={{ width: size, height: size }} />;
-    const badge = Math.max(9, Math.round(size * 0.5));
+    const ref = useRef<HTMLSpanElement>(null);
+    useLayoutEffect(() => {
+        const color = surfaceColor(ref.current);
+        if (color) ref.current?.style.setProperty("--avatar-ring", color);
+    });
+    if (pref !== "on") return <ProviderIcon provider={session.provider} className={className} style={{ width: size, height: size }} />;
+    const badge = Math.max(6, Math.round(size * 0.38));
+    const ring = size >= 32 ? 2 : size >= 20 ? 1.5 : 1;
     return (
-        <span data-agent-avatar={session.id} className={cn("relative inline-block shrink-0", className)} style={{ width: size, height: size }}>
-            <img src={uri} alt="" draggable={false} className="size-full rounded-[28%] bg-muted object-cover ring-1 ring-border/70 dark:brightness-90" />
-            <span className="absolute -right-[3px] -bottom-[3px] grid place-items-center rounded-full bg-card ring-1 ring-border" style={{ width: badge, height: badge }}>
-                <ProviderIcon provider={session.provider} className="size-full p-px" />
+        <span ref={ref} data-agent-avatar={session.id} className={cn("relative inline-block shrink-0", className)} style={{ width: size, height: size }}>
+            <span className="block size-full" dangerouslySetInnerHTML={{ __html: robotAvatarSvg(session.id, size >= 24) }} />
+            <span data-avatar-badge="" className="absolute right-0 bottom-0 grid place-items-center rounded-full bg-[var(--avatar-ring,var(--card))]"
+                style={{ width: badge, height: badge, padding: ring }}>
+                <ProviderIcon provider={session.provider} className="size-full" />
             </span>
         </span>
     );
