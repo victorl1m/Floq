@@ -57,7 +57,7 @@ import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } f
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
 import { AppWindowProvider, appWindowNodeTypes, isAppWindowId, useCanvasAppWindows } from "./app-window-node";
-import { branchChangeToFollow, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
+import { branchChangeToFollow, hiddenByBranch, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
 import { getMirrorText } from "./session-mirror";
 import WireEdgeView, { anchor, KIND_COLOR, type WireEdge } from "./wire-edge";
@@ -167,11 +167,8 @@ function AgentCanvas() {
     if (!activeProjectId) return [];
     const all = sessions.filter((session) => session.projectId === activeProjectId);
     if (!groundWorkspace || !currentBranch || !branchTags) return all;
-    const hidden = new Set<string>();
-    for (const session of sessionsForWorkspace(activeProjectId, groundWorkspace, all)) {
-      const tag = branchTags[session.id];
-      if (tag && tag.branch !== currentBranch) hidden.add(session.id);
-    }
+    const ground = new Set(sessionsForWorkspace(activeProjectId, groundWorkspace, all).map((session) => session.id));
+    const hidden = hiddenByBranch(all, currentBranch, branchTags, (session) => ground.has(session.id));
     return hidden.size ? all.filter((session) => !hidden.has(session.id)) : all;
   }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags]);
   const sessionById = useCallback((id: string) => projectSessions.find((session) => session.id === id), [projectSessions]);
