@@ -152,6 +152,16 @@ Workspace rows reserve fixed space for disclosure and worktree menu buttons, inc
 
 Terminal sessions accept dragged files and a keyboard-accessible picker. Keep upload feedback compact and token-based; show per-file progress/errors while preserving valid files in a mixed selection. Limit files to 4 MiB each, 16 MiB total, and 20 files per drop. Save attachments in the user's private runtime storage outside the checkout, then paste shell-quoted absolute paths into the terminal without executing them. Drag and drop must keep the picker alternative.
 
+## Memory
+
+The Memory dialog (canvas toolbar) is a calm, keyboard-first knowledge view: header, one toolbar, then the list or the graph with a docked detail pane on the right (side by side from 768 px; stacked below). Spacing follows the 4 px grid: 20 px dialog gutters, 12 px between header, toolbar and body, 12 px between panes, rows of 76 px.
+
+- **Colour:** memory types use the Floq palette from `src/lib/robot-avatar.ts`: decision = Floq orange (lead), fact = sky, procedure = teal, episode = violet (hues 60°+ apart). `--mem-<type>` fills discs and dots; `--mem-<type>-ink` is the AA text variant for labels on panes. Selection stays neutral (foreground tint plus a 3 px type-colour tab on the open row).
+- **Surfaces:** panes are theme-tinted translucent fills over the frosted dialog (like the right sidebar). Solid material, reduced transparency and forced colours make them opaque without blur. Floating graph controls use the 8 px dialog blur.
+- **Graph:** the stage is the agent canvas plane with the same dot grid, which pans and zooms with the graph. Nodes are soft discs with a stage-coloured cut-out rim; pinned nodes add an outer ring, forgotten nodes are hollow and dashed, groups are tinted bubbles with a count. Links are thin muted quadratic curves (weight sets width and opacity). Hover or selection draws the node's links in its endpoint colours, adds a soft glow and dims the rest; the focused label sits in a pill. Supersedes links are dashed orange curves with an arrow head. Labels are collision-aware and quieter at rest.
+- **Dates:** relative ("5m ago") in the UI, absolute in the tooltip and `<time datetime>`; missing or unparseable values render "—".
+- **Motion:** the force layout settles visibly and the detail pane slides in 8 px over 200 ms; reduced motion (OS or Floq) solves the layout synchronously and removes both.
+
 ## Plugins
 
 - Plugins extend Floq through declared contribution points only. They never restyle core surfaces or change core navigation order.

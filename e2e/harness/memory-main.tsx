@@ -15,7 +15,16 @@ const graphMode = params.get("graph") ?? "ok"; // ok | 404
 const disabled = params.get("disabled") === "1";
 const empty = params.get("empty") === "1";
 const slow = params.get("slow") === "1";
+const badDates = params.get("dates") === "bad";
 const store: Memory[] = empty ? [] : makeMemories(n);
+// ?dates=bad: the shapes that used to render "Invalid Date": epoch seconds, numeric strings, the epoch placeholder, garbage, null.
+if (badDates && store.length > 5) {
+  const at = (v: unknown) => v as string;
+  store[0].updatedAt = at(Math.floor(Date.now() / 1000) - 300); store[0].createdAt = at(String(Date.now() - 86_400_000));
+  store[1].updatedAt = at("garbage"); store[1].createdAt = at(null);
+  store[2].updatedAt = "1970-01-01T00:00:00.000Z"; store[2].createdAt = at(undefined);
+  store[5].updatedAt = at(""); store[5].createdAt = at(0);
+}
 const calls: Array<{ name: string; args: unknown }> = [];
 (window as unknown as { __calls: typeof calls }).__calls = calls;
 const events = new Map<string, MemoryEvent[]>();
@@ -43,7 +52,11 @@ const client = {
     return buildGraph(list.map((m) => ({ id: m.id, title: m.title, text: m.text, supersededBy: m.supersededBy })), { k: o.k, min: o.min });
   },
   async memoryStatus() { return { enabled: true, redis: true, backend: "dragonfly", embeddings: "local", model: "test", ready: true, vectors: true }; },
-  async memoryEvents(id: string) { return events.get(id) ?? [{ id: 0, memoryId: id, sessionId: null, actor: "agent", action: "add", before: null, after: null, createdAt: "2026-11-01T10:00:00Z" }]; },
+  async memoryEvents(id: string) {
+    // The runtime's real event shape: `at` (no id, no createdAt). ?dates=bad adds a broken entry too.
+    const base = [{ sessionId: null, actor: "agent", action: "add", before: null, after: null, at: "2026-11-01T10:00:00Z" }, ...(badDates ? [{ sessionId: null, actor: "user", action: "pin", before: null, after: null, at: "nope" }] : [])] as unknown as MemoryEvent[];
+    return [...base, ...(events.get(id) ?? [])];
+  },
   async updateMemory(id: string, patch: Record<string, unknown>) {
     calls.push({ name: "updateMemory", args: { id, patch } });
     const m = store.find((x) => x.id === id)!;
@@ -67,7 +80,9 @@ const client = {
 // The test Chromium rejects the stylesheet's `woff2-variations` format hint and has no system fonts, so text would be invisible: register Geist through the FontFace API.
 const geist = new FontFace("Geist Variable", "url(/node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2)", { weight: "100 900" });
 document.fonts.add(geist);
-await geist.load().catch(() => undefined);
+const geistMono = new FontFace("Geist Mono Variable", "url(/node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2)", { weight: "100 900" });
+document.fonts.add(geistMono);
+await Promise.all([geist.load(), geistMono.load()].map((p) => p.catch(() => undefined)));
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

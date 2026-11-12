@@ -122,7 +122,7 @@ test.describe('list view', () => {
     expect(n).toBeLessThan(visible.length);
     await expect(rows(page).first()).toContainText(/postgres|Database/i);
     await page.getByLabel('Search memories').fill('zzzznomatch');
-    await expect(page.getByTestId('memory-empty')).toHaveText('No memories match.');
+    await expect(page.getByTestId('memory-empty')).toContainText('No memories match.');
     await page.getByLabel('Search memories').fill('');
     await expect(rows(page)).toHaveCount(visible.length);
   });
@@ -152,7 +152,7 @@ test.describe('list view', () => {
     await expect(d).toContainText('Second paragraph');
     await expect(d).toContainText('Author');
     await expect(d.getByRole('heading', { name: 'History' })).toBeVisible();
-    await expect(d.locator('ol li').first()).toContainText('add');
+    await expect(d.locator('ol li').first()).toContainText('Added');
     // side by side on a wide window
     const l = (await page.getByTestId('memory-list').boundingBox())!, s = (await page.getByTestId('memory-side').boundingBox())!;
     expect(s.x).toBeGreaterThan(l.x + l.width - 2);
