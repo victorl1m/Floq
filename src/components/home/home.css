@@ -1,0 +1,111 @@
+/* === Home (src/components/home/home-view.tsx) ===
+   Quiet backdrop: the canvas dot grid (22 px pitch, canvas dot colour) fading out from the top, plus one static
+   soft glow behind the composer. No motion. Glow drops for Solid, reduced transparency and forced colours. */
+
+.home-root { isolation: isolate; }
+
+.home-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  min-height: 100%;
+  background-image:
+    radial-gradient(ellipse 52% 38% at 50% 22%, var(--home-glow), transparent 72%),
+    radial-gradient(circle at center, var(--home-dot) 0.8px, transparent 1.3px);
+  background-size: 100% 100%, 22px 22px;
+  background-position: 0 0, 11px 11px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.55) 46%, transparent 88%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.55) 46%, transparent 88%);
+  opacity: 0.85;
+}
+/* Same dot colour as the light canvas (#aab2c0); dark uses a faint white so the grid reads like the sidebar's pixel dots. */
+:root { --home-dot: rgb(170 178 192 / 0.75); --home-glow: color-mix(in oklab, var(--primary) 10%, transparent); }
+:root.dark { --home-dot: rgb(255 255 255 / 0.13); --home-glow: color-mix(in oklab, var(--primary) 12%, transparent); }
+
+/* Composer: the hero. Near-opaque raised card; the focus ring is a soft shadow, not an outline on the textarea. */
+.home-composer {
+  position: relative;
+  border-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+  background-color: color-mix(in oklab, var(--card) 96%, transparent);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+  transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
+}
+.home-composer:focus-within {
+  border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3-focus);
+}
+.home-composer[data-drop-hover] { border-color: var(--ring); }
+.home-drop-veil {
+  position: absolute;
+  inset: 6px;
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed var(--ring);
+  border-radius: 17px;
+  background: color-mix(in oklab, var(--card) 92%, transparent);
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+#home-prompt,
+#home-prompt:focus,
+#home-prompt:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+/* Hint row under the composer: readable secondary text, not a faint footnote. */
+.home-hint { color: color-mix(in oklab, var(--muted-foreground) 88%, var(--foreground)); }
+
+.home-chip { background-color: color-mix(in oklab, var(--card) 70%, transparent); }
+
+/* Section captions: quiet labels instead of headings that compete with the greeting. */
+.home-caption {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+/* Recent agent and project cards. */
+.home-card {
+  border-color: color-mix(in oklab, var(--foreground) 8%, transparent);
+  background-color: color-mix(in oklab, var(--card) 78%, transparent);
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+.home-card:hover {
+  border-color: color-mix(in oklab, var(--foreground) 16%, transparent);
+  background-color: var(--card);
+  box-shadow: var(--shadow-elev-1);
+}
+.home-card:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.home-card[aria-current="true"] { border-color: color-mix(in oklab, var(--foreground) 22%, transparent); }
+
+.home-empty {
+  border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
+  background-color: color-mix(in oklab, var(--card) 50%, transparent);
+}
+
+/* Opaque fallbacks: Solid material, OS reduced transparency. */
+:root[data-material="solid"] .home-backdrop { background-image: radial-gradient(circle at center, var(--home-dot) 0.8px, transparent 1.3px); background-size: 22px 22px; background-position: 11px 11px; }
+:root[data-material="solid"] :is(.home-composer, .home-card, .home-chip, .home-empty) { background-color: var(--card); }
+:root[data-material="solid"] .home-composer,
+:root[data-material="solid"] .home-composer:focus-within { box-shadow: var(--shadow-elev-1); }
+:root[data-material="solid"] .home-card:hover { box-shadow: none; }
+@media (prefers-reduced-transparency: reduce) {
+  :root:not([data-material="solid"]) .home-backdrop { background-image: radial-gradient(circle at center, var(--home-dot) 0.8px, transparent 1.3px); background-size: 22px 22px; background-position: 11px 11px; }
+  :root:not([data-material="solid"]) :is(.home-composer, .home-card, .home-chip, .home-empty) { background-color: var(--card); }
+  :root:not([data-material="solid"]) .home-composer { box-shadow: var(--shadow-elev-1); }
+}
+@media (forced-colors: active) {
+  .home-backdrop { display: none; }
+  .home-composer, .home-card, .home-empty { border-color: CanvasText; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-composer, .home-card { transition: none; }
+}
+.floq-reduced-motion :is(.home-composer, .home-card) { transition: none; }

@@ -1016,18 +1016,6 @@
   backdrop-filter: none;
 }
 
-/* Home composer: near-opaque card; the matrix field is excluded from its rect (data-matrix-exclude). */
-.home-task-composer.glass-key-surface {
-  border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
-  background-color: color-mix(in oklab, var(--card) 97%, transparent);
-  background-image: none;
-  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
-  transition: box-shadow 200ms ease-out;
-}
-.home-task-composer.glass-key-surface:focus-within { box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3-focus); }
-.home-list-row { transition: box-shadow 150ms ease-out; }
-.home-list-row:hover:not(:disabled) { box-shadow: var(--shadow-elev-1); }
-
 [data-slot="sidebar-inner"] {
   border-color: color-mix(in oklab, var(--border) 52%, transparent);
   border-right-color: transparent;
@@ -1051,15 +1039,6 @@
   box-shadow: inset 0 1px 0 var(--glass-highlight), 0 14px 36px -32px color-mix(in oklab, var(--foreground) 42%, transparent);
 }
 
-#home-prompt,
-#home-prompt:focus,
-#home-prompt:focus-visible {
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  box-shadow: none;
-  outline: none;
-}
 .dark .floq-right-sidebar {
   border-color: rgb(255 255 255 / 0.11);
   background-color: rgb(24 24 26 / 0.9);
@@ -1432,7 +1411,6 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  :root:not([data-material="solid"]) .home-task-composer.glass-key-surface { border-color: var(--border); box-shadow: var(--shadow-elev-1); }
 }
 
 :root[data-material="solid"] :is([data-slot="sidebar-inner"], .glass-key-surface, .canvas-agent-card-material, .settings-group, .auth-card, .auth-workflow, .terminal-dialog-toolbar, .floq-surface[data-slot="dialog-content"], .floq-frosted-menu, .floq-frosted-dialog, .material-content, .glass-surface, .glass-panel) {
@@ -1451,8 +1429,6 @@
 }
 :root[data-material="solid"] :is(.floq-frosted-menu, .floq-frosted-dialog) { backdrop-filter: none; }
 :root[data-material="solid"] :is(.glass-key-surface, .canvas-agent-card-material, .floq-surface, .floq-frosted-menu, .floq-frosted-dialog) { box-shadow: var(--shadow-elev-1); }
-:root[data-material="solid"] .home-task-composer.glass-key-surface:focus-within { box-shadow: var(--shadow-elev-1); }
-:root[data-material="solid"] .home-list-row:hover:not(:disabled) { box-shadow: none; }
 
 /* === Sidebar resize handle (left sidebar; user-enlargeable, never below default width) === */
 .sidebar-resize-handle {

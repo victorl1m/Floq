@@ -117,9 +117,14 @@ The runtime token source is `src/index.css` (Model B: runtime CSS is canonical; 
 
 Keep focus rings clearly visible against both themes. Shared loading placeholders use `AsciiSkeleton` from `ascii-reveal`; data that has arrived can enter with `AsciiReveal`. Preserve final content geometry, keep dense placeholders still by default, and honor both OS and Floq reduced motion. Native Mica, Acrylic, and vibrancy follow the OS transparency preference where supported; Solid is opaque. All materials use accessible forced-color fallbacks, and browsers without backdrop-filter get an opaque surface. Do not add ambient movement behind working surfaces.
 
-## Home composer
+## Home
 
-The composer is the primary home action. Keep its project, workspace, provider, model, and send controls in the existing shared flow. Prompt starter cards insert editable text into the composer and move focus there; they never submit directly and stay inert while a draft exists. The prompt field has a programmatic label and a stable help/status description.
+Home is a calm start screen with the composer as its hero (research: `docs/research/home-redesign.md`). Order: a short greeting (`page-heading`, the user's first name) with one muted line, the composer (max 720 px), a keyboard hint row, quick-start chips, then "Recent agents" and "Projects" as card lists (two columns from an 860 px content width, one below). There is no page header bar and no dividers; section captions are 13 px muted labels.
+
+- **Composer:** one raised card (22 px radius, near-opaque `--card`, elevation-3 shadow that strengthens on focus-within). Attachment chips sit above the prompt; one toolbar row holds Attach and the project/workspace picker on the left, provider, model and Start agent on the right. Start agent is the only orange (provider accent) element on the page. Below 480 px content width Start agent is icon-only; below 560 px the provider shows its mark only. Files can be attached by the button, drop or paste.
+- **Starters:** pill chips insert editable text into the composer and move focus there; they never submit and stay inert while a typed draft exists.
+- **Recent agents / Projects:** 16 px-radius cards with the agent avatar (or project mark), a title, and one muted meta line (state label + project, or branch). Up to six of each. Agent cards open the agent on its canvas; project cards open the project canvas. Empty states explain the next step (Add project; or point back at the composer).
+- **Backdrop:** a static 22 px dot grid in the canvas dot colour, faded out from the top with a mask, plus one soft static primary-tinted glow behind the composer. No motion, no canvas element. Solid material and OS reduced transparency keep the dots but drop the glow and use opaque `--card` fills; forced colours hide the backdrop. Styles live in `src/components/home/home.css`.
 
 ## Project navigation
 
