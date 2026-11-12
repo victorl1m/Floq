@@ -101,12 +101,12 @@ async function harness(t, { existing = {} } = {}) {
     return undefined;
   };
   const f = fixture(extra);
-  const pool = { query: async (sql, params) => (await extra(sql, params)) ?? { rows: [] }, connect: async () => { throw new Error("unused"); } };
+  const pool = { query: async (sql, params) => (await extra(sql, params)) ?? (/collaboration\.organizations/.test(sql) ? { rows: [{ id: "00000000-0000-4000-8000-0000000000aa" }] } : { rows: [] }), connect: async () => { throw new Error("unused"); } };
   const vault = new Vault(pool, { encryptionKey: key });
   const port = await freePort();
   const config = { port, host: "127.0.0.1", allowedOrigins: [], maxBodyBytes: 1_000_000, version: "test", logLevel: "info" };
   const auth = { handler() {}, api: { getSession: async () => ({ user: { id: "owner" } }) } };
-  const server = createRuntimeServer({ config, manager: {}, auth, settings: {}, github: {}, vault, orchestrator: new Orchestrator(pool, {}, {}), pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
+  const server = createRuntimeServer({ config, manager: { requireProject: async () => undefined }, auth, settings: {}, github: {}, vault, orchestrator: new Orchestrator(pool, {}, {}), pool, credentials: {}, claudeOauth: {}, usage: {}, skills: f.service, gitReview: {} });
   await server.listen();
   t.after(async () => { await server.close(); rmSync(f.temp, { recursive: true, force: true }); });
   const post = async (path, body) => {

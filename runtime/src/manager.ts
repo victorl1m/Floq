@@ -6,7 +6,7 @@ import { chmodSync, existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, 
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type pg from "pg";
 import type { Config, ModelEntry } from "./config.js";
-import { badRequest, conflict, notFound, tooMany, unavailable } from "./errors.js";
+import { HttpError, badRequest, conflict, notFound, tooMany, unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import { stripAnsi } from "./orchestrator.js";
 import { streamToFile, validAttachmentName } from "./attachments.js";
@@ -17,6 +17,7 @@ import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
 import { DisplayAllocator, displayEnv } from "./display.js";
+import { artifactsGuidance, artifactsRel, ensureArtifactsDir } from "./artifacts.js";
 import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
@@ -27,7 +28,7 @@ import { claudeProjectTrust, claudeStartupSettings, readClaudeProjectConfig } fr
 import { isAllowedProjectIconColor, isAllowedProjectIconName, isAllowedProjectImage } from "./projectImage.js";
 import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
-import { pruneProjectFromFolders } from "./projectFolders.js";
+import { moveProjectsInFolders, pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
@@ -287,6 +288,8 @@ interface LoginState {
 }
 
 export interface CreateSessionOptions {
+  /** Organization the request acts in: a requested project must live in it, and an imported repository is created in it. */
+  orgId?: string;
   /** Trusted logical project identity supplied by the authenticated recruiter. */
   projectCwd?: string | null;
   /** Source repository metadata; used for grouping but never to clone this session again. */
@@ -315,7 +318,7 @@ export class SessionManager {
   /** Set when agent memory is enabled (FLOQ_REDIS_URL): the [FLOQ MEMORY v1] policy is composed in only when it is configured. */
   memories?: { enabled(): boolean };
   /** Fixed always-recruit-subagents policy block, injected for every agent start and resume (set at startup). */
-  subagents?: { blockFor(userId: string, sessionId: string): Promise<string> };
+  subagents?: { blockFor(userId: string, sessionId: string): Promise<string>; assertCanWake?(userId: string, sessionId: string): Promise<() => void> };
   private readonly logins = new Map<string, LoginState>();
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
@@ -588,21 +591,28 @@ export class SessionManager {
     return result.rows[0] as Row;
   }
 
-  async createProject(userId: string, profile: RuntimeProfile, gitUrlValue?: string, requestedName?: string): Promise<RuntimeProject> {
+  /** `orgId`: organization to create in (the request's active org); omitted = the owner's personal organization. */
+  async createProject(userId: string, profile: RuntimeProfile, gitUrlValue?: string, requestedName?: string, orgId?: string): Promise<RuntimeProject> {
     const name = validateProjectName(requestedName);
     if (gitUrlValue === undefined) {
       if (!name) throw badRequest("name is required when gitUrl is not provided", "invalid_project");
-      return this.createNamedProject(userId, name);
+      return this.createNamedProject(userId, name, orgId);
     }
     if (typeof gitUrlValue !== "string" || !gitUrlValue.trim()) throw badRequest("gitUrl must be a non-empty string", "invalid_project");
     const gitUrl = gitUrlValue.trim();
     const normalized = normalizeGitUrl(gitUrl);
-    const key = userId + "\0" + normalized;
+    const key = userId + "\0" + (orgId ?? "") + "\0" + normalized;
     const pending = this.projectCreates.get(key);
     if (pending) return pending;
     const task = this.withShardActivity(userId, async () => {
-      const existing = await this.pool.query("SELECT id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2", [userId, normalized]);
-      if (existing.rows[0]) return (await this.project(userId, String(existing.rows[0].id)))!;
+      const existing = orgId
+        ? await this.pool.query("SELECT id, organization_id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2", [userId, normalized])
+        : await this.pool.query("SELECT id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2", [userId, normalized]);
+      if (existing.rows[0]) {
+        const found = existing.rows[0] as { id: string; organization_id?: string };
+        if (orgId && found.organization_id && found.organization_id !== orgId) await this.throwInOtherOrg(String(found.id), String(found.organization_id));
+        return (await this.project(userId, String(found.id)))!;
+      }
       const handle = await this.shards.wake(userId);
       const id = randomUUID();
       const workspaceId = randomUUID();
@@ -620,11 +630,12 @@ export class SessionManager {
         let projectId: string = id;
         try {
           await client.query("BEGIN");
+          // Without an explicit organization the database default places the project in the owner's personal one.
           const inserted = await client.query(
-            `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd)
-             VALUES($1,$2,$3,$4,$5,$6)
+            `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd${orgId ? ",organization_id" : ""})
+             VALUES($1,$2,$3,$4,$5,$6${orgId ? ",$7" : ""})
              ON CONFLICT (user_id,normalized_git_url) WHERE normalized_git_url IS NOT NULL DO NOTHING
-             RETURNING id`, [id,userId,projectName,gitUrl,normalized,cwd],
+             RETURNING id`, orgId ? [id,userId,projectName,gitUrl,normalized,cwd,orgId] : [id,userId,projectName,gitUrl,normalized,cwd],
           );
           if (!inserted.rows[0]) {
             const winner = await client.query("SELECT id FROM floq_projects WHERE user_id=$1 AND normalized_git_url=$2 FOR UPDATE", [userId, normalized]);
@@ -661,7 +672,15 @@ export class SessionManager {
     return task;
   }
 
-  private async createNamedProject(userId: string, name: string): Promise<RuntimeProject> {
+  private async throwInOtherOrg(projectId: string, organizationId: string): Promise<never> {
+    let organizationName = "";
+    try {
+      organizationName = String((await this.pool.query("SELECT name FROM collaboration.organizations WHERE id=$1::uuid", [organizationId])).rows[0]?.name ?? "");
+    } catch { /* name is a courtesy */ }
+    throw new HttpError(409, "project_in_other_org", "This repository is already a project in another organization", { projectId, organizationId, organizationName });
+  }
+
+  private async createNamedProject(userId: string, name: string, orgId?: string): Promise<RuntimeProject> {
     return this.withShardActivity(userId, async () => {
       const handle = await this.shards.wake(userId);
       this.assertLifecycleOpen();
@@ -682,8 +701,8 @@ export class SessionManager {
         try {
           await client.query("BEGIN");
           await client.query(
-            `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd)
-             VALUES($1,$2,$3,NULL,NULL,$4)`, [id,userId,name,cwd],
+            `INSERT INTO floq_projects(id,user_id,name,git_url,normalized_git_url,cwd${orgId ? ",organization_id" : ""})
+             VALUES($1,$2,$3,NULL,NULL,$4${orgId ? ",$5" : ""})`, orgId ? [id,userId,name,cwd,orgId] : [id,userId,name,cwd],
           );
           await client.query(
             `INSERT INTO floq_project_workspaces(id,user_id,project_id,cwd,name,branch,is_worktree)
@@ -728,12 +747,16 @@ export class SessionManager {
     });
   }
 
-  async listProjects(userId: string): Promise<RuntimeProject[]> {
-    const projects = await this.pool.query("SELECT * FROM floq_projects WHERE user_id=$1 ORDER BY created_at DESC", [userId]);
+  /** The owner's projects; with `orgId`, only those in that organization. */
+  async listProjects(userId: string, orgId?: string): Promise<RuntimeProject[]> {
+    const projects = orgId
+      ? await this.pool.query("SELECT * FROM floq_projects WHERE user_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [userId, orgId])
+      : await this.pool.query("SELECT * FROM floq_projects WHERE user_id=$1 ORDER BY created_at DESC", [userId]);
     const workspaces = await this.pool.query(
       `SELECT w.*, COALESCE(array_agg(s.id::text) FILTER (WHERE s.id IS NOT NULL), ARRAY[]::text[]) AS session_ids
        FROM floq_project_workspaces w LEFT JOIN agent_sessions s ON s.user_id=w.user_id AND s.workspace_id=w.id
-       WHERE w.user_id=$1 GROUP BY w.id ORDER BY w.created_at`, [userId],
+       WHERE w.user_id=$1 ${orgId ? "AND w.project_id IN (SELECT id FROM floq_projects WHERE user_id=$1 AND organization_id=$2)" : ""}
+       GROUP BY w.id ORDER BY w.created_at`, orgId ? [userId, orgId] : [userId],
     );
     const awake = this.shards.awakeHandle(userId);
     if (awake) {
@@ -767,8 +790,47 @@ export class SessionManager {
     return projects.rows.map((row: Record<string, unknown>) => ({
       id: String(row.id), name: String(row.name), displayName: row.display_name ? String(row.display_name) : null,
       imageUrl: row.image_url ? String(row.image_url) : null, iconName: row.icon_name ? String(row.icon_name) : null, iconColor: row.icon_color ? String(row.icon_color) : null, gitUrl: row.git_url ? String(row.git_url) : null,
-      cwd: String(row.cwd), createdAt: new Date(String(row.created_at)).toISOString(), workspaces: byProject.get(String(row.id)) ?? [],
+      cwd: String(row.cwd), createdAt: new Date(String(row.created_at)).toISOString(), organizationId: row.organization_id ? String(row.organization_id) : "", workspaces: byProject.get(String(row.id)) ?? [],
     }));
+  }
+
+  /** Organization a session belongs to: its project's, else the owner's personal one. Null when organizations are unavailable. */
+  private async sessionOrg(userId: string, projectId: string | null): Promise<string | null> {
+    try {
+      const result = projectId
+        ? await this.pool.query("SELECT organization_id AS org FROM floq_projects WHERE id=$1 AND user_id=$2", [projectId, userId])
+        : await this.pool.query("SELECT id AS org FROM collaboration.organizations WHERE personal_owner_id=$1", [userId]);
+      return result.rows[0]?.org ? String(result.rows[0].org) : null;
+    } catch { return null; }
+  }
+
+  /** 404 unless the project exists, belongs to `userId` AND lives in organization `orgId` (never 403: nothing leaks). */
+  async requireProject(userId: string, orgId: string, projectId: string): Promise<void> {
+    if (!UUID_PATTERN.test(projectId) || !UUID_PATTERN.test(orgId)) throw notFound("Project not found");
+    const found = await this.pool.query("SELECT 1 FROM floq_projects WHERE id=$1 AND user_id=$2 AND organization_id=$3", [projectId, userId, orgId]);
+    if (!found.rows[0]) throw notFound("Project not found");
+  }
+
+  /** Move a project to another organization of the same owner (the caller has verified membership of `targetOrgId`). */
+  async moveProject(userId: string, projectId: string, targetOrgId: string): Promise<RuntimeProject> {
+    if (!UUID_PATTERN.test(projectId) || !UUID_PATTERN.test(targetOrgId)) throw notFound("Project not found");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = (await client.query("SELECT organization_id FROM floq_projects WHERE id=$1 AND user_id=$2 FOR UPDATE", [projectId, userId])).rows[0] as { organization_id: string } | undefined;
+      if (!current) throw notFound("Project not found");
+      const from = String(current.organization_id);
+      if (from !== targetOrgId) {
+        await client.query("UPDATE floq_projects SET organization_id=$3 WHERE id=$1 AND user_id=$2", [projectId, userId, targetOrgId]);
+        await moveProjectsInFolders(client, userId, [projectId], from, targetOrgId);
+      }
+      await client.query("COMMIT");
+      for (const live of this.live.values()) if (live.userId === userId && live.projectId === projectId) live.organizationId = targetOrgId;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally { client.release(); }
+    return (await this.project(userId, projectId))!;
   }
 
   async project(userId: string, id: string): Promise<RuntimeProject | null> {
@@ -1157,11 +1219,22 @@ export class SessionManager {
     }
   }
 
-  async list(userId: string): Promise<SessionSummary[]> {
-    const result = await this.pool.query(
-      "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY (archived_at IS NOT NULL), last_active_at DESC LIMIT 500",
-      [userId],
-    );
+  /**
+   * The user's sessions. With `orgId`, only sessions of that organization's projects, plus project-less (scratch/home)
+   * sessions when `orgId` is the personal organization; each summary carries its `organizationId`.
+   */
+  async list(userId: string, orgId?: string): Promise<SessionSummary[]> {
+    const result = orgId
+      ? await this.pool.query(
+        `SELECT s.*, p.organization_id AS org_id FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id
+         WHERE s.user_id = $1 AND (p.organization_id = $2::uuid OR (s.project_id IS NULL AND $2::uuid = (SELECT o.id FROM collaboration.organizations o WHERE o.personal_owner_id = $1)))
+         ORDER BY (s.archived_at IS NOT NULL), s.last_active_at DESC LIMIT 500`,
+        [userId, orgId],
+      )
+      : await this.pool.query(
+        "SELECT * FROM agent_sessions WHERE user_id = $1 ORDER BY (archived_at IS NOT NULL), last_active_at DESC LIMIT 500",
+        [userId],
+      );
     // ONE grouped query for the node badges (no N+1).
     const counts = new Map<string, number>();
     try {
@@ -1170,8 +1243,9 @@ export class SessionManager {
     } catch { /* badge only */ }
     return result.rows.map((row: Row) => {
       const live = this.live.get(row.id);
-      if (!live) return { ...summaryFromRow(row), secretCount: counts.get(row.id) ?? 0 };
-      const summary = { ...live.toSummary(), secretCount: counts.get(row.id) ?? 0 };
+      const organizationId = orgId ? String((row as Row & { org_id?: string | null }).org_id ?? orgId) : undefined;
+      if (!live) return { ...summaryFromRow(row), ...(organizationId ? { organizationId } : {}), secretCount: counts.get(row.id) ?? 0 };
+      const summary = { ...live.toSummary(), ...(organizationId ? { organizationId } : {}), secretCount: counts.get(row.id) ?? 0 };
       // Turn status only for live agents (not shells); reads a bounded transcript tail.
       if (live.state === "running" && live.provider !== "shell") {
         const turn = this.readAgentTurn(live.id, userId);
@@ -1386,7 +1460,13 @@ export class SessionManager {
     const wiredBlock0 = this.wired && row.provider !== "shell" ? await this.wired.blockFor(row.user_id, row.id) : "";
     // The fixed Floq subagent policy rides in the same system-level text (one flag: a second --append-system-prompt would not combine), first and always present for agents.
     const skillsBlock = row.provider === "shell" ? "" : buildRecruitSkillsBlock(storedRecruitSkills(row.recruit_skills), row.provider);
-    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, wiredBlock0);
+    // Shared deliverables folder (<home>/Artifacts/<project>): created best-effort; agents get its path in env and guidance.
+    let artifactsDir: string | null = null;
+    try {
+      ensureArtifactsDir(handle, row.project_id);
+      artifactsDir = this.shards.driver.homePath(handle) + "/" + artifactsRel(row.project_id);
+    } catch (error) { log.warn("artifacts.dir_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, artifactsDir ? artifactsGuidance(artifactsDir) : "", wiredBlock0);
     if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);
@@ -1403,6 +1483,7 @@ export class SessionManager {
     env.FLOQ_API_URL = "http://" + (handle.netns ? NETNS_GATEWAY : "127.0.0.1") + ":" + this.config.port;
     env.FLOQ_AGENT_TOKEN = this.vault.issueToken(row.user_id, row.id);
     env.FLOQ_AGENT_NAME = row.title;
+    if (artifactsDir) env.FLOQ_ARTIFACTS_DIR = artifactsDir;
     if (row.provider === "codex") {
       env.CODEX_HOME = this.shards.driver.homePath(handle) + "/" + codexHomeRel(row.id);
       const codexHome = this.shards.driver.hostPath(handle, codexHomeRel(row.id));
@@ -1519,6 +1600,7 @@ export class SessionManager {
       parentSessionId: row.parent_session_id ?? null,
     });
     this.live.set(row.id, session);
+    session.organizationId = await this.sessionOrg(row.user_id, row.project_id);
     // Free the display slot only once the sandbox has really exited (its pid namespace, and with it xpra/Xvfb, is gone),
     // on every path: exit, sleep, remove, project delete, shutdown. whenExited() resolves even after dispose() dropped
     // the frame listeners. The token guard ignores this when a relaunch of the same session already holds a new lease.
@@ -1725,7 +1807,9 @@ export class SessionManager {
     let projectGitUrl = input.gitUrl ?? options.projectGitUrl ?? null;
     let branch: string | null = null;
     if (input.projectId || input.workspaceId) {
-      const projectResult = await this.pool.query("SELECT * FROM floq_projects WHERE id=$1 AND user_id=$2", [input.projectId, userId]);
+      const projectResult = options.orgId
+        ? await this.pool.query("SELECT * FROM floq_projects WHERE id=$1 AND user_id=$2 AND organization_id=$3", [input.projectId, userId, options.orgId])
+        : await this.pool.query("SELECT * FROM floq_projects WHERE id=$1 AND user_id=$2", [input.projectId, userId]);
       const project = projectResult.rows[0] as Record<string, unknown> | undefined;
       if (!project) throw notFound("Project not found");
       const selected = input.workspaceId
@@ -1740,7 +1824,7 @@ export class SessionManager {
       projectGitUrl = project.git_url ? String(project.git_url) : null;
       branch = workspace.branch ? String(workspace.branch) : null;
     } else if (input.gitUrl) {
-      const project = await this.createProject(userId, profile, input.gitUrl);
+      const project = await this.createProject(userId, profile, input.gitUrl, undefined, options.orgId);
       const workspace = project.workspaces[0];
       if (!workspace) throw new Error("Imported project has no workspace");
       cwd = workspace.cwd;
@@ -1856,12 +1940,17 @@ export class SessionManager {
   }
 
   /** Wake the shard and continue the provider's last conversation in this session's directory. */
-  async resume(userId: string, profile: RuntimeProfile, id: string, options: { strict?: boolean } = {}): Promise<SessionSummary> {
+  async resume(userId: string, profile: RuntimeProfile, id: string, options: { strict?: boolean; boot?: boolean } = {}): Promise<SessionSummary> {
     this.assertLifecycleOpen();
     const key = userId + ":" + id;
     const restart = this.restartTasks.get(key);
     if (restart) return restart;
-    return coalesce(this.resumeTasks, key, () => this.resumeOnce(userId, profile, id, options.strict === true));
+    const releaseWake = !options.boot && !(this.live.get(id)?.isAlive) ? await this.subagents?.assertCanWake?.(userId, id) : undefined;
+    try {
+      return await coalesce(this.resumeTasks, key, () => this.resumeOnce(userId, profile, id, options.strict === true));
+    } finally {
+      releaseWake?.();
+    }
   }
 
   private async resumeOnce(userId: string, profile: RuntimeProfile, id: string, strictResume = false): Promise<SessionSummary> {
@@ -2490,7 +2579,7 @@ export class SessionManager {
         if (notice) bootNotices.set(row.id, BOOT_RESUME_NOTICE);
         try {
           const profile = await profileFor(row.user_id);
-          await this.resume(row.user_id, profile, row.id);
+          await this.resume(row.user_id, profile, row.id, { boot: true });
           result.resumed++;
           log.info("session.boot_resumed", { sessionId: row.id, userId: row.user_id, interrupted: row.interrupted_turn });
         } catch (error) {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { migrateApp } from "../src/db.ts";
 import { Orchestrator } from "../src/orchestrator.ts";
@@ -21,6 +23,8 @@ async function setup() {
     },
   };
   await db.exec(`CREATE TABLE "user" (id TEXT PRIMARY KEY)`);
+  const migrations = join(import.meta.dirname, "..", "prisma", "migrations");
+  for (const name of readdirSync(migrations).filter((n) => /^\d+_/.test(n)).sort()) await db.exec(readFileSync(join(migrations, name, "migration.sql"), "utf8"));
   await migrateApp(pool as never);
   await db.exec(`INSERT INTO "user" (id) VALUES ('${U}')`);
   await db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows) VALUES ($1,$2,'claude','Parent','proj','running',80,24)`, [PARENT, U]);

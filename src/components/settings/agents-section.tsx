@@ -1,9 +1,10 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { IconChevronDown } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/agents/provider";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useClient } from "@/lib/runtime/store";
@@ -81,6 +82,61 @@ function FixedInstructionPreview() {
     );
 }
 
+const DEFAULT_CHILDREN = 6;
+const DEFAULT_TOTAL = 24;
+const CHILDREN_MAX = 32;
+const TOTAL_MAX = 200;
+
+/** Whole-number input that saves on blur/Enter; empty or invalid shows an inline error and keeps the saved value. */
+function LimitInput({ id, value, max, defaultValue, otherError, onSave }: {
+    id: string;
+    value: number;
+    max: number;
+    defaultValue: number;
+    otherError?: string | null;
+    onSave: (next: number | null) => void;
+}) {
+    const [text, setText] = useState(String(value));
+    const [error, setError] = useState<string | null>(null);
+    useEffect(() => { setText(String(value)); setError(null); }, [value]);
+
+    function commit() {
+        const n = Number(text);
+        if (text.trim() === "" || !Number.isInteger(n) || n < 1 || n > max) {
+            setError(`Enter a whole number from 1 to ${max}.`);
+            return;
+        }
+        setError(null);
+        if (n !== value) onSave(n === defaultValue ? null : n);
+    }
+
+    return (
+        <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+                <Input
+                    id={id}
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={max}
+                    step={1}
+                    value={text}
+                    aria-invalid={Boolean(error || otherError)}
+                    aria-describedby={error || otherError ? `${id}-error` : undefined}
+                    className="w-24"
+                    onChange={(e) => setText(e.target.value)}
+                    onBlur={commit}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+                />
+                <Button type="button" variant="outline" size="sm" disabled={value === defaultValue && text === String(defaultValue)} onClick={() => { setText(String(defaultValue)); setError(null); if (value !== defaultValue) onSave(null); }}>
+                    Reset to {defaultValue}
+                </Button>
+            </div>
+            {(error || otherError) && <p id={`${id}-error`} role="alert" className="text-xs text-destructive">{error ?? otherError}</p>}
+        </div>
+    );
+}
+
 export default function AgentsSection({ settings, onChange }: Props) {
     const client = useClient();
     const [defaults, setDefaults] = useState(loadComposerPrefs);
@@ -101,6 +157,16 @@ export default function AgentsSection({ settings, onChange }: Props) {
             toast.error("Could not save settings", { description: errorMessage(e) });
         }
     }
+
+    // The server clamps to operator ceilings; show the effective maximum, never a number it would reject.
+    const childrenMax = Math.min(CHILDREN_MAX, settings.subagentCeilings?.maxChildren ?? CHILDREN_MAX);
+    const totalMax = Math.min(TOTAL_MAX, settings.subagentCeilings?.maxTotal ?? TOTAL_MAX);
+    const childrenDefault = Math.min(DEFAULT_CHILDREN, childrenMax);
+    const totalDefault = Math.min(DEFAULT_TOTAL, totalMax);
+    const children = Math.min(settings.subagentMaxChildren ?? childrenDefault, childrenMax);
+    const total = Math.min(settings.subagentMaxTotal ?? totalDefault, totalMax);
+    /** Server validates children <= total; surface its message as a toast and revert. */
+    const patchLimits = (update: Pick<SettingsPatch, "subagentMaxChildren" | "subagentMaxTotal">) => patch(update);
 
     return (
         <SettingsPage title="Agents" description="How new agents start. Defaults are stored on this device.">
@@ -139,6 +205,33 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         id="allow-cross-project"
                         checked={settings.allowCrossProjectAgents !== false}
                         onCheckedChange={(v) => void patch({ allowCrossProjectAgents: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Active agents at once"
+                    htmlFor="subagent-max-children"
+                    description={`How many direct subagents one agent may have at the same time (1-${childrenMax}, default ${childrenDefault}${childrenMax < CHILDREN_MAX ? "; maximum set by the server" : ""}). Only awake (running) subagents count; sleeping ones do not. Applies to new and resumed sessions.`}
+                >
+                    <LimitInput
+                        id="subagent-max-children"
+                        value={children}
+                        max={childrenMax}
+                        defaultValue={childrenDefault}
+                        otherError={children > total ? "Cannot exceed total agents." : null}
+                        onSave={(v) => void patchLimits({ subagentMaxChildren: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Total agents"
+                    htmlFor="subagent-max-total"
+                    description={`Most subagents you can have across all your agents, awake or sleeping (1-${totalMax}, default ${totalDefault}${totalMax < TOTAL_MAX ? "; maximum set by the server" : ""}). Must be at least the number above. Applies to new and resumed sessions.`}
+                >
+                    <LimitInput
+                        id="subagent-max-total"
+                        value={total}
+                        max={totalMax}
+                        defaultValue={totalDefault}
+                        onSave={(v) => void patchLimits({ subagentMaxTotal: v })}
                     />
                 </SettingRow>
                 <SettingRow

@@ -19,6 +19,7 @@ export interface SessionOptions {
   cwd: string;
   projectCwd?: string | null;
   projectId?: string | null;
+  organizationId?: string | null;
   worktreeId?: string | null;
   branch?: string | null;
   gitUrl?: string | null;
@@ -41,6 +42,8 @@ export class Session {
   readonly cwd: string;
   readonly projectCwd: string | null;
   readonly projectId: string | null;
+  /** Organization of the session's project (personal org for scratch sessions); lets WebSocket clients filter by organization. */
+  organizationId: string | null;
   readonly worktreeId: string | null;
   readonly branch: string | null;
   readonly gitUrl: string | null;
@@ -88,6 +91,7 @@ export class Session {
     this.cwd = options.cwd;
     this.projectCwd = options.projectCwd ?? null;
     this.projectId = options.projectId ?? null;
+    this.organizationId = options.organizationId ?? null;
     this.worktreeId = options.worktreeId ?? null;
     this.branch = options.branch ?? null;
     this.gitUrl = options.gitUrl ?? null;
@@ -314,6 +318,7 @@ export class Session {
       cwd: this.cwd,
       projectCwd: this.projectCwd,
       projectId: this.projectId,
+      ...(this.organizationId ? { organizationId: this.organizationId } : {}),
       worktreeId: this.worktreeId,
       branch: this.branch,
       gitUrl: this.gitUrl,

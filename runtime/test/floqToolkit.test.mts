@@ -54,7 +54,7 @@ async function harness(t) {
   };
   const f = fixture(extra);
   // The fixture's service pool is the same fake, so the vault and orchestrator can share its statements.
-  const pool = { query: async (sql, params) => (await extra(sql, params)) ?? { rows: [] }, connect: async () => { throw new Error("unused"); } };
+  const pool = { query: async (sql, params) => (await extra(sql, params)) ?? (/collaboration\.organizations/.test(sql) ? { rows: [{ id: "00000000-0000-4000-8000-0000000000aa" }] } : { rows: [] }), connect: async () => { throw new Error("unused"); } };
   const vault = new Vault(pool, { encryptionKey: key });
   const orchestrator = new Orchestrator(pool, {}, {});
   const kc = fakeKeychainPool({ projects: { [P1]: "owner" }, sessions: SESSIONS });

@@ -127,7 +127,7 @@ export function buildSubagentInstruction(options: { enabled: boolean; depth: num
     lines.push("Tools (run in your terminal; ID is the UUID printed by recruit/list):");
     for (const tool of TOOL_SPECS) lines.push(`- ${tool.name}: ${tool.command}`);
     lines.push(
-      `Limits: depth at most ${limits.maxDepth} (you are at ${depth}), at most ${limits.maxChildren} direct subagents, at most ${limits.maxTotal} subagents in total. Do not recruit in loops or just to recruit; the limits are enforced and refusals are final.`,
+      `Limits: depth at most ${limits.maxDepth} (you are at ${depth}), at most ${limits.maxChildren} awake (running) direct subagents at once (sleeping ones do not count), at most ${limits.maxTotal} subagents in total (sleeping ones count; dismissed ones do not). Do not recruit in loops or just to recruit; the limits are enforced and refusals are final.`,
       "Cost: every subagent is a full agent session that spends the user's quota. Skip it for trivial work (one quick edit, reading one file), recruit as few as the job needs, give each a self-contained task with paths and a done-criterion, pick a cheaper model for mechanical work, and dismiss subagents when they finish.",
       "Authority: subagents inherit your workspace and project and never get more permission than you have (if you are read-only, so are they). You stay responsible for the result: read each report, verify important claims, and integrate the work.",
     );
@@ -196,15 +196,20 @@ export function descendantsOf(rows: Pick<SubagentRow, "id" | "parent_session_id"
   return out;
 }
 
+/** Direct children that are awake (starting/running). Sleeping, exited and failed ones do not count toward the at-once cap. */
+export function awakeChildren(rows: Pick<SubagentRow, "parent_session_id" | "state">[], parentId: string): number {
+  return rows.filter((r) => r.parent_session_id === parentId && (r.state === "running" || r.state === "starting")).length;
+}
+
 /** Pure limit check; throws the error the agent sees. */
 export function assertWithinLimits(rows: SubagentRow[], callerId: string, limits: SubagentLimits): number {
   const depth = depthOf(rows, callerId);
   if (depth >= limits.maxDepth) {
     throw new HttpError(403, "subagent_depth", `Subagent depth limit reached (max ${limits.maxDepth}); you cannot recruit. Finish the task yourself and report back.`);
   }
-  const children = rows.filter((r) => r.parent_session_id === callerId).length;
+  const children = awakeChildren(rows, callerId);
   if (children >= limits.maxChildren) {
-    throw new HttpError(429, "subagent_children", `You already have ${children} subagents (max ${limits.maxChildren}). Reuse one with \`floq subagent ask\` or dismiss a finished one first.`);
+    throw new HttpError(429, "subagent_children", `You already have ${children} awake subagents (max ${limits.maxChildren} at once; sleeping ones do not count). Reuse one with \`floq subagent ask\` or dismiss a finished one first.`);
   }
   const total = rows.filter((r) => r.parent_session_id).length;
   if (total >= limits.maxTotal) {
@@ -260,6 +265,8 @@ export interface SubagentView {
 
 export class SubagentService {
   private readonly queues = new Map<string, Promise<unknown>>();
+  /** Sessions being woken whose DB row is not 'running' yet; they count as awake so concurrent wakes cannot all pass the cap. */
+  private readonly waking = new Set<string>();
   /** Set when agent memory is enabled (stable switch): the Memory workflow line then points to `floq memory`. */
   memoryOn = false;
 
@@ -271,8 +278,45 @@ export class SubagentService {
     readonly limits: SubagentLimits = limitsFromEnv(),
   ) {}
 
-  private async rows(userId: string): Promise<SubagentRow[]> {
-    return (await this.pool.query("SELECT id, title, provider, model, state, role, cwd, parent_session_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell' AND archived_at IS NULL", [userId])).rows as SubagentRow[];
+  private async rows(userId: string, includeArchived = false): Promise<SubagentRow[]> {
+    const archived = includeArchived ? "" : " AND archived_at IS NULL";
+    return (await this.pool.query("SELECT id, title, provider, model, state, role, cwd, parent_session_id FROM agent_sessions WHERE user_id = $1 AND provider <> 'shell'" + archived, [userId])).rows as SubagentRow[];
+  }
+
+  /** Effective limits for one user: their saved children/total (Settings > Agents) over the server defaults. Never throws. */
+  async limitsFor(userId: string): Promise<SubagentLimits> {
+    try {
+      const s = await this.settings.get(userId);
+      // Operator ceilings always win over the saved values; the at-once cap never exceeds the total cap.
+      const ceil = s.subagentCeilings ?? { maxChildren: Infinity, maxTotal: Infinity };
+      const wantChildren = s.subagentMaxChildren ?? this.limits.maxChildren;
+      const maxTotal = Math.min(s.subagentMaxTotal ?? Math.max(this.limits.maxTotal, wantChildren), ceil.maxTotal);
+      const maxChildren = Math.min(wantChildren, ceil.maxChildren, maxTotal);
+      return { ...this.limits, maxChildren, maxTotal };
+    } catch { return this.limits; }
+  }
+
+  /**
+   * Wake/resume guard (subagent ask, manual resume): waking a sleeping subagent makes it awake, so it must fit the parent's
+   * awake-children cap exactly like a recruit. No-op for top-level agents and already-awake agents. Boot resume skips it
+   * (those agents were awake under the same caps before the restart).
+   */
+  async assertCanWake(userId: string, sessionId: string): Promise<() => void> {
+    return this.serial(userId, async () => {
+      if (this.waking.has(sessionId)) return () => undefined; // a wake is already in flight (coalesced by the manager)
+      // Archived rows are included: resume clears archived_at, so a dismissed-but-kept sleeper must still obey the cap.
+      const rows = await this.rows(userId, true);
+      const me = rows.find((r) => r.id === sessionId);
+      if (!me?.parent_session_id || me.state === "running" || me.state === "starting") return () => undefined;
+      const limits = await this.limitsFor(userId);
+      const awakeIds = new Set(rows.filter((r) => r.parent_session_id === me.parent_session_id && (r.state === "running" || r.state === "starting")).map((r) => r.id));
+      for (const id of this.waking) if (rows.find((r) => r.id === id)?.parent_session_id === me.parent_session_id) awakeIds.add(id);
+      if (awakeIds.size >= limits.maxChildren) {
+        throw new HttpError(429, "subagent_children", `The parent already has ${awakeIds.size} awake subagents (max ${limits.maxChildren} at once). Sleep or dismiss one before waking another.`);
+      }
+      this.waking.add(sessionId);
+      return () => { this.waking.delete(sessionId); };
+    });
   }
 
   async enabled(userId: string): Promise<boolean> {
@@ -287,7 +331,7 @@ export class SubagentService {
     }
     let crossProject = true;
     try { crossProject = (await this.settings.get(userId)).allowCrossProjectAgents !== false; } catch { /* default on */ }
-    return buildSubagentInstruction({ enabled: await this.enabled(userId), depth, limits: this.limits, crossProject, memoryOn: this.memoryOn });
+    return buildSubagentInstruction({ enabled: await this.enabled(userId), depth, limits: await this.limitsFor(userId), crossProject, memoryOn: this.memoryOn });
   }
 
   /** Serialise per user so the limit check and the create cannot race past a cap. */
@@ -311,7 +355,7 @@ export class SubagentService {
       const rows = await this.rows(userId);
       const me = rows.find((r) => r.id === sessionId);
       if (!me) throw notFound("Calling session not found");
-      const depth = assertWithinLimits(rows, me.id, this.limits);
+      const depth = assertWithinLimits(rows, me.id, await this.limitsFor(userId));
       assertNoEscalation(me.role, role?.id ?? null);
       const name = uniqueName(cleanName(input.name, (role?.label ?? "Subagent") + " " + task.slice(0, 24)), rows.map((r) => r.title));
       const created = await this.orchestrator.recruit(
@@ -335,8 +379,9 @@ export class SubagentService {
       return { id: r.id, name: r.title, role: r.role ?? GENERALIST_ID, provider: r.provider, model: r.model ?? "default", state: r.state, depth: depthOf(rows, id), parentId: r.parent_session_id };
     });
     const depth = depthOf(rows, sessionId);
-    const direct = rows.filter((r) => r.parent_session_id === sessionId).length;
-    return { subagents, limits: this.limits, depth, canRecruit: depth < this.limits.maxDepth && direct < this.limits.maxChildren && (await this.enabled(userId)) };
+    const direct = awakeChildren(rows, sessionId);
+    const limits = await this.limitsFor(userId);
+    return { subagents, limits, depth, canRecruit: depth < limits.maxDepth && direct < limits.maxChildren && (await this.enabled(userId)) };
   }
 
   /** Only the caller's own descendants can be targeted; the id must be the UUID. */

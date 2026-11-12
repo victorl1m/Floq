@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   SUBAGENT_BEGIN, SUBAGENT_END, SubagentService, TOOL_SPECS, assertNoEscalation, assertWithinLimits, buildSubagentBrief, buildSubagentInstruction,
-  buildMemoryPolicy, composeSystemBlocks, depthOf, descendantsOf, limitsFromEnv, uniqueName,
+  awakeChildren, buildMemoryPolicy, composeSystemBlocks, depthOf, descendantsOf, limitsFromEnv, uniqueName,
 } from "../dist/subagents.js";
 import { buildRecruitSkillsBlock } from "../dist/recruitSkills.js";
 import { AGENT_ROLES, composeRolePrompt } from "../dist/roles.js";
@@ -44,7 +44,7 @@ test("instruction is fixed, names the tools and forbids native subagents", () =>
   assert.match(text, /Cost:/);
   assert.match(text, /secret values/);
   assert.match(text, /supersedes any earlier guidance/);
-  assert.match(text, /depth at most 2 \(you are at 0\), at most 3 direct subagents, at most 5 subagents in total/);
+  assert.match(text, /depth at most 2 \(you are at 0\), at most 3 awake \(running\) direct subagents at once.*at most 5 subagents in total/);
 });
 
 test("agents at max depth are told not to recruit; disabled mode stops pushing delegation", () => {
@@ -189,4 +189,72 @@ test("system blocks are cache-stable: fixed order, byte-identical across calls, 
   assert.ok(composed.indexOf(memory) < composed.indexOf(skills));
   assert.ok(composed.indexOf(skills) < composed.indexOf("WIRED"));
   for (const block of [policy, memory, skills]) assert.doesNotMatch(block, /\d{4}-\d{2}-\d{2}T/);
+});
+
+test("limitsFor: user settings override the server defaults and feed the policy text", async () => {
+  const mk = (s: Record<string, unknown>) => new SubagentService({ query: async () => ({ rows: [] }) } as never, {} as never, {} as never, { get: async () => s } as never, limits);
+  assert.deepEqual(await mk({}).limitsFor("u"), limits);
+  assert.deepEqual(await mk({ subagentMaxChildren: 10, subagentMaxTotal: 40 }).limitsFor("u"), { maxDepth: 2, maxChildren: 10, maxTotal: 40 });
+  // children raised above the default total: total never ends up below it
+  assert.equal((await mk({ subagentMaxChildren: 9 }).limitsFor("u")).maxTotal, 9);
+  const failing = new SubagentService({} as never, {} as never, {} as never, { get: async () => { throw new Error("db"); } } as never, limits);
+  assert.deepEqual(await failing.limitsFor("u"), limits);
+  assert.match(await mk({ subagentMaxChildren: 10, subagentMaxTotal: 40 }).blockFor("u", "x"), /at most 10 awake.*at most 40 subagents in total/);
+});
+
+test("limitsFor: operator ceilings clamp saved user limits", async () => {
+  const mk = (s: Record<string, unknown>) => new SubagentService({ query: async () => ({ rows: [] }) } as never, {} as never, {} as never, { get: async () => s } as never, limits);
+  const ceilings = { maxChildren: 8, maxTotal: 20 };
+  assert.deepEqual(await mk({ subagentMaxChildren: 30, subagentMaxTotal: 150, subagentCeilings: ceilings }).limitsFor("u"), { maxDepth: 2, maxChildren: 8, maxTotal: 20 });
+  assert.equal((await mk({ subagentMaxChildren: 30, subagentCeilings: ceilings }).limitsFor("u")).maxTotal, 20, "raised total never passes the ceiling");
+  assert.deepEqual(await mk({ subagentCeilings: { maxChildren: 2, maxTotal: 4 } }).limitsFor("u"), { maxDepth: 2, maxChildren: 2, maxTotal: 4 }, "ceiling below the server default lowers it");
+  assert.deepEqual(await mk({ subagentMaxChildren: 30, subagentMaxTotal: 150, subagentCeilings: { maxChildren: 32, maxTotal: 200 } }).limitsFor("u"), { maxDepth: 2, maxChildren: 30, maxTotal: 150 }, "default ceilings allow raising");
+});
+
+test("assertCanWake: waking a sleeping subagent obeys the parent's awake cap", async () => {
+  const kid = (id: string, state: string) => ({ ...row(id, "p"), state });
+  const mk = (rows: Row[]) => new SubagentService({ query: async () => ({ rows }) } as never, {} as never, {} as never, { get: async () => ({}) } as never, limits);
+  const full = [row("p"), kid("a", "running"), kid("b", "starting"), kid("c", "running"), kid("s", "sleeping")];
+  await assert.rejects(mk(full).assertCanWake("u", "s"), code("subagent_children"));
+  await mk(full).assertCanWake("u", "a"); // already awake: no-op
+  await mk(full).assertCanWake("u", "p"); // top-level: no-op
+  await mk([row("p"), kid("a", "running"), kid("s", "sleeping")]).assertCanWake("u", "s");
+  await mk([row("p"), kid("a", "running"), kid("b", "running"), kid("c", "exited"), kid("s", "sleeping")]).assertCanWake("u", "s");
+});
+
+test("assertCanWake: concurrent wakes cannot all pass the cap (waking set under the per-user lock)", async () => {
+  const kid = (id: string, state: string) => ({ ...row(id, "p"), state });
+  const rows = [row("p"), kid("a", "running"), kid("s1", "sleeping"), kid("s2", "sleeping"), kid("s3", "sleeping")];
+  const svc = new SubagentService({ query: async () => { await new Promise((r) => setTimeout(r, 5)); return { rows }; } } as never, {} as never, {} as never, { get: async () => ({}) } as never, limits);
+  // cap 3, 1 awake: exactly two of three simultaneous wakes fit; DB rows stay 'sleeping' like in the real race
+  const results = await Promise.allSettled(["s1", "s2", "s3"].map((id) => svc.assertCanWake("u", id)));
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 2);
+  const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+  assert.equal(rejected.length, 1);
+  assert.equal((rejected[0].reason as { code?: string }).code, "subagent_children");
+  // releasing a finished wake frees its slot
+  const ok = results.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<() => void>;
+  ok.value();
+  await svc.assertCanWake("u", "s3");
+});
+
+test("assertCanWake: an archived sleeping subagent is still capped (resume clears archived_at)", async () => {
+  const kid = (id: string, state: string) => ({ ...row(id, "p"), state });
+  const all = [row("p"), kid("a", "running"), kid("b", "running"), kid("c", "running"), kid("arch", "sleeping")];
+  const sqls: string[] = [];
+  const svc = new SubagentService({ query: async (sql: string) => { sqls.push(sql); return { rows: /archived_at IS NULL/.test(sql) ? all.filter((r) => r.id !== "arch") : all }; } } as never, {} as never, {} as never, { get: async () => ({}) } as never, limits);
+  await assert.rejects(svc.assertCanWake("u", "arch"), code("subagent_children"));
+  assert.ok(sqls.every((q) => !/archived_at IS NULL/.test(q)), "wake check does not filter archived rows");
+});
+
+test("at-once cap counts only awake direct children; total counts sleeping ones too", () => {
+  const kid = (id: string, state: string) => ({ ...row(id, "p"), state });
+  const sleepers = [kid("a", "sleeping"), kid("b", "sleeping"), kid("c", "sleeping"), kid("d", "exited")];
+  assert.equal(awakeChildren([row("p"), ...sleepers, kid("e", "running")], "p"), 1);
+  // 4 sleeping/exited children + cap 3: recruiting still allowed
+  assert.equal(assertWithinLimits([row("p"), ...sleepers], "p", limits), 1);
+  // 3 awake: refused by the children cap
+  assert.throws(() => assertWithinLimits([row("p"), kid("a", "running"), kid("b", "running"), kid("c", "running")], "p", limits), code("subagent_children"));
+  // sleeping children still fill the total cap (5)
+  assert.throws(() => assertWithinLimits([row("p"), ...sleepers, kid("e", "sleeping")], "p", limits), code("subagent_total"));
 });

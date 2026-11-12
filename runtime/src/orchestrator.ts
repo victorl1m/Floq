@@ -230,7 +230,7 @@ export class Orchestrator {
   }
 
   private async rows(userId: string) {
-    return (await this.pool.query("SELECT s.id, s.title, s.provider, s.model, s.state, s.lead, s.role, s.cwd, s.git_url, s.project_cwd, s.project_id, s.workspace_id, s.parent_session_id, p.name AS project_name FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id WHERE s.user_id = $1 AND s.provider <> 'shell' AND s.archived_at IS NULL", [userId])).rows as Array<{
+    const rows = (await this.pool.query("SELECT s.id, s.title, s.provider, s.model, s.state, s.lead, s.role, s.cwd, s.git_url, s.project_cwd, s.project_id, s.workspace_id, s.parent_session_id, p.name AS project_name, p.organization_id AS org_id FROM agent_sessions s LEFT JOIN floq_projects p ON p.id = s.project_id AND p.user_id = s.user_id WHERE s.user_id = $1 AND s.provider <> 'shell' AND s.archived_at IS NULL", [userId])).rows as Array<{
       id: string;
       title: string;
       provider: ProviderId;
@@ -245,7 +245,24 @@ export class Orchestrator {
       workspace_id: string | null;
       project_name: string | null;
       parent_session_id?: string | null;
+      org_id?: string | null;
     }>;
+    // Scratch sessions (no project) live in the owner's personal organization.
+    if (rows.some((r) => !r.project_id)) {
+      let personal: string | null = null;
+      try { personal = (await this.pool.query("SELECT id AS personal_org_id FROM collaboration.organizations WHERE personal_owner_id = $1", [userId])).rows[0]?.personal_org_id ?? null; } catch { /* organizations unavailable: no org boundary */ }
+      for (const r of rows) if (!r.project_id) r.org_id = personal;
+    }
+    return rows;
+  }
+
+  /** Agents of different organizations never talk, whatever the cross-project setting says. Unknown organization = no boundary. */
+  private sameOrg(a: { org_id?: string | null }, b: { org_id?: string | null }): boolean {
+    return !a.org_id || !b.org_id || a.org_id === b.org_id;
+  }
+
+  private assertSameOrg(me: { org_id?: string | null }, other: { title: string; org_id?: string | null }): void {
+    if (!this.sameOrg(me, other)) throw new HttpError(403, "cross_org_disabled", '"' + other.title + '" is in a different organization');
   }
 
   private sameProject(a: { cwd: string | null; git_url?: string | null; project_cwd?: string | null }, b: { cwd: string | null; git_url?: string | null; project_cwd?: string | null }): boolean {
@@ -256,14 +273,22 @@ export class Orchestrator {
     return agentProjectIdentity(agent);
   }
 
-  private async resolve(userId: string, reference: unknown) {
+  /** With `me`, names only match agents of the caller's organization and an id of another organization is refused (403). */
+  private async resolve(userId: string, reference: unknown, me?: { org_id?: string | null }) {
     if (typeof reference !== "string" || !reference.trim()) throw badRequest("agent UUID or name required");
     const selector = reference.trim();
     const rows = await this.rows(userId);
     // Floq's database UUID is authoritative. Provider conversation IDs are intentionally not accepted.
     const byId = rows.find((r) => r.id.toLowerCase() === selector.toLowerCase());
-    if (byId) return byId;
-    const matches = rows.filter((r) => r.title.toLowerCase() === selector.toLowerCase());
+    if (byId) {
+      if (me) this.assertSameOrg(me, byId);
+      return byId;
+    }
+    const named = rows.filter((r) => r.title.toLowerCase() === selector.toLowerCase());
+    // Same-organization agents win, so a twin in another organization is neither ambiguous nor chosen. A name that only
+    // exists in one other organization still resolves, so the caller's org check answers 403 instead of "not found".
+    const mine = me ? named.filter((r) => this.sameOrg(me, r)) : named;
+    const matches = mine.length ? mine : me && named.length === 1 ? named : [];
     if (matches.length === 0) throw notFound('No agent with UUID or name "' + selector + '"');
     if (matches.length > 1) throw conflict('More than one agent is named "' + selector + '"; use its Floq UUID from `floq list`');
     return matches[0];
@@ -280,10 +305,28 @@ export class Orchestrator {
    * excluded from the session rows, exactly as for `floq list`/`recruit`), so they get "Calling session not found".
    * Changes require a lead session, the same check that gates recruit/dismiss.
    */
-  async toolkitCaller(userId: string, sessionId: string, requireLead: boolean): Promise<{ id: string; name: string; projectId: string | null; provider: "claude" | "codex" }> {
+  async toolkitCaller(userId: string, sessionId: string, requireLead: boolean): Promise<{ id: string; name: string; projectId: string | null; orgId: string | null; provider: "claude" | "codex" }> {
     const me = await this.caller(userId, sessionId);
     if (requireLead && !me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can install or remove skills and MCP servers or create secrets");
-    return { id: me.id, name: me.title, projectId: me.project_id, provider: me.provider as "claude" | "codex" };
+    return { id: me.id, name: me.title, projectId: me.project_id, orgId: me.org_id ?? null, provider: me.provider as "claude" | "codex" };
+  }
+
+  /**
+   * An explicit `--project <id>` must live in the caller's organization (404 when the project is not the user's,
+   * 403 cross_org_disabled when it is in another organization). The caller's own project always passes.
+   */
+  async assertProjectInCallerOrg(userId: string, me: { projectId: string | null; orgId: string | null }, projectId: string): Promise<void> {
+    if (projectId === me.projectId) return;
+    let org: string | null = null;
+    try {
+      const found = await this.pool.query("SELECT organization_id AS org FROM floq_projects WHERE id::text = $1 AND user_id = $2", [projectId, userId]);
+      if (!found.rows[0]) throw notFound("Project not found");
+      org = found.rows[0].org ? String(found.rows[0].org) : null;
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      return; // organizations unavailable: no org boundary
+    }
+    if (org && me.orgId && org !== me.orgId) throw new HttpError(403, "cross_org_disabled", "That project is in a different organization");
   }
 
   /**
@@ -294,7 +337,8 @@ export class Orchestrator {
     const me = await this.caller(userId, sessionId);
     const view = (r: typeof me) => ({ id: r.id, name: r.title, provider: r.provider as "claude" | "codex", projectId: r.project_id, projectName: r.project_id ? this.projectName(r) : null });
     if (targetRef === undefined || targetRef === null || targetRef === "" || (typeof targetRef === "string" && targetRef.trim().toLowerCase() === "self")) return { requester: view(me), target: view(me) };
-    const other = await this.resolve(userId, targetRef);
+    const other = await this.resolve(userId, targetRef, me);
+    this.assertSameOrg(me, other);
     if (other.id !== me.id && !this.sameProject(me, other) && !(await this.crossAllowed(userId))) {
       throw new HttpError(403, "cross_project_disabled", '"' + other.title + '" is in a different project and the user turned off "Allow agents to talk across projects" in Settings > Agents');
     }
@@ -303,8 +347,9 @@ export class Orchestrator {
 
   private async target(userId: string, sessionId: string, name: unknown) {
     const me = await this.caller(userId, sessionId);
-    const other = await this.resolve(userId, name);
+    const other = await this.resolve(userId, name, me);
     if (other.id === me.id) throw badRequest("An agent cannot target itself");
+    this.assertSameOrg(me, other);
     const cross = !this.sameProject(me, other);
     if (cross && !(await this.crossAllowed(userId))) {
       throw new HttpError(403, "cross_project_disabled", '"' + other.title + '" is in a different project and the user turned off "Allow agents to talk across projects" in Settings > Agents');
@@ -323,6 +368,7 @@ export class Orchestrator {
     const crossOk = await this.crossAllowed(userId);
     const wanted = typeof options.project === "string" && options.project.trim() ? options.project.trim().toLowerCase() : null;
     const visible = rows
+      .filter((r) => this.sameOrg(me, r))
       .map((r) => ({ r, same: this.sameProject(me, r) }))
       .filter(({ r, same }) => (same || (crossOk && options.here !== true)) && (!wanted || (r.project_name ?? "").toLowerCase().includes(wanted) || r.project_id === wanted));
     return Promise.all(visible.map(async ({ r, same }): Promise<AgentView> => ({
@@ -562,8 +608,8 @@ export class Orchestrator {
   async connect(userId: string, sessionId: string, from: unknown, to: unknown) {
     const me = await this.caller(userId, sessionId);
     if (!me.lead) throw new HttpError(403, "not_lead", "Only a lead agent can connect agents");
-    const a = await this.resolve(userId, from);
-    const b = await this.resolve(userId, to);
+    const a = await this.resolve(userId, from, me);
+    const b = await this.resolve(userId, to, me);
     if (a.id === b.id) throw badRequest("Cannot connect an agent to itself");
     if (!this.sameProject(me, a) || !this.sameProject(me, b)) {
       throw new HttpError(403, "other_project", "Agents outside your project cannot be connected with `floq connect`; use `floq link <agent>` to wire yourself to an agent of another project");
@@ -656,7 +702,7 @@ export class Orchestrator {
 
   async dismiss(userId: string, sessionId: string, name: unknown) {
     const me = await this.caller(userId, sessionId);
-    const other = await this.resolve(userId, name);
+    const other = await this.resolve(userId, name, me);
     if (other.id === me.id) throw badRequest("An agent cannot dismiss itself");
     if (!this.sameProject(me, other)) throw new HttpError(403, "other_project", "That agent is in a different project");
     // A lead may dismiss any agent of its project; any other agent (e.g. an orchestrator the lead recruited) only the

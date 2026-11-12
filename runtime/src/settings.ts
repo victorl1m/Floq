@@ -3,6 +3,33 @@ import type { Config } from "./config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { badRequest } from "./errors.js";
 
+/** Hard bounds for the user-configurable subagent limits (defaults live in subagents.ts DEFAULT_LIMITS). */
+export const SUBAGENT_CHILDREN_RANGE = { min: 1, max: 32 } as const;
+export const SUBAGENT_TOTAL_RANGE = { min: 1, max: 200 } as const;
+const DEFAULT_CHILDREN = 6;
+const DEFAULT_TOTAL = 24;
+
+/** Operator ceilings for the user's saved subagent limits. Users may raise their limits only up to these. */
+export interface SubagentCeilings { maxChildren: number; maxTotal: number }
+
+function ceilEnv(raw: string | undefined, range: { min: number; max: number }): number {
+  const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isInteger(n) && n >= range.min && n <= range.max ? n : range.max;
+}
+
+/** FLOQ_SUBAGENT_CEIL_CHILDREN (1-32) and FLOQ_SUBAGENT_CEIL_TOTAL (1-200); default is the full range. Invalid values fall back to it. */
+export function subagentCeilingsFromEnv(env: Record<string, string | undefined> = process.env): SubagentCeilings {
+  return { maxChildren: ceilEnv(env.FLOQ_SUBAGENT_CEIL_CHILDREN, SUBAGENT_CHILDREN_RANGE), maxTotal: ceilEnv(env.FLOQ_SUBAGENT_CEIL_TOTAL, SUBAGENT_TOTAL_RANGE) };
+}
+
+function limitValue(value: unknown, field: string, range: { min: number; max: number }): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < range.min || value > range.max) {
+    throw badRequest(`${field} must be a whole number from ${range.min} to ${range.max}, or null for the default`);
+  }
+  return value;
+}
+
 export interface PublicSettings {
   claudeAutoApprove: boolean;
   codexAutoApprove: boolean;
@@ -16,6 +43,12 @@ export interface PublicSettings {
   alwaysRecruitSubagents: boolean;
   /** Agents may discover and message agents of the user's other projects (default on). */
   allowCrossProjectAgents: boolean;
+  /** Max direct subagents per agent; null = default (6). */
+  subagentMaxChildren: number | null;
+  /** Max subagents in total; null = default (24). */
+  subagentMaxTotal: number | null;
+  /** Operator ceilings the two limits above are clamped to (Settings shows them as the effective maximum). */
+  subagentCeilings: SubagentCeilings;
   /** The user has answered the one-time "auto-approve runs commands without prompts" confirmation. */
   autoApproveAcknowledged: boolean;
   github: { login: string; connectedAt: string } | null;
@@ -29,6 +62,10 @@ export interface SettingsPatch {
   gitCoauthor?: boolean;
   alwaysRecruitSubagents?: boolean;
   allowCrossProjectAgents?: boolean;
+  /** Whole number 1-32, or null to reset to the default. */
+  subagentMaxChildren?: number | null;
+  /** Whole number 1-200, or null to reset to the default. Must be >= the children limit. */
+  subagentMaxTotal?: number | null;
   /** Only `true` is accepted: the acknowledgement cannot be withdrawn. */
   autoApproveAcknowledged?: boolean;
 }
@@ -59,6 +96,7 @@ export class SettingsStore {
   constructor(
     private readonly pool: pg.Pool,
     private readonly config: Config,
+    private readonly subagentCeilings: SubagentCeilings = subagentCeilingsFromEnv(),
   ) {}
 
   private aad(userId: string, field: string): string {
@@ -81,6 +119,9 @@ export class SettingsStore {
       gitCoauthorAvailable: Boolean(this.config.gitCoauthor),
       alwaysRecruitSubagents: row?.always_recruit_subagents ?? true,
       allowCrossProjectAgents: row?.allow_cross_project_agents ?? true,
+      subagentMaxChildren: row?.subagent_max_children ?? null,
+      subagentMaxTotal: row?.subagent_max_total ?? null,
+      subagentCeilings: this.subagentCeilings,
       autoApproveAcknowledged: Boolean(row?.auto_approve_ack_at),
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
@@ -113,6 +154,18 @@ export class SettingsStore {
     if (patch.allowCrossProjectAgents !== undefined) {
       if (typeof patch.allowCrossProjectAgents !== "boolean") throw badRequest("allowCrossProjectAgents must be boolean");
       push("allow_cross_project_agents", patch.allowCrossProjectAgents);
+    }
+    if (patch.subagentMaxChildren !== undefined || patch.subagentMaxTotal !== undefined) {
+      const current = await this.get(userId);
+      const ceil = this.subagentCeilings;
+      const children = patch.subagentMaxChildren !== undefined ? limitValue(patch.subagentMaxChildren, "subagentMaxChildren", { min: SUBAGENT_CHILDREN_RANGE.min, max: Math.min(SUBAGENT_CHILDREN_RANGE.max, ceil.maxChildren) }) : current.subagentMaxChildren;
+      const total = patch.subagentMaxTotal !== undefined ? limitValue(patch.subagentMaxTotal, "subagentMaxTotal", { min: SUBAGENT_TOTAL_RANGE.min, max: Math.min(SUBAGENT_TOTAL_RANGE.max, ceil.maxTotal) }) : current.subagentMaxTotal;
+      // Compare effective values: an unset limit is the default, itself clamped by the operator ceiling.
+      const effChildren = Math.min(children ?? DEFAULT_CHILDREN, ceil.maxChildren);
+      const effTotal = Math.min(total ?? DEFAULT_TOTAL, ceil.maxTotal);
+      if (effChildren > effTotal) throw badRequest("Active agents at once cannot exceed total agents");
+      if (patch.subagentMaxChildren !== undefined) push("subagent_max_children", children);
+      if (patch.subagentMaxTotal !== undefined) push("subagent_max_total", total);
     }
     if (patch.autoApproveAcknowledged !== undefined) {
       if (patch.autoApproveAcknowledged !== true) throw badRequest("autoApproveAcknowledged can only be set to true");
