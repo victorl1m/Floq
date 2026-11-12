@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { IconArrowRight, IconBan, IconPencil, IconPin, IconPinnedOff, IconRestore, IconTrash, IconX } from "@tabler/icons-react";
+import { IconArrowRight, IconBan, IconPencil, IconPin, IconPinnedOff, IconRestore, IconTrash, IconWorld, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,17 +13,30 @@ import { Textarea } from "@/components/ui/textarea";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { errorMessage } from "@/lib/runtime/store";
 import type { Memory, MemoryEvent, MemoryScope, MemoryType } from "@/lib/runtime/types";
-import { MAX_TEXT, MEMORY_TYPES, relativeTime, titleOf, typeColor } from "./memory-meta";
+import { dateParts, eventTime } from "@/lib/memory-dates";
+import { MAX_TEXT, MEMORY_TYPES, titleOf, TYPE_META, typeColor, typeInk } from "./memory-meta";
 
 export interface Related { memory: Memory; weight: number; kind: "semantic" | "keyword" | "supersedes" }
 
+const tint = (type: MemoryType) => ({ ["--mem-tint" as string]: typeColor(type), ["--mem-tint-ink" as string]: typeInk(type) }) as React.CSSProperties;
+
 export function TypeBadge({ type }: { type: MemoryType }) {
+  const meta = TYPE_META[type] ?? TYPE_META.fact, Icon = meta.icon;
   return (
-    <span className="inline-flex items-center gap-1 text-xs font-medium capitalize" style={{ color: typeColor(type) }}>
-      <span aria-hidden className="size-2 rounded-full" style={{ background: typeColor(type) }} />{type}
+    <span className="mem-type-pill inline-flex h-6 items-center gap-1 rounded-full px-2 text-xs font-medium" style={tint(type)} title={meta.hint}>
+      <Icon aria-hidden size={13} stroke={2} />{meta.label}
     </span>
   );
 }
+
+/** A date with the relative form visible and the absolute one on hover; "—" when the runtime sent nothing usable. */
+export function When({ value, prefix = "" }: { value: unknown; prefix?: string }) {
+  const d = dateParts(value);
+  return <time dateTime={d.iso} title={d.valid ? `${prefix}${d.absolute}` : "Unknown time"} className="tabular-nums">{d.relative}</time>;
+}
+
+const ACTION_LABEL: Record<string, string> = { add: "Added", update: "Edited", invalidate: "Forgotten", pin: "Pinned", unpin: "Unpinned", delete: "Deleted", restore: "Restored" };
+const ACTION_DOT: Record<string, string> = { add: "var(--mem-procedure)", invalidate: "var(--destructive)", delete: "var(--destructive)", pin: "var(--mem-decision)" };
 
 interface FormProps {
   initial?: Memory;
@@ -49,14 +62,17 @@ export function MemoryForm({ initial, client, projectId, onDone }: FormProps) {
     } catch (err) { toast.error(errorMessage(err)); } finally { setSaving(false); }
   };
   return (
-    <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4" data-testid="memory-form">
-      <h3 className="text-sm font-semibold">{initial ? "Edit memory" : "New memory"}</h3>
+    <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4" data-testid="memory-form">
+      <div>
+        <h3 className="text-[15px] font-semibold">{initial ? "Edit memory" : "New memory"}</h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">{initial ? "Agents see the change on their next search." : "One durable fact, decision or procedure. Every agent in the project can find it."}</p>
+      </div>
       <Input aria-label="Title" placeholder="Title (optional)" value={title} onChange={(e) => setTitle(e.target.value)} />
       <Textarea aria-label="Memory text" placeholder="One durable fact, decision or procedure. No secrets." rows={8} className="min-h-40 max-h-72" maxLength={MAX_TEXT} autoFocus value={text} onChange={(e) => setText(e.target.value)} />
       <div className="flex flex-wrap items-center gap-2">
         <Select value={type} onValueChange={(v) => setType(v as MemoryType)}>
           <SelectTrigger size="sm" aria-label="Type" className="capitalize"><SelectValue /></SelectTrigger>
-          <SelectContent position="popper">{MEMORY_TYPES.map((t) => <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>)}</SelectContent>
+          <SelectContent position="popper">{MEMORY_TYPES.map((t) => <SelectItem key={t} value={t}><span aria-hidden className="size-2 rounded-full" style={{ background: typeColor(t) }} />{TYPE_META[t].label}</SelectItem>)}</SelectContent>
         </Select>
         {!initial && (
           <Select value={scope} onValueChange={(v) => setScope(v as MemoryScope)}>
@@ -73,7 +89,7 @@ export function MemoryForm({ initial, client, projectId, onDone }: FormProps) {
         </div>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">{text.length}/{MAX_TEXT}</span>
       </div>
-      <div className="flex justify-end gap-2">
+      <div className="mt-auto flex justify-end gap-2 pt-1">
         <Button type="button" size="sm" variant="ghost" onClick={() => onDone(null)}>Cancel</Button>
         <Button type="button" size="sm" disabled={saving || !text.trim()} onClick={() => void save()}>{saving ? <Spinner /> : null}{initial ? "Save" : "Add"}</Button>
       </div>
@@ -112,67 +128,86 @@ export function MemoryDetail({ memory: m, client, related, supersededBy, onClose
     try { await fn(); if (ok) toast.success(ok); after(); } catch (err) { toast.error(errorMessage(err)); }
   };
 
+  const maxWeight = Math.max(0.0001, ...related.filter((r) => r.kind !== "supersedes").map((r) => r.weight));
   return (
-    <section className="flex min-h-0 flex-1 flex-col" aria-label="Memory detail" data-testid="memory-detail">
-      <div className="flex items-start gap-2 border-b border-border/70 p-3 pb-2.5">
+    <section className="flex min-h-0 flex-1 flex-col" aria-label="Memory detail" data-testid="memory-detail" style={tint(m.type)}>
+      <header className="flex items-start gap-2 px-4 pt-4 pb-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <TypeBadge type={m.type} />
-            {m.pinned && <Badge variant="secondary"><IconPin aria-hidden />pinned</Badge>}
-            {m.scope === "user" && <Badge variant="outline">all projects</Badge>}
-            {invalid && <Badge variant="destructive">forgotten</Badge>}
+            {m.pinned && <Badge variant="secondary" className="h-6 rounded-full"><IconPin aria-hidden />Pinned</Badge>}
+            {m.scope === "user" && <Badge variant="outline" className="h-6 rounded-full"><IconWorld aria-hidden />All projects</Badge>}
+            {invalid && <Badge variant="destructive" className="h-6 rounded-full">Forgotten</Badge>}
           </div>
-          <h3 className="mt-1 text-base leading-snug font-semibold break-words">{titleOf(m)}</h3>
+          <h3 className={`mt-2.5 text-[17px] leading-snug font-semibold tracking-[-0.01em] break-words ${invalid ? "text-muted-foreground line-through decoration-muted-foreground/50" : ""}`}>{titleOf(m)}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{m.author ?? "you"} · updated <When value={m.updatedAt} prefix="Updated " /></p>
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close detail" onClick={onClose}><IconX aria-hidden /></Button>
-      </div>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close detail" className="-mt-1 -mr-1" onClick={onClose}><IconX aria-hidden /></Button>
+      </header>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-        <p className="text-sm break-words whitespace-pre-wrap">{m.text}</p>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4">
+        <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">{m.text}</p>
 
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          <dt className="text-muted-foreground">Author</dt><dd>{m.author ?? "you"}</dd>
-          <dt className="text-muted-foreground">Created</dt><dd>{new Date(m.createdAt).toLocaleString()}</dd>
-          <dt className="text-muted-foreground">Updated</dt><dd>{new Date(m.updatedAt).toLocaleString()} <span className="text-muted-foreground">({relativeTime(m.updatedAt)})</span></dd>
-          {invalid && <><dt className="text-muted-foreground">Forgotten</dt><dd>{m.invalidReason ?? "no reason given"}</dd></>}
-          <dt className="text-muted-foreground">Id</dt><dd className="font-mono break-all text-muted-foreground">{m.id}</dd>
-        </dl>
+        <section aria-label="Details">
+          <h4 className="mem-eyebrow mb-2">Details</h4>
+          <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--mem-pane-border)] bg-[var(--mem-pane-border)] text-xs">
+            {([
+              ["Created", <When key="c" value={m.createdAt} prefix="Created " />],
+              ["Updated", <When key="u" value={m.updatedAt} prefix="Updated " />],
+              ["Author", m.author ?? "you"],
+              ["Scope", m.scope === "user" ? "All my projects" : "This project"],
+            ] as const).map(([k, v]) => (
+              <div key={k} className="bg-[var(--mem-pane-strong)] px-3 py-2">
+                <dt className="text-[11px] text-muted-foreground">{k}</dt>
+                <dd className="mt-0.5 truncate font-medium">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {invalid && <p className="mt-2 rounded-lg bg-destructive/8 px-3 py-2 text-xs text-destructive">Forgotten <When value={m.invalidatedAt} prefix="Forgotten " />: {m.invalidReason ?? "no reason given"}</p>}
+          <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground" title={m.id}>{m.id}</p>
+        </section>
 
         {(supersededBy || related.length > 0) && (
-          <div>
-            <h4 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Related</h4>
-            <ul className="space-y-0.5 text-sm">
+          <section aria-label="Related">
+            <h4 className="mem-eyebrow mb-1.5">Related</h4>
+            <ul className="-mx-1.5 space-y-0.5 text-[13px]">
               {supersededBy && (
-                <li><button type="button" className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent" onClick={() => onOpen(supersededBy.id)}>
-                  <IconArrowRight aria-hidden className="size-3.5 shrink-0" /><span className="truncate">Superseded by {titleOf(supersededBy)}</span></button></li>
+                <li><button type="button" className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--mem-row-hover)]" onClick={() => onOpen(supersededBy.id)}>
+                  <IconArrowRight aria-hidden className="size-3.5 shrink-0 text-[var(--mem-decision-ink)]" /><span className="truncate">Superseded by {titleOf(supersededBy)}</span></button></li>
               )}
               {related.map((r) => (
-                <li key={r.memory.id}><button type="button" className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent" onClick={() => onOpen(r.memory.id)}>
+                <li key={r.memory.id}><button type="button" className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--mem-row-hover)]" style={tint(r.memory.type)} onClick={() => onOpen(r.memory.id)}>
                   <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: typeColor(r.memory.type) }} />
                   <span className="min-w-0 flex-1 truncate">{titleOf(r.memory)}</span>
-                  <span className="text-xs text-muted-foreground tabular-nums">{r.kind === "supersedes" ? "replaces" : r.weight.toFixed(2)}</span></button></li>
+                  {r.kind === "supersedes"
+                    ? <span className="text-[11px] text-muted-foreground">replaces</span>
+                    : <span className="flex items-center gap-1.5" title={`Similarity ${r.weight.toFixed(2)}`}><span aria-hidden className="mem-meter"><span style={{ width: `${Math.round((r.weight / maxWeight) * 100)}%` }} /></span><span className="w-7 text-right font-mono text-[11px] text-muted-foreground tabular-nums">{r.weight.toFixed(2)}</span></span>}
+                </button></li>
               ))}
             </ul>
-          </div>
+          </section>
         )}
 
-        <div>
-          <h4 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">History</h4>
-          <ol className="space-y-1 text-xs">
+        <section aria-label="History">
+          <h4 className="mem-eyebrow mb-2">History</h4>
+          <ol className="mem-timeline space-y-2.5 text-xs">
             {events === null && <li aria-label="Loading history"><Skeleton rows={2} className="h-8 w-full" /></li>}
-            {events?.length === 0 && <li className="text-muted-foreground">No history.</li>}
-            {events?.map((ev) => (
-              <li key={ev.id} className="flex flex-wrap gap-x-2">
-                <span className="text-muted-foreground tabular-nums">{new Date(ev.createdAt).toLocaleString()}</span>
-                <span className="font-medium">{ev.action}</span>
-                <span className="text-muted-foreground">by {ev.actor}</span>
-              </li>
-            ))}
+            {events?.length === 0 && <li className="text-muted-foreground">No history recorded.</li>}
+            {events?.map((ev, i) => {
+              const at = eventTime(ev as MemoryEvent & { at?: unknown });
+              return (
+                <li key={`${ev.id ?? "e"}-${i}`} className="flex flex-wrap items-baseline gap-x-1.5" style={{ ["--mem-dot" as string]: ACTION_DOT[ev.action] ?? "var(--muted-foreground)" }} data-testid="history-item">
+                  <span className="font-medium">{ACTION_LABEL[ev.action] ?? ev.action}</span>
+                  <span className="text-muted-foreground">by {ev.actor ?? "unknown"}</span>
+                  <span className="ml-auto text-muted-foreground"><When value={at} /></span>
+                </li>
+              );
+            })}
           </ol>
-        </div>
+        </section>
       </div>
 
-      <div className="space-y-2 border-t border-border/70 p-3">
+      <footer className="space-y-2 border-t border-[var(--mem-pane-border)] px-4 py-3">
         {forgetting && (
           <div className="flex items-center gap-2">
             <Input aria-label="Reason" placeholder="Why is this no longer true? (optional)" autoFocus value={reason} onChange={(e) => setReason(e.target.value)}
@@ -190,9 +225,9 @@ export function MemoryDetail({ memory: m, client, related, supersededBy, onClose
           <span className="flex-1" />
           {confirmDelete
             ? <Button type="button" size="sm" variant="destructive" onClick={() => void run(() => client.deleteMemory(m.id), "Memory deleted", onDeleted)} onBlur={() => setConfirmDelete(false)} autoFocus>Delete permanently?</Button>
-            : <Button type="button" size="sm" variant="ghost" aria-label="Delete" onClick={() => setConfirmDelete(true)}><IconTrash aria-hidden />Delete</Button>}
+            : <Button type="button" size="icon-sm" variant="ghost" aria-label="Delete" title="Delete" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirmDelete(true)}><IconTrash aria-hidden /></Button>}
         </div>
-      </div>
+      </footer>
     </section>
   );
 }

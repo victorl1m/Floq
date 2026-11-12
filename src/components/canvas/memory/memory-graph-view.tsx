@@ -9,14 +9,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { fitTransform, ForceSim, pickNode, placeLabels, type ForceLink, type PlacedLabel, type Point } from "@/lib/memory-force";
 import { autoExpand, buildDisplay, displayIdOf, groupMemories, groupRadius, litNodes, type GEdge, type GroupMode } from "@/lib/memory-groups";
 import type { Memory, MemoryGraph, MemoryType } from "@/lib/runtime/types";
-import { MEMORY_TYPES, titleOf, truncate, typeColor } from "./memory-meta";
+import { MEMORY_TYPES, titleOf, truncate, TYPE_META, typeColor } from "./memory-meta";
 
 /* =====================================================================================================================
-   Obsidian-style memory graph on a <canvas>.
+   Floq memory graph on a <canvas>: soft discs in the Floq palette on the canvas dot grid, thin curved links.
    - One DPR-aware canvas, drawn by a plain class (GraphEngine): React never re-renders per tick, hover or drag.
    - Continuous, damped force simulation (ForceSim): repulsion, springs by similarity, centre gravity, collision. It cools
      down by itself, wakes up on drag / new data and stops drawing when idle.
-   - Pan (drag), zoom (wheel, buttons, pinch), node drag, neighbour fade on hover, greedy label declutter.
+   - Pan (drag), zoom (wheel, buttons, pinch), node drag, neighbour fade + coloured links + glow on hover/selection,
+     greedy collision-aware label placement (the hovered / selected label sits in a pill).
    - Colours come from the app's CSS variables (light/dark), re-read on theme change.
    - prefers-reduced-motion: the layout is solved synchronously, nothing eases or animates (static mode).
    - Grouped mode (Type / Topic / Author): a group is one bubble (name + count). Click expands it in place (its members
@@ -30,10 +31,14 @@ interface NodeInfo { id: string; r: number; pinned: boolean; forgotten: boolean;
 interface EdgeIn { source: string; target: string; /** 0..1 drawing strength */ strength: number; kind: "semantic" | "keyword" | "supersedes"; count: number }
 interface HullIn { key: string; label: string; color: string; members: string[] }
 interface Callbacks { onSelect: (id: string) => void; onLayout: (ms: number) => void; onToggleGroup: (key: string) => void; onFocusGroup: (key: string) => void }
-interface Colors { types: Record<MemoryType, string>; muted: string; accent: string; fg: string; bg: string; font: string }
+/** `bg` = stage colour (label halos, node cut-out rims), `dot` = canvas grid dots, `edge` = resting link colour, `card` / `border` = label pills and hull chips. */
+interface Colors { types: Record<MemoryType, string>; muted: string; accent: string; fg: string; bg: string; dot: string; edge: string; card: string; border: string; font: string }
 interface View { k: number; tx: number; ty: number }
 
 const BUCKETS = 4;
+const GRID = 24; // world units between grid dots (the agent canvas uses 22 px)
+const BEND = 0.14; // edge curvature: control point offset as a share of the edge length
+const TAU = Math.PI * 2;
 const MIN_ZOOM = 0.08, MAX_ZOOM = 6;
 const DIM = 0.14; // alpha of faded nodes
 const ease = 0.22;
@@ -336,13 +341,21 @@ class GraphEngine {
     const s = this.sim, k = this.view.k;
     if (!s) return -1;
     let best = -1, bd = 6;
+    // The edges are gentle quadratic curves: test the pointer against 8 chords of each curve (screen space).
+    const tx = this.view.tx, ty = this.view.ty;
     for (let i = 0; i < this.edges.length; i++) {
-      const e = this.edges[i];
-      const ax = s.x[e.a] * k + this.view.tx, ay = s.y[e.a] * k + this.view.ty, bx = s.x[e.b] * k + this.view.tx, by = s.y[e.b] * k + this.view.ty;
-      const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
-      const t = Math.min(Math.max(((px - ax) * dx + (py - ay) * dy) / l2, 0), 1);
-      const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-      if (d < bd) { bd = d; best = i; }
+      const c = this.curve(this.edges[i]);
+      const x0 = c[0] * k + tx, y0 = c[1] * k + ty, cx = c[2] * k + tx, cy = c[3] * k + ty, x1 = c[4] * k + tx, y1 = c[5] * k + ty;
+      if (px < Math.min(x0, cx, x1) - bd || px > Math.max(x0, cx, x1) + bd || py < Math.min(y0, cy, y1) - bd || py > Math.max(y0, cy, y1) + bd) continue;
+      let ax = x0, ay = y0;
+      for (let q = 1; q <= 8; q++) {
+        const t = q / 8, u = 1 - t, bx = u * u * x0 + 2 * u * t * cx + t * t * x1, by = u * u * y0 + 2 * u * t * cy + t * t * y1;
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+        const h = Math.min(Math.max(((px - ax) * dx + (py - ay) * dy) / l2, 0), 1);
+        const d = Math.hypot(px - (ax + h * dx), py - (ay + h * dy));
+        if (d < bd) { bd = d; best = i; }
+        ax = bx; ay = by;
+      }
     }
     return best;
   }
@@ -484,7 +497,9 @@ class GraphEngine {
     const v = (...names: string[]) => { for (const n of names) { const x = cs.getPropertyValue(n).trim(); if (x) return x; } return "currentColor"; };
     return {
       types: { fact: v("--mem-fact", "--chart-2", "--foreground"), decision: v("--mem-decision", "--chart-3", "--foreground"), procedure: v("--mem-procedure", "--chart-4", "--foreground"), episode: v("--mem-episode", "--chart-5", "--foreground") },
-      muted: v("--muted-foreground", "--foreground"), accent: v("--primary-text", "--primary", "--foreground"), fg: v("--foreground"), bg: v("--background", "--card"),
+      muted: v("--muted-foreground", "--foreground"), accent: v("--mem-link-supersedes", "--primary-text", "--primary", "--foreground"), fg: v("--foreground"),
+      bg: v("--mem-stage", "--background", "--card"), dot: v("--mem-stage-dot", "--border", "--muted-foreground"), edge: v("--mem-link", "--muted-foreground", "--foreground"),
+      card: v("--popover", "--card", "--background"), border: v("--border", "--muted-foreground"),
       font: cs.fontFamily || "sans-serif",
     };
   }
@@ -495,17 +510,36 @@ class GraphEngine {
     return w;
   }
 
+  /** Canvas dot grid that pans and zooms with the graph, like the agent canvas behind this dialog. */
+  private drawGrid(): void {
+    const ctx = this.ctx, k = this.view.k;
+    let step = GRID * k;
+    while (step < 14) step *= 2;
+    while (step > 56) step /= 2;
+    const ox = ((this.view.tx % step) + step) % step, oy = ((this.view.ty % step) + step) % step;
+    const s = Math.min(1.6, Math.max(1, k * 1.2));
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = this.colors.dot;
+    ctx.beginPath();
+    for (let y = oy; y < this.h; y += step) for (let x = ox; x < this.w; x += step) ctx.rect(x - s / 2, y - s / 2, s, s);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   private draw(_t0: number, moving: boolean): void {
     const ctx = this.ctx, sim = this.sim, col = this.colors, k = this.view.k;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.w, this.h);
+    this.drawGrid();
     if (!sim || sim.n === 0) return;
     ctx.save();
     ctx.translate(this.view.tx, this.view.ty);
     ctx.scale(k, k);
     ctx.lineCap = "round";
+    const px = 1 / k; // one screen pixel in world units
+    const lw = 1 / Math.max(k, 0.6); // line widths stop thinning out below 0.6x so far views stay legible
 
-    // hulls of expanded groups: a soft disc with a dashed outline behind the members
+    // hulls of expanded groups: a faint tinted disc with a hairline rim behind the members
     this.chips = [];
     const hullGeo: Array<{ h: HullIn & { idx: number[] }; cx: number; cy: number; r: number }> = [];
     for (const h of this.hulls) {
@@ -515,17 +549,17 @@ class GraphEngine {
       cx /= h.idx.length; cy /= h.idx.length;
       let r = 0;
       for (const i of h.idx) r = Math.max(r, Math.hypot(sim.x[i] - cx, sim.y[i] - cy) + sim.r[i]);
-      r += 16;
+      r += 18;
       hullGeo.push({ h, cx, cy, r });
       const color = this.colorOf(h.color);
       ctx.fillStyle = color; ctx.strokeStyle = color;
-      ctx.globalAlpha = 0.07; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 6.2832); ctx.fill();
-      ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5 / k; ctx.setLineDash([6 / k, 4 / k]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 0.055; ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 0.32; ctx.lineWidth = px; ctx.stroke();
     }
 
-    // similarity edges: one path per (weight bucket, bright|dim) instead of one stroke per edge
-    const dim = 1 - 0.93 * this.dimMix;
-    ctx.strokeStyle = col.muted;
+    // similarity edges: thin, muted, gently curved; one path per (weight bucket, bright|dim) instead of one stroke per edge
+    const dim = 1 - 0.9 * this.dimMix;
+    ctx.strokeStyle = col.edge;
     for (const bright of [0, 1]) {
       for (let b = 0; b < BUCKETS; b++) {
         ctx.beginPath();
@@ -533,74 +567,102 @@ class GraphEngine {
         for (let i = 0; i < this.edges.length; i++) {
           const e = this.edges[i];
           if (e.sup || this.eBright[i] !== bright || Math.min(BUCKETS - 1, Math.floor(Math.min(Math.max(e.s, 0), 0.9999) * BUCKETS)) !== b) continue;
-          const q = this.seg(e); ctx.moveTo(q[0], q[1]); ctx.lineTo(q[2], q[3]); any = true;
+          const c = this.curve(e); ctx.moveTo(c[0], c[1]); ctx.quadraticCurveTo(c[2], c[3], c[4], c[5]); any = true;
         }
         if (!any) continue;
         const f = b / (BUCKETS - 1);
-        ctx.lineWidth = (0.8 + f * 2.2) / Math.max(k, 0.6);
-        ctx.globalAlpha = (0.3 + f * 0.45) * (bright ? 1 : dim);
+        ctx.lineWidth = (0.75 + f * 1.25) * lw;
+        ctx.globalAlpha = (0.22 + f * 0.36) * (bright ? 1 : dim);
         ctx.stroke();
       }
     }
-    // hovered node: its own edges on top in the foreground colour
-    if ((this.hover >= 0 || this.hoverEdge >= 0) && this.dimMix > 0.05) {
-      ctx.strokeStyle = col.fg; ctx.globalAlpha = 0.7 * this.dimMix;
-      ctx.beginPath();
-      for (let i = 0; i < this.edges.length; i++) { const e = this.edges[i]; if (e.sup || this.eBright[i] !== 1) continue; const q = this.seg(e); ctx.moveTo(q[0], q[1]); ctx.lineTo(q[2], q[3]); }
-      ctx.lineWidth = 1.6 / Math.max(k, 0.6);
-      ctx.stroke();
+    // focus edges (hovered node or edge, else the selected node): coloured from one endpoint to the other
+    const focus = this.hover >= 0 || this.hoverEdge >= 0 ? (this.dimMix > 0.05 ? this.dimMix : 0) : this.selected >= 0 ? 0.75 : 0;
+    if (focus > 0) {
+      const sel = this.hover < 0 && this.hoverEdge < 0 ? this.selected : -1;
+      ctx.lineWidth = 1.7 * lw;
+      for (let i = 0; i < this.edges.length; i++) {
+        const e = this.edges[i];
+        if (e.sup) continue;
+        if (sel >= 0 ? e.a !== sel && e.b !== sel : this.eBright[i] !== 1) continue;
+        const c = this.curve(e), g = ctx.createLinearGradient(c[0], c[1], c[4], c[5]);
+        g.addColorStop(0, this.colorOf(this.infos[e.a].color)); g.addColorStop(1, this.colorOf(this.infos[e.b].color));
+        ctx.strokeStyle = g; ctx.globalAlpha = 0.85 * focus;
+        ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.quadraticCurveTo(c[2], c[3], c[4], c[5]); ctx.stroke();
+      }
     }
-    // supersedes: dashed accent line with an arrow head at the newer memory
+    // supersedes: dashed accent curve with a small arrow head at the newer memory
     ctx.strokeStyle = col.accent; ctx.fillStyle = col.accent;
     for (let i = 0; i < this.edges.length; i++) {
       const e = this.edges[i];
       if (!e.sup) continue;
-      const q = this.seg(e), dx = q[2] - q[0], dy = q[3] - q[1], d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
-      const ex = q[2] - ux * (this.infos[e.b].group ? 3 : sim.r[e.b] + 3), ey = q[3] - uy * (this.infos[e.b].group ? 3 : sim.r[e.b] + 3), s = 7 / Math.max(k, 0.6);
+      const c = this.curve(e), tdx = c[4] - c[2], tdy = c[5] - c[3], d = Math.hypot(tdx, tdy) || 1, ux = tdx / d, uy = tdy / d;
+      const back = this.infos[e.b].group ? 3 * px : sim.r[e.b] + 3 * px;
+      const ex = c[4] - ux * back, ey = c[5] - uy * back, s = 6.5 * lw;
       ctx.globalAlpha = 0.9 * (this.eBright[i] ? 1 : dim);
-      ctx.setLineDash([5 / Math.max(k, 0.6), 3 / Math.max(k, 0.6)]); ctx.lineWidth = 1.8 / Math.max(k, 0.6);
-      ctx.beginPath(); ctx.moveTo(q[0], q[1]); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.setLineDash([4 * lw, 3.5 * lw]); ctx.lineWidth = 1.5 * lw;
+      ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.quadraticCurveTo(c[2], c[3], ex, ey); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex - ux * s - uy * s * 0.5, ey - uy * s + ux * s * 0.5); ctx.lineTo(ex - ux * s + uy * s * 0.5, ey - uy * s - ux * s * 0.5); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex - ux * s - uy * s * 0.55, ey - uy * s + ux * s * 0.55); ctx.lineTo(ex - ux * s + uy * s * 0.55, ey - uy * s - ux * s * 0.55); ctx.closePath(); ctx.fill();
     }
 
-    // nodes
-    const minR = 3 / k;
+    // nodes: soft discs with a cut-out rim in the stage colour; hovered / selected ones glow and draw last
+    const minR = 3 * px;
     for (let pass = 0; pass < 2; pass++) {
       for (let i = 0; i < sim.n; i++) {
         const top = i === this.hover || i === this.selected;
         if ((pass === 1) !== top) continue;
         const n = this.infos[i], a = this.cur[i], r = Math.max(sim.r[i], minR), x = sim.x[i], y = sim.y[i], color = this.colorOf(n.color);
-        ctx.fillStyle = color; ctx.strokeStyle = color;
-        if (n.pinned) { ctx.globalAlpha = 0.75 * a; ctx.lineWidth = 1.6 / k; ctx.beginPath(); ctx.arc(x, y, r + 4 / Math.max(k, 0.6), 0, 6.2832); ctx.stroke(); }
-        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832);
-        if (n.group) {
-          ctx.globalAlpha = 0.26 * a; ctx.fill();
-          ctx.globalAlpha = a; ctx.lineWidth = 2.2 / k; ctx.stroke();
-        } else if (n.forgotten) {
-          ctx.globalAlpha = 0.18 * a; ctx.fill();
-          ctx.globalAlpha = 0.6 * a; ctx.lineWidth = 1.5 / k; ctx.setLineDash([3 / k, 2.5 / k]); ctx.stroke(); ctx.setLineDash([]);
-        } else {
-          ctx.globalAlpha = 0.9 * a; ctx.fill();
-          ctx.globalAlpha = a; ctx.lineWidth = 1.5 / k; ctx.stroke();
+        if (top) {
+          const glow = r + (n.group ? 10 : 14) * px, g = ctx.createRadialGradient(x, y, r * 0.6, x, y, glow);
+          g.addColorStop(0, color); g.addColorStop(1, "transparent");
+          ctx.globalAlpha = i === this.selected ? 0.5 : 0.36; ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(x, y, glow, 0, TAU); ctx.fill();
         }
-        if (top) { ctx.globalAlpha = 1; ctx.strokeStyle = col.fg; ctx.lineWidth = (i === this.selected ? 2.5 : 1.6) / k; ctx.beginPath(); ctx.arc(x, y, r + 1.5 / k, 0, 6.2832); ctx.stroke(); }
+        ctx.fillStyle = color; ctx.strokeStyle = color;
+        if (n.pinned) { ctx.globalAlpha = 0.85 * a; ctx.lineWidth = 1.4 * px; ctx.beginPath(); ctx.arc(x, y, r + 3.5 * px, 0, TAU); ctx.stroke(); }
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+        if (n.group) {
+          ctx.globalAlpha = 0.16 * a; ctx.fill();
+          ctx.globalAlpha = 0.9 * a; ctx.lineWidth = 1.6 * px; ctx.stroke();
+          ctx.globalAlpha = 0.35 * a; ctx.beginPath(); ctx.arc(x, y, Math.max(r - 5 * px, r * 0.82), 0, TAU); ctx.lineWidth = px; ctx.stroke();
+        } else if (n.forgotten) {
+          ctx.globalAlpha = 0.12 * a; ctx.fill();
+          ctx.globalAlpha = 0.7 * a; ctx.lineWidth = 1.3 * px; ctx.setLineDash([2.5 * px, 2 * px]); ctx.stroke(); ctx.setLineDash([]);
+        } else {
+          ctx.globalAlpha = a; ctx.fill();
+          ctx.strokeStyle = col.bg; ctx.lineWidth = 1.5 * px; ctx.stroke(); // cut-out rim keeps touching discs apart
+          if (r * k >= 6) { ctx.globalAlpha = 0.28 * a; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = px; ctx.beginPath(); ctx.arc(x, y, r - 1.6 * px, Math.PI * 1.05, Math.PI * 1.75); ctx.stroke(); }
+        }
+        if (top) { ctx.globalAlpha = i === this.selected ? 1 : 0.7; ctx.strokeStyle = col.fg; ctx.lineWidth = (i === this.selected ? 2 : 1.4) * px; ctx.beginPath(); ctx.arc(x, y, r + (n.pinned ? 6 : 3) * px, 0, TAU); ctx.stroke(); }
       }
     }
     ctx.restore();
 
-    // labels in screen space (constant size), decluttered
+    // labels in screen space (constant size), collision-aware; the hovered / selected label sits in a pill
     ctx.globalAlpha = 1;
-    ctx.font = `500 11px ${col.font}`;
     ctx.textAlign = "center"; ctx.textBaseline = "alphabetic"; ctx.lineJoin = "round";
+    ctx.font = `500 11px ${col.font}`;
     this.layoutLabels(moving);
+    const quiet = this.hover < 0 && this.hoverEdge < 0 && !this.matches;
     for (const l of this.placed) {
       const i = sim.indexOf(l.id);
       if (i < 0) continue;
-      const sx = sim.x[i] * k + this.view.tx, sy = sim.y[i] * k + this.view.ty, r = Math.max(sim.r[i] * k, 3), text = this.labelOf(i);
-      ctx.globalAlpha = Math.max(this.cur[i], 0.5);
-      ctx.strokeStyle = col.bg; ctx.lineWidth = 4; ctx.strokeText(text, sx, sy + r + 12);
-      ctx.fillStyle = col.fg; ctx.fillText(text, sx, sy + r + 12);
+      const sx = sim.x[i] * k + this.view.tx, sy = sim.y[i] * k + this.view.ty, r = Math.max(sim.r[i] * k, 3), text = this.labelOf(i), ly = sy + r + 13;
+      const strong = i === this.hover || i === this.selected;
+      if (strong) {
+        ctx.font = `600 11px ${col.font}`;
+        const w = this.textW(text) + 14;
+        ctx.globalAlpha = 0.96; ctx.fillStyle = col.card; ctx.strokeStyle = col.border; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(sx - w / 2, ly - 12, w, 17, 8.5); ctx.fill(); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.fillStyle = col.fg; ctx.fillText(text, sx, ly);
+        ctx.font = `500 11px ${col.font}`;
+        continue;
+      }
+      // resting labels are a step quieter than lit ones so the eye lands on the nodes first
+      ctx.globalAlpha = Math.max(this.cur[i], 0.45) * (quiet && !this.infos[i].group ? 0.82 : 1);
+      ctx.strokeStyle = col.bg; ctx.lineWidth = 3.5; ctx.strokeText(text, sx, ly);
+      ctx.fillStyle = col.fg; ctx.fillText(text, sx, ly);
     }
     // member count inside each group bubble
     ctx.font = `600 13px ${col.font}`;
@@ -612,16 +674,18 @@ class GraphEngine {
       ctx.globalAlpha = Math.max(this.cur[i], 0.35); ctx.fillStyle = col.fg;
       ctx.fillText(String(this.litCount.get(i) ?? n.count), sim.x[i] * k + this.view.tx, sim.y[i] * k + this.view.ty + 4.5);
     }
-    // hull chips (click collapses the group)
+    // hull chips (click collapses the group): a pill with the group colour dot
     ctx.font = `500 11px ${col.font}`;
     for (const g of hullGeo) {
-      const text = `${g.h.label} · ${g.h.idx.length}  ×`, w = this.textW(text) + 14;
-      const x = Math.min(Math.max(g.cx * k + this.view.tx, w / 2 + 4), this.w - w / 2 - 4), y = Math.min(Math.max(g.cy * k + this.view.ty - g.r * k - 9, 14), this.h - 14);
+      const text = `${g.h.label} · ${g.h.idx.length}   ×`, w = this.textW(text) + 26;
+      const x = Math.min(Math.max(g.cx * k + this.view.tx, w / 2 + 4), this.w - w / 2 - 4), y = Math.min(Math.max(g.cy * k + this.view.ty - g.r * k - 10, 14), this.h - 14);
       const box = { key: g.h.key, x0: x - w / 2, y0: y - 10, x1: x + w / 2, y1: y + 10 };
       this.chips.push(box);
-      ctx.globalAlpha = 0.95; ctx.fillStyle = col.bg; ctx.strokeStyle = this.colorOf(g.h.color); ctx.lineWidth = 1.2;
+      const color = this.colorOf(g.h.color);
+      ctx.globalAlpha = 0.97; ctx.fillStyle = col.card; ctx.strokeStyle = col.border; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.roundRect(box.x0, box.y0, w, 20, 10); ctx.fill(); ctx.stroke();
-      ctx.globalAlpha = 1; ctx.fillStyle = col.fg; ctx.fillText(text, x, y + 4);
+      ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(box.x0 + 10, y, 3.5, 0, TAU); ctx.fill();
+      ctx.fillStyle = col.fg; ctx.fillText(text, x + 6, y + 4);
     }
     ctx.globalAlpha = 1;
   }
@@ -635,6 +699,12 @@ class GraphEngine {
     const ra = ga ? s.r[e.a] : 0, rb = gb ? s.r[e.b] : 0;
     if (ra + rb >= d) return [ax, ay, ax, ay];
     return [ax + ux * ra, ay + uy * ra, bx - ux * rb, by - uy * rb];
+  }
+
+  /** Quadratic curve of an edge: [x0, y0, cx, cy, x1, y1]. Bends to the same side for a given pair (lower index first), so parallel links never cross over. */
+  private curve(e: { a: number; b: number }): [number, number, number, number, number, number] {
+    const q = this.seg(e), dx = q[2] - q[0], dy = q[3] - q[1], sign = e.a < e.b ? 1 : -1;
+    return [q[0], q[1], (q[0] + q[2]) / 2 - dy * BEND * sign, (q[1] + q[3]) / 2 + dx * BEND * sign, q[2], q[3]];
   }
 
   /** Colour of a node / hull: a type token or one of the four --mem-* tokens by index. */
@@ -751,7 +821,7 @@ const MIN_DEFAULT = 0.55;
 function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild><Button type="button" size="icon-sm" variant="outline" aria-label={label} onClick={onClick}>{children}</Button></TooltipTrigger>
+      <TooltipTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={label} onClick={onClick}>{children}</Button></TooltipTrigger>
       <TooltipContent side="left">{label}</TooltipContent>
     </Tooltip>
   );
@@ -857,55 +927,67 @@ export function MemoryGraphView({ memories, graph, loading, source, matches, sel
   const empty = !loading && nodes.length === 0;
   const fit = useCallback(() => engineRef.current?.fit(true), []);
 
+  const meta = `${nodes.length} ${nodes.length === 1 ? "memory" : "memories"}${effMode !== "none" ? ` · ${groups.length} groups` : ""} · ${mode === "semantic" ? "embedding" : "keyword"} similarity${source === "local" ? " (computed locally)" : ""}${layoutMs ? ` · layout ${layoutMs} ms` : ""}`;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2" data-testid="memory-graph">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+      <div className="mem-graph-toolbar flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
         <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">Group by</span>
+          <span className="mem-eyebrow">Group</span>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={effMode} aria-label="Group by" data-testid="group-mode"
             onValueChange={(v) => { if (v) { setGroupBy(v as GroupMode); setExpanded(new Set()); } }}>
-            {GROUP_MODES.map(([v, label]) => <ToggleGroupItem key={v} value={v} data-testid={`group-${v}`}>{label}</ToggleGroupItem>)}
+            {GROUP_MODES.map(([v, label]) => <ToggleGroupItem key={v} value={v} data-testid={`group-${v}`} className="px-2.5 text-xs">{label}</ToggleGroupItem>)}
           </ToggleGroup>
           {effMode !== "none" && (
-            <>
-              <Button type="button" size="xs" variant="ghost" data-testid="expand-all" onClick={() => setExpanded(new Set(groups.map((g) => g.key)))}><IconArrowsMaximize size={12} />Expand all</Button>
-              <Button type="button" size="xs" variant="ghost" data-testid="collapse-all" onClick={() => setExpanded(new Set())}><IconArrowsMinimize size={12} />Collapse all</Button>
-            </>
+            <span className="flex items-center">
+              <Button type="button" size="xs" variant="ghost" data-testid="expand-all" onClick={() => setExpanded(new Set(groups.map((g) => g.key)))}><IconArrowsMaximize size={12} aria-hidden />Expand all</Button>
+              <Button type="button" size="xs" variant="ghost" data-testid="collapse-all" onClick={() => setExpanded(new Set())}><IconArrowsMinimize size={12} aria-hidden />Collapse</Button>
+            </span>
           )}
         </div>
-        <label className="flex items-center gap-2">
-          <span className="text-muted-foreground">Min similarity</span>
-          <Slider aria-label="Min similarity" className="w-32" min={0.2} max={0.95} step={0.05} value={[minSim]} onValueChange={(v) => setMinSim(v[0])} />
-          <span className="w-8 tabular-nums" data-testid="min-sim-value">{minSim.toFixed(2)}</span>
-        </label>
-        <label className="flex items-center gap-1.5"><Checkbox checked={showSim} onCheckedChange={(c) => setShowSim(c === true)} aria-label="Similarity links" />Similarity <span className="text-muted-foreground tabular-nums" data-testid="sim-count">{simCount}</span></label>
-        <label className="flex items-center gap-1.5"><Checkbox checked={showSup} onCheckedChange={(c) => setShowSup(c === true)} aria-label="Superseded links" />Superseded <span className="text-muted-foreground tabular-nums" data-testid="sup-count">{supCount}</span></label>
-        <span className="ml-auto text-muted-foreground" data-testid="graph-meta">{nodes.length} {nodes.length === 1 ? "memory" : "memories"}{effMode !== "none" ? ` · ${groups.length} groups` : ""} · {mode === "semantic" ? "embedding" : "keyword"} similarity{source === "local" ? " (computed locally)" : ""}{layoutMs ? ` · layout ${layoutMs} ms` : ""}</span>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2">
+            <span className="mem-eyebrow">Similarity</span>
+            <Slider aria-label="Min similarity" className="w-28" min={0.2} max={0.95} step={0.05} value={[minSim]} onValueChange={(v) => setMinSim(v[0])} />
+            <span className="w-8 font-mono text-[11px] tabular-nums text-muted-foreground" data-testid="min-sim-value">{minSim.toFixed(2)}</span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-1.5"><Checkbox checked={showSim} onCheckedChange={(c) => setShowSim(c === true)} aria-label="Similarity links" />Similar <span className="mem-count" data-testid="sim-count">{simCount}</span></label>
+          <label className="flex cursor-pointer items-center gap-1.5"><Checkbox checked={showSup} onCheckedChange={(c) => setShowSup(c === true)} aria-label="Superseded links" />Superseded <span className="mem-count" data-testid="sup-count">{supCount}</span></label>
+        </div>
       </div>
 
-      <div ref={wrapRef} className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border/70 bg-background">
-        {loading && <div className="absolute inset-0 z-10 flex items-center justify-center"><Spinner /></div>}
-        {empty && <p className="absolute inset-0 z-10 flex items-center justify-center text-sm text-muted-foreground">No memories to map yet.</p>}
+      <div ref={wrapRef} className="mem-stage relative min-h-0 flex-1 overflow-hidden rounded-xl border">
+        {loading && <div className="absolute inset-0 z-10 flex items-center justify-center" role="status" aria-label="Loading graph"><Spinner /></div>}
+        {empty && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-center">
+            <p className="text-sm font-medium">No memories to map yet</p>
+            <p className="text-xs text-muted-foreground">Memories appear here as connected discs once agents save them.</p>
+          </div>
+        )}
         <canvas ref={canvasRef} data-testid="graph-canvas" role="img" tabIndex={0} aria-label={`Memory graph, ${nodes.length} memories. Drag to pan, scroll or pinch to zoom, drag a node to move it, click to open. Keys: plus, minus, zero to fit.`}
           className="memgraph absolute inset-0 block size-full cursor-grab touch-none outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset" />
-        <div ref={tipRef} role="tooltip" className="pointer-events-none absolute z-10 hidden max-w-64 rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md" />
+        <div ref={tipRef} role="tooltip" className="mem-float pointer-events-none absolute z-10 hidden max-w-72 rounded-lg px-2.5 py-1.5 text-xs leading-snug" />
+
+        <p className="mem-float pointer-events-none absolute top-3 left-3 z-[1] max-w-[calc(100%-5rem)] truncate rounded-full px-2.5 py-1 text-[11px] text-muted-foreground" data-testid="graph-meta">{meta}</p>
 
         <TooltipProvider delayDuration={200}>
-          <div className="absolute top-2 right-2 flex flex-col gap-1">
+          <div className="mem-float absolute top-3 right-3 flex flex-col gap-0.5 rounded-xl p-1">
             <ToolButton label="Zoom in" onClick={() => engineRef.current?.zoomBy(1.3)}><IconPlus size={14} /></ToolButton>
             <ToolButton label="Zoom out" onClick={() => engineRef.current?.zoomBy(1 / 1.3)}><IconMinus size={14} /></ToolButton>
+            <span aria-hidden className="mx-1.5 my-0.5 h-px bg-border" />
             <ToolButton label="Fit to view" onClick={fit}><IconScan size={14} /></ToolButton>
             <ToolButton label="Reset layout" onClick={() => setSeed((s) => s + 1)}><IconRefresh size={14} /></ToolButton>
           </div>
         </TooltipProvider>
 
-        <div className="absolute bottom-2 left-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/70 bg-popover/90 px-2 py-1 text-[11px]" data-testid="graph-legend">
-          {MEMORY_TYPES.map((t) => <span key={t} className="flex items-center gap-1 capitalize"><span aria-hidden className="size-2.5 rounded-full" style={{ background: typeColor(t) }} />{t}</span>)}
-          <span className="flex items-center gap-1"><svg width="22" height="8" aria-hidden><line x1="0" y1="4" x2="22" y2="4" stroke="var(--muted-foreground)" strokeWidth="2" opacity="0.7" /></svg>similar</span>
-          <span className="flex items-center gap-1"><svg width="22" height="8" aria-hidden><line x1="0" y1="4" x2="18" y2="4" stroke="var(--primary-text)" strokeWidth="1.8" strokeDasharray="4 2" /><path d="M16 0 L22 4 L16 8 z" fill="var(--primary-text)" /></svg>superseded by</span>
-          {effMode !== "none" && <span className="flex items-center gap-1"><svg width="16" height="16" aria-hidden><circle cx="8" cy="8" r="6.5" fill="var(--muted-foreground)" fillOpacity="0.25" stroke="var(--muted-foreground)" strokeWidth="1.8" /></svg>group · line width = links</span>}
-          <span className="flex items-center gap-1"><svg width="14" height="14" aria-hidden><circle cx="7" cy="7" r="5" fill="none" stroke="var(--foreground)" strokeWidth="1.5" /><circle cx="7" cy="7" r="2.5" fill="var(--foreground)" /></svg>pinned</span>
-          <span className="flex items-center gap-1"><svg width="12" height="12" aria-hidden><circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--foreground)" strokeWidth="1.3" strokeDasharray="3 2" /></svg>forgotten</span>
+        <div className="mem-float absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-xl px-2.5 py-1.5 text-[11px] text-muted-foreground" data-testid="graph-legend">
+          {MEMORY_TYPES.map((t) => <span key={t} className="flex items-center gap-1.5 text-foreground"><span aria-hidden className="size-2.5 rounded-full" style={{ background: typeColor(t) }} />{TYPE_META[t].label}</span>)}
+          <span aria-hidden className="h-3 w-px bg-border" />
+          <span className="flex items-center gap-1.5"><svg width="22" height="10" aria-hidden><path d="M1 8 Q11 0 21 8" fill="none" stroke="var(--mem-link)" strokeWidth="1.5" /></svg>similar</span>
+          <span className="flex items-center gap-1.5"><svg width="22" height="10" aria-hidden><path d="M1 8 Q9 1 16 5" fill="none" stroke="var(--mem-link-supersedes)" strokeWidth="1.5" strokeDasharray="3 2.5" /><path d="M15 2 L21 7 L13.5 8 z" fill="var(--mem-link-supersedes)" /></svg>superseded by</span>
+          {effMode !== "none" && <span className="flex items-center gap-1.5"><svg width="14" height="14" aria-hidden><circle cx="7" cy="7" r="6" fill="var(--muted-foreground)" fillOpacity="0.18" stroke="var(--muted-foreground)" strokeWidth="1.3" /></svg>group · width = links</span>}
+          <span className="flex items-center gap-1.5"><svg width="14" height="14" aria-hidden><circle cx="7" cy="7" r="6" fill="none" stroke="var(--foreground)" strokeWidth="1.2" /><circle cx="7" cy="7" r="3.5" fill="var(--foreground)" /></svg>pinned</span>
+          <span className="flex items-center gap-1.5"><svg width="12" height="12" aria-hidden><circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--foreground)" strokeWidth="1.2" strokeDasharray="2.5 2" /></svg>forgotten</span>
         </div>
       </div>
     </div>
