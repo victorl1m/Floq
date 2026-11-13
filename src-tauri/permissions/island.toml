@@ -10,6 +10,7 @@ commands.allow = [
   "set_runtime_origin",
   "get_memory_details",
   "inspect_dropped_file",
+  "read_dropped_image",
   "upload_dropped_file",
   "cancel_dropped_upload",
   "download_to_downloads",
@@ -20,6 +21,9 @@ commands.allow = [
   "set_native_material",
   "port_forward_start",
   "port_forward_stop",
+  "egress_start",
+  "egress_stop",
+  "egress_status",
   "island_publish",
   "get_desktop_preferences",
   "set_desktop_preference"
