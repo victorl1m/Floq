@@ -2,6 +2,9 @@
 export type BrowserState = "starting" | "running" | "stopped" | "disabled" | "unavailable";
 export interface BrowserNav { targetId: string; url: string; title: string; loading: boolean; canBack: boolean; canForward: boolean }
 export interface BrowserFrame { n: number; targetId: string; jpeg: string; w: number; h: number; scale: number }
+/** Egress of the agent browser (docs/design/browser-user-egress.md §4.2): `mode` is the user's choice, `state` the truth. */
+export type BrowserEgressMode = "server" | "desktop" | "desktop-fallback";
+export interface BrowserEgress { mode: BrowserEgressMode; state: "up" | "down" | "standby"; machine?: string; rttMs?: number; /** "Use the server connection this time" is active: transient on the runtime, the saved mode is unchanged. */ override?: boolean }
 /** runtime -> app. */
 export type BrowserServerMessage =
   | { type: "state"; state: BrowserState }
@@ -15,6 +18,7 @@ export type BrowserServerMessage =
   | { type: "clipboard"; targetId: string; text: string }
   | { type: "download"; targetId: string; name: string; state: "started" | "done" | "failed" }
   | { type: "clients"; agents: number }
+  | ({ type: "egress" } & BrowserEgress)
   | { type: "error"; code: string };
 /** app -> runtime. Mouse/key messages use `kind` for the CDP event type because `type` names the message. */
 export type BrowserClientMessage =
@@ -37,6 +41,7 @@ export interface BrowserStatus {
   version?: { chromium: string; revision: string | number; playwrightMcp: string; build?: string } | null;
   profile?: string;
   sandbox?: string;
+  egress?: BrowserEgress;
 }
 /** Cookie / data import (docs/design/agent-browser.md §A.13). Names and counts only: values never reach the app after upload. */
 export interface BrowserDomainCount { domain: string; count: number }

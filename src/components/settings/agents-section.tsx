@@ -16,6 +16,8 @@ import { BrowserImportDialog } from "@/components/canvas/browser-import-dialog";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 import ClaudeConnectorsGroup from "./claude-connectors-group";
 import { UsageFallbackGroup } from "./usage-fallback-group";
+import { BrowserEgressSettings } from "./browser-egress-settings";
+import { EGRESS_SETTINGS_EVENT } from "@/lib/browser-egress";
 
 interface Props {
     settings: UserSettings;
@@ -361,6 +363,10 @@ export default function AgentsSection({ settings, onChange }: Props) {
                     />
                 </SettingRow>
                 <BrowserControls enabled={settings.agentBrowser !== false} />
+                <BrowserEgressSettings
+                    mode={settings.agentBrowserEgress ?? "server"}
+                    onMode={async (mode) => { onChange(await client.updateSettings({ agentBrowserEgress: mode })); window.dispatchEvent(new CustomEvent(EGRESS_SETTINGS_EVENT, { detail: mode })); }}
+                />
             </SettingsGroup>
 
             <ClaudeConnectorsGroup enabled={settings.claudeAiConnectors !== false} onToggle={(v) => void patch({ claudeAiConnectors: v })} />

@@ -111,6 +111,8 @@ export interface SpawnSpec {
   rows: number;
   /** spawnPipe only: give the child a stdin pipe (default: stdin is closed). For runtime-driven daemons such as floq-browserd. */
   stdin?: boolean;
+  /** spawnPipe only: a 4th stdio pipe (the child's fd 3), for a binary side channel. bwrap passes it through (user-IP egress relay). */
+  extraPipe?: boolean;
 }
 
 export interface ShardDriver {
@@ -445,7 +447,7 @@ export class LinuxShardDriver implements ShardDriver {
     const launch = this.sandboxLaunch(handle, spec);
     return spawn(launch.file, launch.args, {
       cwd: "/",
-      stdio: [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"],
+      stdio: spec.extraPipe ? [spec.stdin ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"],
       env: { ...spec.env, HOME: SANDBOX_HOME, USER: "agent", LOGNAME: "agent" },
       windowsHide: true,
     });
@@ -576,7 +578,7 @@ export class LocalShardDriver implements ShardDriver {
   spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess {
     const cwd = this.hostPath(handle, spec.cwd);
     mkdirSync(cwd, { recursive: true });
-    return spawn(spec.file, spec.args, { cwd, stdio: [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"], env: spec.env, windowsHide: true });
+    return spawn(spec.file, spec.args, { cwd, stdio: spec.extraPipe ? [spec.stdin ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"], env: spec.env, windowsHide: true });
   }
 
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {

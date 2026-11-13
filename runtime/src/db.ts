@@ -175,6 +175,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS claude_ai_connectors BOOLEAN;
     -- Shared agent browser for this user's agents (NULL = on, the default; docs/design/agent-browser.md).
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_browser BOOLEAN;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_browser_egress TEXT;
     CREATE TABLE IF NOT EXISTS provider_credentials (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,

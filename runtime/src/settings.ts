@@ -58,8 +58,14 @@ export interface PublicSettings {
   claudeAiConnectors: boolean;
   /** Agents may use the shared headless browser (MCP server floq-browser); default on when the server allows it. */
   agentBrowser: boolean;
+  /** Where the agent browser's traffic leaves the internet (docs/design/browser-user-egress.md §4.1). */
+  agentBrowserEgress: BrowserEgressMode;
   github: { login: string; connectedAt: string } | null;
 }
+
+export type BrowserEgressMode = "server" | "desktop" | "desktop-fallback";
+export const BROWSER_EGRESS_MODES: readonly BrowserEgressMode[] = ["server", "desktop", "desktop-fallback"];
+export const readEgressMode = (v: unknown): BrowserEgressMode => (v === "desktop" || v === "desktop-fallback" ? v : "server");
 
 export interface SettingsPatch {
   claudeAutoApprove?: boolean;
@@ -79,6 +85,7 @@ export interface SettingsPatch {
   usageFallback?: UsageFallback | null;
   claudeAiConnectors?: boolean;
   agentBrowser?: boolean;
+  agentBrowserEgress?: BrowserEgressMode;
 }
 
 /** Decrypted values used to launch one user's agent session. */
@@ -139,6 +146,7 @@ export class SettingsStore {
       usageFallback: readUsageFallback(row?.usage_fallback),
       claudeAiConnectors: row?.claude_ai_connectors !== false,
       agentBrowser: row?.agent_browser !== false,
+      agentBrowserEgress: readEgressMode(row?.agent_browser_egress),
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
   }
@@ -196,6 +204,10 @@ export class SettingsStore {
       if (typeof patch.agentBrowser !== "boolean") throw badRequest("agentBrowser must be a boolean");
       push("agent_browser", patch.agentBrowser);
     }
+    if (patch.agentBrowserEgress !== undefined) {
+      if (typeof patch.agentBrowserEgress !== "string" || !BROWSER_EGRESS_MODES.includes(patch.agentBrowserEgress)) throw badRequest("agentBrowserEgress must be server, desktop or desktop-fallback");
+      push("agent_browser_egress", patch.agentBrowserEgress);
+    }
     if (patch.gitName !== undefined) push("git_name", cleanText(patch.gitName, "gitName", 100));
     if (patch.gitEmail !== undefined) {
       const email = cleanText(patch.gitEmail, "gitEmail", 200);
@@ -224,6 +236,12 @@ export class SettingsStore {
   async agentBrowser(userId: string): Promise<boolean> {
     const row = (await this.pool.query("SELECT agent_browser FROM user_settings WHERE user_id = $1", [userId])).rows[0];
     return row?.agent_browser !== false;
+  }
+
+  /** The user's egress choice (default "server": the VPS connection, as before). */
+  async agentBrowserEgress(userId: string): Promise<BrowserEgressMode> {
+    const row = (await this.pool.query("SELECT agent_browser_egress FROM user_settings WHERE user_id = $1", [userId])).rows[0];
+    return readEgressMode(row?.agent_browser_egress);
   }
 
   /** The user's fallback chain (defaults when unset). */

@@ -867,6 +867,13 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
       return send(res, 200, await browser.restart(userId, { wake: true }));
     }
+    if (url.pathname === "/v1/browser/egress/override" && method === "POST") {
+      if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
+      const body = await readJson<{ server?: unknown }>(req);
+      if (typeof body.server !== "boolean") throw badRequest("server must be a boolean");
+      await browser.setEgressOverride(userId, body.server);
+      return send(res, 200, browser.egress ? await browser.egressStatus(userId) : {});
+    }
     if (url.pathname === "/v1/browser/clear-data" && method === "POST") {
       if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
       const body = await readJson<{ confirm?: unknown }>(req);
@@ -889,7 +896,8 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         if (body.claudeAiConnectors !== undefined) claudeConnectors.invalidate(userId);
         const updated = await settings.update(userId, body);
         // The toggle changed: stop a running browser when it went off and fix the floq-browser MCP entries, without holding up the response.
-        if (browser && body.agentBrowser !== undefined) void browser.onToggle(userId).catch((error) => log.warn("browser.toggle_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
+        if (browser && body.agentBrowserEgress !== undefined) void browser.setEgressOverride(userId, false).catch(() => undefined);
+        if (browser && (body.agentBrowser !== undefined || body.agentBrowserEgress !== undefined)) void browser.onToggle(userId).catch((error) => log.warn("browser.toggle_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
         return send(res, 200, { settings: updated });
       }
     }
@@ -1662,6 +1670,32 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offDisplays(); offPlugins(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
+        });
+        return;
+      }
+      if (url.pathname === "/v1/browser/egress") {
+        // The user's desktop app dials in to carry the agent browser's traffic (docs/design/browser-user-egress.md §3.1). Native client: the
+        // session token travels ONLY in the Authorization header, never in the URL or a subprotocol (those land in access logs).
+        const hub = browser?.egress;
+        if (!browser || !hub) return reject(404, "Not Found");
+        if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
+        if (url.searchParams.has("token") || String(req.headers["sec-websocket-protocol"] ?? "").includes("floq.bearer.")) return reject(400, "Bad Request");
+        if (!req.headers.authorization) return reject(401, "Unauthorized");
+        // The socket belongs to the calling user's browser: there is no user id in the route to tamper with.
+        const { userId, authSessionId } = await authFor(req.headers);
+        try { await browser.assertAllowed(userId); } catch { return reject(403, "Forbidden"); }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          const live: LivePeer = { ws, userId, authSessionId, headers: req.headers };
+          livePeers.add(live);
+          const fwd = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+          const peer = hub.attachDesktop(userId, {
+            send: (frame) => { if (ws.readyState !== ws.OPEN) return; if (ws.bufferedAmount > 16 * 1024 * 1024) return void ws.close(1013, "Slow consumer"); ws.send(frame, { binary: true }); },
+            close: (code, reason) => { try { ws.close(code, reason); } catch { /* closed */ } },
+          }, { peerIp: (fwd || req.socket.remoteAddress || "").replace(/^::ffff:/, "") });
+          ws.on("message", (data, isBinary) => peer.onMessage(Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data), isBinary));
+          const done = () => { livePeers.delete(live); peer.onClose(); };
+          ws.on("close", done);
+          ws.on("error", done);
         });
         return;
       }

@@ -40,6 +40,7 @@ import { CatalogClient } from "./plugins/catalog.js";
 import { loadInstalledPackages, pluginDirFromEnv } from "./plugins/installed.js";
 import { PluginInstaller } from "./plugins/installer.js";
 import { BrowserService } from "./browser.js";
+import { EgressHub } from "./browserEgress.js";
 import { BrowserLinks } from "./browserLinks.js";
 import { FLOQ_BROWSER_MCP_SPEC } from "./mcpConfig.js";
 import { sha256Hex } from "./plugins/package.js";
@@ -77,6 +78,7 @@ const manager = new SessionManager(config, pool, shards, vault);
 const skills = new SkillsService(config, shards, pool, (userId, operation) => manager.withUserShardActivity(userId, operation));
 // Agent browser: one sandboxed Chromium daemon per user (docs/design/agent-browser.md). The floq-browser MCP entry follows the user's toggle.
 const browser = new BrowserService(shards, settings, { sync: (userId, desired) => skills.syncReservedMcp(userId, FLOQ_BROWSER_MCP_SPEC, desired) }, config.browser, (userId) => manager.inNetns(userId));
+browser.egress = new EgressHub({ onChange: (userId, rttOnly) => browser.onEgressChange(userId, rttOnly) });
 manager.settings = settings;
 manager.attachBrowser(browser);
 shards.onWake = (userId) => void browser.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
@@ -208,6 +210,7 @@ async function stop(signal: string): Promise<void> {
   credentials.stop();
   await plugins.stopAll();
   await browser.shutdown();
+  browser.egress?.close();
   await manager.shutdown();
   await server.close();
   await pool.end();

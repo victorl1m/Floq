@@ -46,7 +46,11 @@ class MockSocket {
 (window as unknown as { WebSocket: unknown }).WebSocket = MockSocket;
 
 (w as unknown as { __import: unknown[] }).__import = [];
+(w as unknown as { __patches: unknown[] }).__patches = [];
+(w as unknown as { __overrides: unknown[] }).__overrides = [];
 const client = {
+  browserEgressOverride: async (server: boolean) => { (w as unknown as { __overrides: unknown[] }).__overrides.push(server); return {}; },
+  updateSettings: async (patch: unknown) => { (w as unknown as { __patches: unknown[] }).__patches.push(patch); return {}; },
   browserStreamUrl: (nodeId: string) => `ws://mock/v1/browser/stream?node=${nodeId}`, browserStatus: async () => ({ state: "running", agents: 0 }),
   // Mocked import API (§A.13): a file containing "bad" is refused, anything else previews two domains plus bookmarks.
   browserImportPreview: async (content: string) => {

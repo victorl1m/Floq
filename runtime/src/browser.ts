@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HttpError, unavailable } from "./errors.js";
 import { log } from "./logger.js";
+import type { EgressHub } from "./browserEgress.js";
+import type { BrowserEgressMode } from "./settings.js";
 import type { ShardDriver, ShardHandle } from "./shard.js";
 import {
   NODE_ID, JsonLines, RateWindow, encodeLine, toViewerMessage, validateClientMessage,
@@ -59,7 +61,7 @@ export interface BrowserShards {
 }
 /** Source of the user's agent <-> Browser node links (the browser_links table). */
 export interface BrowserLinkPort { forUser(userId: string): Promise<Array<{ sessionId: string; nodeId: string }>>; removeNode(userId: string, nodeId: string): Promise<string[]> }
-export interface BrowserSettingsPort { agentBrowser(userId: string): Promise<boolean> }
+export interface BrowserSettingsPort { agentBrowser(userId: string): Promise<boolean>; /** The user's egress choice; absent in older callers = "server". */ agentBrowserEgress?(userId: string): Promise<BrowserEgressMode> }
 export interface BrowserMcpPort { sync(userId: string, desired: boolean): Promise<McpSyncResult> }
 
 /** What a WebSocket gives the service. The route adapts `ws` to this, tests pass a fake. */
@@ -70,7 +72,11 @@ export interface ViewerSink {
 }
 export interface ViewerHandle { onMessage(raw: string): void; close(): void }
 
+export interface EgressStatus { mode: BrowserEgressMode; effective: "server" | "desktop"; state: "up" | "down"; machine?: string; rttMs?: number; /** "Use the server connection this time" is active (transient, never persisted). */ override?: true }
+
 export interface BrowserStatus {
+  /** Where traffic leaves the internet; absent when the server has no egress relay. */
+  egress?: EgressStatus;
   state: BrowserState;
   agents: number;
   tabs: number;
@@ -110,6 +116,9 @@ interface Entry {
   agents: number;
   lastActivity: number;
   viewers: Set<Viewer>;
+  /** How THIS daemon run routes its traffic (fixed at spawn; a change restarts the daemon). */
+  egressMode: "server" | "desktop";
+  egressPipe: { push(chunk: Buffer): void; close(): void } | null;
   idleTimer: NodeJS.Timeout | null;
   ackTimer: NodeJS.Timeout | null;
   pendingAcks: Map<string, number>;
@@ -138,6 +147,8 @@ export class BrowserService {
   onActivity?: (userId: string, running: boolean) => void;
   /** Set by the runtime: lets the service restore every link's scope when a daemon (re)starts, and drop links of a closed node. */
   links?: BrowserLinkPort;
+  /** Set by the runtime: the user-IP egress relay (docs/design/browser-user-egress.md). Without it, "desktop" modes fail closed. */
+  egress?: EgressHub;
 
   constructor(
     private readonly shards: BrowserShards,
@@ -187,6 +198,7 @@ export class BrowserService {
       version: this.installed,
       profile: PROFILE_LABEL,
     };
+    if (this.egress) out.egress = await this.egressStatus(userId);
     if (live?.sandbox) out.sandbox = live.sandbox === "on" ? "chromium sandbox on" : "off (" + (live.sandboxReason ?? "no nested user namespaces in bwrap") + "; see docs/design/agent-browser.md §A.4)";
     if (live?.state === "running") { out.pid = live.pid ?? undefined; out.uptimeSec = Math.max(0, Math.round((Date.now() - live.startedAt) / 1000)); }
     if (opts.profileBytes) {
@@ -209,7 +221,7 @@ export class BrowserService {
    * Makes sure this user's daemon is running and returns the endpoint for their agents' MCP wrapper.
    * An agent's own shard is awake already; `wake` (a viewer opening the node) may unlock a sleeping one.
    */
-  async ensure(userId: string, opts: { wake?: boolean; agentId?: string } = {}): Promise<{ wsEndpoint: string; token: string; chromium?: string }> {
+  async ensure(userId: string, opts: { wake?: boolean; agentId?: string } = {}): Promise<{ wsEndpoint: string; token: string; chromium?: string; egress?: "paused" }> {
     await this.assertAllowed(userId);
     let entry = this.entries.get(userId);
     if (!entry || entry.state === "stopped") entry = await this.startEntry(userId, opts.wake === true);
@@ -218,7 +230,7 @@ export class BrowserService {
     this.armIdle(entry);
     // `?agent=` names the agent session so the daemon can scope it to the Browser node the user linked it to (see setAgentScope).
     const agent = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? `?agent=${opts.agentId}` : "";
-    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser${agent}`, token: entry.token, chromium: this.installed?.chromium };
+    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser${agent}`, token: entry.token, chromium: this.installed?.chromium, ...(entry.egressMode === "desktop" && !this.egress?.isUp(userId) ? { egress: "paused" as const } : {}) };
   }
 
   /** One Entry per user for the life of the runtime: viewers hold it across daemon restarts. */
@@ -226,7 +238,7 @@ export class BrowserService {
     let entry = this.entries.get(userId);
     if (!entry) {
       const dead = exitedPromise();
-      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, lastActivity: Date.now(), viewers: new Set(), idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
+      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, lastActivity: Date.now(), viewers: new Set(), egressMode: "server", egressPipe: null, idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
       this.entries.set(userId, entry);
     }
     return entry;
@@ -253,16 +265,21 @@ export class BrowserService {
     if (!handle && wake) handle = await this.shards.wake(userId);
     if (!handle) throw unavailable("Your sandbox is not running", "sandbox_unavailable");
     if (entry.state !== "stopped") return entry;
+    // The route is fixed for this run: desktop => Chromium gets the proxy flags and fd 3 is wired to the relay, else direct from the server.
+    const egress = await this.effectiveEgress(userId);
+    if (egress === "desktop" && !this.egress) throw unavailable("Egress through your computer is not available on this server", "egress_unavailable");
+    if (entry.state !== "stopped") return entry;
     const dead = exitedPromise();
     Object.assign(entry, { state: "starting", child: null, port: 0, token: "", pid: null, startedAt: Date.now(), sandbox: null, sandboxReason: undefined, tabs: [], pages: new Map(), agents: 0, lastActivity: Date.now(), pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve });
     entry.nav.clear();
     this.broadcast(entry, { type: "state", state: "starting" });
+    entry.egressMode = egress;
     entry.start = this.launch(entry, handle).finally(() => { entry.start = null; });
     try { await entry.start; } catch (error) { await this.teardown(entry, "start_failed"); throw error; }
     return entry;
   }
 
-  private env(userId: string): Record<string, string> {
+  private env(userId: string, egress: "server" | "desktop"): Record<string, string> {
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
       LANG: "C.UTF-8",
@@ -272,13 +289,25 @@ export class BrowserService {
     // T6: without a per-user network namespace the daemon blocks loopback / private ranges for web content itself.
     if (!this.hasNetns(userId) && !this.options.allowPrivate) env.FLOQ_BROWSER_BLOCK_PRIVATE = "1";
     if (this.options.memMb > 0) env.FLOQ_BROWSER_MEM_MB = String(this.options.memMb);
+    env.FLOQ_BROWSER_EGRESS = egress;
     return env;
   }
 
   private launch(entry: Entry, handle: ShardHandle): Promise<void> {
     const { userId } = entry;
-    const child = this.shards.driver.spawnPipe(handle, { file: this.options.daemonPath ?? DAEMON_PATH, args: [], env: this.env(userId), cwd: ".", stdin: true });
+    const desktop = entry.egressMode === "desktop";
+    const child = this.shards.driver.spawnPipe(handle, { file: this.options.daemonPath ?? DAEMON_PATH, args: [], env: this.env(userId, entry.egressMode), cwd: ".", stdin: true, ...(desktop ? { extraPipe: true } : {}) });
     entry.child = child;
+    if (desktop && this.egress) {
+      const pipe = child.stdio[3] as (NodeJS.ReadWriteStream & { destroy(): void }) | null | undefined;
+      if (pipe) {
+        pipe.on("error", () => undefined);
+        const h = this.egress.attachDaemon(userId, { write: (data) => { if ((pipe as unknown as { writable: boolean }).writable) pipe.write(data); }, close: () => { try { pipe.destroy(); } catch { /* gone */ } } });
+        pipe.on("data", (chunk: Buffer) => h.push(chunk));
+        pipe.on("close", () => h.close());
+        entry.egressPipe = h;
+      }
+    }
     this.onActivity?.(userId, true);
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -337,6 +366,7 @@ export class BrowserService {
     if (entry.ackTimer) clearTimeout(entry.ackTimer);
     entry.idleTimer = null; entry.ackTimer = null; entry.pendingAcks.clear();
     const wasLive = entry.state !== "stopped";
+    entry.egressPipe?.close(); entry.egressPipe = null;
     entry.state = "stopped"; entry.child = null; entry.token = ""; entry.port = 0; entry.tabs = []; entry.nav.clear(); entry.pages.clear(); entry.agents = 0;
     for (const v of entry.viewers) { v.cast = false; v.targetId = null; }
     this.broadcast(entry, { type: "state", state: "stopped" });
@@ -353,6 +383,7 @@ export class BrowserService {
 
   /** Clean shutdown: ask the daemon, wait up to `waitMs`, then SIGKILL. Resolves once the process is gone. */
   async stop(userId: string, reason = "stop", waitMs = this.options.stopWaitMs ?? 5000): Promise<void> {
+    if (reason === "idle" || reason === "disabled" || reason === "shutdown") this.serverOverride.delete(userId);
     const entry = this.entries.get(userId);
     if (!entry || entry.state === "stopped") return;
     entry.stopRequested = true;
@@ -609,6 +640,7 @@ export class BrowserService {
     if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
     const current = entry;
     send({ type: "state", state: current.state });
+    if (this.egress) { const eg = await this.egressStatus(userId).catch(() => null); if (eg) send({ type: "egress", ...eg }); }
     if (current.state === "running") {
       send({ type: "clients", agents: current.agents });
       const tid = current.pages.get(nodeId);
@@ -690,9 +722,90 @@ export class BrowserService {
     return result;
   }
 
+  // ------------------------------------------------------------------ egress (docs/design/browser-user-egress.md §4)
+
+  /** The user's chosen mode (setting), default "server". */
+  async egressSetting(userId: string): Promise<BrowserEgressMode> {
+    return (await this.settings.agentBrowserEgress?.(userId)) ?? "server";
+  }
+
+  /** How a daemon started now would route: "desktop" (proxied, fail closed), or "server". desktop-fallback follows the link. */
+  async effectiveEgress(userId: string): Promise<"server" | "desktop"> {
+    if (this.serverOverride.has(userId)) return "server";
+    const mode = await this.egressSetting(userId);
+    if (mode === "desktop") return "desktop";
+    if (mode === "desktop-fallback") return this.egress?.isUp(userId) ? "desktop" : "server";
+    return "server";
+  }
+
+  /**
+   * "Use the server connection this time": a transient, in-memory override (the setting itself is untouched, so the user's desktop
+   * choice survives). While set the browser routes via the server. It ends when a desktop of the user comes up after having been down
+   * (or `on: false`), when the user changes the mode, or when the browser goes idle / is disabled.
+   */
+  private serverOverride = new Map<string, { upAtSet: boolean }>();
+  async setEgressOverride(userId: string, on: boolean): Promise<void> {
+    if (on) this.serverOverride.set(userId, { upAtSet: !!this.egress?.isUp(userId) });
+    else if (!this.serverOverride.delete(userId)) return;
+    await this.reconcileEgress(userId, 0);
+    void this.pushEgress(userId);
+  }
+
+  /** What viewers and GET /v1/browser show for egress. `mode` is the setting, `effective` what the running daemon does. */
+  async egressStatus(userId: string): Promise<EgressStatus> {
+    const mode = await this.egressSetting(userId);
+    const entry = this.entries.get(userId);
+    const info = this.egress?.info(userId) ?? { state: "none" as const };
+    const effective = entry && entry.state !== "stopped" ? entry.egressMode : (await this.effectiveEgress(userId));
+    const overridden = this.serverOverride.has(userId);
+    const state: EgressStatus["state"] = mode !== "server" && !overridden && info.state === "up" ? "up" : "down";
+    return { mode, effective, state, ...(overridden ? { override: true as const } : {}), ...(info.state === "up" && info.machine ? { machine: info.machine } : {}), ...(info.state === "up" && info.rttMs !== undefined ? { rttMs: info.rttMs } : {}) };
+  }
+
+  private egressTimers = new Map<string, NodeJS.Timeout>();
+  /** The hub reports a desktop came or went (and rtt changes): tell viewers, and for desktop-fallback restart onto the right route. */
+  onEgressChange(userId: string, rttOnly = false): void {
+    if (rttOnly) { void this.pushEgress(userId); return; } // a PONG every ~20 s: no settings reads, no route decision
+    const ov = this.serverOverride.get(userId);
+    if (ov) {
+      if (!this.egress?.isUp(userId)) ov.upAtSet = false;
+      else if (!ov.upAtSet) this.serverOverride.delete(userId); // the desktop came (back): the "this time" is over
+    }
+    void this.pushEgress(userId);
+    void this.reconcileEgress(userId);
+  }
+
+  private async pushEgress(userId: string): Promise<void> {
+    const entry = this.entries.get(userId);
+    if (!entry || !entry.viewers.size) return;
+    const status = await this.egressStatus(userId).catch(() => null);
+    if (status) this.broadcast(entry, { type: "egress", ...status });
+  }
+
+  /** A running daemon whose route no longer matches the setting is restarted (the only switch point: a page never mixes IPs). Debounced against flapping. */
+  async reconcileEgress(userId: string, delayMs = 1500): Promise<void> {
+    const entry = this.entries.get(userId);
+    if (!entry || entry.state !== "running") return;
+    const want = await this.effectiveEgress(userId);
+    if (want === entry.egressMode) { const t = this.egressTimers.get(userId); if (t) { clearTimeout(t); this.egressTimers.delete(userId); } return; }
+    if (this.egressTimers.has(userId)) return;
+    const timer = setTimeout(() => {
+      this.egressTimers.delete(userId);
+      void (async () => {
+        const e = this.entries.get(userId);
+        if (!e || e.state !== "running" || (await this.effectiveEgress(userId)) === e.egressMode) return;
+        log.info("browser.egress_switch", { userId, from: e.egressMode });
+        await this.restart(userId).catch((error) => log.warn("browser.egress_restart_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
+      })();
+    }, delayMs);
+    timer.unref?.();
+    this.egressTimers.set(userId, timer);
+  }
+
   /** The user toggled `agentBrowser`: stop a running daemon when it went off, and fix the MCP entries either way. */
   async onToggle(userId: string): Promise<void> {
     if (!(await this.settings.agentBrowser(userId)) || this.capability() !== "available") await this.stop(userId, "disabled");
+    else { await this.reconcileEgress(userId, 0); void this.pushEgress(userId); }
     await this.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
   }
 

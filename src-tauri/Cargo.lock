@@ -1143,7 +1143,9 @@ dependencies = [
 name = "floq"
 version = "1.0.9"
 dependencies = [
+ "chrono",
  "futures-util",
+ "libc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

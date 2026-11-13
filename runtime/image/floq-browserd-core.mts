@@ -198,10 +198,12 @@ export type Resolver = (host: string) => Promise<string[]>;
 
 /** True when the request must be refused: its host is, or resolves to, a non-public address. A resolution failure is refused too
  *  (fail closed: a lookup that fails here must not be retried by Chromium against a different answer); localhost names are refused without a lookup. */
-export async function shouldBlockHost(host: string, resolve: Resolver): Promise<boolean> {
+export async function shouldBlockHost(host: string, resolve: Resolver, opts: { literalOnly?: boolean } = {}): Promise<boolean> {
   const h = host.toLowerCase().replace(/\.$/, "");
   if (isIP(h) || isIP(h.replace(/^\[|\]$/g, ""))) return isPrivateAddress(h);
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  // Egress mode: names are resolved (and checked) by the desktop; a lookup here would leak DNS to the VPS and be the wrong answer anyway.
+  if (opts.literalOnly) return false;
   let addrs: string[];
   try { addrs = await resolve(h); } catch { return true; }
   if (!addrs.length) return true;
@@ -327,6 +329,8 @@ const BLOCKED_METHODS = new Set(["Browser.close", "Browser.crash", "Browser.cras
  *  Chromium sees a single browser-level connection (the daemon). Every client gets its own sessions (Target.attachToTarget with
  *  flatten:true), so Target.setAutoAttach at browser level is emulated per client. */
 export class CdpMux {
+  /** Egress mode: strip per-context proxy settings from Target.createBrowserContext (the route is the daemon's, not the agent's). */
+  lockProxy = false;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private clients = new Map<number, MuxClient>();
@@ -487,6 +491,12 @@ export class CdpMux {
         // A linked agent works in its node's page: it may not open more (the user watches exactly one page).
         if (this.isScoped(client.id)) return fail("This agent is linked to one browser page; navigate that page instead of opening a new one");
         return this.forward(client, id, method, params, undefined);
+      case "Target.createBrowserContext": {
+        // Egress mode: a context may not pick its own proxy ("direct://" would leave from the server, an http proxy would route through a third party).
+        let p = params;
+        if (this.lockProxy) { p = { ...params }; for (const k of ["proxyServer", "proxyBypassList", "proxyBypassRules"]) delete p[k]; }
+        return this.forward(client, id, method, p, undefined);
+      }
       case "Target.attachToTarget": case "Target.closeTarget": case "Target.activateTarget": case "Target.getTargetInfo": {
         const tid = typeof params.targetId === "string" ? params.targetId : undefined;
         if (tid && this.targets.has(tid) && !this.visible(client.id, tid)) return fail("No target with given id found");
