@@ -379,6 +379,9 @@ export interface SecretInfo {
 }
 
 /** A wire between two agent sessions on the Canvas (directed from -> to). */
+/** An agent wired to a canvas Browser node (node ids are the part after `browser:`). */
+export interface BrowserLink { nodeId: string; sessionId: string; projectId: string | null }
+
 export interface AgentLink {
   id: string;
   projectId: string | null;

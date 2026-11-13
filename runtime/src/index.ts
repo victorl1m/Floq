@@ -40,6 +40,7 @@ import { CatalogClient } from "./plugins/catalog.js";
 import { loadInstalledPackages, pluginDirFromEnv } from "./plugins/installed.js";
 import { PluginInstaller } from "./plugins/installer.js";
 import { BrowserService } from "./browser.js";
+import { BrowserLinks } from "./browserLinks.js";
 import { FLOQ_BROWSER_MCP_SPEC } from "./mcpConfig.js";
 import { sha256Hex } from "./plugins/package.js";
 
@@ -139,6 +140,8 @@ fallback.usage = {
 manager.fallback = fallback;
 void fallback.start().catch((error) => log.error("fallback.start_failed", { error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
 const agentLinks = new AgentLinks(pool);
+const browserLinks = new BrowserLinks(pool);
+browser.links = browserLinks;
 const canvasNotes = new CanvasNotes(pool);
 const wired = new WiredContext(pool);
 wired.browserEnabled = async (userId) => browser.capability() === "available" && (await settings.agentBrowser(userId));
@@ -181,7 +184,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
 
 await server.listen();
 log.info("runtime.listening", {

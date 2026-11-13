@@ -22,21 +22,26 @@ export const DEFAULT_VIEWPORT = { w: 1280, h: 800 };
 export type Control =
   | { type: "hello" }
   | { type: "screencast.start"; targetId: string; maxW: number; maxH: number; quality: number }
-  | { type: "screencast.stop" }
+  | { type: "screencast.stop"; targetId?: string }
   | { type: "frame.ack"; n: number }
-  | { type: "input.mouse"; kind: "mousePressed" | "mouseReleased" | "mouseMoved"; x: number; y: number; button: "none" | "left" | "middle" | "right"; clickCount: number; modifiers: number }
-  | { type: "input.wheel"; x: number; y: number; dx: number; dy: number }
-  | { type: "input.key"; kind: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key: string; code: string; text: string; modifiers: number }
-  | { type: "input.text"; text: string }
+  | { type: "input.mouse"; targetId?: string; kind: "mousePressed" | "mouseReleased" | "mouseMoved"; x: number; y: number; button: "none" | "left" | "middle" | "right"; buttons: number; clickCount: number; modifiers: number }
+  | { type: "input.wheel"; targetId?: string; x: number; y: number; dx: number; dy: number; modifiers: number }
+  | { type: "input.key"; targetId?: string; kind: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key: string; code: string; text: string; modifiers: number }
+  | { type: "input.text"; targetId?: string; text: string }
   | { type: "nav.go"; targetId?: string; url: string }
   | { type: "nav.back" | "nav.forward" | "nav.reload" | "nav.stop"; targetId?: string }
-  | { type: "tab.new"; url?: string }
-  | { type: "tab.close" | "tab.select"; targetId: string }
+  | { type: "viewport"; targetId: string; width: number; height: number; dpr: number }
+  /** One page per Browser node: idempotent open (adopts an unclaimed user tab first), close, and agent scoping by link. */
+  | { type: "page.open"; nodeId: string; url?: string }
+  | { type: "page.close"; nodeId: string }
+  | { type: "agent.scope"; agent: string; nodeId: string | null }
   | { type: "shutdown" };
 
 export type Validated = { ok: true; msg: Control } | { ok: false; code: string };
 
 const TARGET_ID = /^[A-Za-z0-9]{8,64}$/;
+export const NODE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+export const AGENT_ID = /^[A-Za-z0-9-]{8,64}$/;
 const CODE_NAME = /^[A-Za-z0-9]{1,32}$/;
 const NAMED_KEYS = new Set([
   "Enter", "Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown",
@@ -69,7 +74,23 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
   switch (m.type) {
     case "hello": return { ok: true, msg: { type: "hello" } };
     case "shutdown": return { ok: true, msg: { type: "shutdown" } };
-    case "screencast.stop": return { ok: true, msg: { type: "screencast.stop" } };
+    case "screencast.stop": { const targetId = optTarget(); return targetId === false ? bad() : { ok: true, msg: { type: "screencast.stop", ...(targetId ? { targetId } : {}) } }; }
+    case "viewport": {
+      if (typeof m.targetId !== "string" || !TARGET_ID.test(m.targetId) || !isInt(m.width, 200, 3840) || !isInt(m.height, 200, 2160) || !isNum(m.dpr, 0.5, 4)) return bad();
+      return { ok: true, msg: { type: "viewport", targetId: m.targetId, width: m.width, height: m.height, dpr: m.dpr } };
+    }
+    case "page.open": {
+      if (typeof m.nodeId !== "string" || !NODE_ID.test(m.nodeId)) return bad();
+      if (m.url === undefined) return { ok: true, msg: { type: "page.open", nodeId: m.nodeId } };
+      const url = normalizeNavUrl(m.url);
+      return url ? { ok: true, msg: { type: "page.open", nodeId: m.nodeId, url } } : bad("bad_url");
+    }
+    case "page.close": return typeof m.nodeId === "string" && NODE_ID.test(m.nodeId) ? { ok: true, msg: { type: "page.close", nodeId: m.nodeId } } : bad();
+    case "agent.scope": {
+      if (typeof m.agent !== "string" || !AGENT_ID.test(m.agent)) return bad();
+      if (m.nodeId !== null && (typeof m.nodeId !== "string" || !NODE_ID.test(m.nodeId))) return bad();
+      return { ok: true, msg: { type: "agent.scope", agent: m.agent, nodeId: m.nodeId as string | null } };
+    }
     case "screencast.start": {
       if (typeof m.targetId !== "string" || !TARGET_ID.test(m.targetId) || !isInt(m.maxW, 1, 1600) || !isInt(m.maxH, 1, 1200) || !isInt(m.quality, 1, 100)) return bad();
       return { ok: true, msg: { type: "screencast.start", targetId: m.targetId, maxW: m.maxW, maxH: m.maxH, quality: m.quality } };
@@ -83,12 +104,17 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
       if (button !== "none" && button !== "left" && button !== "middle" && button !== "right") return bad();
       const clickCount = m.clickCount ?? 0;
       const modifiers = m.modifiers ?? 0;
-      if (!isInt(clickCount, 0, 3) || !isInt(modifiers, 0, 15)) return bad();
-      return { ok: true, msg: { type: "input.mouse", kind, x: m.x, y: m.y, button, clickCount, modifiers } };
+      const buttons = m.buttons ?? 0;
+      const targetId = optTarget();
+      if (targetId === false || !isInt(clickCount, 0, 3) || !isInt(modifiers, 0, 15) || !isInt(buttons, 0, 31)) return bad();
+      return { ok: true, msg: { type: "input.mouse", ...(targetId ? { targetId } : {}), kind, x: m.x, y: m.y, button, buttons, clickCount, modifiers } };
     }
     case "input.wheel": {
       if (!isNum(m.x, 0, viewport.w) || !isNum(m.y, 0, viewport.h) || !isNum(m.dx, -10000, 10000) || !isNum(m.dy, -10000, 10000)) return bad();
-      return { ok: true, msg: { type: "input.wheel", x: m.x, y: m.y, dx: m.dx, dy: m.dy } };
+      const modifiers = m.modifiers ?? 0;
+      const targetId = optTarget();
+      if (targetId === false || !isInt(modifiers, 0, 15)) return bad();
+      return { ok: true, msg: { type: "input.wheel", ...(targetId ? { targetId } : {}), x: m.x, y: m.y, dx: m.dx, dy: m.dy, modifiers } };
     }
     case "input.key": {
       const kind = m.kind;
@@ -103,9 +129,11 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
       if (typeof text !== "string" || [...text].length > 8) return bad();
       const modifiers = m.modifiers ?? 0;
       if (!isInt(modifiers, 0, 15)) return bad();
-      return { ok: true, msg: { type: "input.key", kind, key, code, text, modifiers } };
+      const targetId = optTarget();
+      if (targetId === false) return bad();
+      return { ok: true, msg: { type: "input.key", ...(targetId ? { targetId } : {}), kind, key, code, text, modifiers } };
     }
-    case "input.text": return textOk(m.text) ? { ok: true, msg: { type: "input.text", text: m.text } } : bad();
+    case "input.text": { const targetId = optTarget(); return targetId !== false && textOk(m.text) ? { ok: true, msg: { type: "input.text", ...(targetId ? { targetId } : {}), text: m.text } } : bad(); }
     case "nav.go": {
       const targetId = optTarget();
       const url = normalizeNavUrl(m.url);
@@ -117,13 +145,6 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
       if (targetId === false) return bad();
       return { ok: true, msg: { type: m.type, ...(targetId ? { targetId } : {}) } };
     }
-    case "tab.new": {
-      if (m.url === undefined) return { ok: true, msg: { type: "tab.new" } };
-      const url = normalizeNavUrl(m.url);
-      return url ? { ok: true, msg: { type: "tab.new", url } } : bad("bad_url");
-    }
-    case "tab.close": case "tab.select":
-      return typeof m.targetId === "string" && TARGET_ID.test(m.targetId) ? { ok: true, msg: { type: m.type, targetId: m.targetId } } : bad();
     default: return bad();
   }
 }
@@ -286,7 +307,7 @@ export class FrameDecoder {
 // ---------------------------------------------------------------- CdpMux
 
 export type CdpMsg = { id?: number; method?: string; params?: Record<string, unknown>; sessionId?: string; result?: Record<string, unknown>; error?: { code: number; message: string } };
-export type MuxClient = { id: number; send(msg: CdpMsg): void; close(): void };
+export type MuxClient = { id: number; send(msg: CdpMsg): void; close(): void; /** Identifies the agent session (from the endpoint URL); used to look up its link scope. */ agent?: string };
 
 type Pending =
   | { kind: "client"; client: MuxClient; id: number; method: string; sessionId?: string; params: Record<string, unknown> }
@@ -312,6 +333,62 @@ export class CdpMux {
   /** Page targets created through an agent client. */
   readonly agentOpened = new Set<string>();
   private daemonSessionByTarget = new Map<string, string>();
+  /** Pages owned by a Browser node (the user's live view). Unscoped agents never see them: a linked agent sees exactly its node's page. */
+  readonly claimed = new Set<string>();
+  /** While true, the next page Chromium announces is the daemon's own node page: claimed at once. */
+  reserve = false;
+  reserved: string[] = [];
+  /** client id -> the one targetId it is linked to (null = linked but the page is not up yet). Absent = unscoped. */
+  private scopes = new Map<number, string | null>();
+
+  /** Whether `targetId` is part of this client's world: a scoped client sees only its page, an unscoped one sees every unclaimed page. */
+  visible(clientId: number, targetId: string): boolean {
+    const t = this.targets.get(targetId);
+    if (t && t.type !== "page") return true; // non-page targets (workers etc.) follow their page through sessions
+    if (this.scopes.has(clientId)) return this.scopes.get(clientId) === targetId;
+    return !this.claimed.has(targetId);
+  }
+  isScoped(clientId: number): boolean { return this.scopes.has(clientId); }
+
+  /** Re-scopes a connected client and tells it what appeared and disappeared (so Playwright adopts or drops pages live). */
+  setScope(clientId: number, targetId: string | null | undefined): void {
+    const client = this.clients.get(clientId);
+    const before = client ? this.visiblePages(clientId) : new Set<string>();
+    if (targetId === undefined) this.scopes.delete(clientId); else this.scopes.set(clientId, targetId);
+    if (!client) return;
+    const after = this.visiblePages(clientId);
+    for (const id of before) if (!after.has(id)) this.hideFrom(client, id);
+    for (const id of after) if (!before.has(id)) this.showTo(client, id);
+  }
+  /** Claims/unclaims pages for nodes and refreshes every connected client's view. */
+  setClaimed(next: Set<string>): void {
+    const before = new Map([...this.clients.keys()].map((id) => [id, this.visiblePages(id)] as const));
+    this.claimed.clear(); for (const id of next) this.claimed.add(id);
+    for (const [cid, was] of before) {
+      const client = this.clients.get(cid); if (!client) continue;
+      const now = this.visiblePages(cid);
+      for (const id of was) if (!now.has(id)) this.hideFrom(client, id);
+      for (const id of now) if (!was.has(id)) this.showTo(client, id);
+    }
+  }
+  private visiblePages(clientId: number): Set<string> {
+    const out = new Set<string>();
+    for (const t of this.targets.values()) if (t.type === "page" && this.visible(clientId, t.targetId)) out.add(t.targetId);
+    return out;
+  }
+  private hideFrom(client: MuxClient, targetId: string) {
+    for (const [sid, owner] of this.owners) if (owner === client.id && this.sessionTarget.get(sid) === targetId) {
+      this.owners.delete(sid); this.sessionTarget.delete(sid);
+      client.send({ method: "Target.detachedFromTarget", params: { sessionId: sid, targetId } });
+      this.command("Target.detachFromTarget", { sessionId: sid }).catch(() => {});
+    }
+    if (this.discover.has(client.id)) client.send({ method: "Target.targetDestroyed", params: { targetId } });
+  }
+  private showTo(client: MuxClient, targetId: string) {
+    const info = this.targets.get(targetId); if (!info) return;
+    if (this.discover.has(client.id)) client.send({ method: "Target.targetCreated", params: { targetInfo: this.infoFor(info) } });
+    if (this.autoAttach.has(client.id)) void this.attachForClient(client, info);
+  }
 
   onDaemonEvent: (msg: CdpMsg) => void = () => {};
   onTargetsChanged: () => void = () => {};
@@ -349,6 +426,7 @@ export class CdpMux {
     this.clients.delete(clientId);
     this.autoAttach.delete(clientId);
     this.discover.delete(clientId);
+    this.scopes.delete(clientId);
     for (const [sid, owner] of this.owners) {
       if (owner === clientId) {
         this.owners.delete(sid);
@@ -383,7 +461,7 @@ export class CdpMux {
         if (params.autoAttach === true) {
           this.autoAttach.add(client.id);
           client.send({ id, result: {} });
-          for (const info of this.targets.values()) if (info.type === "page") void this.attachForClient(client, info);
+          for (const info of this.targets.values()) if (info.type === "page" && this.visible(client.id, info.targetId)) void this.attachForClient(client, info);
         } else {
           this.autoAttach.delete(client.id);
           client.send({ id, result: {} });
@@ -394,11 +472,20 @@ export class CdpMux {
         if (params.discover === true) {
           this.discover.add(client.id);
           client.send({ id, result: {} });
-          for (const info of this.targets.values()) client.send({ method: "Target.targetCreated", params: { targetInfo: this.infoFor(info) } });
+          for (const info of this.targets.values()) if (this.visible(client.id, info.targetId)) client.send({ method: "Target.targetCreated", params: { targetInfo: this.infoFor(info) } });
         } else { this.discover.delete(client.id); client.send({ id, result: {} }); }
         return;
       case "Target.getTargets":
-        return client.send({ id, result: { targetInfos: [...this.targets.values()].map((t) => this.infoFor(t)) } });
+        return client.send({ id, result: { targetInfos: [...this.targets.values()].filter((t) => this.visible(client.id, t.targetId)).map((t) => this.infoFor(t)) } });
+      case "Target.createTarget":
+        // A linked agent works in its node's page: it may not open more (the user watches exactly one page).
+        if (this.isScoped(client.id)) return fail("This agent is linked to one browser page; navigate that page instead of opening a new one");
+        return this.forward(client, id, method, params, undefined);
+      case "Target.attachToTarget": case "Target.closeTarget": case "Target.activateTarget": case "Target.getTargetInfo": {
+        const tid = typeof params.targetId === "string" ? params.targetId : undefined;
+        if (tid && this.targets.has(tid) && !this.visible(client.id, tid)) return fail("No target with given id found");
+        return this.forward(client, id, method, params, undefined);
+      }
       default:
         return this.forward(client, id, method, params, undefined);
     }
@@ -522,8 +609,10 @@ export class CdpMux {
       case "Target.targetCreated": {
         const info = p.targetInfo as TargetInfo;
         this.targets.set(info.targetId, info);
+        // A page the daemon is creating for a Browser node is claimed before anyone can see it.
+        if (this.reserve && info.type === "page") { this.claimed.add(info.targetId); this.reserved.push(info.targetId); }
         this.broadcastDiscovery(msg);
-        if (info.type === "page") for (const cid of this.autoAttach) { const c = this.clients.get(cid); if (c) void this.attachForClient(c, info); }
+        if (info.type === "page") for (const cid of this.autoAttach) { const c = this.clients.get(cid); if (c && this.visible(cid, info.targetId)) void this.attachForClient(c, info); }
         this.onTargetsChanged();
         return;
       }
@@ -549,7 +638,8 @@ export class CdpMux {
   }
 
   private broadcastDiscovery(msg: CdpMsg) {
-    for (const cid of this.discover) this.clients.get(cid)?.send({ method: msg.method, params: msg.params });
+    const tid = typeof (msg.params?.targetInfo as { targetId?: string } | undefined)?.targetId === "string" ? (msg.params!.targetInfo as { targetId: string }).targetId : typeof msg.params?.targetId === "string" ? msg.params.targetId : undefined;
+    for (const cid of this.discover) if (!tid || msg.method === "Target.targetDestroyed" || this.visible(cid, tid)) this.clients.get(cid)?.send({ method: msg.method, params: msg.params });
   }
 
   /** Close everything on shutdown. */

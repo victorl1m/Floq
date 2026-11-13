@@ -21,7 +21,7 @@ function fakeDaemon(user) {
   c.stdin = new PassThrough(); c.stdout = new PassThrough(); c.stderr = new PassThrough();
   c.user = user; c.received = [];
   let buf = "";
-  c.stdin.on("data", (d) => { buf += d.toString(); for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); c.received.push(m); if (m.type === "shutdown") { c.stdout.end(); c.emit("exit", 0, null); } } });
+  c.stdin.on("data", (d) => { buf += d.toString(); for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); c.received.push(m); if (m.type === "page.open") setImmediate(() => c.emitOut({ type: "page", nodeId: m.nodeId, targetId: TID, created: true })); if (m.type === "shutdown") { c.stdout.end(); c.emit("exit", 0, null); } } });
   c.emitOut = (m) => c.stdout.write(JSON.stringify(m) + "\n");
   c.kill = () => { c.stdout.end(); c.emit("exit", null, "SIGKILL"); return true; };
   setImmediate(() => c.emitOut({ type: "ready", port: user === "alice" ? 40001 : 40002, token: (user === "alice" ? "a" : "b").repeat(64), pid: 1, sandbox: "on" }));
@@ -98,9 +98,9 @@ test("a socket always belongs to the token's own user: it cannot be pointed at a
   await until(() => alice.msgs.some((m) => m.type === "state" && m.state === "running") && bob.msgs.some((m) => m.type === "state" && m.state === "running"));
   assert.deepEqual(state.children.map((c) => c.user).sort(), ["alice", "bob"], "one daemon each, started in each user's own sandbox");
   const aliceDaemon = state.children.find((c) => c.user === "alice");
-  aliceDaemon.emitOut({ type: "tabs", tabs: [{ targetId: TID, title: "alice secret tab", url: "https://alice.test/", opener: "user" }] });
+  aliceDaemon.emitOut({ type: "nav", targetId: TID, title: "alice secret tab", url: "https://alice.test/", loading: false, canBack: false, canForward: false });
   aliceDaemon.emitOut({ type: "frame", n: 1, targetId: TID, jpeg: "QQ==", w: 10, h: 10, scale: 1 });
-  await until(() => alice.msgs.some((m) => m.type === "tabs" && m.tabs.length));
+  await until(() => alice.msgs.some((m) => m.type === "nav"));
   await wait(50);
   assert.ok(!JSON.stringify(bob.msgs).includes("alice secret tab"), "bob never sees alice's tabs");
   // Bob's input only ever reaches bob's daemon.
@@ -109,8 +109,8 @@ test("a socket always belongs to the token's own user: it cannot be pointed at a
   assert.ok(!aliceDaemon.received.some((m) => m.type === "nav.go"));
   // Each agent gets only its own user's endpoint.
   const a = await agent("alice", "browser/ensure"), b = await agent("bob", "browser/ensure");
-  assert.equal(a.json.wsEndpoint, "ws://127.0.0.1:40001/devtools/browser");
-  assert.equal(b.json.wsEndpoint, "ws://127.0.0.1:40002/devtools/browser");
+  assert.match(a.json.wsEndpoint, /^ws:\/\/127\.0\.0\.1:40001\/devtools\/browser(\?agent=[\w-]+)?$/);
+  assert.match(b.json.wsEndpoint, /^ws:\/\/127\.0\.0\.1:40002\/devtools\/browser(\?agent=[\w-]+)?$/);
   assert.notEqual(a.json.token, b.json.token);
   alice.ws.close(); bob.ws.close();
 });
@@ -125,13 +125,13 @@ test("the relay validates what the app sends: bad URLs, unknown messages and raw
     { type: "nav.go", targetId: TID, url: "javascript:alert(1)" },
     { type: "Runtime.evaluate", expression: "1" },
     { type: "frame.ack", n: 9 }, { type: "shutdown" },
-    { type: "tab.new", url: "https://ok.test/" },
+    { type: "nav.go", url: "https://ok.test/" },
   ]) v.ws.send(JSON.stringify(m));
   v.ws.send(Buffer.from([1, 2, 3]));
   v.ws.send("not json");
   await until(() => v.msgs.filter((m) => m.type === "error").length >= 5);
   assert.deepEqual(v.msgs.filter((m) => m.type === "error").map((m) => m.code), ["bad_url", "bad_message", "bad_message", "bad_message", "bad_json"]);
-  assert.deepEqual(daemon.received.filter((m) => m.type !== "hello"), [{ type: "tab.new", url: "https://ok.test/" }]);
+  assert.deepEqual(daemon.received.filter((m) => m.type !== "hello" && m.type !== "page.open"), [{ type: "nav.go", targetId: TID, url: "https://ok.test/" }]);
   assert.equal(daemon.received.some((m) => m.type === "shutdown"), false);
   v.ws.close();
 });
@@ -186,7 +186,7 @@ test("internal routes: ensure/status/restart work for the calling agent's user; 
   assert.equal((await http("", "POST", "/internal/browser/ensure", {})).status, 401);
   const ensured = await agent("alice", "browser/ensure");
   assert.equal(ensured.status, 200);
-  assert.equal(ensured.json.wsEndpoint, "ws://127.0.0.1:40001/devtools/browser");
+  assert.match(ensured.json.wsEndpoint, /^ws:\/\/127\.0\.0\.1:40001\/devtools\/browser(\?agent=[\w-]+)?$/);
   assert.match(ensured.json.token, /^a{64}$/);
   const status = await agent("alice", "browser/status");
   assert.equal(status.status, 200);

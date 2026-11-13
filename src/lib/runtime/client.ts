@@ -4,6 +4,7 @@ import type {
   PluginRepoPreview,
   PluginUpdateNotice,
   AgentLink,
+  BrowserLink,
   CanvasNote,
   Memory,
   MemoryEvent,
@@ -406,13 +407,13 @@ export class RuntimeClient {
     return url.toString();
   }
 
-  /** Agent browser live stream (WebSocket); same auth as the other sockets. */
-  browserStreamUrl(): string {
+  /** Agent browser live stream (WebSocket) for one Browser node (one page per node); same auth as the other sockets. */
+  browserStreamUrl(nodeId: string): string {
     if (!this.token) throw new RuntimeError(401, "unauthorized", "Sign in to use the browser");
     const url = new URL(this.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/v1/browser/stream";
-    url.search = new URLSearchParams({ token: this.token }).toString();
+    url.search = new URLSearchParams({ token: this.token, node: nodeId }).toString();
     return url.toString();
   }
   browserStatus = () => this.call<BrowserStatus>("GET", "/v1/browser");
@@ -1007,6 +1008,24 @@ export class RuntimeClient {
   /** Manual wire (idempotent). */
   async createLink(fromSessionId: string, toSessionId: string): Promise<AgentLink> {
     return this.call<AgentLink>("POST", "/v1/links", { fromSessionId, toSessionId });
+  }
+
+  // --- agent <-> Browser node wires ---
+
+  /** Wires between agents and Browser nodes of one project ("none" for sessions outside a registered project). */
+  async browserLinks(projectId: string): Promise<BrowserLink[]> {
+    return (await this.call<{ links: BrowserLink[] }>("GET", `/v1/browser/links?project=${encodeURIComponent(projectId)}`)).links;
+  }
+  /** Idempotent. An agent drives one node at a time: `replacedNode` is the node it was moved away from. */
+  async linkBrowser(nodeId: string, sessionId: string): Promise<{ link: BrowserLink; replacedNode: string | null }> {
+    return this.call("POST", "/v1/browser/links", { nodeId, sessionId });
+  }
+  async unlinkBrowser(nodeId: string, sessionId: string): Promise<void> {
+    await this.call("DELETE", `/v1/browser/links/${encodeURIComponent(nodeId)}/${encodeURIComponent(sessionId)}`);
+  }
+  /** A node was closed: drop all its wires. */
+  async removeBrowserNode(nodeId: string): Promise<void> {
+    await this.call("DELETE", `/v1/browser/links/${encodeURIComponent(nodeId)}`);
   }
 
   async deleteLink(linkId: string): Promise<void> {

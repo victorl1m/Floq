@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// A tiny stand-in for chrome-headless-shell: CDP over fds 3 (in) / 4 (out), NUL-delimited JSON. Enough of the protocol for floq-browserd.
+// A tiny stand-in for the full chrome (--headless=new): CDP over fds 3 (in) / 4 (out), NUL-delimited JSON. Enough of the protocol for floq-browserd.
 // FAKE_CHROMIUM_NEEDS_NO_SANDBOX=1 makes it exit like Chromium does when it has no usable sandbox, unless --no-sandbox is given.
-import { createReadStream, createWriteStream } from "node:fs";
+import { appendFileSync, createReadStream, createWriteStream } from "node:fs";
+const note = (line) => { process.stderr.write(line + "\n"); if (process.env.FAKE_CHROMIUM_LOG) appendFileSync(process.env.FAKE_CHROMIUM_LOG, line + "\n"); };
 const args = process.argv.slice(2);
 if (args.includes("--version")) { console.log("Fake Chromium 157.0.0.0"); process.exit(0); }
 if (process.env.FAKE_CHROMIUM_NEEDS_NO_SANDBOX === "1" && !args.includes("--no-sandbox")) { console.error("FATAL: No usable sandbox!"); process.exit(1); }
@@ -65,10 +66,11 @@ function handle(m) {
     case "Page.getNavigationHistory": return reply({ currentIndex: target.index, entries: target.history.map((url, id) => ({ id, url })) });
     case "Page.navigateToHistoryEntry": { target.index = m.params.entryId; target.url = target.history[target.index]; reply(); send({ method: "Target.targetInfoChanged", params: { targetInfo: info(target) } }); return; }
     case "Page.reload": case "Page.stopLoading": return reply();
-    case "Page.startScreencast": reply(); send({ method: "Page.screencastFrame", sessionId: m.sessionId, params: { data: "/9j/FAKEJPEG", sessionId: 77, metadata: { deviceWidth: 1280, deviceHeight: 800, pageScaleFactor: 1 } } }); return;
+    case "Page.startScreencast": reply(); send({ method: "Page.screencastFrame", sessionId: m.sessionId, params: { data: "/9j/FAKEJPEG", sessionId: 77, metadata: { deviceWidth: target.viewport?.width ?? 1280, deviceHeight: target.viewport?.height ?? 800, pageScaleFactor: 1 } } }); return;
     case "Page.stopScreencast": case "Page.screencastFrameAck": return reply();
-    case "Input.dispatchMouseEvent": case "Input.dispatchKeyEvent": case "Input.insertText": process.stderr.write("INPUT " + m.method + " " + JSON.stringify(m.params) + "\n"); return reply();
-    case "Runtime.evaluate": return reply({ result: { type: "string", value: "url=" + target.url } });
+    case "Input.dispatchMouseEvent": case "Input.dispatchKeyEvent": case "Input.insertText": note("INPUT " + m.method + " " + JSON.stringify(m.params)); return reply();
+    case "Emulation.setDeviceMetricsOverride": note("EMULATION " + JSON.stringify(m.params)); target.viewport = m.params; return reply();
+    case "Runtime.evaluate": return reply({ result: { type: "string", value: /elementFromPoint/.test(m.params.expression ?? "") ? "pointer" : "url=" + target.url } });
     default: return send({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), error: { code: -32601, message: m.method + " wasn't found" } });
   }
 }

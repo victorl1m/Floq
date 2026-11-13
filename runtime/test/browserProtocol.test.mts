@@ -17,8 +17,12 @@ test("every message the canvas node sends is accepted", () => {
   ok({ type: "input.text", text: "héllo 😀" });
   ok({ type: "nav.go", targetId: TID, url: "https://example.com/a?b=c" });
   for (const t of ["nav.back", "nav.forward", "nav.reload", "nav.stop"]) ok({ type: t });
-  ok({ type: "tab.new" }); ok({ type: "tab.new", url: "http://localhost:3000/" });
-  ok({ type: "tab.close", targetId: TID }); ok({ type: "tab.select", targetId: TID });
+  ok({ type: "screencast.start", maxW: 900, maxH: 600, quality: 60 }); // the relay fills in the node's page
+  ok({ type: "input.mouse", kind: "mouseMoved", x: 1, y: 2, button: "left", buttons: 1, clickCount: 0, modifiers: 8 });
+  ok({ type: "input.mouse", kind: "mousePressed", x: 1, y: 2, button: "right", buttons: 2, clickCount: 3, modifiers: 15 });
+  ok({ type: "input.wheel", x: 1, y: 1, dx: 5, dy: -120, modifiers: 2 });
+  ok({ type: "viewport", width: 800, height: 600, dpr: 1.5 });
+  ok({ type: "page.close" });
 });
 
 test("messages are rebuilt: unknown fields are dropped, sizes are capped", () => {
@@ -44,7 +48,10 @@ test("coordinates, counts and key names are bounded", () => {
   bad({ type: "screencast.start", targetId: TID, maxW: 0, maxH: 1, quality: 1 });
   bad({ type: "screencast.start", targetId: TID, maxW: 1, maxH: 1, quality: 101 });
   bad({ type: "screencast.start", targetId: TID, maxW: "1", maxH: 1, quality: 1 });
-  bad({ type: "tab.close" }); bad({ type: "tab.select", targetId: "x y" }); bad({ type: "tab.close", targetId: "a".repeat(65) });
+  for (const type of ["tab.new", "tab.close", "tab.select"]) bad({ type, targetId: TID, url: "https://a.test/" }); // one node, one page: no tabs
+  for (const patch of [{ buttons: 32 }, { buttons: -1 }, { buttons: 1.5 }]) bad({ ...mouse, ...patch });
+  bad({ ...wheel, modifiers: 16 });
+  for (const v of [{ width: 199, height: 500, dpr: 1 }, { width: 3841, height: 500, dpr: 1 }, { width: 500, height: 2161, dpr: 1 }, { width: 500.5, height: 500, dpr: 1 }, { width: 500, height: 500, dpr: 0 }, { width: 500, height: 500, dpr: 9 }, { width: "500", height: 500, dpr: 1 }]) bad({ type: "viewport", ...v });
 });
 
 test("text is limited to 4 KiB of UTF-8 and may not contain NUL", () => {
@@ -73,7 +80,6 @@ test("navigation: only http, https and the exact about:blank, however the URL is
   assert.equal(normalizeNavUrl("http://localhost:3000"), "http://localhost:3000/");
   assert.equal(normalizeNavUrl("about:blank"), "about:blank");
   bad({ type: "nav.go", targetId: TID, url: "javascript:1" }, "bad_url");
-  bad({ type: "tab.new", url: "data:text/html,x" }, "bad_url");
 });
 
 test("daemon messages are rebuilt for viewers; ready, exit and unknown types never pass", () => {

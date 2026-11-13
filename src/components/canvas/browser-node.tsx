@@ -1,13 +1,16 @@
-// Browser canvas node: the user's shared agent browser (CDP screencast relayed by the runtime) with tabs, URL bar and input.
-// Contract: docs/design/agent-browser.md §A.5 / §A.8. One node per canvas; open state and geometry are stored locally per project.
+// Browser canvas node: one page of the user's shared agent browser (CDP screencast relayed by the runtime) with URL bar and input.
+// Contract: docs/design/agent-browser.md §A.5 / §A.8. Many nodes per canvas, one page each; geometry is stored locally per project.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { NodeResizer, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { IconUpload, IconArrowLeft, IconArrowRight, IconGripHorizontal, IconPlus, IconRefresh, IconWorld, IconX } from "@tabler/icons-react";
-import { cn } from "cn";
+import { Handle, NodeResizer, Position, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
+import { IconUpload, IconArrowLeft, IconArrowRight, IconGripHorizontal, IconPlus, IconRefresh, IconShieldCheck, IconWorld, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
+import { CanvasCtx } from "@/components/canvas/canvas-context";
 import { BrowserImportDialog } from "@/components/canvas/browser-import-dialog";
+import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/canvas/wire-edge";
+import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
+import { robotAvatarSvg } from "@/lib/robot-avatar";
 import type { RuntimeClient } from "@/lib/runtime/client";
-import { FRAME_QUALITY, MAX_FRAME, mapPointer, modifierBits, normalizeUrl, useBrowserStream } from "@/lib/runtime/browser-stream";
+import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels } from "@/lib/runtime/browser-stream";
 
 export const BROWSER_PREFIX = "browser:";
 export const BROWSER_NODE_ID = BROWSER_PREFIX + "main";
@@ -15,35 +18,72 @@ export const isBrowserId = (id: string) => id.startsWith(BROWSER_PREFIX);
 export const BROWSER_DEFAULT = { width: 900, height: 620 };
 const ACTIVITY_MS = 4_000;
 const POLL_MS = 5_000;
+const MOVE_MIN_MS = 16;
+const MAX_AVATARS = 3;
+const VIEWPORT_DEBOUNCE_MS = 250;
+const SIDES = [
+  { id: "top", position: Position.Top }, { id: "right", position: Position.Right },
+  { id: "bottom", position: Position.Bottom }, { id: "left", position: Position.Left },
+] as const;
 
-export type BrowserNode = Node<{ projectId: string }, "browser">;
-interface BrowserCtxValue { client: RuntimeClient | null; openSettings?: () => void; close: () => void }
-const BrowserCtx = createContext<BrowserCtxValue>({ client: null, close: () => {} });
+export type BrowserNode = Node<{ projectId: string; nodeId: string }, "browser">;
+export interface BrowserLinkedAgent { sessionId: string; title: string }
+interface BrowserCtxValue {
+  client: RuntimeClient | null;
+  openSettings?: () => void;
+  /** Closes a node (id incl. the `browser:` prefix). */
+  close: (nodeId: string) => void;
+  linkedAgents: (nodeId: string) => BrowserLinkedAgent[];
+  newBrowser: () => void;
+}
+const BrowserCtx = createContext<BrowserCtxValue>({ client: null, close: () => {}, linkedAgents: () => [], newBrowser: () => {} });
 export const BrowserProvider = BrowserCtx.Provider;
 
-const btnName = (b: number) => (b === 1 ? "middle" : b === 2 ? "right" : "left") as "left" | "middle" | "right";
-const tabLabel = (title: string, url: string) => title || url.replace(/^https?:\/\//, "") || "New tab";
-
-const BrowserCard = memo(function BrowserCard({ selected }: NodeProps<BrowserNode>) {
-  const { client, openSettings, close } = useContext(BrowserCtx);
-  const stream = useBrowserStream(client, true);
-  const { state, frame, tabs, nav, activity, agents, send, reconnect } = stream;
-  const [activeId, setActiveId] = useState<string | null>(null);
+/**
+ * Input and canvas interplay (final behaviour):
+ * - Shift+click over the page reaches the page: the page carries `nokey`, so react-flow's Shift selection overlay ignores it.
+ * - Canvas Link mode: the page ignores pointer input (the click links the node instead).
+ * - Pointer: hover/drag/press/release/wheel over the page go to the page only. Presses capture the pointer, so drags and the
+ *   final release work outside the image (coordinates are clamped into the page). Wheel never zooms or pans the canvas.
+ * - Panning the canvas over a browser: drag the header (`.browser-drag`), or hold Space while the pointer is over the node and the
+ *   page's hidden textarea is NOT focused. Then the live view stops capturing pointer events and the body drops `nopan`, so
+ *   react-flow's own Space+drag pan takes the drag. Space typed into a focused page still goes to the page.
+ * - Keyboard: only the focused textarea feeds the page, and it stops propagation so canvas shortcuts (L, N, F, Delete...) never fire.
+ */
+const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<BrowserNode>) {
+  const { client, openSettings, close, linkedAgents, newBrowser } = useContext(BrowserCtx);
+  const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
+  const stream = useBrowserStream(client, true, nodeId);
+  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect } = stream;
+  const linked = linkedAgents(id);
+  // Canvas Link mode: the page gets no pointer input at all, the click only links (it bubbles to the node).
+  const linking = useContext(CanvasCtx)?.linkMode != null;
   const [urlText, setUrlText] = useState("");
   const [urlFocused, setUrlFocused] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const rootRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastMove = useRef(0);
+  const clickCounter = useRef(createClickCounter());
+  const held = useRef<{ clickCount: number; x: number; y: number; button: number } | null>(null);
 
-  // Active tab: keep the user's choice while it exists, else follow the stream's current frame, else the first tab.
-  const current = tabs.find((t) => t.targetId === activeId) ?? tabs.find((t) => t.targetId === frame?.targetId) ?? tabs[0] ?? null;
-  const targetId = current?.targetId ?? null;
-  const info = targetId ? nav[targetId] : undefined;
-  const agentBusy = !!targetId && now - (activity[targetId] ?? 0) < ACTIVITY_MS;
-  useEffect(() => { if (!agentBusy && !Object.keys(activity).length) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [agentBusy, activity]);
-  useEffect(() => { if (!urlFocused) setUrlText(info?.url ?? current?.url ?? ""); }, [info?.url, current?.url, urlFocused]);
+  const agentBusy = !!targetId && now - activity < ACTIVITY_MS;
+  useEffect(() => { if (!agentBusy && !activity) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [agentBusy, activity]);
+  useEffect(() => { if (!urlFocused) setUrlText(info?.url ?? ""); }, [info?.url, urlFocused]);
+  const challenge = looksLikeChallenge(info?.title, info?.url);
+
+  // Space-to-pan (see the comment above BrowserCard).
+  const [spacePan, setSpacePan] = useState(false);
+  const hovering = useRef(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.code === "Space" && hovering.current && document.activeElement !== inputRef.current && !(e.target instanceof HTMLInputElement)) setSpacePan(true); };
+    const up = (e: KeyboardEvent) => { if (e.code === "Space") setSpacePan(false); };
+    const off = () => setSpacePan(false);
+    window.addEventListener("keydown", down); window.addEventListener("keyup", up); window.addEventListener("blur", off);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("blur", off); };
+  }, []);
 
   // Screencast runs only while the node is visible (on-screen and the document is not hidden).
   const [visible, setVisible] = useState(true);
@@ -64,31 +104,62 @@ const BrowserCard = memo(function BrowserCard({ selected }: NodeProps<BrowserNod
     return () => ro.disconnect();
   }, [state]);
   const sizeKey = `${Math.round(size.w / 40)}x${Math.round(size.h / 40)}`; // restart only on meaningful resizes
+  // The page viewport follows the live view area (CSS px), debounced after mount/resize.
+  useEffect(() => {
+    if (state !== "running" || !targetId || size.w < 50 || size.h < 50) return;
+    const t = setTimeout(() => {
+      const c = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(n)));
+      send({ type: "viewport", width: c(size.w, 200, 3840), height: c(size.h, 200, 2160), dpr: typeof devicePixelRatio === "number" ? devicePixelRatio : 1 });
+    }, VIEWPORT_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, targetId, size.w, size.h, send]);
   useEffect(() => {
     if (state !== "running" || !targetId || !visible || size.w < 50 || size.h < 50) { if (state === "running") send({ type: "screencast.stop" }); return; }
     const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
     const k = Math.min(1, MAX_FRAME.w / (size.w * dpr), MAX_FRAME.h / (size.h * dpr));
-    send({ type: "screencast.start", targetId, maxW: Math.round(size.w * dpr * k), maxH: Math.round(size.h * dpr * k), quality: FRAME_QUALITY });
+    send({ type: "screencast.start", maxW: Math.round(size.w * dpr * k), maxH: Math.round(size.h * dpr * k), quality: FRAME_QUALITY });
     return () => send({ type: "screencast.stop" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, targetId, visible, sizeKey, send]);
 
-  const point = (e: { clientX: number; clientY: number }) => {
+  const point = (e: { clientX: number; clientY: number }, clamp: boolean) => {
     const img = imgRef.current; if (!img || !frame) return null;
-    const r = img.getBoundingClientRect();
-    return mapPointer(e.clientX, e.clientY, r, frame);
+    return (clamp ? mapPointerClamped : mapPointer)(e.clientX, e.clientY, img.getBoundingClientRect(), frame);
   };
   const focusInput = () => inputRef.current?.focus({ preventScroll: true });
-  const onPointer = (kind: "mousePressed" | "mouseReleased" | "mouseMoved") => (e: React.PointerEvent) => {
-    if (kind === "mousePressed") focusInput(); // letterbox clicks still focus the page for typing
-    const p = point(e); if (!p) return;
-    if (kind === "mouseMoved") { const t = performance.now(); if (t - lastMove.current < 16) return; lastMove.current = t; }
-    if (kind === "mousePressed") { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); }
-    send({ type: "input.mouse", kind, x: p.x, y: p.y, button: kind === "mouseMoved" ? (e.buttons & 1 ? "left" : "none") : btnName(e.button), clickCount: kind === "mouseMoved" ? 0 : Math.max(1, e.detail), modifiers: modifierBits(e) });
+  const buttonsFor = (b: number) => (b & 1 ? "left" : b & 4 ? "middle" : b & 2 ? "right" : "none") as "left" | "middle" | "right" | "none";
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (linking) return;
+    focusInput(); // letterbox clicks still focus the page for typing
+    const p = point(e, false); if (!p) return;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    // pointerdown.detail is 0 in Chrome: count clicks ourselves.
+    const clickCount = clickCounter.current(performance.now(), p.x, p.y, e.button);
+    held.current = { clickCount, x: p.x, y: p.y, button: e.button };
+    send({ type: "input.mouse", kind: "mousePressed", x: p.x, y: p.y, button: buttonName(e.button), buttons: e.buttons, clickCount, modifiers: modifierBits(e) });
   };
-  useEffect(() => { // wheel needs a non-passive listener to stop the canvas from zooming
+  const release = (e: React.PointerEvent) => {
+    if (linking) return;
+    const h = held.current; if (!h) return;
+    const p = point(e, true) ?? h;
+    held.current = null;
+    send({ type: "input.mouse", kind: "mouseReleased", x: p.x, y: p.y, button: buttonName(h.button), buttons: e.buttons, clickCount: h.clickCount, modifiers: modifierBits(e) });
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (linking) return;
+    const t = performance.now(); if (t - lastMove.current < MOVE_MIN_MS) return;
+    const p = point(e, !!held.current || (e.currentTarget as HTMLElement).hasPointerCapture?.(e.pointerId)); if (!p) return;
+    lastMove.current = t;
+    send({ type: "input.mouse", kind: "mouseMoved", x: p.x, y: p.y, button: buttonsFor(e.buttons), buttons: e.buttons, clickCount: 0, modifiers: modifierBits(e) });
+  };
+  useEffect(() => { // wheel needs a non-passive listener to stop the canvas from zooming or panning
     const el = viewRef.current; if (!el) return;
-    const onWheel = (e: WheelEvent) => { e.preventDefault(); e.stopPropagation(); const p = point(e); if (p) send({ type: "input.wheel", x: p.x, y: p.y, dx: e.deltaX, dy: e.deltaY }); };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      const p = point(e, false); if (!p || !frame) return;
+      send({ type: "input.wheel", x: p.x, y: p.y, dx: wheelPixels(e.deltaX, e.deltaMode, frame.h), dy: wheelPixels(e.deltaY, e.deltaMode, frame.h), modifiers: modifierBits(e) });
+    };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   });
@@ -110,43 +181,46 @@ const BrowserCard = memo(function BrowserCard({ selected }: NodeProps<BrowserNod
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
     send({ type: "input.key", kind: "keyUp", key: e.key, code: e.code, modifiers: modifierBits(e) });
   };
+  const onKeyPress = (e: React.KeyboardEvent) => e.stopPropagation();
   const onPaste = (e: React.ClipboardEvent) => { e.preventDefault(); e.stopPropagation(); const text = e.clipboardData.getData("text/plain"); if (text) send({ type: "input.text", text: text.slice(0, 4096) }); };
 
-  const go = () => {
-    const url = normalizeUrl(urlText);
-    if (!url) return;
-    if (targetId) send({ type: "nav.go", targetId, url }); else send({ type: "tab.new", url });
-  };
+  const go = () => { const url = normalizeUrl(urlText); if (url) send({ type: "nav.go", url }); };
+  const closeNode = () => { send({ type: "page.close" }); close(id); }; // only the user closing the node destroys the page
   const live = state === "running";
   const [importOpen, setImportOpen] = useState(false);
 
   return (
-    <div data-testid="browser-node" data-state={state} className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg">
-      <NodeResizer isVisible={selected} minWidth={420} minHeight={300} />
+    <div className="canvas-node-wrap group/node relative size-full" data-selected={selected ? "true" : undefined}>
+      <NodeResizer lineStyle={RESIZER_ABOVE} handleStyle={RESIZER_ABOVE} isVisible={selected} minWidth={MIN_SIZE.width} minHeight={MIN_SIZE.height} maxWidth={MAX_SIZE.width} maxHeight={MAX_SIZE.height}
+        lineClassName="border-primary/70!" handleClassName="size-2.5! rounded-sm! border-primary! bg-background!" />
+      {SIDES.map((side) => (
+        <Handle key={side.id} id={side.id} type="source" position={side.position} style={SIDE_STRIP_STYLE[side.position]} isConnectable isConnectableStart isConnectableEnd className={SIDE_STRIP_CLASS} />
+      ))}
+    <div ref={rootRef} data-testid="browser-node" data-state={state} data-node-id={id} className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+      onPointerEnter={() => { hovering.current = true; }} onPointerLeave={() => { hovering.current = false; }}>
       <div className="browser-drag flex h-8 shrink-0 cursor-grab items-center gap-2 border-b border-border/70 px-3 text-xs font-medium">
         <IconWorld size={14} className="shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">Browser{agents > 0 ? ` · ${agents} agent${agents === 1 ? "" : "s"} connected` : ""}</span>
+        <span className="min-w-0 truncate">Browser</span>
+        {linked.length > 0 && (
+          <span className="flex shrink-0 items-center -space-x-1">
+            {linked.slice(0, MAX_AVATARS).map((a) => (
+              <span key={a.sessionId} data-testid="browser-linked-agent" title={a.title} className="inline-block size-4 shrink-0 overflow-hidden rounded-full ring-1 ring-card"
+                dangerouslySetInnerHTML={{ __html: robotAvatarSvg(a.sessionId, false) }} />
+            ))}
+            {linked.length > MAX_AVATARS && <span className="pl-1.5 text-[10px] text-muted-foreground">+{linked.length - MAX_AVATARS}</span>}
+          </span>
+        )}
+        <span className="flex-1" />
         <IconGripHorizontal size={14} className="text-muted-foreground" />
+        <button type="button" aria-label="New browser" title="New browser" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={newBrowser}><IconPlus size={14} /></button>
         {client && state !== "disabled" && state !== "unavailable" && (
           <button type="button" aria-label="Import cookies and data" title="Import cookies & data" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={() => setImportOpen(true)}><IconUpload size={14} /></button>
         )}
-        <button type="button" aria-label="Close browser" title="Close (the browser keeps running until idle)" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={close}><IconX size={14} /></button>
+        <button type="button" aria-label="Close browser" title="Close this browser" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={closeNode}><IconX size={14} /></button>
       </div>
-      <div className="nodrag nowheel nopan flex min-h-0 flex-1 flex-col">
+      <div className={"nodrag nowheel flex min-h-0 flex-1 flex-col" + (spacePan ? "" : " nopan")}>
         {live && (
           <>
-            <div role="tablist" aria-label="Browser tabs" className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60 bg-muted/30 px-1.5">
-              {tabs.map((tab) => (
-                <div key={tab.targetId} role="tab" aria-selected={tab.targetId === targetId} data-testid="browser-tab"
-                  className={cn("group flex h-6 max-w-44 shrink-0 items-center gap-1 rounded-md px-2 text-xs", tab.targetId === targetId ? "bg-background shadow-sm" : "text-muted-foreground hover:bg-background/60")}
-                  onClick={() => { setActiveId(tab.targetId); send({ type: "tab.select", targetId: tab.targetId }); }}>
-                  {tab.opener === "agent" && <span className="rounded bg-primary/15 px-1 text-[9px] font-semibold uppercase text-primary">agent</span>}
-                  <span className="truncate">{tabLabel(tab.title, tab.url)}</span>
-                  <button type="button" aria-label={`Close tab ${tabLabel(tab.title, tab.url)}`} className="rounded opacity-0 hover:text-foreground group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); send({ type: "tab.close", targetId: tab.targetId }); }}><IconX size={11} /></button>
-                </div>
-              ))}
-              <button type="button" aria-label="New tab" className="rounded p-1 text-muted-foreground hover:text-foreground" onClick={() => send({ type: "tab.new" })}><IconPlus size={13} /></button>
-            </div>
             <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-1.5">
               <button type="button" aria-label="Back" disabled={!info?.canBack} className="rounded p-1 text-muted-foreground enabled:hover:text-foreground disabled:opacity-40" onClick={() => send({ type: "nav.back" })}><IconArrowLeft size={15} /></button>
               <button type="button" aria-label="Forward" disabled={!info?.canForward} className="rounded p-1 text-muted-foreground enabled:hover:text-foreground disabled:opacity-40" onClick={() => send({ type: "nav.forward" })}><IconArrowRight size={15} /></button>
@@ -158,20 +232,26 @@ const BrowserCard = memo(function BrowserCard({ selected }: NodeProps<BrowserNod
                 onFocus={(e) => { setUrlFocused(true); e.currentTarget.select(); }} onBlur={() => setUrlFocused(false)}
                 onChange={(e) => setUrlText(e.target.value)}
                 onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); go(); } else if (e.key === "Escape") { setUrlText(info?.url ?? ""); e.currentTarget.blur(); } }} />
-              {agentBusy && <span data-testid="browser-agent-pulse" className="flex shrink-0 items-center gap-1 pr-1 text-[10px] font-medium text-primary"><span className="size-1.5 animate-pulse rounded-full bg-primary" />Agent is using this tab</span>}
+              {agentBusy && <span data-testid="browser-agent-pulse" className="flex shrink-0 items-center gap-1 pr-1 text-[10px] font-medium text-primary"><span className="size-1.5 animate-pulse rounded-full bg-primary" />Agent is using this page</span>}
             </div>
+            {challenge && (
+              <div role="status" data-testid="browser-challenge-hint" className="flex shrink-0 items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+                <IconShieldCheck size={12} className="shrink-0" />
+                <span className="min-w-0">Verification needed. Complete it here, your clearance is kept for later agent use.</span>
+              </div>
+            )}
           </>
         )}
-        <div ref={viewRef} className="relative min-h-0 flex-1 bg-black/90">
+        <div ref={viewRef} className="nokey relative min-h-0 flex-1 bg-black/90">
           {live ? (
             <>
               {frame && <img ref={imgRef} data-testid="browser-frame" alt="Browser page" draggable={false} src={`data:image/jpeg;base64,${frame.jpeg}`}
-                className="absolute inset-0 h-full w-full select-none object-contain touch-none"
-                onMouseDown={(e) => { e.preventDefault(); focusInput(); }} onPointerDown={onPointer("mousePressed")} onPointerUp={onPointer("mouseReleased")} onPointerMove={onPointer("mouseMoved")}
+                className="nokey absolute inset-0 h-full w-full select-none object-contain touch-none" style={{ cursor: linking ? "pointer" : cursor, pointerEvents: spacePan || linking ? "none" : undefined }}
+                onMouseDown={(e) => { e.preventDefault(); focusInput(); }} onPointerDown={onPointerDown} onPointerUp={release} onPointerCancel={release} onPointerMove={onPointerMove}
                 onContextMenu={(e) => e.preventDefault()} />}
               <textarea ref={inputRef} data-testid="browser-input" aria-label="Browser keyboard input" autoCapitalize="off" autoCorrect="off" spellCheck={false}
                 className="pointer-events-none absolute bottom-0 left-0 size-px opacity-0"
-                onKeyDown={onKeyDown} onKeyUp={onKeyUp} onPaste={onPaste}
+                onKeyDown={onKeyDown} onKeyUp={onKeyUp} onKeyPress={onKeyPress} onPaste={onPaste}
                 onCompositionStart={() => { composing.current = true; }}
                 onCompositionEnd={(e) => { composing.current = false; const text = e.data; e.currentTarget.value = ""; if (text) send({ type: "input.text", text: text.slice(0, 4096) }); }} />
               {!frame && <Overlay title="Loading page…" />}
@@ -191,6 +271,7 @@ const BrowserCard = memo(function BrowserCard({ selected }: NodeProps<BrowserNod
       </div>
       {client && <BrowserImportDialog client={client} open={importOpen} onOpenChange={setImportOpen} />}
     </div>
+    </div>
   );
 });
 
@@ -205,52 +286,84 @@ function Overlay({ title, body, children }: { title: string; body?: string; chil
 }
 export const browserNodeTypes = { browser: BrowserCard };
 
-// --- per-project local state (open flag + geometry), like app windows ---
-const key = (projectId: string) => `floq:browser-node:${projectId}`;
-interface Stored { open: boolean; seen?: boolean; x?: number; y?: number; width?: number; height?: number }
-const read = (projectId: string): Stored => { try { return { open: false, ...JSON.parse(localStorage.getItem(key(projectId)) ?? "{}") }; } catch { return { open: false }; } };
+
+// --- per-project local state (node list + geometry), like app windows ---
+const key = (projectId: string) => `floq:browser-nodes:${projectId}`;
+const legacyKey = (projectId: string) => `floq:browser-node:${projectId}`;
+interface StoredNode { id: string; x: number; y: number; width: number; height: number }
+interface Stored { nodes: StoredNode[]; seen?: boolean }
+const OFFSET = 40;
+
+/** Reads the node list; migrates the old single-node record once (open -> node `main`, closed -> only `seen`). */
+function read(projectId: string, anchor: { x: number; y: number }): Stored {
+  try {
+    const raw = localStorage.getItem(key(projectId));
+    if (raw) { const v = JSON.parse(raw) as Stored; return { nodes: Array.isArray(v.nodes) ? v.nodes : [], seen: v.seen }; }
+    const old = localStorage.getItem(legacyKey(projectId));
+    if (old) {
+      const o = JSON.parse(old) as { open?: boolean; seen?: boolean; x?: number; y?: number; width?: number; height?: number };
+      const migrated: Stored = { nodes: o.open ? [{ id: "main", x: o.x ?? anchor.x, y: o.y ?? anchor.y, width: o.width ?? BROWSER_DEFAULT.width, height: o.height ?? BROWSER_DEFAULT.height }] : [], seen: o.seen || o.open || undefined };
+      localStorage.setItem(key(projectId), JSON.stringify(migrated)); localStorage.removeItem(legacyKey(projectId));
+      return migrated;
+    }
+  } catch { /* storage unavailable or corrupt */ }
+  return { nodes: [] };
+}
 const write = (projectId: string, value: Stored) => { try { localStorage.setItem(key(projectId), JSON.stringify(value)); } catch { /* storage unavailable */ } };
+const newId = () => Math.random().toString(36).slice(2, 8);
 
 /**
- * The single Browser node of a canvas. Opened from the canvas menu, or automatically the first time an agent is connected
- * (polled while closed; once per project, the user closing it is remembered).
+ * The Browser nodes of a canvas (one page each). Opened from the canvas menu or the node's "New browser" button, or one is opened
+ * automatically the first time an agent is connected (polled while there is no node; once per project, closing is remembered).
  */
-export function useCanvasBrowser(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true) {
-  const [stored, setStored] = useState<Stored>(() => (projectId ? read(projectId) : { open: false }));
-  useEffect(() => { setStored(projectId ? read(projectId) : { open: false }); }, [projectId]);
-  const [selected, setSelected] = useState(false);
-  const update = useCallback((patch: Partial<Stored>) => {
-    setStored((prev) => { const next = { ...prev, ...patch }; if (projectId) write(projectId, next); return next; });
+export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true) {
+  const anchorRef = useRef(anchor); anchorRef.current = anchor;
+  const [stored, setStored] = useState<Stored>(() => (projectId ? read(projectId, anchor) : { nodes: [] }));
+  useEffect(() => { setStored(projectId ? read(projectId, anchorRef.current) : { nodes: [] }); }, [projectId]);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const storedRef = useRef(stored); storedRef.current = stored;
+  const update = useCallback((fn: (prev: Stored) => Stored) => {
+    const next = fn(storedRef.current); storedRef.current = next; if (projectId) write(projectId, next); setStored(next);
   }, [projectId]);
-  const open = useCallback((at?: { x: number; y: number }) => update({ open: true, seen: true, ...(at ? { x: Math.round(at.x), y: Math.round(at.y) } : {}) }), [update]);
-  const close = useCallback(() => update({ open: false, seen: true }), [update]);
 
+  const open = useCallback((at?: { x: number; y: number }): string => {
+    const id = newId();
+    update((prev) => {
+      const base = at ?? { x: anchorRef.current.x + OFFSET * prev.nodes.length, y: anchorRef.current.y + OFFSET * prev.nodes.length };
+      return { seen: true, nodes: [...prev.nodes, { id, x: Math.round(base.x), y: Math.round(base.y), width: BROWSER_DEFAULT.width, height: BROWSER_DEFAULT.height }] };
+    });
+    return BROWSER_PREFIX + id;
+  }, [update]);
+  const close = useCallback((nodeId: string) => {
+    const id = nodeId.startsWith(BROWSER_PREFIX) ? nodeId.slice(BROWSER_PREFIX.length) : nodeId;
+    update((prev) => ({ seen: true, nodes: prev.nodes.filter((n) => n.id !== id) }));
+  }, [update]);
+
+  const count = stored.nodes.length;
   useEffect(() => {
-    if (!client || !projectId || stored.open || stored.seen || !autoOpenPoll) return;
+    if (!client || !projectId || count > 0 || stored.seen || !autoOpenPoll) return;
     let stopped = false;
-    const poll = async () => { try { const s = await client.browserStatus(); if (!stopped && (s.agents ?? 0) > 0) open(); } catch { /* older runtime / disabled */ } };
+    const poll = async () => { try { const s = await client.browserStatus(); if (!stopped && (s.agents ?? 0) > 0 && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
     void poll();
     const t = setInterval(() => { if (document.visibilityState !== "hidden") void poll(); }, POLL_MS);
     return () => { stopped = true; clearInterval(t); };
-  }, [client, projectId, stored.open, stored.seen, autoOpenPoll, open]);
+  }, [client, projectId, count, stored.seen, autoOpenPoll, open]);
 
-  const anchorRef = useRef(anchor); anchorRef.current = anchor;
-  const nodes = useMemo<BrowserNode[]>(() => (!projectId || !stored.open ? [] : [{
-    id: BROWSER_NODE_ID, type: "browser", dragHandle: ".browser-drag", selected,
-    position: { x: stored.x ?? anchorRef.current.x, y: stored.y ?? anchorRef.current.y },
-    width: stored.width ?? BROWSER_DEFAULT.width, height: stored.height ?? BROWSER_DEFAULT.height,
-    data: { projectId },
-  }]), [projectId, stored, selected]);
+  const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
+    id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),
+    position: { x: n.x, y: n.y }, width: n.width, height: n.height, data: { projectId, nodeId: n.id },
+  }))), [projectId, stored, selected]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
-    const patch: Partial<Stored> = {};
+    const patches = new Map<string, Partial<StoredNode>>();
     for (const c of changes) {
-      if (!("id" in c) || c.id !== BROWSER_NODE_ID) continue;
-      if (c.type === "select") setSelected(c.selected);
-      else if (c.type === "position" && c.position) { patch.x = c.position.x; patch.y = c.position.y; }
-      else if (c.type === "dimensions" && c.dimensions && c.setAttributes) { patch.width = c.dimensions.width; patch.height = c.dimensions.height; }
+      if (!("id" in c) || !isBrowserId(c.id)) continue;
+      const id = c.id.slice(BROWSER_PREFIX.length);
+      if (c.type === "select") setSelected((prev) => { const next = new Set(prev); if (c.selected) next.add(c.id); else next.delete(c.id); return next; });
+      else if (c.type === "position" && c.position) patches.set(id, { ...patches.get(id), x: c.position.x, y: c.position.y });
+      else if (c.type === "dimensions" && c.dimensions && c.setAttributes) patches.set(id, { ...patches.get(id), width: c.dimensions.width, height: c.dimensions.height });
     }
-    if (Object.keys(patch).length) update(patch);
+    if (patches.size) update((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (patches.has(n.id) ? { ...n, ...patches.get(n.id) } : n)) }));
   }, [update]);
-  return { nodes, onNodesChange, isOpen: stored.open, open, close };
+  return { nodes, onNodesChange, open, close, count, isOpen: count > 0 };
 }

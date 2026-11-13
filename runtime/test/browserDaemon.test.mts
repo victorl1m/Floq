@@ -33,8 +33,10 @@ test("validateControl accepts the documented messages", () => {
   ok({ type: "nav.go", targetId: TID, url: "https://example.com/a?b=c" });
   ok({ type: "nav.go", url: "about:blank" });
   for (const t of ["nav.back", "nav.forward", "nav.reload", "nav.stop"]) ok({ type: t });
-  ok({ type: "tab.new" }); ok({ type: "tab.new", url: "http://localhost:3000" });
-  ok({ type: "tab.close", targetId: TID }); ok({ type: "tab.select", targetId: TID });
+  ok({ type: "page.open", nodeId: "main" }); ok({ type: "page.open", nodeId: "br-ab12_CD", url: "http://localhost:3000" }); ok({ type: "page.close", nodeId: "main" });
+  ok({ type: "agent.scope", agent: "11111111-1111-1111-1111-111111111111", nodeId: "n1" }); ok({ type: "agent.scope", agent: "11111111-1111-1111-1111-111111111111", nodeId: null });
+  ok({ type: "viewport", targetId: TID, width: 900, height: 600, dpr: 2 });
+  ok({ type: "input.mouse", targetId: TID, kind: "mouseMoved", x: 1, y: 1, button: "left", buttons: 1, clickCount: 0, modifiers: 0 });
   ok({ type: "shutdown" });
 });
 
@@ -54,7 +56,10 @@ test("validateControl rejects bad types, ranges, keys and oversize text", () => 
   bad({ type: "screencast.start", targetId: TID, maxW: 1601, maxH: 100, quality: 60 }); bad({ type: "screencast.start", targetId: TID, maxW: 100, maxH: 1201, quality: 60 });
   bad({ type: "screencast.start", targetId: TID, maxW: 100, maxH: 100, quality: 0 }); bad({ type: "screencast.start", targetId: "../x", maxW: 1, maxH: 1, quality: 1 });
   bad({ type: "frame.ack", n: -1 }); bad({ type: "frame.ack", n: 1.2 });
-  bad({ type: "tab.close", targetId: "x y" }); bad({ type: "tab.select" }); bad({ type: "nav.back", targetId: 5 });
+  bad({ type: "tab.close", targetId: TID }); bad({ type: "tab.select", targetId: TID }); bad({ type: "tab.new" }); bad({ type: "nav.back", targetId: 5 });
+  bad({ type: "page.open", nodeId: "../x" }); bad({ type: "page.open", nodeId: "" }); bad({ type: "page.open", nodeId: "a".repeat(65) }); bad({ type: "page.open", nodeId: "n", url: "javascript:1" });
+  bad({ type: "agent.scope", agent: "x", nodeId: "n" }); bad({ type: "agent.scope", agent: "11111111-1111-1111-1111-111111111111", nodeId: "a b" });
+  bad({ type: "viewport", targetId: TID, width: 100, height: 600, dpr: 1 }); bad({ type: "viewport", width: 900, height: 600, dpr: 1 });
 });
 
 test("navigation URLs: only http, https and about:blank, however they are dressed", () => {
@@ -72,7 +77,7 @@ test("navigation URLs: only http, https and about:blank, however they are dresse
   assert.equal(normalizeNavUrl("about:blank"), "about:blank");
   assert.equal(normalizeNavUrl("ABOUT:BLANK"), null, "only the exact lowercase about:blank");
   assert.equal(validateControl({ type: "nav.go", url: "javascript:1" }).ok, false);
-  const r = validateControl({ type: "tab.new", url: "data:text/html,x" });
+  const r = validateControl({ type: "page.open", nodeId: "n", url: "data:text/html,x" });
   assert.deepEqual(r, { ok: false, code: "bad_url" });
 });
 
@@ -130,14 +135,14 @@ test("floq browser status text and exit codes", () => {
 
 // -------------------------------------------------------------- daemon (fake Chromium)
 
-type Daemon = { child: ChildProcess; msgs: any[]; stderr: string; ready: any; home: string; send(m: unknown): void; waitFor(pred: (m: any) => boolean, ms?: number): Promise<any>; stop(): Promise<void> };
+type Daemon = { chromiumLog(): string; child: ChildProcess; msgs: any[]; stderr: string; ready: any; home: string; send(m: unknown): void; waitFor(pred: (m: any) => boolean, ms?: number): Promise<any>; stop(): Promise<void> };
 
 async function startDaemon(t: test.TestContext, opts: { exe?: string; env?: Record<string, string>; home?: string } = {}): Promise<Daemon> {
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "floq-browserd-"));
   if (!opts.home) t.after(() => rmSync(home, { recursive: true, force: true }));
-  const child = spawn(process.execPath, [DAEMON], { env: { PATH: process.env.PATH!, HOME: home, FLOQ_BROWSER_EXECUTABLE: opts.exe ?? FAKE, ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}), ...opts.env }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [DAEMON], { env: { PATH: process.env.PATH!, HOME: home, FLOQ_BROWSER_EXECUTABLE: opts.exe ?? FAKE, FAKE_CHROMIUM_LOG: join(home, "chromium.log"), ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}), ...opts.env }, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin!.on("error", () => {});
-  const d: Daemon = { child, msgs: [], stderr: "", ready: null, home, send: (m) => { if (child.stdin!.writable) child.stdin!.write(JSON.stringify(m) + "\n"); }, waitFor: null as any, stop: null as any };
+  const d: Daemon = { chromiumLog: () => { try { return readFileSync(join(home, "chromium.log"), "utf8"); } catch { return ""; } }, child, msgs: [], stderr: "", ready: null, home, send: (m) => { if (child.stdin!.writable) child.stdin!.write(JSON.stringify(m) + "\n"); }, waitFor: null as any, stop: null as any };
   const waiters: { pred: (m: any) => boolean; resolve: (m: any) => void }[] = [];
   let buf = "";
   child.stdout!.on("data", (c: Buffer) => {
@@ -284,42 +289,132 @@ test("daemon: malformed agent traffic never takes the daemon down", async (t) =>
   assert.ok((await c.call("Browser.getVersion")).result.product);
 });
 
-test("daemon: control channel validates, streams frames, navigates and manages tabs", async (t) => {
+test("daemon: control channel validates, binds one page per node, streams frames, forwards pointer input and closes the page", async (t) => {
   const d = await startDaemon(t);
-  const tabs = await d.waitFor((m) => m.type === "tabs" && m.tabs.length === 1);
-  const targetId = tabs.tabs[0].targetId;
-  d.send({ type: "nav.go", targetId, url: "javascript:alert(1)" });
+  const first = await d.waitFor((m) => m.type === "tabs" && m.tabs.length === 1);
+  const initial = first.tabs[0].targetId;
+  d.send({ type: "nav.go", targetId: initial, url: "javascript:alert(1)" });
   assert.deepEqual(await d.waitFor((m) => m.type === "error" && m.code === "bad_url"), { type: "error", code: "bad_url" });
-  d.send({ type: "input.mouse", kind: "mouseMoved", x: 99999, y: 1, button: "none", clickCount: 0, modifiers: 0 });
+  d.send({ type: "input.mouse", targetId: initial, kind: "mouseMoved", x: 99999, y: 1, button: "none", buttons: 0, clickCount: 0, modifiers: 0 });
   await d.waitFor((m) => m.type === "error" && m.code === "bad_message");
   d.child.stdin!.write("{broken\n");
   await d.waitFor((m) => m.type === "error" && m.code === "bad_json");
-  d.send({ type: "screencast.start", targetId: "DEADBEEFDEADBEEF", maxW: 100, maxH: 100, quality: 60 });
+  // A page nobody claimed for a node is not controllable by the control channel.
+  d.send({ type: "screencast.start", targetId: initial, maxW: 100, maxH: 100, quality: 60 });
   await d.waitFor((m) => m.type === "error" && m.code === "no_target");
+
+  // The first node adopts the initial blank tab; a second node gets a page of its own.
+  d.send({ type: "page.open", nodeId: "n1" });
+  const p1 = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  assert.deepEqual([p1.targetId, p1.created], [initial, false]);
+  d.send({ type: "page.open", nodeId: "n2", url: "https://two.example/" });
+  const p2 = await d.waitFor((m) => m.type === "page" && m.nodeId === "n2");
+  assert.equal(p2.created, true);
+  assert.notEqual(p2.targetId, initial);
+  d.send({ type: "page.open", nodeId: "n2" }); // idempotent
+  const again = await d.waitFor((m) => m.type === "page" && m.nodeId === "n2" && m !== p2);
+  assert.deepEqual([again.targetId, again.created], [p2.targetId, false]);
+  const targetId = p1.targetId;
 
   d.send({ type: "screencast.start", targetId, maxW: 1280, maxH: 800, quality: 60 });
   const frame = await d.waitFor((m) => m.type === "frame");
   assert.deepEqual({ n: frame.n, targetId: frame.targetId, w: frame.w, h: frame.h, scale: frame.scale }, { n: 1, targetId, w: 1280, h: 800, scale: 1 });
   d.send({ type: "frame.ack", n: frame.n });
+  d.send({ type: "viewport", targetId, width: 900, height: 500, dpr: 3 });
+  for (let i = 0; i < 40 && !/EMULATION/.test(d.chromiumLog()); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.match(d.chromiumLog(), /EMULATION \{"width":900,"height":500,"deviceScaleFactor":2,"mobile":false\}/, "viewport follows the node, dpr capped at 2");
 
   d.send({ type: "nav.go", targetId, url: "https://example.com" });
-  const nav = await d.waitFor((m) => m.type === "nav" && m.url === "https://example.com/" && m.canBack);
+  const nav = await d.waitFor((m) => m.type === "nav" && m.targetId === targetId && m.url === "https://example.com/" && m.canBack);
   assert.equal(nav.canForward, false);
-  d.send({ type: "nav.back" });
-  await d.waitFor((m) => m.type === "nav" && m.url === "about:blank" && m.canForward);
+  d.send({ type: "nav.back", targetId });
+  await d.waitFor((m) => m.type === "nav" && m.targetId === targetId && m.url === "about:blank" && m.canForward);
 
-  d.send({ type: "input.mouse", kind: "mousePressed", x: 5, y: 6, button: "left", clickCount: 1, modifiers: 0 });
-  d.send({ type: "input.text", text: "hi" });
-  d.send({ type: "input.key", kind: "keyDown", key: "Enter", code: "Enter", modifiers: 0 });
-  for (let i = 0; i < 40 && !/Input.insertText/.test(d.stderr); i++) await new Promise((r) => setTimeout(r, 50));
-  d.send({ type: "tab.new", url: "https://two.example/" });
-  const two = await d.waitFor((m) => m.type === "tabs" && m.tabs.length === 2);
-  assert.equal(two.tabs.find((x: any) => x.url === "https://two.example/").opener, "user");
-  const second = two.tabs.find((x: any) => x.url === "https://two.example/").targetId;
-  d.send({ type: "tab.close", targetId: second });
-  await d.waitFor((m) => m.type === "tabs" && m.tabs.length === 1 && m !== two);
+  // Pointer input: hover with buttons, press with clickCount/modifiers, wheel with modifiers, all on the node's page.
+  d.send({ type: "input.mouse", targetId, kind: "mouseMoved", x: 5, y: 6, button: "left", buttons: 1, clickCount: 0, modifiers: 8 });
+  d.send({ type: "input.mouse", targetId, kind: "mousePressed", x: 5, y: 6, button: "right", buttons: 2, clickCount: 2, modifiers: 2 });
+  d.send({ type: "input.wheel", targetId, x: 7, y: 8, dx: -4, dy: 120, modifiers: 4 });
+  d.send({ type: "input.text", targetId, text: "hi" });
+  d.send({ type: "input.key", targetId, kind: "keyDown", key: "Enter", code: "Enter", modifiers: 0 });
+  for (let i = 0; i < 60 && !/Input.insertText/.test(d.chromiumLog()); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.match(d.chromiumLog(), /Input\.dispatchMouseEvent \{"type":"mouseMoved","x":5,"y":6,"button":"left","buttons":1,"clickCount":0,"modifiers":8\}/);
+  assert.match(d.chromiumLog(), /Input\.dispatchMouseEvent \{"type":"mousePressed","x":5,"y":6,"button":"right","buttons":2,"clickCount":2,"modifiers":2\}/);
+  assert.match(d.chromiumLog(), /Input\.dispatchMouseEvent \{"type":"mouseWheel","x":7,"y":8,"deltaX":-4,"deltaY":120,"modifiers":4\}/);
+  const cursor = await d.waitFor((m) => m.type === "cursor" && m.targetId === targetId);
+  assert.equal(cursor.cursor, "pointer", "the cursor under the pointer is reported");
+  // Control of a node's page never reaches another node's page.
+  d.send({ type: "input.text", targetId: initial === targetId ? p2.targetId : initial, text: "x" });
+
+  // Closing the node destroys its page and frees the id.
+  d.send({ type: "page.close", nodeId: "n2" });
+  await d.waitFor((m) => m.type === "tabs" && m.tabs.length === 1 && m.tabs[0].targetId === targetId);
   d.send({ type: "shutdown" });
   await d.waitFor((m) => m.type === "exit");
+});
+
+test("daemon: a linked agent sees exactly its node's page; unlinked agents never see node pages; linking and unlinking are live", async (t) => {
+  const d = await startDaemon(t);
+  d.send({ type: "page.open", nodeId: "n1" });
+  const p1 = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  d.send({ type: "page.open", nodeId: "n2", url: "https://two.example/" });
+  const p2 = await d.waitFor((m) => m.type === "page" && m.nodeId === "n2");
+  const AGENT = "11111111-1111-1111-1111-111111111111";
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: "n2" });
+
+  const connectAs = async (agent?: string) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser${agent ? "?agent=" + agent : ""}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+    await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+    let id = 0; const pending = new Map<number, (m: any) => void>(); const events: any[] = [];
+    ws.on("message", (raw) => { const m = JSON.parse(String(raw)); if (m.id !== undefined) pending.get(m.id)?.(m); else events.push(m); });
+    t.after(() => ws.close());
+    return { events, call: (method: string, params: any = {}, sessionId?: string) => new Promise<any>((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); }) };
+  };
+  const linked = await connectAs(AGENT);
+  const free = await connectAs();
+  const wait = (ms = 80) => new Promise((r) => setTimeout(r, ms));
+  const pagesOf = async (c: any) => (await c.call("Target.getTargets")).result.targetInfos.filter((x: any) => x.type === "page").map((x: any) => x.targetId).sort();
+  assert.deepEqual(await pagesOf(linked), [p2.targetId], "a linked agent sees only its node's page");
+  assert.ok(!(await pagesOf(free)).includes(p1.targetId) && !(await pagesOf(free)).includes(p2.targetId), "an unlinked agent sees neither node page");
+
+  await linked.call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  await wait();
+  const attached = linked.events.filter((e) => e.method === "Target.attachedToTarget");
+  assert.deepEqual(attached.map((e) => e.params.targetInfo.targetId), [p2.targetId], "it is attached to its page and nothing else");
+  assert.equal((await linked.call("Runtime.evaluate", { expression: "1" }, attached[0].params.sessionId)).result.result.value, "url=https://two.example/");
+  // It cannot reach another node's page, open new ones or close its own through a side door.
+  assert.match((await linked.call("Target.attachToTarget", { targetId: p1.targetId, flatten: true })).error.message, /No target/);
+  assert.match((await linked.call("Target.closeTarget", { targetId: p1.targetId })).error.message, /No target/);
+  assert.match((await linked.call("Target.createTarget", { url: "https://x.example/" })).error.message, /linked to one browser page/);
+  // The unlinked agent can still open its own page, which stays out of the node view.
+  const mine = (await free.call("Target.createTarget", { url: "https://free.example/" })).result.targetId;
+  assert.ok(mine);
+  await wait();
+  assert.ok(!(await pagesOf(linked)).includes(mine), "a linked agent does not see other agents' pages");
+
+  // Re-link live: the agent now drives node n1; it is told its old page went away and the new one appeared.
+  linked.events.length = 0;
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: "n1" });
+  await wait(200);
+  assert.deepEqual(await pagesOf(linked), [p1.targetId]);
+  assert.ok(linked.events.some((e) => e.method === "Target.detachedFromTarget"), "old session detached");
+  assert.ok(linked.events.some((e) => e.method === "Target.attachedToTarget" && e.params.targetInfo.targetId === p1.targetId), "new page attached");
+  // Unlink: it goes back to the shared world (unclaimed pages only).
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: null });
+  await wait(200);
+  const after = await pagesOf(linked);
+  assert.ok(after.includes(mine) && !after.includes(p1.targetId) && !after.includes(p2.targetId));
+  // Two agents may share one node: both see the page, nothing crashes.
+  const second = await connectAs("22222222-2222-2222-2222-222222222222");
+  d.send({ type: "agent.scope", agent: "22222222-2222-2222-2222-222222222222", nodeId: "n1" });
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: "n1" });
+  await wait(200);
+  assert.deepEqual(await pagesOf(second), [p1.targetId]);
+  assert.deepEqual(await pagesOf(linked), [p1.targetId]);
+  // The node's page being closed behind its back (by a linked agent) is reported so the runtime can re-open it.
+  const sess = (await second.call("Target.attachToTarget", { targetId: p1.targetId, flatten: true })).result.sessionId;
+  assert.ok(sess);
+  await second.call("Target.closeTarget", { targetId: p1.targetId });
+  await d.waitFor((m) => m.type === "pageGone" && m.nodeId === "n1");
 });
 
 test("daemon: caps open tabs at 20, closing the oldest agent-opened background tab first", async (t) => {
@@ -410,7 +505,17 @@ const REAL = realChromium();
 const PW = playwright();
 
 test("real Chromium: Playwright connects over CDP, two agents work at once, the cookie jar survives a restart", { skip: !REAL ? "no runnable chrome-headless-shell (set FLOQ_TEST_CHROMIUM)" : !PW ? "no playwright-core (set FLOQ_TEST_PLAYWRIGHT=<dir with node_modules>)" : false, timeout: 120000 }, async (t) => {
-  const site = createServer((req, res) => { res.setHeader("set-cookie", "floq=1; Max-Age=3600; Path=/"); res.setHeader("content-type", "text/html"); res.end(`<title>t:${req.url}</title><body>hello ${req.url}`); });
+  const site = createServer((req, res) => { res.setHeader("set-cookie", "floq=1; Max-Age=3600; Path=/"); res.setHeader("content-type", "text/html");
+    if (req.url === "/interactive") return void res.end(`<title>interactive</title><style>body{margin:0}#box{position:absolute;left:100px;top:100px;width:200px;height:100px;background:#c00;cursor:pointer}#box:hover{background:green}</style><div id="box"></div><script>
+      window.__ev=[];const b=document.getElementById('box');let down=false;
+      b.addEventListener('mouseover',()=>__ev.push('over'));b.addEventListener('dblclick',()=>__ev.push('dblclick'));
+      b.addEventListener('contextmenu',e=>{e.preventDefault();__ev.push('contextmenu')});
+      b.addEventListener('click',e=>{if(e.shiftKey)__ev.push('shiftclick')});
+      addEventListener('mousedown',e=>{down=true;__ev.push('down:'+e.button)});addEventListener('mouseup',()=>{down=false});
+      addEventListener('mousemove',e=>{if(down&&e.buttons===1)__ev.push('drag:1')});
+      addEventListener('wheel',e=>__ev.push('wheel:'+e.deltaX+':'+e.deltaY),{passive:true});
+    </script>`);
+    res.end(`<title>t:${req.url}</title><body>hello ${req.url}`); });
   await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
   t.after(() => site.close());
   const base = `http://127.0.0.1:${(site.address() as any).port}`;
@@ -435,12 +540,55 @@ test("real Chromium: Playwright connects over CDP, two agents work at once, the 
   await d.waitFor((m) => m.type === "tabs" && m.tabs.some((x: any) => x.url === base + "/one" && x.opener === "agent"));
   await b1.close(); await b2.close();
 
-  // The user's view: screencast frames are real JPEGs, and a click reaches the page.
-  const tab = d.msgs.filter((m) => m.type === "tabs").at(-1).tabs.find((x: any) => x.url === base + "/one");
-  d.send({ type: "screencast.start", targetId: tab.targetId, maxW: 800, maxH: 600, quality: 50 });
-  const frame = await d.waitFor((m) => m.type === "frame" && m.targetId === tab.targetId, 15000);
+  // The user's view is a Browser node: its page streams real JPEGs and takes hover, clicks (double, right), wheel and modifiers.
+  d.send({ type: "page.open", nodeId: "n1", url: base + "/interactive" });
+  const node = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  const NODE_AGENT = "33333333-3333-3333-3333-333333333333";
+  d.send({ type: "agent.scope", agent: NODE_AGENT, nodeId: "n1" });
+  d.send({ type: "screencast.start", targetId: node.targetId, maxW: 800, maxH: 600, quality: 50 });
+  const frame = await d.waitFor((m) => m.type === "frame" && m.targetId === node.targetId, 15000);
   assert.equal(Buffer.from(frame.jpeg, "base64").subarray(0, 2).toString("hex"), "ffd8");
-  d.send({ type: "screencast.stop" });
+  d.send({ type: "frame.ack", n: frame.n });
+  const watcher = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${NODE_AGENT}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  for (let i = 0; i < 60 && watcher.contexts()[0].pages().length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  const seen = watcher.contexts()[0].pages();
+  assert.equal(seen.length, 1, "the linked agent drives exactly the node's page, not the agents' own tabs");
+  const view = seen[0];
+  for (let i = 0; i < 50 && !(await view.title().then((x: string) => x === "interactive")); i++) await new Promise((r) => setTimeout(r, 100));
+  const log = () => view.evaluate(() => (window as any).__ev as string[]);
+  const mouse = (kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => d.send({ type: "input.mouse", targetId: node.targetId, kind, x, y, button: "none", buttons: 0, clickCount: 0, modifiers: 0, ...extra });
+  mouse("mouseMoved", 150, 150); // inside #box
+  await view.waitForFunction(() => (window as any).__ev.includes("over"));
+  assert.equal(await view.evaluate(() => getComputedStyle(document.getElementById("box")!).backgroundColor), "rgb(0, 128, 0)", "CSS :hover applies from mouseMoved");
+  const cursor = await d.waitFor((m) => m.type === "cursor" && m.targetId === node.targetId && m.cursor === "pointer", 5000);
+  assert.equal(cursor.cursor, "pointer", "the page's cursor over #box is reported");
+  // double click = press/release/press/release with clickCount 1 then 2
+  for (const n of [1, 2]) { mouse("mousePressed", 150, 150, { button: "left", buttons: 1, clickCount: n }); mouse("mouseReleased", 150, 150, { button: "left", buttons: 0, clickCount: n }); }
+  await view.waitForFunction(() => (window as any).__ev.includes("dblclick"));
+  // right click
+  mouse("mousePressed", 150, 150, { button: "right", buttons: 2, clickCount: 1 }); mouse("mouseReleased", 150, 150, { button: "right", buttons: 0, clickCount: 1 });
+  await view.waitForFunction(() => (window as any).__ev.includes("contextmenu"));
+  // shift + click
+  mouse("mousePressed", 150, 150, { button: "left", buttons: 1, clickCount: 1, modifiers: 8 }); mouse("mouseReleased", 150, 150, { button: "left", buttons: 0, clickCount: 1, modifiers: 8 });
+  await view.waitForFunction(() => (window as any).__ev.includes("shiftclick"));
+  // wheel with dx/dy (the page's wheel handler sees both axes)
+  d.send({ type: "input.wheel", targetId: node.targetId, x: 150, y: 150, dx: 30, dy: 120, modifiers: 0 });
+  await view.waitForFunction(() => (window as any).__ev.some((e: string) => e.startsWith("wheel:30:120")));
+  // drag: move with the button held; the page sees mousemove with buttons=1
+  mouse("mousePressed", 150, 150, { button: "left", buttons: 1, clickCount: 1 });
+  mouse("mouseMoved", 220, 170, { button: "left", buttons: 1 });
+  mouse("mouseReleased", 220, 170, { button: "left", buttons: 0, clickCount: 1 });
+  await view.waitForFunction(() => (window as any).__ev.includes("drag:1"));
+  assert.ok((await log()).includes("down:0"), "left button reported as button 0");
+  // viewport follows the node: the page sees the new size
+  d.send({ type: "viewport", targetId: node.targetId, width: 640, height: 400, dpr: 1 });
+  await view.waitForFunction(() => innerWidth === 640 && innerHeight === 400);
+  // An unlinked agent never sees the node's page.
+  const free = await attach(d);
+  assert.ok(!free.contexts()[0].pages().some((pg: any) => /interactive/.test(pg.url())), "node page hidden from unlinked agents");
+  await free.close();
+  await watcher.close();
+  d.send({ type: "screencast.stop", targetId: node.targetId });
 
   // Persist: the cookie set by the page is still there after a full daemon restart on the same profile.
   await d.stop();

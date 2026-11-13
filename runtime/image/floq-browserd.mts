@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  CdpMux, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
+  AGENT_ID, CdpMux, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
 
@@ -158,10 +158,12 @@ async function main() {
   } catch { /* version check is advisory */ }
 
   // ---- state
-  let viewport = { ...DEFAULT_VIEWPORT };
-  let viewed: string | undefined; // target the user is looking at
-  let screencastOn = false;
-  const ackIds = new Map<number, number>(); // our frame n -> Chromium screencast ack id
+  let viewport = { ...DEFAULT_VIEWPORT }; // upper bound for pointer coordinates: the largest page viewport seen
+  const nodes = new Map<string, string>(); // Browser node id -> its page's targetId (one page per node)
+  const casting = new Set<string>(); // targets with a running screencast
+  const ackIds = new Map<number, { id: number; sid: string }>(); // our frame n -> Chromium screencast ack
+  const agentScope = new Map<string, string | null>(); // agent session id -> node it is linked to (null/absent = unlinked)
+  const muxClients = new Map<number, MuxClient>();
   let frameN = 0;
   const lastActivity = new Map<string, number>();
   const navState = new Map<string, { loading: boolean; canBack: boolean; canForward: boolean }>();
@@ -174,7 +176,12 @@ async function main() {
     lastTabs = tabs;
     out({ type: "tabs", tabs: JSON.parse(tabs) });
   };
-  mux.onTargetsChanged = () => { enforceTabCap(); emitTabs(); const t = viewed ? mux.targets.get(viewed) : undefined; if (t) void emitNav(t.targetId); };
+  mux.onTargetsChanged = () => {
+    // A node's page that went away (closed by its linked agent, or crashed): forget it and let the runtime re-open it for a live viewer.
+    for (const [nodeId, tid] of [...nodes]) if (!mux.targets.has(tid)) { nodes.delete(nodeId); casting.delete(tid); refreshScopes(); out({ type: "pageGone", nodeId }); }
+    enforceTabCap(); emitTabs();
+    for (const tid of nodes.values()) { const t = mux.targets.get(tid); if (t) void emitNav(t.targetId); }
+  };
   mux.onClientCount = (n) => out({ type: "clients", agents: n });
   mux.onActivity = (targetId) => {
     const now = Date.now();
@@ -186,7 +193,7 @@ async function main() {
   function enforceTabCap() {
     const all = pages();
     if (all.length <= MAX_TABS) return;
-    const candidates = all.filter((t) => t.targetId !== viewed);
+    const candidates = all.filter((t) => !mux.claimed.has(t.targetId));
     const victim = candidates.find((t) => mux.agentOpened.has(t.targetId)) ?? candidates[0];
     if (victim) { log("browser.tab_cap_closed", { targetId: victim.targetId }); mux.command("Target.closeTarget", { targetId: victim.targetId }).catch(() => {}); }
   }
@@ -245,19 +252,19 @@ async function main() {
       }).catch(() => {});
       return;
     }
-    if (msg.method === "Page.screencastFrame" && screencastOn) {
-      const meta = (p.metadata ?? {}) as { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number };
-      const n = ++frameN;
-      ackIds.set(n, Number(p.sessionId));
-      if (ackIds.size > 64) ackIds.delete(ackIds.keys().next().value as number);
-      const w = Math.round(meta.deviceWidth ?? viewport.w), h = Math.round(meta.deviceHeight ?? viewport.h);
-      if (w > 0 && h > 0) viewport = { w, h };
-      const targetId = viewed ?? "";
-      out({ type: "frame", n, targetId, jpeg: String(p.data), w, h, scale: meta.pageScaleFactor ?? 1 });
-      return;
-    }
-    if (msg.method === "Page.screencastFrame") { // not watching any more: ack so Chromium does not stall
-      if (msg.sessionId) mux.command("Page.screencastFrameAck", { sessionId: Number(p.sessionId) }, msg.sessionId).catch(() => {});
+    if (msg.method === "Page.screencastFrame") {
+      const frameTarget = msg.sessionId ? sessionTargetOf(msg.sessionId) : undefined;
+      if (frameTarget && casting.has(frameTarget) && msg.sessionId) {
+        const meta = (p.metadata ?? {}) as { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number };
+        const n = ++frameN;
+        ackIds.set(n, { id: Number(p.sessionId), sid: msg.sessionId });
+        if (ackIds.size > 64) ackIds.delete(ackIds.keys().next().value as number);
+        const w = Math.round(meta.deviceWidth ?? viewport.w), h = Math.round(meta.deviceHeight ?? viewport.h);
+        if (w > viewport.w || h > viewport.h) viewport = { w: Math.max(w, viewport.w), h: Math.max(h, viewport.h) };
+        out({ type: "frame", n, targetId: frameTarget, jpeg: String(p.data), w, h, scale: meta.pageScaleFactor ?? 1 });
+      } else if (msg.sessionId) { // not watching any more: ack so Chromium does not stall
+        mux.command("Page.screencastFrameAck", { sessionId: Number(p.sessionId) }, msg.sessionId).catch(() => {});
+      }
       return;
     }
     const tid = msg.sessionId ? sessionTargetOf(msg.sessionId) : undefined;
@@ -272,6 +279,66 @@ async function main() {
   await mux.command("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   await mux.command("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOADS, eventsEnabled: false }).catch(() => {});
 
+  // ---- node pages and agent scoping
+  function refreshScopes() {
+    mux.setClaimed(new Set(nodes.values()));
+    for (const [cid, client] of muxClients) {
+      if (!client.agent) continue;
+      const node = agentScope.get(client.agent);
+      mux.setScope(cid, node == null ? undefined : (nodes.get(node) ?? null));
+    }
+  }
+  const opening = new Map<string, Promise<string>>();
+  /** Idempotent per node. Adopts an unclaimed user page first (the initial tab, or a pre-upgrade tab: the active one is kept, the rest dropped for the legacy node). */
+  function openPage(nodeId: string, url?: string): Promise<string> {
+    let p = opening.get(nodeId);
+    if (!p) { p = doOpen(nodeId, url).finally(() => opening.delete(nodeId)); opening.set(nodeId, p); }
+    return p;
+  }
+  async function doOpen(nodeId: string, url?: string): Promise<string> {
+    const have = nodes.get(nodeId);
+    if (have && mux.targets.has(have)) { out({ type: "page", nodeId, targetId: have, created: false }); return have; }
+    const free = pages().filter((t) => !mux.claimed.has(t.targetId) && !mux.agentOpened.has(t.targetId));
+    let targetId: string;
+    let created = true;
+    if (free.length) {
+      targetId = free[0].targetId; created = false;
+      if (nodeId === "main") for (const t of free.slice(1)) mux.command("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
+      if (url) await mux.command("Page.navigate", { url }, mux.sessionFor(targetId)).catch(() => {});
+    } else {
+      mux.reserve = true; mux.reserved = [];
+      try { targetId = String((await mux.command("Target.createTarget", { url: url ?? "about:blank" })).result?.targetId ?? ""); }
+      finally { mux.reserve = false; }
+      if (!targetId) throw new Error("no target");
+    }
+    nodes.set(nodeId, targetId);
+    for (let i = 0; i < 40 && !mux.sessionFor(targetId); i++) await new Promise((r) => setTimeout(r, 50));
+    refreshScopes();
+    out({ type: "page", nodeId, targetId, created });
+    return targetId;
+  }
+  function closePage(nodeId: string) {
+    const tid = nodes.get(nodeId); if (!tid) return;
+    nodes.delete(nodeId); casting.delete(tid);
+    for (const [agent, node] of agentScope) if (node === nodeId) agentScope.delete(agent);
+    refreshScopes();
+    mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
+  }
+  const cursorProbe = new Map<string, { at: number; last: string; busy: boolean }>();
+  function probeCursor(targetId: string, sid: string, x: number, y: number) {
+    const st = cursorProbe.get(targetId) ?? { at: 0, last: "", busy: false };
+    cursorProbe.set(targetId, st);
+    const now = Date.now();
+    if (st.busy || now - st.at < 80) return;
+    st.at = now; st.busy = true;
+    const expr = `(()=>{const e=document.elementFromPoint(${Math.round(x)},${Math.round(y)});if(!e)return "default";let c=getComputedStyle(e).cursor;if(c==="auto"){const t=e.tagName;c=(t==="TEXTAREA"||(t==="INPUT"&&!/^(button|submit|checkbox|radio|reset|file|image|range|color)$/.test(e.type))||e.isContentEditable)?"text":"default"}return c.split(",").pop().trim()})()`;
+    void mux.command("Runtime.evaluate", { expression: expr, returnByValue: true }, sid, 2000).then((r) => {
+      const v = (r.result as { result?: { value?: unknown } } | undefined)?.result?.value;
+      const cursor = typeof v === "string" && /^[a-z-]{1,24}$/.test(v) ? v : "default";
+      if (cursor !== st.last) { st.last = cursor; out({ type: "cursor", targetId, cursor }); }
+    }).catch(() => {}).finally(() => { st.busy = false; });
+  }
+
   // ---- agent endpoint
   const token = randomBytes(32).toString("hex");
   let nextClient = 1;
@@ -284,13 +351,15 @@ async function main() {
     acceptUpgrade(req, socket);
     const id = nextClient++;
     let closed = false;
+    const agentParam = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("agent");
     const client: MuxClient = {
       id,
+      ...(agentParam && AGENT_ID.test(agentParam) ? { agent: agentParam } : {}),
       send: (m) => { if (!closed && socket.writable) socket.write(encodeFrame(1, Buffer.from(JSON.stringify(m)))); },
       close: () => { if (!closed) { closed = true; socket.end(encodeFrame(8, Buffer.from([0x03, 0xe8]))); } },
     };
     let removed = false;
-    const gone = () => { closed = true; if (!removed) { removed = true; mux.removeClient(id); } };
+    const gone = () => { closed = true; if (!removed) { removed = true; muxClients.delete(id); mux.removeClient(id); } };
     const dec = new FrameDecoder((op, data) => {
       if (op === 1) { try { mux.fromClient(client, JSON.parse(data.toString("utf8"))); } catch { /* bad json: ignore */ } }
       else if (op === 8) { socket.end(encodeFrame(8, data.subarray(0, 2))); gone(); }
@@ -298,7 +367,10 @@ async function main() {
     }, () => { socket.destroy(); gone(); });
     socket.on("data", (c: Buffer) => dec.push(c));
     socket.on("close", gone);
+    muxClients.set(id, client);
     mux.addClient(client);
+    // A linked agent is scoped before it asks for anything, so it only ever hears about its node's page.
+    if (client.agent && agentScope.get(client.agent) != null) mux.setScope(id, nodes.get(agentScope.get(client.agent)!) ?? null);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
@@ -308,60 +380,72 @@ async function main() {
 
   // ---- control channel
   const viewSession = (targetId?: string): { targetId: string; sid: string } | undefined => {
-    const t = targetId ?? viewed;
-    const sid = t ? mux.sessionFor(t) : undefined;
-    return t && sid ? { targetId: t, sid } : undefined;
+    const sid = targetId && nodes.size ? mux.sessionFor(targetId) : undefined;
+    return targetId && sid && mux.claimed.has(targetId) ? { targetId, sid } : undefined;
   };
   const noTarget = () => out({ type: "error", code: "no_target" });
 
-  async function stopScreencast() {
-    if (!screencastOn) return;
-    screencastOn = false;
-    const v = viewSession();
-    if (v) await mux.command("Page.stopScreencast", {}, v.sid).catch(() => {});
+  async function stopScreencast(targetId: string) {
+    if (!casting.delete(targetId)) return;
+    const sid = mux.sessionFor(targetId);
+    if (sid) await mux.command("Page.stopScreencast", {}, sid).catch(() => {});
   }
 
   async function handle(c: Control) {
     switch (c.type) {
       case "hello": return;
       case "shutdown": return shutdown(0);
-      case "screencast.start": {
-        if (!mux.targets.has(c.targetId)) return noTarget();
-        await stopScreencast();
-        viewed = c.targetId;
-        const sid = mux.sessionFor(c.targetId);
-        if (!sid) return noTarget();
-        screencastOn = true;
-        await mux.command("Page.startScreencast", { format: "jpeg", quality: c.quality, maxWidth: c.maxW, maxHeight: c.maxH, everyNthFrame: 1 }, sid);
-        void emitNav(c.targetId);
+      case "page.open": await openPage(c.nodeId, c.url); return;
+      case "page.close": return closePage(c.nodeId);
+      case "agent.scope": {
+        if (c.nodeId === null) agentScope.delete(c.agent); else agentScope.set(c.agent, c.nodeId);
+        if (c.nodeId !== null && !nodes.has(c.nodeId)) await openPage(c.nodeId).catch(() => {}); // linking creates the node's page if its viewer has not
+        refreshScopes();
         return;
       }
-      case "screencast.stop": return void (await stopScreencast());
+      case "screencast.start": {
+        const v = viewSession(c.targetId); if (!v) return noTarget();
+        await stopScreencast(v.targetId);
+        casting.add(v.targetId);
+        const start = () => mux.command("Page.startScreencast", { format: "jpeg", quality: c.quality, maxWidth: c.maxW, maxHeight: c.maxH, everyNthFrame: 1 }, v.sid);
+        // A page that has not painted yet (just created or adopted) answers "Not attached to an active page": activate it and retry.
+        try { await start(); } catch { await mux.command("Target.activateTarget", { targetId: v.targetId }).catch(() => {}); await new Promise((r) => setTimeout(r, 150)); await start(); }
+        void emitNav(v.targetId);
+        return;
+      }
+      case "screencast.stop": return void (c.targetId ? await stopScreencast(c.targetId) : await Promise.all([...casting].map(stopScreencast)));
       case "frame.ack": {
-        const id = ackIds.get(c.n);
+        const a = ackIds.get(c.n);
         ackIds.delete(c.n);
-        const v = viewSession();
-        if (id !== undefined && v) mux.command("Page.screencastFrameAck", { sessionId: id }, v.sid).catch(() => {});
+        if (a) mux.command("Page.screencastFrameAck", { sessionId: a.id }, a.sid).catch(() => {});
+        return;
+      }
+      case "viewport": {
+        const v = viewSession(c.targetId); if (!v) return noTarget();
+        const dpr = Math.min(2, Math.max(1, c.dpr));
+        if (c.width > viewport.w || c.height > viewport.h) viewport = { w: Math.max(c.width, viewport.w), h: Math.max(c.height, viewport.h) };
+        await mux.command("Emulation.setDeviceMetricsOverride", { width: c.width, height: c.height, deviceScaleFactor: dpr, mobile: false }, v.sid);
         return;
       }
       case "input.mouse": {
-        const v = viewSession(); if (!v) return noTarget();
-        await mux.command("Input.dispatchMouseEvent", { type: c.kind, x: c.x, y: c.y, button: c.button, clickCount: c.clickCount, modifiers: c.modifiers }, v.sid);
+        const v = viewSession(c.targetId); if (!v) return noTarget();
+        if (c.kind === "mouseMoved") probeCursor(v.targetId, v.sid, c.x, c.y);
+        await mux.command("Input.dispatchMouseEvent", { type: c.kind, x: c.x, y: c.y, button: c.button, buttons: c.buttons, clickCount: c.clickCount, modifiers: c.modifiers }, v.sid);
         return;
       }
       case "input.wheel": {
-        const v = viewSession(); if (!v) return noTarget();
-        await mux.command("Input.dispatchMouseEvent", { type: "mouseWheel", x: c.x, y: c.y, deltaX: c.dx, deltaY: c.dy }, v.sid);
+        const v = viewSession(c.targetId); if (!v) return noTarget();
+        await mux.command("Input.dispatchMouseEvent", { type: "mouseWheel", x: c.x, y: c.y, deltaX: c.dx, deltaY: c.dy, modifiers: c.modifiers }, v.sid);
         return;
       }
       case "input.key": {
-        const v = viewSession(); if (!v) return noTarget();
+        const v = viewSession(c.targetId); if (!v) return noTarget();
         const text = c.text || ([...c.key].length === 1 ? c.key : "");
         await mux.command("Input.dispatchKeyEvent", { type: c.kind === "keyDown" && text && !(c.modifiers & 6) ? "keyDown" : c.kind, key: c.key, code: c.code, modifiers: c.modifiers, ...(c.kind === "keyUp" ? {} : { text }), windowsVirtualKeyCode: vkey(c.key) }, v.sid);
         return;
       }
       case "input.text": {
-        const v = viewSession(); if (!v) return noTarget();
+        const v = viewSession(c.targetId); if (!v) return noTarget();
         await mux.command("Input.insertText", { text: c.text }, v.sid);
         return;
       }
@@ -380,24 +464,6 @@ async function main() {
         const h = (await mux.command("Page.getNavigationHistory", {}, v.sid)).result as { currentIndex: number; entries: { id: number }[] };
         const entry = h.entries[h.currentIndex + (c.type === "nav.back" ? -1 : 1)];
         if (entry) await mux.command("Page.navigateToHistoryEntry", { entryId: entry.id }, v.sid);
-        return;
-      }
-      case "tab.new": {
-        await mux.command("Target.createTarget", { url: c.url ?? "about:blank" });
-        return;
-      }
-      case "tab.close": {
-        if (!mux.targets.has(c.targetId)) return noTarget();
-        await mux.command("Target.closeTarget", { targetId: c.targetId });
-        return;
-      }
-      case "tab.select": {
-        if (!mux.targets.has(c.targetId)) return noTarget();
-        const wasOn = screencastOn;
-        await mux.command("Target.activateTarget", { targetId: c.targetId });
-        if (wasOn) { await stopScreencast(); }
-        viewed = c.targetId;
-        void emitNav(c.targetId);
         return;
       }
     }

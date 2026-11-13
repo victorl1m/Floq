@@ -9,6 +9,8 @@
  * The daemon validates again on its own side (runtime/image/floq-browserd-core.mts); this is the first gate, not the only one.
  */
 
+/** Browser node ids: opaque, chosen by the app. */
+export const NODE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 export const MAX_TEXT_BYTES = 4096;
 export const MAX_URL_CHARS = 2048;
@@ -19,17 +21,18 @@ export const MAX_TABS_REPORTED = 64;
 
 export type MouseKind = "mousePressed" | "mouseReleased" | "mouseMoved";
 export type ClientMessage =
-  | { type: "screencast.start"; targetId: string; maxW: number; maxH: number; quality: number }
+  | { type: "screencast.start"; targetId?: string; maxW: number; maxH: number; quality: number }
   | { type: "screencast.stop" }
-  | { type: "input.mouse"; kind: MouseKind; x: number; y: number; button: "none" | "left" | "middle" | "right"; clickCount: number; modifiers: number }
-  | { type: "input.wheel"; x: number; y: number; dx: number; dy: number }
+  | { type: "input.mouse"; kind: MouseKind; x: number; y: number; button: "none" | "left" | "middle" | "right"; buttons: number; clickCount: number; modifiers: number }
+  | { type: "input.wheel"; x: number; y: number; dx: number; dy: number; modifiers: number }
   | { type: "input.key"; kind: "keyDown" | "keyUp"; key: string; code: string; text?: string; modifiers: number }
   | { type: "input.text"; text: string }
   | { type: "nav.go"; targetId?: string; url: string }
   | { type: "nav.back" } | { type: "nav.forward" } | { type: "nav.reload" } | { type: "nav.stop" }
-  | { type: "tab.new"; url?: string }
-  | { type: "tab.close"; targetId: string }
-  | { type: "tab.select"; targetId: string };
+  /** Follow the node's size (CSS px of the live view). Applied with Emulation.setDeviceMetricsOverride. */
+  | { type: "viewport"; width: number; height: number; dpr: number }
+  /** The user closed the node: its page is destroyed. */
+  | { type: "page.close" };
 export type ClientValidation = { ok: true; msg: ClientMessage } | { ok: false; code: string };
 
 const bad = (code = "bad_message"): { ok: false; code: string } => ({ ok: false, code });
@@ -77,23 +80,23 @@ export function validateClientMessage(input: unknown): ClientValidation {
   const m = input;
   switch (m.type) {
     case "screencast.start": {
-      if (typeof m.targetId !== "string" || !TARGET_ID.test(m.targetId)) return bad();
+      if (m.targetId !== undefined && (typeof m.targetId !== "string" || !TARGET_ID.test(m.targetId))) return bad();
       const w = num(m.maxW, 1, 1e6), h = num(m.maxH, 1, 1e6), q = num(m.quality, 1, 100);
       if (w === null || h === null || q === null) return bad();
-      return { ok: true, msg: { type: "screencast.start", targetId: m.targetId, maxW: Math.min(MAX_FRAME_W, Math.round(w)), maxH: Math.min(MAX_FRAME_H, Math.round(h)), quality: Math.round(q) } };
+      return { ok: true, msg: { type: "screencast.start", ...(m.targetId !== undefined ? { targetId: m.targetId as string } : {}), maxW: Math.min(MAX_FRAME_W, Math.round(w)), maxH: Math.min(MAX_FRAME_H, Math.round(h)), quality: Math.round(q) } };
     }
     case "screencast.stop": return { ok: true, msg: { type: "screencast.stop" } };
     case "input.mouse": {
       if (m.kind !== "mousePressed" && m.kind !== "mouseReleased" && m.kind !== "mouseMoved") return bad();
       if (m.button !== "none" && m.button !== "left" && m.button !== "middle" && m.button !== "right") return bad();
-      const x = num(m.x, 0, COORD_LIMIT), y = num(m.y, 0, COORD_LIMIT), clickCount = int(m.clickCount, 0, 3), modifiers = int(m.modifiers ?? 0, 0, 15);
-      if (x === null || y === null || clickCount === null || modifiers === null) return bad();
-      return { ok: true, msg: { type: "input.mouse", kind: m.kind, x, y, button: m.button, clickCount, modifiers } };
+      const x = num(m.x, 0, COORD_LIMIT), y = num(m.y, 0, COORD_LIMIT), clickCount = int(m.clickCount, 0, 3), modifiers = int(m.modifiers ?? 0, 0, 15), buttons = int(m.buttons ?? 0, 0, 31);
+      if (x === null || y === null || clickCount === null || modifiers === null || buttons === null) return bad();
+      return { ok: true, msg: { type: "input.mouse", kind: m.kind, x, y, button: m.button, buttons, clickCount, modifiers } };
     }
     case "input.wheel": {
-      const x = num(m.x, 0, COORD_LIMIT), y = num(m.y, 0, COORD_LIMIT), dx = num(m.dx, -WHEEL_LIMIT, WHEEL_LIMIT), dy = num(m.dy, -WHEEL_LIMIT, WHEEL_LIMIT);
-      if (x === null || y === null || dx === null || dy === null) return bad();
-      return { ok: true, msg: { type: "input.wheel", x, y, dx, dy } };
+      const x = num(m.x, 0, COORD_LIMIT), y = num(m.y, 0, COORD_LIMIT), dx = num(m.dx, -WHEEL_LIMIT, WHEEL_LIMIT), dy = num(m.dy, -WHEEL_LIMIT, WHEEL_LIMIT), modifiers = int(m.modifiers ?? 0, 0, 15);
+      if (x === null || y === null || dx === null || dy === null || modifiers === null) return bad();
+      return { ok: true, msg: { type: "input.wheel", x, y, dx, dy, modifiers } };
     }
     case "input.key": {
       if (m.kind !== "keyDown" && m.kind !== "keyUp") return bad();
@@ -120,13 +123,12 @@ export function validateClientMessage(input: unknown): ClientValidation {
     }
     case "nav.back": case "nav.forward": case "nav.reload": case "nav.stop":
       return { ok: true, msg: { type: m.type } };
-    case "tab.new": {
-      if (m.url === undefined) return { ok: true, msg: { type: "tab.new" } };
-      const url = normalizeNavUrl(m.url);
-      return url === null ? bad("bad_url") : { ok: true, msg: { type: "tab.new", url } };
+    case "viewport": {
+      const width = int(m.width, 200, 3840), height = int(m.height, 200, 2160), dpr = num(m.dpr ?? 1, 0.5, 4);
+      if (width === null || height === null || dpr === null) return bad();
+      return { ok: true, msg: { type: "viewport", width, height, dpr } };
     }
-    case "tab.close": case "tab.select":
-      return typeof m.targetId === "string" && TARGET_ID.test(m.targetId) ? { ok: true, msg: { type: m.type, targetId: m.targetId } } : bad();
+    case "page.close": return { ok: true, msg: { type: "page.close" } };
     default: return bad();
   }
 }
@@ -137,6 +139,8 @@ export type ViewerMessage =
   | { type: "state"; state: "starting" | "running" | "stopped" | "disabled" | "unavailable" }
   | { type: "frame"; n: number; targetId: string; jpeg: string; w: number; h: number; scale: number }
   | { type: "tabs"; tabs: Array<{ targetId: string; title: string; url: string; opener: "agent" | "user" }> }
+  | { type: "page"; targetId: string; created: boolean }
+  | { type: "cursor"; cursor: string }
   | { type: "nav"; targetId: string; url: string; title: string; loading: boolean; canBack: boolean; canForward: boolean }
   | { type: "agentActivity"; targetId: string; at: number }
   | { type: "clients"; agents: number }
@@ -165,6 +169,11 @@ export function toViewerMessage(raw: unknown): ViewerMessage | null {
       }
       return { type: "tabs", tabs };
     }
+    case "page": {
+      const targetId = target(raw.targetId);
+      return targetId ? { type: "page", targetId, created: raw.created === true } : null;
+    }
+    case "cursor": return { type: "cursor", cursor: typeof raw.cursor === "string" && /^[a-z-]{1,24}$/.test(raw.cursor) ? raw.cursor : "default" };
     case "nav": {
       const targetId = target(raw.targetId);
       if (!targetId) return null;
