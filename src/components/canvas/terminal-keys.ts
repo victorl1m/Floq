@@ -37,6 +37,9 @@ export function keyToSequence(e: KeyLike): string | null {
 /** Keys worth forwarding from the message bar while it is empty: navigation, control and mode keys, never plain characters. */
 export function isControlKey(e: KeyLike): boolean {
   if (e.metaKey) return false;
+  // Paste shortcuts belong to the input's own paste (text or image chip); forwarding Ctrl+V (\x16) makes Claude Code answer "No image found in clipboard".
+  if (e.key.length === 1 && e.ctrlKey && e.key.toLowerCase() === "v") return false;
+  if (e.key === "Insert" && e.shiftKey) return false;
   if (e.key.length === 1) return e.ctrlKey && !e.altKey && keyToSequence(e) !== null && e.key.toLowerCase() !== "d";
   return keyToSequence(e) !== null && e.key !== "Backspace" && e.key !== "Delete";
 }
