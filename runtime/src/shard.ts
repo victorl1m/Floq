@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, fstatSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { opendir, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { promisify } from "node:util";
@@ -218,6 +218,68 @@ export function writeFileOwned(path: string, data: string | Buffer, uid: number,
   } catch (error) {
     try { rmSync(temp, { force: true }); } catch { /* best effort */ }
     throw error;
+  }
+}
+
+/** Thrown by readHomeFile when an agent-planted path is unsafe to read (symlink, FIFO/device, foreign owner, oversize). */
+export class UnsafeHomePathError extends Error {}
+
+/**
+ * Read a file the agent can write (anything under its home) as root without being steered: every directory segment is
+ * opened with O_NOFOLLOW|O_DIRECTORY (chained through /proc/self/fd so a swapped parent cannot redirect), the leaf with
+ * O_NOFOLLOW|O_NONBLOCK (a FIFO then opens instantly instead of blocking), and the descriptor itself must be a regular file
+ * owned by `uid` (never root or another tenant) no bigger than maxBytes. Returns null when the path does not exist; throws
+ * UnsafeHomePathError for a poisoned one. Callers treat both as "nothing there" and must never adopt the content.
+ */
+export function readHomeFile(home: string, path: string, uid: number, maxBytes = 1_048_576): { text: string; mtimeMs: number } | null {
+  const rel = relative(home, path);
+  if (rel === "" || rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("/")) throw new UnsafeHomePathError("path escapes the home directory");
+  const parts = rel.split(sep).filter(Boolean);
+  const opened: number[] = [];
+  const unsafe = (code: string | undefined) => code === "ELOOP" || code === "EMLINK";
+  try {
+    let base = home;
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      const target = join(base, parts[i]);
+      const flags = last
+        ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY
+        : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY;
+      let fd: number;
+      try {
+        fd = openSync(target, flags);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return null;
+        if (unsafe(code)) throw new UnsafeHomePathError("symlink in home path");
+        if (code === "ENOTDIR") {
+          // O_DIRECTORY|O_NOFOLLOW reports a symlink-to-dir as ELOOP; ENOTDIR means a plain file or other node in the way.
+          try { if (lstatSync(target).isSymbolicLink()) throw new UnsafeHomePathError("symlink in home path"); } catch (inner) { if (inner instanceof UnsafeHomePathError) throw inner; }
+          return null;
+        }
+        throw error;
+      }
+      opened.push(fd);
+      if (last) {
+        const st = fstatSync(fd);
+        if (!st.isFile()) throw new UnsafeHomePathError("not a regular file");
+        if (st.uid !== uid) throw new UnsafeHomePathError("file is not owned by the user");
+        if (st.size > maxBytes) throw new UnsafeHomePathError("file too large");
+        const buffer = Buffer.alloc(Math.min(st.size, maxBytes) + 1);
+        let total = 0;
+        for (;;) {
+          const n = readSync(fd, buffer, total, buffer.length - total, null);
+          if (n === 0) break;
+          total += n;
+          if (total >= buffer.length) throw new UnsafeHomePathError("file too large");
+        }
+        return { text: buffer.subarray(0, total).toString("utf8"), mtimeMs: st.mtimeMs };
+      }
+      base = existsSync("/proc/self/fd") ? `/proc/self/fd/${fd}` : target;
+    }
+    return null;
+  } finally {
+    for (const fd of opened) { try { closeSync(fd); } catch { /* already closed */ } }
   }
 }
 

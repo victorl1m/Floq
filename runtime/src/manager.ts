@@ -41,7 +41,7 @@ const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { buildMemoryPolicy, composeSystemBlocks } from "./subagents.js";
 import { NETNS_GATEWAY } from "./netns.js";
-import { mkdirOwned, mkdirOwnedSegment, ownTree, safeRelative, writeFileOwned, type ShardHandle } from "./shard.js";
+import { mkdirOwned, mkdirOwnedSegment, ownTree, readHomeFile, safeRelative, UnsafeHomePathError, writeFileOwned, type ShardHandle } from "./shard.js";
 import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
@@ -2179,6 +2179,32 @@ export class SessionManager {
     this.credMtime.set(path, statSync(path).mtimeMs);
   }
 
+  /**
+   * Read a file inside the agent's home without following planted symlinks or blocking on a FIFO (see readHomeFile). A missing
+   * or poisoned file reads as null ("nothing there"), so it is never adopted or distributed.
+   */
+  private readHome(handle: ShardHandle, path: string): { text: string; mtimeMs: number } | null {
+    try {
+      return readHomeFile(handle.mountPath, path, handle.uid);
+    } catch (error) {
+      if (error instanceof UnsafeHomePathError) {
+        log.warn("home.read_refused", { userId: handle.userId, file: relative(handle.mountPath, path), reason: error.message });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private readHomeJson(handle: ShardHandle, path: string): { value: Record<string, unknown>; mtimeMs: number } | null {
+    let file;
+    try { file = this.readHome(handle, path); } catch { return null; }
+    if (!file) return null;
+    try {
+      const value = JSON.parse(file.text) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value) ? { value: value as Record<string, unknown>, mtimeMs: file.mtimeMs } : null;
+    } catch { return null; }
+  }
+
   private claudeCredPath(handle: ShardHandle): string {
     return this.shards.driver.hostPath(handle, ".claude/.credentials.json");
   }
@@ -2216,24 +2242,14 @@ export class SessionManager {
 
   private writeClaude(handle: ShardHandle, data: CredentialData): void {
     const path = this.claudeCredPath(handle);
-    let existing: Record<string, unknown> = {};
-    try {
-      existing = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    } catch {
-      /* first write */
-    }
+    const existing = this.readHomeJson(handle, path)?.value ?? {}; // first write, or a poisoned file: start clean
     this.writeCredFile(handle, path, JSON.stringify({ ...existing, claudeAiOauth: data }));
   }
 
   /** Replace Claude Code's own commit/PR attribution with Floq's, keeping the user's other settings. */
   private enforceClaudeSettings(handle: ShardHandle, profile: RuntimeProfile): void {
     const path = this.shards.driver.hostPath(handle, ".claude/settings.json");
-    let settings: Record<string, unknown> = {};
-    try {
-      settings = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    } catch {
-      /* none yet */
-    }
+    let settings: Record<string, unknown> = this.readHomeJson(handle, path)?.value ?? {};
     settings.attribution = { commit: "", pr: profile.gitCoauthor ? FLOQ_PR_ATTRIBUTION : "" };
     settings.includeCoAuthoredBy = false;
     settings = claudeStartupSettings(settings, profile.claudeAutoApprove, { ttl: this.config.cacheTtl, helperTtl: this.config.cacheHelperTtl });
@@ -2249,11 +2265,10 @@ export class SessionManager {
     if (!this.shards.isAwake(userId)) return;
     const handle = await this.shards.wake(userId);
     const path = this.claudeCredPath(handle);
-    let data: unknown;
-    try {
-      data = (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>).claudeAiOauth;
-      this.credMtime.set(path, statSync(path).mtimeMs);
-    } catch { return; }
+    const file = this.readHomeJson(handle, path);
+    if (!file) return;
+    const data: unknown = file.value.claudeAiOauth;
+    this.credMtime.set(path, file.mtimeMs);
     if (!validCredential("claude", data)) return;
     if (this.accounts) {
       const where = await this.accounts.adoptAttributed(userId, data).catch(() => "retry" as const);
@@ -2290,21 +2305,11 @@ export class SessionManager {
       } else {
         path = this.codexAuthPath(handle, s.id);
       }
-      let mtime: number;
-      try {
-        mtime = statSync(path).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (this.credMtime.get(path) === mtime) continue;
-      this.credMtime.set(path, mtime);
-      let data: unknown;
-      try {
-        const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-        data = s.provider === "claude" ? parsed.claudeAiOauth : parsed;
-      } catch {
-        continue;
-      }
+      const file = this.readHomeJson(handle, path);
+      if (!file) continue;
+      if (this.credMtime.get(path) === file.mtimeMs) continue;
+      this.credMtime.set(path, file.mtimeMs);
+      const data: unknown = s.provider === "claude" ? file.value.claudeAiOauth : file.value;
       // Several Claude logins: only adopt a rewritten file into the account it belongs to (profile account uuid).
       if (s.provider === "claude" && this.accounts && validCredential("claude", data)) {
         const where = await this.accounts.adoptAttributed(s.userId, data).catch(() => "retry" as const);
@@ -2394,14 +2399,10 @@ export class SessionManager {
 
     const readCred = (): CredentialData | null => {
       for (const candidate of candidates) {
-        try {
-          if (candidate.fresh && statSync(candidate.path).mtimeMs < state.startedAt) continue;
-          const parsed = JSON.parse(readFileSync(candidate.path, "utf8")) as Record<string, unknown>;
-          const data = provider === "claude" ? parsed.claudeAiOauth : parsed;
-          if (validCredential(provider, data)) return data;
-        } catch {
-          /* not there yet */
-        }
+        const file = this.readHomeJson(handle, candidate.path);
+        if (!file || (candidate.fresh && file.mtimeMs < state.startedAt)) continue; // not there yet, or unsafe
+        const data = provider === "claude" ? file.value.claudeAiOauth : file.value;
+        if (validCredential(provider, data)) return data;
       }
       return null;
     };
