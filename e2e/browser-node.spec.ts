@@ -154,6 +154,7 @@ test('resize persists across reload and the standard side handles exist', async 
 });
 
 test('challenge hint appears only for challenge-looking pages', async ({ page }) => {
+  await page.clock.install();
   await open(page);
   await expect(page.getByTestId('browser-challenge-hint')).toHaveCount(0);
   await page.goto('/e2e/harness/browser.html?title=Just%20a%20moment...&url=https%3A%2F%2Fsite.test%2F');
@@ -162,6 +163,9 @@ test('challenge hint appears only for challenge-looking pages', async ({ page })
   await expect(hint).toHaveAttribute('role', 'status');
   await expect(hint).toContainText('Verification needed. Complete it here, your clearance is kept for later agent use.');
   await page.screenshot({ path: '.tmp/shots/browser-node-challenge.png' });
+  // Still a challenge after 15s: no widget to complete, so say the site is blocking automated browsers.
+  await page.clock.fastForward(16_000);
+  await expect(hint).toContainText('This site is blocking automated browsers');
 });
 
 test('linked agents show as avatars with tooltips', async ({ page }) => {

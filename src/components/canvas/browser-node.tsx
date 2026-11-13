@@ -16,6 +16,7 @@ export const BROWSER_PREFIX = "browser:";
 export const BROWSER_NODE_ID = BROWSER_PREFIX + "main";
 export const isBrowserId = (id: string) => id.startsWith(BROWSER_PREFIX);
 export const BROWSER_DEFAULT = { width: 900, height: 620 };
+const CHALLENGE_STALL_MS = 15_000;
 const ACTIVITY_MS = 4_000;
 const POLL_MS = 5_000;
 const MOVE_MIN_MS = 16;
@@ -73,6 +74,14 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   useEffect(() => { if (!agentBusy && !activity) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [agentBusy, activity]);
   useEffect(() => { if (!urlFocused) setUrlText(info?.url ?? ""); }, [info?.url, urlFocused]);
   const challenge = looksLikeChallenge(info?.title, info?.url);
+  // A challenge that is still up after CHALLENGE_STALL_MS has no interactive widget to complete: the site is refusing this browser.
+  const [challengeStalled, setChallengeStalled] = useState(false);
+  useEffect(() => {
+    setChallengeStalled(false);
+    if (!challenge) return;
+    const t = setTimeout(() => setChallengeStalled(true), CHALLENGE_STALL_MS);
+    return () => clearTimeout(t);
+  }, [challenge, info?.url]);
 
   // Space-to-pan (see the comment above BrowserCard).
   const [spacePan, setSpacePan] = useState(false);
@@ -237,7 +246,9 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
             {challenge && (
               <div role="status" data-testid="browser-challenge-hint" className="flex shrink-0 items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
                 <IconShieldCheck size={12} className="shrink-0" />
-                <span className="min-w-0">Verification needed. Complete it here, your clearance is kept for later agent use.</span>
+                <span className="min-w-0">{challengeStalled
+                  ? "This site is blocking automated browsers. Open it in your own browser, or use the site's API or a connector."
+                  : "Verification needed. Complete it here, your clearance is kept for later agent use."}</span>
               </div>
             )}
           </>
