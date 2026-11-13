@@ -384,17 +384,39 @@ const newId = () => Math.random().toString(36).slice(2, 8);
 
 /**
  * The Browser nodes of a canvas (one page each). Opened from the canvas menu or the node's "New browser" button, or one is opened
- * automatically the first time an agent is connected (polled while there is no node; once per project, closing is remembered).
+ * automatically the first time an agent of this project is connected (polled while there is no node; once per project, closing is remembered).
+ * Nodes belong to the project they were created on: the list is tagged with its project (a stale list from the previous project is never
+ * shown or written under the new one) and the runtime registers each node id to one project.
  */
-export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true) {
+export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true, projectHasAgents = true) {
   const anchorRef = useRef(anchor); anchorRef.current = anchor;
-  const [stored, setStored] = useState<Stored>(() => (projectId ? read(projectId, anchor) : { nodes: [] }));
-  useEffect(() => { setStored(projectId ? read(projectId, anchorRef.current) : { nodes: [] }); }, [projectId]);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [state, setState] = useState<{ projectId: string | null; stored: Stored }>(() => ({ projectId, stored: projectId ? read(projectId, anchor) : { nodes: [] } }));
+  // During the render that follows a project switch the old list is still in state: treat it as empty until the effect swaps it.
+  const stored = state.projectId === projectId ? state.stored : (projectId ? read(projectId, anchor) : { nodes: [] });
   const storedRef = useRef(stored); storedRef.current = stored;
+  const claimed = useRef(new Set<string>());
+  const projectRef = useRef(projectId); projectRef.current = projectId;
+  useEffect(() => { setState({ projectId, stored: projectId ? read(projectId, anchorRef.current) : { nodes: [] } }); }, [projectId]);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const update = useCallback((fn: (prev: Stored) => Stored) => {
-    const next = fn(storedRef.current); storedRef.current = next; if (projectId) write(projectId, next); setStored(next);
-  }, [projectId]);
+    const pid = projectRef.current;
+    const next = fn(storedRef.current); storedRef.current = next; if (pid) write(pid, next); setState({ projectId: pid, stored: next });
+  }, []);
+
+  // Register this project's nodes with the runtime (it owns "which project is this browser on"). A node that another project already owns
+  // (old shared `main` page) gets a fresh page here instead; the owner keeps the page it has open.
+  useEffect(() => {
+    if (!client || !projectId || state.projectId !== projectId) return;
+    const ids = state.stored.nodes.map((n) => n.id).filter((id) => !claimed.current.has(projectId + ":" + id));
+    if (!ids.length) return;
+    for (const id of ids) claimed.current.add(projectId + ":" + id);
+    void Promise.allSettled(ids.map((id) => Promise.resolve().then(() => client.claimBrowserNode(id, projectId)).then(() => null, (e: unknown) => ((e as { status?: number }).status === 409 ? id : null)))).then((r) => {
+      const clash = new Set(r.map((x) => (x.status === "fulfilled" ? x.value : null)).filter((x): x is string => !!x));
+      if (!clash.size || projectRef.current !== projectId) return;
+      update((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (clash.has(n.id) ? { ...n, id: newId() } : n)) }));
+    });
+  }, [client, projectId, state, update]);
+
 
   const open = useCallback((at?: { x: number; y: number }): string => {
     const id = newId();
@@ -411,13 +433,13 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
 
   const count = stored.nodes.length;
   useEffect(() => {
-    if (!client || !projectId || count > 0 || stored.seen || !autoOpenPoll) return;
+    if (!client || !projectId || count > 0 || stored.seen || !autoOpenPoll || !projectHasAgents) return;
     let stopped = false;
     const poll = async () => { try { const s = await client.browserStatus(); if (!stopped && (s.agents ?? 0) > 0 && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
     void poll();
     const t = setInterval(() => { if (document.visibilityState !== "hidden") void poll(); }, POLL_MS);
     return () => { stopped = true; clearInterval(t); };
-  }, [client, projectId, count, stored.seen, autoOpenPoll, open]);
+  }, [client, projectId, count, stored.seen, autoOpenPoll, projectHasAgents, open]);
 
   const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
     id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),

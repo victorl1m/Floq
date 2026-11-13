@@ -7,8 +7,8 @@ import { WiredContext } from "../dist/wiredContext.js";
 
 // Agent <-> Browser node wires: stored per user, one node per agent, shared nodes, wired-context line, cascade with the session.
 const U = "u1", OTHER = "u2";
-const P1 = "11111111-1111-4111-8111-111111111111";
-const S1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", S2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", S3 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const P1 = "11111111-1111-4111-8111-111111111111", P2 = "22222222-2222-4222-8222-222222222222";
+const S1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", S2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", S3 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", S4 = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 async function setup() {
   const db = new PGlite();
@@ -23,7 +23,9 @@ async function setup() {
   await migrateApp(pool as never);
   await db.exec(`INSERT INTO "user" (id) VALUES ('${U}'), ('${OTHER}')`);
   await db.query(`INSERT INTO floq_projects (id, user_id, name, cwd) VALUES ($1,$2,'p','/w')`, [P1, U]);
+  await db.query(`INSERT INTO floq_projects (id, user_id, name, cwd) VALUES ($1,$2,'p2','/w2')`, [P2, U]);
   for (const [id, user] of [[S1, U], [S2, U], [S3, OTHER]]) await db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows, project_id) VALUES ($1,$2,'claude','Agent','/w','running',80,24,$3)`, [id, user, user === U ? P1 : null]);
+  await db.query(`INSERT INTO agent_sessions (id, user_id, provider, title, cwd, state, cols, rows, project_id) VALUES ($1,$2,'claude','Agent','/w2','running',80,24,$3)`, [S4, U, P2]);
   return { db, pool };
 }
 
@@ -68,4 +70,26 @@ test("a linked agent's wired context lists the browser, and loses it when unlink
   assert.equal((await wired.sync(U, S2)).block, "", "other agents are not told about it");
   await links.unlink(U, "br-1", S1);
   assert.equal((await wired.sync(U, S1)).block, "");
+});
+
+test("browser nodes belong to one project: per-project listing, cross-project links refused, closing frees the id", async (t) => {
+  const { db, pool } = await setup();
+  t.after(() => db.close());
+  const links = new BrowserLinks(pool as never);
+  await links.claim(U, "a1", P1);
+  await links.claim(U, "a1", P1); // idempotent
+  await links.claim(U, "b1", P2);
+  assert.deepEqual(await links.nodes(U, P1), ["a1"]);
+  assert.deepEqual(await links.nodes(U, P2), ["b1"]);
+  await assert.rejects(() => links.claim(U, "a1", P2), (e: { status?: number }) => e.status === 409, "a node is never moved to another project");
+  await assert.rejects(() => links.link(U, "a1", S4), (e: { status?: number; code?: string }) => e.status === 409, "an agent of project 2 cannot drive project 1's browser");
+  assert.deepEqual(await links.list(U, P2), []);
+  await links.link(U, "a1", S1);
+  await links.link(U, "b1", S4);
+  assert.deepEqual((await links.list(U, P1)).map((l) => l.nodeId), ["a1"]);
+  assert.deepEqual((await links.list(U, P2)).map((l) => l.nodeId), ["b1"]);
+  await links.link(U, "fresh", S1); // an unregistered node is claimed by the agent's project
+  assert.deepEqual(await links.nodes(U, P1), ["a1", "fresh"]);
+  await links.removeNode(U, "a1");
+  assert.deepEqual(await links.nodes(U, P1), ["fresh"]);
 });

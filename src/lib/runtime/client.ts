@@ -1035,6 +1035,10 @@ export class RuntimeClient {
   async unlinkBrowser(nodeId: string, sessionId: string): Promise<void> {
     await this.call("DELETE", `/v1/browser/links/${encodeURIComponent(nodeId)}/${encodeURIComponent(sessionId)}`);
   }
+  /** Registers a Browser node on a project (idempotent). Rejects with status 409 when another project owns that node id. */
+  async claimBrowserNode(nodeId: string, projectId: string): Promise<void> {
+    await this.call("POST", "/v1/browser/nodes", { nodeId, projectId });
+  }
   /** A node was closed: drop all its wires. */
   async removeBrowserNode(nodeId: string): Promise<void> {
     await this.call("DELETE", `/v1/browser/links/${encodeURIComponent(nodeId)}`);
