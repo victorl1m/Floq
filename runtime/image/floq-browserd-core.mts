@@ -573,7 +573,16 @@ export class CdpMux {
         if (owner !== "daemon" && ti?.targetId) this.sessionTarget.set(msg.params.sessionId, ti.targetId);
       }
       if (msg.method === "Target.detachedFromTarget" && typeof msg.params?.sessionId === "string") { this.owners.delete(msg.params.sessionId); this.sessionTarget.delete(msg.params.sessionId); }
-      if (owner === "daemon") return this.onDaemonEvent(msg);
+      if (owner === "daemon") {
+        // A child target (cross-origin iframe, worker) attached under the daemon's own page session is started paused
+        // (waitForDebuggerOnStart): it must go through the same hook as a page, which resumes it. Without this the OOPIF
+        // never loads (Cloudflare Turnstile's challenge iframe stayed an empty frame).
+        if (msg.method === "Target.attachedToTarget" && typeof msg.params?.sessionId === "string" && msg.params.targetInfo) {
+          this.onDaemonAttached(msg.params.targetInfo as TargetInfo, msg.params.sessionId);
+          return;
+        }
+        return this.onDaemonEvent(msg);
+      }
       if (typeof owner === "number") this.clients.get(owner)?.send(msg);
       return;
     }
