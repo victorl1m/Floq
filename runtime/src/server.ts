@@ -41,6 +41,7 @@ import { WebDav } from "./webdav.js";
 import type { ShardService } from "./shards.js";
 import { runtimeCapabilities } from "./capabilities.js";
 import type { BrowserService, ViewerHandle } from "./browser.js";
+import type { BrowserLinks } from "./browserLinks.js";
 import { BrowserImportService } from "./browserImport.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
@@ -99,9 +100,11 @@ interface Deps {
   /** Optional so existing callers keep working; absent = the browser routes answer "unavailable". */
   plugins?: PluginHost;
   browser?: BrowserService;
+  /** Agent <-> Browser node wires. */
+  browserLinks?: BrowserLinks;
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -449,7 +452,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         }
         case "browser/ensure": {
           if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
-          const e = await browser.ensure(userId);
+          const e = await browser.ensure(userId, { agentId: sessionId });
           // The one place the endpoint token leaves the runtime: to the user's own agent, over its own authenticated internal channel.
           return sendPlain(res, 200, e);
         }
@@ -1245,6 +1248,36 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, { ok: true });
     }
 
+    // Agent <-> Browser node wires (same model as note links): the agent's floq-browser MCP then drives that node's page.
+    const bLink = /^\/v1\/browser\/links(?:\/([\w-]{1,64}))?(?:\/([\w-]{36}))?$/.exec(url.pathname);
+    if (bLink) {
+      if (!browserLinks) throw unavailable("This Floq server has no browser", "unavailable");
+      const touch = async (ids: string[]) => { await wiredTouch(ids, true); };
+      if (method === "GET" && !bLink[1]) {
+        const project = url.searchParams.get("project");
+        return send(res, 200, { links: await browserLinks.list(userId, project === null ? undefined : project === "none" ? null : project) });
+      }
+      if (method === "POST" && !bLink[1]) {
+        const body = await readJson<{ nodeId?: unknown; sessionId?: unknown }>(req);
+        const { link, replacedNode } = await browserLinks.link(userId, body.nodeId, body.sessionId);
+        browser?.setAgentScope(userId, link.sessionId, link.nodeId);
+        await touch([link.sessionId]);
+        return send(res, 200, { link, replacedNode });
+      }
+      if (method === "DELETE" && bLink[1] && bLink[2]) {
+        await browserLinks.unlink(userId, bLink[1], bLink[2]);
+        browser?.setAgentScope(userId, bLink[2], null);
+        await touch([bLink[2]]);
+        return send(res, 200, { ok: true });
+      }
+      if (method === "DELETE" && bLink[1]) {
+        const ids = await browserLinks.removeNode(userId, bLink[1]);
+        for (const id of ids) browser?.setAgentScope(userId, id, null);
+        await touch(ids);
+        return send(res, 200, { ok: true });
+      }
+    }
+
     if (url.pathname === "/v1/projects") {
       if (method === "GET") return send(res, 200, { projects: await manager.listProjects(userId, await activeOrg()) });
       if (method === "POST") {
@@ -1644,7 +1677,7 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const live: LivePeer = { ws, userId, authSessionId, headers };
           livePeers.add(live);
           ws.on("close", () => livePeers.delete(live));
-          attachBrowserViewer(ws, userId);
+          attachBrowserViewer(ws, userId, url.searchParams.get("node") ?? "main");
         });
         return;
       }
@@ -1708,7 +1741,7 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
   }
 
   /** Relays one Browser node socket through BrowserService (allowlisted messages only). Messages that arrive before the attach finishes are queued. */
-  function attachBrowserViewer(ws: WebSocket, userId: string): void {
+  function attachBrowserViewer(ws: WebSocket, userId: string, nodeId: string): void {
     if (!browser) return void ws.close(1011, "Browser unavailable");
     const pending: string[] = [];
     let handle: ViewerHandle | null = null;
@@ -1726,7 +1759,7 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
     const done = () => { clearInterval(heartbeat); gone = true; handle?.close(); };
     ws.on("close", done);
     ws.on("error", done);
-    browser.attachViewer(userId, { send: (text) => { if (ws.readyState === ws.OPEN) ws.send(text); }, bufferedAmount: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) })
+    browser.attachViewer(userId, { send: (text) => { if (ws.readyState === ws.OPEN) ws.send(text); }, bufferedAmount: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) }, nodeId)
       .then((h) => { if (gone) return h.close(); handle = h; for (const text of pending.splice(0)) h.onMessage(text); })
       .catch((error) => { log.warn("browser.attach_failed", { userId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); ws.close(1011, "Browser unavailable"); });
   }

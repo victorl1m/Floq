@@ -387,6 +387,15 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       PRIMARY KEY (note_id, session_id)
     );
     CREATE INDEX IF NOT EXISTS canvas_note_links_session_idx ON canvas_note_links(session_id);
+    CREATE TABLE IF NOT EXISTS browser_links (
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      node_id TEXT NOT NULL,
+      session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      project_id UUID,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, node_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS browser_links_session_idx ON browser_links(session_id);
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS agent_note_name TEXT;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS placed BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS user_title TEXT;

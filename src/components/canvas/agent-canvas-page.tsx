@@ -56,7 +56,8 @@ import { createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, 
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
-import { BrowserProvider, browserNodeTypes, isBrowserId, useCanvasBrowser } from "./browser-node";
+import { BROWSER_PREFIX, BrowserProvider, browserNodeTypes, isBrowserId, useCanvasBrowsers } from "./browser-node";
+import { isBrowserWireId, parseBrowserWire, useBrowserLinks } from "./browser-links";
 import { AppWindowProvider, appWindowNodeTypes, isAppWindowId, useCanvasAppWindows } from "./app-window-node";
 import { branchChangeToFollow, hiddenByBranch, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
@@ -173,7 +174,7 @@ function AgentCanvas() {
     return hidden.size ? all.filter((session) => !hidden.has(session.id)) : all;
   }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags]);
   const sessionById = useCallback((id: string) => projectSessions.find((session) => session.id === id), [projectSessions]);
-  const titleOf = useCallback((id: string) => sessionById(id)?.title ?? "agent", [sessionById]);
+  const titleOf = useCallback((id: string) => (id.startsWith("browser:") ? "Browser" : sessionById(id)?.title ?? "agent"), [sessionById]);
 
   // The terminal opens in a dialog on the canvas; `focus` (full view) is the old navigation, kept for the dialog's "Open in full view".
   const [terminalId, setTerminalId] = useState<string | null>(null);
@@ -300,8 +301,10 @@ function AgentCanvas() {
     }
   }, [client, activeProjectId, refreshLinks, titleOf]);
 
+  const browserUnlinkRef = useRef<(nodeId: string, sessionId: string) => void>(() => undefined);
   const deleteLink = useCallback(async (link: CanvasLink): Promise<boolean> => {
     if (!client) return false;
+    if (isBrowserWireId(link.id)) { const { nodeId, sessionId } = parseBrowserWire(link.id); browserUnlinkRef.current(nodeId, sessionId); return true; }
     if (link.synthetic) { toast.info("This wire cannot be deleted", { description: "The recruiting parent created it automatically." }); return false; }
     setRemoved((set) => new Set(set).add(link.id));
     try {
@@ -561,11 +564,6 @@ function AgentCanvas() {
       markerEnd: { type: MarkerType.ArrowClosed, color: NOTE_TEAL, width: 16, height: 16 },
     })));
   }, [notes.notes, projectSessions, selectedEdgeId]);
-  const allEdges = useMemo(() => [...edges, ...noteEdges] as Edge[], [edges, noteEdges]);
-  const hotIds = useMemo(() => {
-    const edge = allEdges.find((item) => item.id === (hoverEdgeId ?? selectedEdgeId));
-    return edge ? new Set([edge.source, edge.target]) : new Set<string>();
-  }, [allEdges, hoverEdgeId, selectedEdgeId]);
   const noteCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const note of notes.notes) for (const sid of note.linkedSessionIds) counts[sid] = (counts[sid] ?? 0) + 1;
@@ -879,12 +877,30 @@ function AgentCanvas() {
   const appAnchor = useMemo(() => ({ x: nodes.reduce((max, node) => Math.max(max, node.position.x + (node.width ?? DEFAULT_NODE_SIZE.width)), 0) + 80, y: nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0 }), [nodes]);
   const appWindows = useCanvasAppWindows(client, projectSessions, appAnchor);
   const browserAnchor = useMemo(() => ({ x: appAnchor.x, y: appAnchor.y + 40 + (appWindows.nodes.length * 480) }), [appAnchor, appWindows.nodes.length]);
-  const browser = useCanvasBrowser(client, activeProjectId ?? null, browserAnchor);
+  const browser = useCanvasBrowsers(client, activeProjectId ?? null, browserAnchor);
+  const browserLinks = useBrowserLinks(client, activeProjectId, titleOf);
+  browserUnlinkRef.current = browserLinks.unlink;
+  const browserWiresRef = useRef<CanvasLink[]>([]);
+  const browserNodeIds = useMemo(() => new Set(browser.nodes.map((node) => node.id)), [browser.nodes]);
+  // Agent -> Browser node wires use the standard wire edge (same component, colours, dashes, handles and delete button as agent links).
+  const browserWires = useMemo(() => browserLinks.wires(browserNodeIds, new Set(projectSessions.map((session) => session.id))), [browserLinks.wires, browserNodeIds, projectSessions]);
+  browserWiresRef.current = browserWires;
+  const browserEdges = useMemo(() => browserWires.map<WireEdge>((link) => ({
+    id: link.id, type: "wire", source: link.fromSessionId, target: link.toSessionId, data: { link }, selected: link.id === selectedEdgeId,
+    markerEnd: { type: MarkerType.ArrowClosed, color: link.id === selectedEdgeId ? "var(--primary-text)" : KIND_COLOR[link.kind], width: 18, height: 18 },
+  })), [browserWires, selectedEdgeId]);
+  const allEdges = useMemo(() => [...edges, ...noteEdges, ...browserEdges] as Edge[], [edges, noteEdges, browserEdges]);
+  const hotIds = useMemo(() => {
+    const edge = allEdges.find((item) => item.id === (hoverEdgeId ?? selectedEdgeId));
+    return edge ? new Set([edge.source, edge.target]) : new Set<string>();
+  }, [allEdges, hoverEdgeId, selectedEdgeId]);
   otherNodesRef.current = {
     nodes: [...notes.nodes, ...appWindows.nodes, ...browser.nodes] as Node[],
     apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id))), (c) => browser.onNodesChange(c.filter((x) => "id" in x && isBrowserId(x.id)))],
   };
-  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("agents"), close: browser.close }), [client, openSettings, browser.close]);
+  const closeBrowser = useCallback((nodeId: string) => { browser.close(nodeId); browserLinks.dropNode(nodeId); }, [browser.close, browserLinks.dropNode]);
+  const newBrowser = useCallback(() => { browser.open(); }, [browser.open]);
+  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("agents"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser]);
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
     ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...nodes,
@@ -925,7 +941,12 @@ function AgentCanvas() {
   const NOTELINK_PREFIX_LEN = noteLinkId("", "").length - 1;
   const menuApi: MenuApi = {
     sessionById,
-    linkById: (id) => allLinks.find((link) => link.id === id),
+    linkById: (id) => allLinks.find((link) => link.id === id) ?? browserWires.find((link) => link.id === id),
+    browserInfo: (id) => (isBrowserId(id) && browserNodeIds.has(id) ? { agents: browserLinks.linkedAgents(id) } : undefined),
+    closeBrowser: (id) => closeBrowser(id),
+    browsers: browser.nodes.map((node) => ({ id: node.id, linked: browserLinks.linkedAgents(node.id).map((agent) => agent.sessionId) })),
+    linkToBrowser: (sessionId, nodeId) => browserLinks.link(nodeId, sessionId),
+    unlinkBrowserAgent: (id, sessionId) => browserLinks.unlink(id.slice(BROWSER_PREFIX.length), sessionId),
     linksOf: (id) => allLinks.filter((link) => link.fromSessionId === id || link.toSessionId === id),
     titleOf,
     collapsed: (id) => collapsed.has(id),
@@ -933,7 +954,7 @@ function AgentCanvas() {
     showActivity,
     linkMode: linkMode !== null,
     nodeCount: nodes.length,
-    openBrowser: (flow) => browser.open(flow),
+    openBrowser: (flow) => { browser.open(flow); },
     browserOpen: browser.isOpen,
     addNoteHere: (flow) => void addNoteAt({ x: Math.round(flow.x), y: Math.round(flow.y) }),
     noteInfo: (id) => { const note = notes.notes.find((item) => NOTE_PREFIX + item.id === id); return note ? { linked: note.linkedSessionIds.length } : undefined; },
@@ -1004,6 +1025,14 @@ function AgentCanvas() {
     setFlashIds(new Set([a, b]));
     clearTimeout(flashTimer.current);
     flashTimer.current = setTimeout(() => setFlashIds(new Set()), 600);
+    const aBrowser = isBrowserId(a), bBrowser = isBrowserId(b);
+    if (aBrowser || bBrowser) {
+      const agent = aBrowser ? b : a;
+      if (aBrowser && bBrowser) { toast.error("Browsers link to agents", { description: "Drag the wire from a browser to an agent." }); return; }
+      if (!sessionsRef.current.some((item) => item.id === agent)) { toast.error("Browsers can only be linked to agents", { description: "Drop the wire on an agent instead." }); return; }
+      browserLinks.link(aBrowser ? a : b, agent);
+      return;
+    }
     const aNote = isNoteId(a), bNote = isNoteId(b);
     if (aNote || bNote) {
       const agent = aNote ? b : a;
@@ -1012,7 +1041,7 @@ function AgentCanvas() {
       return;
     }
     void createLink(a, b);
-  }, [createLink, notes.link]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [createLink, notes.link, browserLinks.link]); // eslint-disable-line react-hooks/exhaustive-deps
   const onConnect = useCallback((connection: Connection) => {
     if (connection.source && connection.target) connectNodes(connection.source, connection.target);
   }, [connectNodes]);
@@ -1045,7 +1074,7 @@ function AgentCanvas() {
           const [noteId, sid] = selectedEdgeId.slice(NOTELINK_PREFIX_LEN).split(":");
           notes.unlink(noteId, sid);
         } else {
-          const link = linksRef.current.find((item) => item.id === selectedEdgeId);
+          const link = linksRef.current.find((item) => item.id === selectedEdgeId) ?? browserWiresRef.current.find((item) => item.id === selectedEdgeId);
           if (link) void deleteLink(link);
         }
         return;

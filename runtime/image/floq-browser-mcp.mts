@@ -36,7 +36,7 @@ if (reply.error || !reply.wsEndpoint || !reply.token) {
   fail(reply.error?.code === "disabled" ? "the agent browser is turned off in Floq settings (Settings > Agents > Browser)" : why);
 }
 // Reject anything that is not a loopback ws endpoint: the runtime is trusted, but this keeps the token off the network by construction.
-if (!/^ws:\/\/127\.0\.0\.1:\d{1,5}\/devtools\/browser$/.test(reply.wsEndpoint!)) fail("the runtime returned an unexpected endpoint");
+if (!/^ws:\/\/127\.0\.0\.1:\d{1,5}\/devtools\/browser(\?agent=[A-Za-z0-9-]{8,64})?$/.test(reply.wsEndpoint!)) fail("the runtime returned an unexpected endpoint");
 
 const cli = process.env.FLOQ_BROWSER_MCP_CLI || "/opt/floq/playwright-mcp/node_modules/@playwright/mcp/cli.js";
 if (!existsSync(cli)) fail("Playwright MCP is not installed in this image (" + cli + ")");

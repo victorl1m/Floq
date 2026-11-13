@@ -5,7 +5,7 @@ import { HttpError, unavailable } from "./errors.js";
 import { log } from "./logger.js";
 import type { ShardDriver, ShardHandle } from "./shard.js";
 import {
-  JsonLines, RateWindow, encodeLine, toViewerMessage, validateClientMessage,
+  NODE_ID, JsonLines, RateWindow, encodeLine, toViewerMessage, validateClientMessage,
   type ClientMessage, type ViewerMessage,
 } from "./browserProtocol.js";
 
@@ -57,6 +57,8 @@ export interface BrowserShards {
   wake(userId: string): Promise<ShardHandle>;
   driver: Pick<ShardDriver, "spawnPipe" | "hostPath">;
 }
+/** Source of the user's agent <-> Browser node links (the browser_links table). */
+export interface BrowserLinkPort { forUser(userId: string): Promise<Array<{ sessionId: string; nodeId: string }>>; removeNode(userId: string, nodeId: string): Promise<string[]> }
 export interface BrowserSettingsPort { agentBrowser(userId: string): Promise<boolean> }
 export interface BrowserMcpPort { sync(userId: string, desired: boolean): Promise<McpSyncResult> }
 
@@ -83,7 +85,11 @@ export interface BrowserStatus {
 interface Viewer {
   sink: ViewerSink;
   input: RateWindow;
-  cast: { targetId: string } | null;
+  /** The Browser node this socket shows. One node = one page. */
+  nodeId: string;
+  /** That node's page, once the daemon has bound it. */
+  targetId: string | null;
+  cast: boolean;
   overSince?: number;
 }
 
@@ -99,12 +105,14 @@ interface Entry {
   sandboxReason?: string;
   tabs: Array<{ targetId: string; title: string; url: string; opener: "agent" | "user" }>;
   nav: Map<string, ViewerMessage>;
+  /** nodeId -> targetId of its page, as reported by the daemon. */
+  pages: Map<string, string>;
   agents: number;
   lastActivity: number;
   viewers: Set<Viewer>;
   idleTimer: NodeJS.Timeout | null;
   ackTimer: NodeJS.Timeout | null;
-  pendingAck: number | null;
+  pendingAcks: Map<string, number>;
   stopRequested: boolean;
   exited: Promise<void>;
   markExited: () => void;
@@ -128,6 +136,8 @@ export class BrowserService {
   private readonly installed: BrowserVersion | null;
   /** Called whenever a user's daemon starts (true) or has fully stopped (false). The manager uses it to count the browser as shard activity. */
   onActivity?: (userId: string, running: boolean) => void;
+  /** Set by the runtime: lets the service restore every link's scope when a daemon (re)starts, and drop links of a closed node. */
+  links?: BrowserLinkPort;
 
   constructor(
     private readonly shards: BrowserShards,
@@ -199,14 +209,16 @@ export class BrowserService {
    * Makes sure this user's daemon is running and returns the endpoint for their agents' MCP wrapper.
    * An agent's own shard is awake already; `wake` (a viewer opening the node) may unlock a sleeping one.
    */
-  async ensure(userId: string, opts: { wake?: boolean } = {}): Promise<{ wsEndpoint: string; token: string; chromium?: string }> {
+  async ensure(userId: string, opts: { wake?: boolean; agentId?: string } = {}): Promise<{ wsEndpoint: string; token: string; chromium?: string }> {
     await this.assertAllowed(userId);
     let entry = this.entries.get(userId);
     if (!entry || entry.state === "stopped") entry = await this.startEntry(userId, opts.wake === true);
     if (entry.start) await entry.start;
     if (entry.state !== "running") throw unavailable("The browser stopped while starting. Try again.", "browser_start_failed");
     this.armIdle(entry);
-    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser`, token: entry.token, chromium: this.installed?.chromium };
+    // `?agent=` names the agent session so the daemon can scope it to the Browser node the user linked it to (see setAgentScope).
+    const agent = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? `?agent=${opts.agentId}` : "";
+    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser${agent}`, token: entry.token, chromium: this.installed?.chromium };
   }
 
   /** One Entry per user for the life of the runtime: viewers hold it across daemon restarts. */
@@ -214,7 +226,7 @@ export class BrowserService {
     let entry = this.entries.get(userId);
     if (!entry) {
       const dead = exitedPromise();
-      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), agents: 0, lastActivity: Date.now(), viewers: new Set(), idleTimer: null, ackTimer: null, pendingAck: null, stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
+      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, lastActivity: Date.now(), viewers: new Set(), idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
       this.entries.set(userId, entry);
     }
     return entry;
@@ -242,7 +254,7 @@ export class BrowserService {
     if (!handle) throw unavailable("Your sandbox is not running", "sandbox_unavailable");
     if (entry.state !== "stopped") return entry;
     const dead = exitedPromise();
-    Object.assign(entry, { state: "starting", child: null, port: 0, token: "", pid: null, startedAt: Date.now(), sandbox: null, sandboxReason: undefined, tabs: [], agents: 0, lastActivity: Date.now(), pendingAck: null, stopRequested: false, exited: dead.promise, markExited: dead.resolve });
+    Object.assign(entry, { state: "starting", child: null, port: 0, token: "", pid: null, startedAt: Date.now(), sandbox: null, sandboxReason: undefined, tabs: [], pages: new Map(), agents: 0, lastActivity: Date.now(), pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve });
     entry.nav.clear();
     this.broadcast(entry, { type: "state", state: "starting" });
     entry.start = this.launch(entry, handle).finally(() => { entry.start = null; });
@@ -290,6 +302,8 @@ export class BrowserService {
             settled = true; clearTimeout(timer);
             this.write(entry, { type: "hello" });
             this.broadcast(entry, { type: "state", state: "running" });
+            this.openViewerPages(entry);
+            void this.restoreScopes(entry);
             this.armIdle(entry);
             log.info("browser.started", { userId, pid: entry.pid, sandbox: entry.sandbox });
             return resolve();
@@ -321,10 +335,10 @@ export class BrowserService {
   private markStopped(entry: Entry): void {
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     if (entry.ackTimer) clearTimeout(entry.ackTimer);
-    entry.idleTimer = null; entry.ackTimer = null; entry.pendingAck = null;
+    entry.idleTimer = null; entry.ackTimer = null; entry.pendingAcks.clear();
     const wasLive = entry.state !== "stopped";
-    entry.state = "stopped"; entry.child = null; entry.token = ""; entry.port = 0; entry.tabs = []; entry.nav.clear(); entry.agents = 0;
-    for (const v of entry.viewers) v.cast = null;
+    entry.state = "stopped"; entry.child = null; entry.token = ""; entry.port = 0; entry.tabs = []; entry.nav.clear(); entry.pages.clear(); entry.agents = 0;
+    for (const v of entry.viewers) { v.cast = false; v.targetId = null; }
     this.broadcast(entry, { type: "state", state: "stopped" });
     entry.markExited();
     if (wasLive) this.onActivity?.(entry.userId, false);
@@ -465,61 +479,110 @@ export class BrowserService {
   }
 
   private fromDaemon(entry: Entry, raw: unknown): void {
+    const r = raw as Record<string, unknown> | null;
+    const nodeOf = (v: unknown): string | null => (typeof v === "string" && NODE_ID.test(v) ? v : null);
+    if (r && r.type === "page") {
+      const nodeId = nodeOf(r.nodeId), msg = toViewerMessage(r);
+      if (nodeId && msg && msg.type === "page") {
+        entry.pages.set(nodeId, msg.targetId);
+        for (const v of entry.viewers) if (v.nodeId === nodeId) { v.targetId = msg.targetId; this.sendTo(v, msg); const nav = entry.nav.get(msg.targetId); if (nav) this.sendTo(v, nav); }
+      }
+      return;
+    }
+    if (r && r.type === "pageGone") {
+      // The page of a node vanished (its linked agent closed it, or it crashed): open a fresh one for a node somebody is still looking at or linked to.
+      const nodeId = nodeOf(r.nodeId);
+      if (!nodeId) return;
+      const tid = entry.pages.get(nodeId);
+      entry.pages.delete(nodeId);
+      for (const v of entry.viewers) if (v.nodeId === nodeId) { v.targetId = null; v.cast = false; }
+      if (tid) entry.nav.delete(tid);
+      if ([...entry.viewers].some((v) => v.nodeId === nodeId)) this.write(entry, { type: "page.open", nodeId });
+      return;
+    }
     const msg = toViewerMessage(raw);
     if (!msg) return;
+    const forTarget = (targetId: string) => (v: Viewer) => v.targetId === targetId;
     switch (msg.type) {
       case "frame": return this.onFrame(entry, msg);
-      case "tabs": entry.tabs = msg.tabs; break;
-      case "nav": entry.nav.set(msg.targetId, msg); break;
+      case "tabs": entry.tabs = msg.tabs; return; // counted for status; viewers only ever see their own page
+      case "nav": entry.nav.set(msg.targetId, msg); return this.broadcast(entry, msg, forTarget(msg.targetId));
+      case "cursor": { const tid = typeof r?.targetId === "string" ? r.targetId : ""; return this.broadcast(entry, msg, forTarget(tid)); }
       case "clients": entry.agents = msg.agents; entry.lastActivity = Date.now(); this.armIdle(entry); break;
-      case "agentActivity": entry.lastActivity = Date.now(); this.armIdle(entry); break;
+      case "agentActivity": entry.lastActivity = Date.now(); this.armIdle(entry); return this.broadcast(entry, msg, forTarget(msg.targetId));
       default: break;
     }
     this.broadcast(entry, msg);
   }
 
+  /** The daemon came up: every attached node asks for its page, and every stored link is re-applied to the daemon. */
+  private openViewerPages(entry: Entry): void {
+    const nodes = new Set([...entry.viewers].map((v) => v.nodeId));
+    for (const nodeId of nodes) this.write(entry, { type: "page.open", nodeId });
+  }
+  private async restoreScopes(entry: Entry): Promise<void> {
+    if (!this.links) return;
+    try {
+      for (const l of await this.links.forUser(entry.userId)) if (entry.state === "running") this.write(entry, { type: "agent.scope", agent: l.sessionId, nodeId: l.nodeId });
+    } catch (error) { log.warn("browser.scope_restore_failed", { userId: entry.userId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
+  }
+
   /**
-   * Frames go only to viewers that asked for a screencast. The next frame is requested from Chromium (ack) only when every such
-   * viewer's socket has drained below 512 KiB; a frame that arrives while one is behind is dropped for that viewer and the ack
-   * waits, so a slow client throttles Chromium instead of growing the buffer.
+   * Links (nodeId set) or unlinks (null) an agent session to a Browser node's page. The agent's MCP keeps its CDP connection: the daemon
+   * changes which targets that connection can see, so a linked agent drives exactly that page and an unlinked one gets its own again.
+   * Several agents may share a node; commands interleave on the one page (last action wins). No-op while the daemon is stopped:
+   * the stored links are re-applied when it starts.
+   */
+  setAgentScope(userId: string, sessionId: string, nodeId: string | null): void {
+    const entry = this.entries.get(userId);
+    if (!entry || entry.state !== "running") return;
+    this.write(entry, { type: "agent.scope", agent: sessionId, nodeId });
+  }
+
+  /**
+   * Frames go only to the viewers of that frame's page that asked for a screencast. The next frame of a page is requested from Chromium
+   * (ack) only when every such viewer's socket has drained below 512 KiB; a frame that arrives while one is behind is dropped for that
+   * viewer and the ack waits, so a slow client throttles Chromium instead of growing the buffer.
    */
   private onFrame(entry: Entry, frame: Extract<ViewerMessage, { type: "frame" }>): void {
-    const casters = [...entry.viewers].filter((v) => v.cast);
+    const casters = [...entry.viewers].filter((v) => v.cast && v.targetId === frame.targetId);
     if (!casters.length) { this.write(entry, { type: "frame.ack", n: frame.n }); return; }
     const text = JSON.stringify(frame);
     for (const v of casters) {
       if (v.sink.bufferedAmount() < BACKPRESSURE_BYTES) { try { v.sink.send(text); } catch { /* closing */ } }
     }
-    this.ackWhenDrained(entry, frame.n);
+    this.ackWhenDrained(entry, frame.targetId, frame.n);
   }
 
-  private ackWhenDrained(entry: Entry, n: number): void {
-    entry.pendingAck = n;
+  private ackWhenDrained(entry: Entry, targetId: string, n: number): void {
+    entry.pendingAcks.set(targetId, n);
     if (entry.ackTimer) return;
     const check = () => {
       entry.ackTimer = null;
-      if (entry.state !== "running" || entry.pendingAck === null) return;
+      if (entry.state !== "running" || entry.pendingAcks.size === 0) return;
       const now = Date.now();
-      let slow = false, evicted = false;
-      for (const v of [...entry.viewers]) {
-        if (!v.cast) continue;
-        if (v.sink.bufferedAmount() < BACKPRESSURE_BYTES) { v.overSince = undefined; continue; }
-        v.overSince ??= now;
-        // A viewer that has not drained for this long (half-open socket) is evicted instead of throttling everyone.
-        if (now - v.overSince > (this.options.stuckViewerMs ?? 10_000)) {
-          entry.viewers.delete(v); v.cast = null; evicted = true;
-          try { v.sink.close(1013, "Viewer too slow"); } catch { /* gone */ }
-          continue;
+      let slow = false;
+      for (const [tid, ack] of [...entry.pendingAcks]) {
+        let behind = false;
+        for (const v of [...entry.viewers]) {
+          if (!v.cast || v.targetId !== tid) continue;
+          if (v.sink.bufferedAmount() < BACKPRESSURE_BYTES) { v.overSince = undefined; continue; }
+          v.overSince ??= now;
+          // A viewer that has not drained for this long (half-open socket) is evicted instead of throttling everyone.
+          if (now - v.overSince > (this.options.stuckViewerMs ?? 10_000)) {
+            entry.viewers.delete(v); v.cast = false;
+            try { v.sink.close(1013, "Viewer too slow"); } catch { /* gone */ }
+            if (![...entry.viewers].some((o) => o.cast && o.targetId === tid)) this.write(entry, { type: "screencast.stop", targetId: tid });
+            this.armIdle(entry);
+            continue;
+          }
+          behind = true;
         }
-        slow = true;
+        if (behind) { slow = true; continue; }
+        entry.pendingAcks.delete(tid);
+        this.write(entry, { type: "frame.ack", n: ack });
       }
-      if (evicted) {
-        if (![...entry.viewers].some((o) => o.cast)) this.write(entry, { type: "screencast.stop" });
-        this.armIdle(entry);
-      }
-      if (slow) { entry.ackTimer = setTimeout(check, this.options.ackRetryMs ?? 100); entry.ackTimer.unref?.(); return; }
-      const ack = entry.pendingAck; entry.pendingAck = null;
-      this.write(entry, { type: "frame.ack", n: ack });
+      if (slow) { entry.ackTimer = setTimeout(check, this.options.ackRetryMs ?? 100); entry.ackTimer.unref?.(); }
     };
     check();
   }
@@ -527,13 +590,15 @@ export class BrowserService {
   // ------------------------------------------------------------------ viewers
 
   /**
-   * Registers a Browser node's socket for this user. Starts the daemon (waking the shard) when it is stopped and allowed.
-   * The sink only ever receives allowlisted messages (state, frame, tabs, nav, agentActivity, clients, error).
+   * Registers a Browser node's socket for this user (`nodeId`: one node, one page). Starts the daemon (waking the shard) when it is stopped
+   * and allowed, and asks it for the node's page. The sink only ever receives allowlisted messages (state, page, frame, nav, cursor, agentActivity, clients, error).
    */
-  async attachViewer(userId: string, sink: ViewerSink): Promise<ViewerHandle> {
+  async attachViewer(userId: string, sink: ViewerSink, nodeId = "main"): Promise<ViewerHandle> {
     const state = await this.state(userId);
-    const viewer: Viewer = { sink, input: new RateWindow(), cast: null };
-    const send = (msg: ViewerMessage) => { try { sink.send(JSON.stringify(msg)); } catch { /* closing */ } };
+    const send0 = (msg: ViewerMessage) => { try { sink.send(JSON.stringify(msg)); } catch { /* closing */ } };
+    if (!NODE_ID.test(nodeId)) { send0({ type: "error", code: "bad_node" }); return { onMessage: () => undefined, close: () => undefined }; }
+    const viewer: Viewer = { sink, input: new RateWindow(), nodeId, targetId: null, cast: false };
+    const send = send0;
     if (state === "disabled" || state === "unavailable") {
       send({ type: "state", state });
       return { onMessage: () => undefined, close: () => undefined };
@@ -545,8 +610,9 @@ export class BrowserService {
     send({ type: "state", state: current.state });
     if (current.state === "running") {
       send({ type: "clients", agents: current.agents });
-      send({ type: "tabs", tabs: current.tabs });
-      for (const nav of current.nav.values()) send(nav);
+      const tid = current.pages.get(nodeId);
+      if (tid) { viewer.targetId = tid; send({ type: "page", targetId: tid, created: false }); const nav = current.nav.get(tid); if (nav) send(nav); }
+      else this.write(current, { type: "page.open", nodeId });
     } else if (current.state === "stopped") {
       // Opening the node starts the browser; failures are reported as an error message and the stopped state.
       void this.ensure(userId, { wake: true }).catch((error) => {
@@ -561,10 +627,11 @@ export class BrowserService {
       close: () => {
         if (closed) return;
         closed = true;
-        const wasCasting = viewer.cast !== null;
+        const wasCasting = viewer.cast && viewer.targetId !== null;
+        const tid = viewer.targetId;
         current.viewers.delete(viewer);
-        viewer.cast = null;
-        if (wasCasting && ![...current.viewers].some((v) => v.cast)) this.write(current, { type: "screencast.stop" });
+        viewer.cast = false;
+        if (wasCasting && tid && ![...current.viewers].some((v) => v.cast && v.targetId === tid)) this.write(current, { type: "screencast.stop", targetId: tid });
         this.armIdle(current);
       },
     };
@@ -580,13 +647,27 @@ export class BrowserService {
     // Only the high-rate events are throttled: dropping a press/release/key would leave a button or key stuck.
     if ((msg.type === "input.wheel" || (msg.type === "input.mouse" && msg.kind === "mouseMoved")) && !viewer.input.allow()) return;
     if (entry.state !== "running") return;
-    if (msg.type === "screencast.start") viewer.cast = { targetId: msg.targetId };
-    if (msg.type === "screencast.stop") {
-      viewer.cast = null;
-      // Another viewer may still be watching: the one screencast keeps running for them.
-      if ([...entry.viewers].some((o) => o.cast)) return;
+    if (msg.type === "page.close") {
+      // The user closed the node: destroy its page and drop the agent links to it.
+      this.write(entry, { type: "page.close", nodeId: viewer.nodeId });
+      const tid = entry.pages.get(viewer.nodeId);
+      entry.pages.delete(viewer.nodeId);
+      if (tid) entry.nav.delete(tid);
+      for (const o of entry.viewers) if (o.nodeId === viewer.nodeId) { o.targetId = null; o.cast = false; }
+      void this.links?.removeNode(entry.userId, viewer.nodeId).catch(() => undefined);
+      return;
     }
-    this.write(entry, msg);
+    // A viewer only ever acts on its own node's page: the target is filled in here, whatever the client sent.
+    if (!viewer.targetId) return;
+    const targetId = viewer.targetId;
+    if (msg.type === "screencast.start") { viewer.cast = true; return void this.write(entry, { ...msg, targetId }); }
+    if (msg.type === "screencast.stop") {
+      viewer.cast = false;
+      // Another viewer of the same page may still be watching: its screencast keeps running.
+      if ([...entry.viewers].some((o) => o.cast && o.targetId === targetId)) return;
+      return void this.write(entry, { type: "screencast.stop", targetId });
+    }
+    this.write(entry, { ...msg, targetId });
   }
 
   private sendTo(viewer: Viewer, msg: ViewerMessage): void { try { viewer.sink.send(JSON.stringify(msg)); } catch { /* closing */ } }

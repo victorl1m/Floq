@@ -13,6 +13,7 @@ import { isOrchestrator } from "@/lib/runtime/orchestrator";
 import type { SessionSummary } from "@/lib/runtime/types";
 import type { CanvasLink } from "./canvas-data";
 import { isNoteId, isNoteLinkId } from "./canvas-notes";
+import { isBrowserId } from "./browser-node";
 
 export type MenuTarget =
   | { kind: "pane"; flow: { x: number; y: number } }
@@ -34,6 +35,11 @@ export interface MenuApi {
   addNoteHere: (flow: { x: number; y: number }) => void;
   openBrowser: (flow: { x: number; y: number }) => void;
   browserOpen: boolean;
+  browserInfo: (nodeId: string) => { agents: Array<{ sessionId: string; title: string }> } | undefined;
+  closeBrowser: (nodeId: string) => void;
+  browsers: Array<{ id: string; linked: string[] }>;
+  linkToBrowser: (sessionId: string, nodeId: string) => void;
+  unlinkBrowserAgent: (nodeId: string, sessionId: string) => void;
   noteInfo: (nodeId: string) => { linked: number } | undefined;
   deleteNote: (nodeId: string) => void;
   unlinkNoteAgents: (nodeId: string) => void;
@@ -67,6 +73,7 @@ const danger = "text-destructive focus:text-destructive [&_svg]:text-destructive
 export default function CanvasMenuContent({ target, api }: { target: MenuTarget; api: MenuApi }) {
   if (target.kind === "pane") return <PaneMenu flow={target.flow} api={api} />;
   if (target.kind === "node" && isNoteId(target.id)) return <NoteMenu id={target.id} api={api} />;
+  if (target.kind === "node" && isBrowserId(target.id)) return <BrowserMenu id={target.id} api={api} />;
   if (target.kind === "edge" && isNoteLinkId(target.id)) return <NoteLinkMenu id={target.id} api={api} />;
   if (target.kind === "node") {
     const session = api.sessionById(target.id);
@@ -82,7 +89,7 @@ function PaneMenu({ flow, api }: { flow: { x: number; y: number }; api: MenuApi 
     <ContextMenuContent className="min-w-56">
       <ContextMenuItem onSelect={() => api.newAgentHere(flow)}><IconPlus />New agent here</ContextMenuItem>
       <ContextMenuItem onSelect={() => api.addNoteHere(flow)}><IconNote />Add note here<Keys keys="N" /></ContextMenuItem>
-      {!api.browserOpen && <ContextMenuItem onSelect={() => api.openBrowser(flow)}><IconWorld />Open browser</ContextMenuItem>}
+      <ContextMenuItem onSelect={() => api.openBrowser(flow)}><IconWorld />New browser here</ContextMenuItem>
       {hasNodes && (
         <>
           <ContextMenuSeparator />
@@ -110,6 +117,12 @@ function NodeMenu({ session, api }: { session: SessionSummary; api: MenuApi }) {
       {!live && <ContextMenuItem onSelect={() => api.resume(session)}>{session.state === "sleeping" ? <IconPlayerPlay /> : <IconRefresh />}{session.state === "sleeping" ? "Wake agent" : "Restart agent"}</ContextMenuItem>}
       <ContextMenuItem onSelect={() => api.focus(session)}><IconWindowMaximize />Open terminal<Keys keys="Dbl-click" /></ContextMenuItem>
       <ContextMenuItem onSelect={() => api.startLink(session.id)}><IconLink />Link to…</ContextMenuItem>
+      {api.browsers.length > 0 && <ContextMenuSub>
+        <ContextMenuSubTrigger><IconWorld />Link to browser</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="min-w-52">
+          {api.browsers.map((browser, index) => <ContextMenuItem key={browser.id} onSelect={() => api.linkToBrowser(session.id, browser.id)}><IconWorld />Browser {index + 1}{browser.linked.includes(session.id) ? " (linked)" : ""}</ContextMenuItem>)}
+        </ContextMenuSubContent>
+      </ContextMenuSub>}
       <ContextMenuItem onSelect={() => api.rename(session)}><IconPencil />Rename</ContextMenuItem>
       {isOrchestrator(session)
         ? <ContextMenuItem onSelect={() => api.setOrchestrator(session, false)}><IconCrownOff />Remove orchestrator role</ContextMenuItem>
@@ -160,7 +173,7 @@ function EdgeMenu({ link, api }: { link: CanvasLink; api: MenuApi }) {
       {real && (
         <>
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={() => api.reverseLink(link)}><IconArrowsExchange />Reverse direction</ContextMenuItem>
+          {!isBrowserId(link.toSessionId) && <ContextMenuItem onSelect={() => api.reverseLink(link)}><IconArrowsExchange />Reverse direction</ContextMenuItem>}
           <ContextMenuItem className={danger} onSelect={() => api.deleteLink(link)}><IconTrash />Delete link<Keys keys="Del" /></ContextMenuItem>
         </>
       )}
@@ -187,6 +200,25 @@ function NoteLinkMenu({ id, api }: { id: string; api: MenuApi }) {
     <ContextMenuContent className="min-w-56">
       <ContextMenuLabel className="truncate">Note → {info.agent}</ContextMenuLabel>
       <ContextMenuItem className={danger} onSelect={() => api.unlinkNote(id)}><IconLinkOff />Unlink<Keys keys="Del" /></ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+function BrowserMenu({ id, api }: { id: string; api: MenuApi }) {
+  const info = api.browserInfo(id);
+  if (!info) return null;
+  return (
+    <ContextMenuContent className="min-w-60">
+      <ContextMenuLabel>Browser</ContextMenuLabel>
+      <ContextMenuItem onSelect={() => api.startLink(id)}><IconLink />Link to agent…</ContextMenuItem>
+      {info.agents.length > 0 && <ContextMenuSub>
+        <ContextMenuSubTrigger><IconLinkOff />Unlink agent</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="min-w-60">
+          {info.agents.map((agent) => <ContextMenuItem key={agent.sessionId} className={danger} onSelect={() => api.unlinkBrowserAgent(id, agent.sessionId)}><IconLinkOff /><span className="truncate">{agent.title}</span></ContextMenuItem>)}
+        </ContextMenuSubContent>
+      </ContextMenuSub>}
+      <ContextMenuSeparator />
+      <ContextMenuItem className={danger} onSelect={() => api.closeBrowser(id)}><IconTrash />Close browser</ContextMenuItem>
     </ContextMenuContent>
   );
 }
