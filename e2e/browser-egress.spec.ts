@@ -76,7 +76,8 @@ test.describe('Settings > Browser egress', () => {
     await expect(ports).toHaveAttribute('aria-checked', 'false');
     await expect(page.getByText('Your local network stays blocked either way.')).toBeVisible();
     await ports.click();
-    await page.getByTestId('egress-cap').selectOption('50');
+    await page.getByTestId('egress-cap').click();
+    await page.getByRole('option', { name: '50 GB' }).click();
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('floq.browserEgress.policy')!));
     expect(stored).toEqual({ allowOtherPorts: true, dailyCapBytes: 50 * 1024 ** 3 });
     // The relay would restart with this policy: it is what the Rust side receives.
