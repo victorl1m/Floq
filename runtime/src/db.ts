@@ -397,6 +397,18 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       PRIMARY KEY (user_id, node_id, session_id)
     );
     CREATE INDEX IF NOT EXISTS browser_links_session_idx ON browser_links(session_id);
+    -- Browser nodes belong to the project (canvas) they were created on; the browser itself stays one per user.
+    CREATE TABLE IF NOT EXISTS browser_nodes (
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      node_id TEXT NOT NULL,
+      project_id UUID,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, node_id)
+    );
+    -- Existing nodes stay on the project of their oldest wire (the one place the runtime knows them from). Never deletes anything.
+    INSERT INTO browser_nodes (user_id, node_id, project_id)
+      SELECT DISTINCT ON (user_id, node_id) user_id, node_id, project_id FROM browser_links ORDER BY user_id, node_id, created_at
+      ON CONFLICT DO NOTHING;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS agent_note_name TEXT;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS placed BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE canvas_notes ADD COLUMN IF NOT EXISTS user_title TEXT;

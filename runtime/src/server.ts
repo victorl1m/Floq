@@ -1258,6 +1258,19 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
 
     // Agent <-> Browser node wires (same model as note links): the agent's floq-browser MCP then drives that node's page.
     const bLink = /^\/v1\/browser\/links(?:\/([\w-]{1,64}))?(?:\/([\w-]{36}))?$/.exec(url.pathname);
+    if (url.pathname === "/v1/browser/nodes" && browserLinks) {
+      const projectOf = async (value: unknown): Promise<string | null> => {
+        if (value === null || value === "none") return null;
+        if (typeof value !== "string" || !(await manager.listProjects(userId, await activeOrg())).some((p) => p.id === value)) throw notFound("Project not found");
+        return value;
+      };
+      if (method === "GET") return send(res, 200, { nodes: await browserLinks.nodes(userId, await projectOf(url.searchParams.get("project") ?? "none")) });
+      if (method === "POST") {
+        const body = await readJson<{ nodeId?: unknown; projectId?: unknown }>(req);
+        await browserLinks.claim(userId, body.nodeId, await projectOf(body.projectId ?? null));
+        return send(res, 200, { ok: true });
+      }
+    }
     if (bLink) {
       if (!browserLinks) throw unavailable("This Floq server has no browser", "unavailable");
       const touch = async (ids: string[]) => { await wiredTouch(ids, true); };
