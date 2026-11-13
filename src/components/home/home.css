@@ -28,12 +28,12 @@
   position: relative;
   border-color: color-mix(in oklab, var(--foreground) 12%, transparent);
   background-color: color-mix(in oklab, var(--card) 96%, transparent);
-  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-1);
   transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
 }
 .home-composer:focus-within {
   border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
-  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3-focus);
+  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-1);
 }
 .home-composer[data-drop-hover] { border-color: var(--ring); }
 .home-drop-veil {
