@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { describeEgress, egressSupported, formatBytes, GIB, refreshEgressStatus, setEgressHere, setEgressPolicy, stopEgress, useBrowserEgress } from "@/lib/browser-egress";
 import type { BrowserEgressMode } from "@/lib/runtime/browser-types";
 import { SettingRow } from "./ui";
@@ -63,26 +66,28 @@ export function BrowserEgressSettings({ mode, onMode }: { mode: BrowserEgressMod
                         <Button type="button" variant="outline" size="sm" data-testid="egress-stop" disabled={busy} onClick={() => void toggle(false)}>Stop using my connection</Button>
                     </SettingRow>
                     <SettingRow label="If this computer is offline" description="Pausing keeps your IP private: nothing reaches the internet from the server while Floq is closed on your computer.">
-                        <div role="radiogroup" aria-label="If this computer is offline" className="flex flex-col gap-1.5 text-sm">
+                        <RadioGroup aria-label="If this computer is offline" value={mode === "desktop-fallback" ? "desktop-fallback" : "desktop"} disabled={busy} className="gap-2"
+                            onValueChange={(value) => { setBusy(true); void onMode(value as BrowserEgressMode).catch((error) => toast.error("Could not save", { description: String(error) })).finally(() => setBusy(false)); }}>
                             {([["desktop", "Pause the browser"], ["desktop-fallback", "Use the server's connection"]] as const).map(([value, label]) => (
-                                <label key={value} className="flex cursor-pointer items-center gap-2">
-                                    <input type="radio" name="egress-offline" value={value} checked={mode === value} disabled={busy}
-                                        onChange={() => { setBusy(true); void onMode(value).catch((error) => toast.error("Could not save", { description: String(error) })).finally(() => setBusy(false)); }} />
-                                    {label}{value === "desktop" && <span className="text-xs text-muted-foreground">(default)</span>}
-                                </label>
+                                <div key={value} className="flex items-center gap-2">
+                                    <RadioGroupItem id={`egress-offline-${value}`} value={value} />
+                                    <Label htmlFor={`egress-offline-${value}`} className="cursor-pointer text-sm font-normal">
+                                        {label}{value === "desktop" && <span className="text-xs text-muted-foreground">(default)</span>}
+                                    </Label>
+                                </div>
                             ))}
-                        </div>
+                        </RadioGroup>
                     </SettingRow>
                     <details className="group p-4" data-testid="egress-advanced">
                         <summary className="cursor-pointer select-none text-sm font-medium">Advanced</summary>
                         <div className="mt-3 flex flex-col gap-4 text-sm">
                             <label className="flex items-center justify-between gap-4">
                                 <span>Daily data cap <span className="block text-xs text-muted-foreground">Used today: {formatBytes(status?.usedToday ?? 0)}. Resets at local midnight.</span></span>
-                                <select aria-label="Daily data cap" data-testid="egress-cap" className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-                                    value={CAPS.includes(Math.round(policy.dailyCapBytes / GIB)) ? Math.round(policy.dailyCapBytes / GIB) : 10}
-                                    onChange={(e) => setEgressPolicy({ ...policy, dailyCapBytes: Number(e.target.value) * GIB })}>
-                                    {CAPS.map((gib) => <option key={gib} value={gib}>{gib} GB</option>)}
-                                </select>
+                                <Select value={String(CAPS.includes(Math.round(policy.dailyCapBytes / GIB)) ? Math.round(policy.dailyCapBytes / GIB) : 10)}
+                                    onValueChange={(v) => setEgressPolicy({ ...policy, dailyCapBytes: Number(v) * GIB })}>
+                                    <SelectTrigger size="sm" aria-label="Daily data cap" data-testid="egress-cap" className="w-24"><SelectValue /></SelectTrigger>
+                                    <SelectContent>{CAPS.map((gib) => <SelectItem key={gib} value={String(gib)}>{gib} GB</SelectItem>)}</SelectContent>
+                                </Select>
                             </label>
                             <label className="flex items-start justify-between gap-4">
                                 <span>Allow other ports <span className="block max-w-prose text-xs text-muted-foreground">Only web ports (80, 443, 8080, 8443) are allowed by default. Other ports can reach mail, SSH and database servers from your IP. Your local network stays blocked either way.</span></span>
