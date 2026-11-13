@@ -29,6 +29,7 @@ export type Control =
   | { type: "input.key"; targetId?: string; kind: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key: string; code: string; text: string; modifiers: number }
   | { type: "input.text"; targetId?: string; text: string }
   | { type: "nav.go"; targetId?: string; url: string }
+  | { type: "dialog.reply"; targetId?: string; accept: boolean; text?: string }
   | { type: "nav.back" | "nav.forward" | "nav.reload" | "nav.stop"; targetId?: string }
   | { type: "viewport"; targetId: string; width: number; height: number; dpr: number }
   /** One page per Browser node: idempotent open (adopts an unclaimed user tab first), close, and agent scoping by link. */
@@ -134,6 +135,11 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
       return { ok: true, msg: { type: "input.key", ...(targetId ? { targetId } : {}), kind, key, code, text, modifiers } };
     }
     case "input.text": { const targetId = optTarget(); return targetId !== false && textOk(m.text) ? { ok: true, msg: { type: "input.text", ...(targetId ? { targetId } : {}), text: m.text } } : bad(); }
+    case "dialog.reply": {
+      const targetId = optTarget();
+      if (targetId === false || typeof m.accept !== "boolean" || (m.text !== undefined && (typeof m.text !== "string" || m.text.length > 4096))) return bad();
+      return { ok: true, msg: { type: "dialog.reply", ...(targetId ? { targetId } : {}), accept: m.accept, ...(typeof m.text === "string" ? { text: m.text } : {}) } };
+    }
     case "nav.go": {
       const targetId = optTarget();
       const url = normalizeNavUrl(m.url);
@@ -641,7 +647,7 @@ export class CdpMux {
         this.onTargetsChanged();
         return;
       }
-      case "Target.targetCrashed": this.broadcastDiscovery(msg); return;
+      case "Target.targetCrashed": this.broadcastDiscovery(msg); this.onDaemonEvent(msg); return;
       default: this.onDaemonEvent(msg);
     }
   }

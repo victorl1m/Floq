@@ -508,6 +508,7 @@ export class BrowserService {
       case "tabs": entry.tabs = msg.tabs; return; // counted for status; viewers only ever see their own page
       case "nav": entry.nav.set(msg.targetId, msg); return this.broadcast(entry, msg, forTarget(msg.targetId));
       case "cursor": { const tid = typeof r?.targetId === "string" ? r.targetId : ""; return this.broadcast(entry, msg, forTarget(tid)); }
+      case "dialog": case "dialogClosed": case "clipboard": case "download": return this.broadcast(entry, msg, forTarget(msg.targetId));
       case "clients": entry.agents = msg.agents; entry.lastActivity = Date.now(); this.armIdle(entry); break;
       case "agentActivity": entry.lastActivity = Date.now(); this.armIdle(entry); return this.broadcast(entry, msg, forTarget(msg.targetId));
       default: break;

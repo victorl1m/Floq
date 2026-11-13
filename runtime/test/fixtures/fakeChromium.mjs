@@ -5,7 +5,7 @@ import { appendFileSync, createReadStream, createWriteStream } from "node:fs";
 const note = (line) => { process.stderr.write(line + "\n"); if (process.env.FAKE_CHROMIUM_LOG) appendFileSync(process.env.FAKE_CHROMIUM_LOG, line + "\n"); };
 const args = process.argv.slice(2);
 if (args.includes("--version")) { console.log("Fake Chromium 157.0.0.0"); process.exit(0); }
-if (process.env.FAKE_CHROMIUM_NEEDS_NO_SANDBOX === "1" && !args.includes("--no-sandbox")) { console.error("FATAL: No usable sandbox!"); process.exit(1); }
+if (process.env.FAKE_CHROMIUM_NEEDS_NO_SANDBOX === "1" && !args.includes("--no-sandbox")) { console.error("[1:1:1113/000000.1:FATAL:zygote_host_impl_linux.cc:144] No usable sandbox! see docs\n[1113/000000.2:ERROR:crashpad/file_io_posix.cc:145] open /sys/devices/system/cpu/online: No such file or directory (2)\nReceived signal 6\n#0 0x57c757f95533 (/opt/chrome+0x7491532)\n#1 0x57c75cf0c2a4 (/opt/chrome+0xc4082a3)"); process.exit(1); }
 const input = createReadStream(null, { fd: 3 });
 const output = createWriteStream(null, { fd: 4 });
 const send = (m) => output.write(JSON.stringify(m) + "\0");

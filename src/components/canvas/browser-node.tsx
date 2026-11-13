@@ -10,7 +10,7 @@ import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/
 import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
 import { robotAvatarSvg } from "@/lib/robot-avatar";
 import type { RuntimeClient } from "@/lib/runtime/client";
-import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels } from "@/lib/runtime/browser-stream";
+import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels, type BrowserStreamState } from "@/lib/runtime/browser-stream";
 
 export const BROWSER_PREFIX = "browser:";
 export const BROWSER_NODE_ID = BROWSER_PREFIX + "main";
@@ -55,7 +55,9 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   const { client, openSettings, close, linkedAgents, newBrowser } = useContext(BrowserCtx);
   const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
   const stream = useBrowserStream(client, true, nodeId);
-  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect } = stream;
+  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect, dialog, clipboard, download } = stream;
+  // Ctrl/Cmd+C in the page: the daemon reports the selected text and it lands on the user's own clipboard.
+  useEffect(() => { if (clipboard) void navigator.clipboard?.writeText(clipboard.text).catch(() => {}); }, [clipboard]);
   const linked = linkedAgents(id);
   // Canvas Link mode: the page gets no pointer input at all, the click only links (it bubbles to the node).
   const linking = useContext(CanvasCtx)?.linkMode != null;
@@ -243,6 +245,11 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); go(); } else if (e.key === "Escape") { setUrlText(info?.url ?? ""); e.currentTarget.blur(); } }} />
               {agentBusy && <span data-testid="browser-agent-pulse" className="flex shrink-0 items-center gap-1 pr-1 text-[10px] font-medium text-primary"><span className="size-1.5 animate-pulse rounded-full bg-primary" />Agent is using this page</span>}
             </div>
+            {download && (
+              <div role="status" data-testid="browser-download" className="flex shrink-0 items-center gap-1.5 border-b border-border/60 bg-muted/50 px-2.5 py-1 text-[11px] text-muted-foreground">
+                <span className="min-w-0 truncate">{download.state === "started" ? `Downloading ${download.name}…` : download.state === "done" ? `Downloaded ${download.name}` : `Download of ${download.name} failed`}</span>
+              </div>
+            )}
             {challenge && (
               <div role="status" data-testid="browser-challenge-hint" className="flex shrink-0 items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-700 dark:text-amber-300">
                 <IconShieldCheck size={12} className="shrink-0" />
@@ -266,6 +273,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 onCompositionStart={() => { composing.current = true; }}
                 onCompositionEnd={(e) => { composing.current = false; const text = e.data; e.currentTarget.value = ""; if (text) send({ type: "input.text", text: text.slice(0, 4096) }); }} />
               {!frame && <Overlay title="Loading page…" />}
+              {dialog && <PageDialog key={dialog.message + dialog.kind} dialog={dialog} onReply={(accept, text) => { send({ type: "dialog.reply", accept, ...(text !== undefined ? { text } : {}) }); }} />}
             </>
           ) : state === "disabled" ? (
             <Overlay title="Browser is turned off" body="Agents cannot use it while it is off.">
@@ -285,6 +293,28 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
     </div>
   );
 });
+
+/** The page's alert/confirm/prompt: the page is blocked until it is answered. */
+function PageDialog({ dialog, onReply }: { dialog: NonNullable<BrowserStreamState["dialog"]>; onReply: (accept: boolean, text?: string) => void }) {
+  const [text, setText] = useState(dialog.defaultPrompt);
+  const submit = () => onReply(true, dialog.kind === "prompt" ? text : undefined);
+  return (
+    <div role="alertdialog" aria-label="Page dialog" data-testid="browser-dialog" className="absolute inset-0 z-10 flex items-start justify-center bg-black/40 p-4"
+      onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") onReply(false); }}>
+      <div className="mt-6 w-full max-w-sm rounded-lg border border-border bg-card p-3 text-card-foreground shadow-xl">
+        <p className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs">{dialog.message || " "}</p>
+        {dialog.kind === "prompt" && (
+          <input autoFocus aria-label="Prompt answer" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+            className="mt-2 h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/70" />
+        )}
+        <div className="mt-3 flex justify-end gap-2">
+          {dialog.kind !== "alert" && <Button size="sm" variant="outline" onClick={() => onReply(false)}>Cancel</Button>}
+          <Button size="sm" autoFocus={dialog.kind !== "prompt"} onClick={submit}>OK</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Overlay({ title, body, children }: { title: string; body?: string; children?: React.ReactNode }) {
   return (

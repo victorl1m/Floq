@@ -20,8 +20,14 @@ export interface BrowserStreamState {
   cursor: string;
   agents: number;
   error: string | null;
+  /** The page's open alert/confirm/prompt, shown by the node until answered (or the page closes it). */
+  dialog: { kind: "alert" | "confirm" | "prompt"; message: string; defaultPrompt: string } | null;
+  /** Text the user copied in the page; `seq` changes on every copy so the node writes it to the system clipboard once. */
+  clipboard: { text: string; seq: number } | null;
+  /** Last download started from this page (files land in ~/Downloads in the sandbox). */
+  download: { name: string; state: "started" | "done" | "failed" } | null;
 }
-const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, cursor: "default", agents: 0, error: null };
+const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, cursor: "default", agents: 0, error: null, dialog: null, clipboard: null, download: null };
 
 const CURSORS = new Set(["default", "pointer", "text", "vertical-text", "grab", "grabbing", "crosshair", "move", "wait", "progress", "help", "not-allowed", "no-drop", "copy", "alias", "context-menu", "cell", "zoom-in", "zoom-out", "all-scroll", "col-resize", "row-resize", "n-resize", "e-resize", "s-resize", "w-resize", "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize"]);
 /** Unknown cursor names fall back to `default` (never feed page-controlled text into CSS). */
@@ -39,8 +45,12 @@ export function looksLikeChallenge(title: string | undefined | null, url: string
 /** Applies one runtime message; pure so the e2e and unit checks can share it. */
 export function reduceBrowser(prev: BrowserStreamState, msg: BrowserServerMessage): BrowserStreamState {
   switch (msg.type) {
-    case "state": return { ...prev, state: msg.state, error: null, ...(msg.state === "running" ? {} : { frame: msg.state === "starting" ? prev.frame : null, ...(msg.state === "starting" ? {} : { targetId: null }) }) };
-    case "page": return { ...prev, targetId: msg.targetId, frame: prev.frame?.targetId === msg.targetId ? prev.frame : null, nav: prev.nav?.targetId === msg.targetId ? prev.nav : null };
+    case "state": return { ...prev, state: msg.state, error: null, ...(msg.state === "running" ? {} : { dialog: null }), ...(msg.state === "running" ? {} : { frame: msg.state === "starting" ? prev.frame : null, ...(msg.state === "starting" ? {} : { targetId: null }) }) };
+    case "dialog": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, dialog: { kind: msg.kind, message: msg.message, defaultPrompt: msg.defaultPrompt } };
+    case "dialogClosed": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, dialog: null };
+    case "clipboard": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, clipboard: { text: msg.text, seq: (prev.clipboard?.seq ?? 0) + 1 } };
+    case "download": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, download: { name: msg.name || prev.download?.name || "file", state: msg.state } };
+    case "page": return { ...prev, dialog: null, targetId: msg.targetId, frame: prev.frame?.targetId === msg.targetId ? prev.frame : null, nav: prev.nav?.targetId === msg.targetId ? prev.nav : null };
     case "frame": { if (prev.targetId && msg.targetId !== prev.targetId) return prev; const { type: _t, ...frame } = msg; return { ...prev, frame }; }
     case "nav": { if (prev.targetId && msg.targetId !== prev.targetId) return prev; const { type: _t, ...nav } = msg; return { ...prev, nav }; }
     case "cursor": return { ...prev, cursor: normalizeCursor(msg.cursor) };

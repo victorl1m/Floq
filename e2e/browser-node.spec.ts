@@ -187,3 +187,39 @@ test('the New browser button opens a second node with its own stream', async ({ 
   const urls = await page.evaluate(() => (window as unknown as { __urls: string[] }).__urls);
   expect(new Set(urls).size).toBe(2);
 });
+
+test('page dialogs show in the node and the answer goes back to the page', async ({ page }) => {
+  await open(page);
+  const push = (m: unknown) => page.evaluate((x) => (window as unknown as { __push: (m: unknown) => void }).__push(x), m);
+  await push({ type: 'dialog', targetId: 't1', kind: 'prompt', message: 'Your name?', defaultPrompt: 'bob' });
+  const dlg = page.getByTestId('browser-dialog');
+  await expect(dlg).toContainText('Your name?');
+  await expect(dlg.getByLabel('Prompt answer')).toHaveValue('bob');
+  await dlg.getByLabel('Prompt answer').fill('alice');
+  await dlg.getByRole('button', { name: 'OK' }).click();
+  expect(await sentOf(page, 'dialog.reply')).toEqual([{ type: 'dialog.reply', accept: true, text: 'alice' }]);
+  await push({ type: 'dialogClosed', targetId: 't1' });
+  await expect(dlg).toHaveCount(0);
+
+  await push({ type: 'dialog', targetId: 't1', kind: 'confirm', message: 'Sure?', defaultPrompt: '' });
+  await page.getByTestId('browser-dialog').getByRole('button', { name: 'Cancel' }).click();
+  expect((await sentOf(page, 'dialog.reply')).pop()).toEqual({ type: 'dialog.reply', accept: false });
+  await push({ type: 'dialogClosed', targetId: 't1' });
+
+  await push({ type: 'dialog', targetId: 't1', kind: 'alert', message: 'Heads up', defaultPrompt: '' });
+  await expect(page.getByTestId('browser-dialog').getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+  await page.getByTestId('browser-dialog').getByRole('button', { name: 'OK' }).click();
+  expect((await sentOf(page, 'dialog.reply')).pop()).toEqual({ type: 'dialog.reply', accept: true });
+});
+
+test('copied text reaches the clipboard and downloads are reported', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await open(page);
+  const push = (m: unknown) => page.evaluate((x) => (window as unknown as { __push: (m: unknown) => void }).__push(x), m);
+  await push({ type: 'clipboard', targetId: 't1', text: 'copied from the page' });
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('copied from the page');
+  await push({ type: 'download', targetId: 't1', name: 'report.pdf', state: 'started' });
+  await expect(page.getByTestId('browser-download')).toContainText('Downloading report.pdf');
+  await push({ type: 'download', targetId: 't1', name: '', state: 'done' });
+  await expect(page.getByTestId('browser-download')).toContainText('Downloaded report.pdf');
+});

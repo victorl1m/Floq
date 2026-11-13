@@ -10,6 +10,10 @@ export type BrowserServerMessage =
   | { type: "cursor"; cursor: string }
   | ({ type: "nav" } & BrowserNav)
   | { type: "agentActivity"; targetId: string; at: number }
+  | { type: "dialog"; targetId: string; kind: "alert" | "confirm" | "prompt"; message: string; defaultPrompt: string }
+  | { type: "dialogClosed"; targetId: string }
+  | { type: "clipboard"; targetId: string; text: string }
+  | { type: "download"; targetId: string; name: string; state: "started" | "done" | "failed" }
   | { type: "clients"; agents: number }
   | { type: "error"; code: string };
 /** app -> runtime. Mouse/key messages use `kind` for the CDP event type because `type` names the message. */
@@ -22,6 +26,7 @@ export type BrowserClientMessage =
   | { type: "input.text"; text: string }
   | { type: "nav.go"; url: string }
   | { type: "nav.back" } | { type: "nav.forward" } | { type: "nav.reload" } | { type: "nav.stop" }
+  | { type: "dialog.reply"; accept: boolean; text?: string }
   | { type: "viewport"; width: number; height: number; dpr: number }
   | { type: "page.close" };
 /** GET /v1/browser. */

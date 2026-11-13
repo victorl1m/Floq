@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
 import { FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
+import { sandboxFailureReason, shortcutCommand } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
 const DAEMON = fileURLToPath(new URL("../dist/image/floq-browserd.mjs", import.meta.url));
@@ -235,7 +236,8 @@ test("daemon: listens on loopback only, endpoint.json is 0600, profile is 0700",
 test("daemon: falls back to --no-sandbox when Chromium cannot start sandboxed, and says why", async (t) => {
   const d = await startDaemon(t, { env: { FAKE_CHROMIUM_NEEDS_NO_SANDBOX: "1" } });
   assert.equal(d.ready.sandbox, "off");
-  assert.match(d.ready.sandboxReason, /No usable sandbox/);
+  assert.match(d.ready.sandboxReason, /no usable sandbox/);
+  assert.ok(!d.ready.sandboxReason.includes("\n") && d.ready.sandboxReason.length < 160 && !/#\d|Received signal/.test(d.ready.sandboxReason), "one clean line, no trace");
   assert.match(d.stderr, /browser\.chromium_sandbox_off/);
 });
 
@@ -695,4 +697,167 @@ test("daemon: a target whose Fetch.enable fails is closed and never resumed (fai
   await new Promise((r) => setTimeout(r, 100));
   assert.doesNotMatch(d.stderr, /RUN_IF_WAITING/, "an unprotected target must not be resumed");
   assert.match(d.stderr, /CLOSE_TARGET|"event":"browser\.fetch_enable_failed"/);
+});
+
+test("real Chromium: session cookies and a node's last URL survive a daemon restart (0600 state file)", { skip: !REAL ? "no runnable chrome" : !PW ? "no playwright-core" : false, timeout: 120000 }, async (t) => {
+  const site = createServer((req, res) => { res.setHeader("set-cookie", "sess=abc123; Path=/"); res.setHeader("content-type", "text/html"); res.end(`<title>t:${req.url}</title>hello`); });
+  await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
+  t.after(() => site.close());
+  const base = `http://127.0.0.1:${(site.address() as any).port}`;
+  const home = mkdtempSync(join(tmpdir(), "floq-browserd-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const attach = async (d: Daemon) => PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser`, { headers: { Authorization: "Bearer " + d.ready.token } });
+
+  let d = await startDaemon(t, { exe: REAL!, home });
+  d.send({ type: "page.open", nodeId: "n1", url: base + "/first" });
+  await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  for (let i = 0; i < 100 && !d.msgs.some((m) => m.type === "tabs" && m.tabs.some((x: any) => x.url === base + "/first")); i++) await new Promise((r) => setTimeout(r, 100));
+  d.send({ type: "nav.go", targetId: d.msgs.find((m) => m.type === "page" && m.nodeId === "n1").targetId, url: base + "/second" });
+  for (let i = 0; i < 100 && !d.msgs.some((m) => m.type === "tabs" && m.tabs.some((x: any) => x.url === base + "/second")); i++) await new Promise((r) => setTimeout(r, 100));
+  await d.stop();
+
+  const file = join(home, ".floq/browser/session-state.json");
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.ok(saved.cookies.some((c: any) => c.name === "sess" && c.value === "abc123"), "session cookie saved");
+  assert.equal(saved.pages.n1, base + "/second");
+
+  d = await startDaemon(t, { exe: REAL!, home });
+  const b = await attach(d);
+  t.after(() => b.close().catch(() => {}));
+  const cookies = await b.contexts()[0].cookies(base);
+  assert.ok(cookies.some((c: any) => c.name === "sess" && c.value === "abc123"), "session cookie restored into the new Chromium");
+  d.send({ type: "page.open", nodeId: "n1" });
+  const page = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  for (let i = 0; i < 100 && !d.msgs.some((m) => m.type === "tabs" && m.tabs.some((x: any) => x.targetId === page.targetId && x.url === base + "/second")); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(d.msgs.some((m) => m.type === "tabs" && m.tabs.some((x: any) => x.targetId === page.targetId && x.url === base + "/second")), "node resumes its last URL");
+});
+
+test("real Chromium: target=_blank and window.open load in the node page instead of vanishing", { skip: !REAL ? "no runnable chrome" : !PW ? "no playwright-core" : false, timeout: 120000 }, async (t) => {
+  const site = createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/dl") { res.setHeader("content-disposition", "attachment; filename=report.txt"); return res.end("data"); }
+    res.end(`<title>t${req.url}</title><body style="margin:0"><a id=a target=_blank href="/popup" style="position:absolute;left:10px;top:10px">pop</a>
+      <button id=w style="position:absolute;left:10px;top:50px" onclick="window.open('/win')">w</button>
+      <button id=al style="position:absolute;left:10px;top:90px" onclick="window.__r=[alert('hello'),confirm('sure?'),prompt('name?','bob')]">dlg</button>
+      <a id=d href=/dl style="position:absolute;left:10px;top:130px">dl</a>
+      <input id=i value="copy me" style="position:absolute;left:10px;top:170px">`);
+  });
+  await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
+  t.after(() => site.close());
+  const base = `http://127.0.0.1:${(site.address() as any).port}`;
+  const AGENT_ID = "22222222-2222-4222-8222-222222222222";
+  const d = await startDaemon(t, { exe: REAL! });
+  d.send({ type: "page.open", nodeId: "n1", url: base + "/" });
+  const opened = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  const tid = opened.targetId;
+  d.send({ type: "agent.scope", agent: AGENT_ID, nodeId: "n1" });
+  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  t.after(() => b.close().catch(() => {}));
+  let page: any;
+  for (let i = 0; i < 60 && !page; i++) { page = b.contexts()[0]?.pages().find((p: any) => p.url().startsWith(base)); await new Promise((r) => setTimeout(r, 100)); }
+  assert.ok(page, "agent sees the node page");
+  const click = async (x: number, y: number, count = 1) => { d.send({ type: "input.mouse", targetId: tid, kind: "mouseMoved", x, y, button: "none", buttons: 0, clickCount: 0, modifiers: 0 }); await new Promise((r) => setTimeout(r, 150)); for (const kind of ["mousePressed", "mouseReleased"]) d.send({ type: "input.mouse", targetId: tid, kind, x, y, button: "left", buttons: kind === "mousePressed" ? 1 : 0, clickCount: count, modifiers: 0 }); };
+  const wait = async (f: () => boolean | Promise<boolean>, what: string, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await f()) return; await new Promise((r) => setTimeout(r, 100)); } assert.fail("timeout: " + what + " tabs=" + JSON.stringify(d.msgs.filter((m) => m.type === "tabs").pop()?.tabs.map((x: any) => x.url)) + " err=" + JSON.stringify(d.msgs.filter((m) => m.type === "error")) + d.stderr.slice(-300)); };
+  const lastTabs = () => d.msgs.filter((m) => m.type === "tabs").pop()?.tabs ?? [];
+  const goto = async (path: string) => { d.send({ type: "nav.go", targetId: tid, url: base + path }); await wait(() => lastTabs().some((x: any) => x.targetId === tid && x.url === base + path), "navigate to " + path); await new Promise((r) => setTimeout(r, 1500)); };
+
+  // target=_blank and window.open load in the node's own page, not in a vanished tab
+  await click(15, 18);
+  await wait(() => lastTabs().some((x: any) => x.targetId === tid && x.url === base + "/popup"), "target=_blank adopted by the node page");
+  await wait(() => lastTabs().filter((x: any) => x.url.startsWith(base)).length === 1, "popup tab closed");
+  await goto("/");
+  await click(15, 58);
+  await wait(() => lastTabs().some((x: any) => x.targetId === tid && x.url === base + "/win"), "window.open adopted by the node page");
+  await goto("/");
+
+  await wait(async () => (await Promise.race([page.evaluate("document.readyState"), new Promise((r) => setTimeout(() => r("hung"), 1000))])) === "complete", "page loads normally after popups were adopted");
+});
+
+test("real Chromium: dialogs, downloads, copy shortcuts and a crashed page work through the node", { skip: !REAL ? "no runnable chrome" : !PW ? "no playwright-core" : false, timeout: 120000 }, async (t) => {
+  const site = createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/dl") { res.setHeader("content-disposition", "attachment; filename=report.txt"); return res.end("data"); }
+    res.end(`<title>t${req.url}</title><body style="margin:0"><a id=a target=_blank href="/popup" style="position:absolute;left:10px;top:10px">pop</a>
+      <button id=w style="position:absolute;left:10px;top:50px" onclick="window.open('/win')">w</button>
+      <button id=al style="position:absolute;left:10px;top:90px" onclick="window.__r=[alert('hello'),confirm('sure?'),prompt('name?','bob')]">dlg</button>
+      <a id=d href=/dl style="position:absolute;left:10px;top:130px">dl</a>
+      <input id=i value="copy me" style="position:absolute;left:10px;top:170px">`);
+  });
+  await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
+  t.after(() => site.close());
+  const base = `http://127.0.0.1:${(site.address() as any).port}`;
+  const AGENT_ID = "22222222-2222-4222-8222-222222222222";
+  const d = await startDaemon(t, { exe: REAL! });
+  d.send({ type: "page.open", nodeId: "n1", url: base + "/" });
+  const opened = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  const tid = opened.targetId;
+  d.send({ type: "agent.scope", agent: AGENT_ID, nodeId: "n1" });
+  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  t.after(() => b.close().catch(() => {}));
+  let page: any;
+  for (let i = 0; i < 60 && !page; i++) { page = b.contexts()[0]?.pages().find((p: any) => p.url().startsWith(base)); await new Promise((r) => setTimeout(r, 100)); }
+  assert.ok(page, "agent sees the node page");
+  const click = async (x: number, y: number, count = 1) => { d.send({ type: "input.mouse", targetId: tid, kind: "mouseMoved", x, y, button: "none", buttons: 0, clickCount: 0, modifiers: 0 }); await new Promise((r) => setTimeout(r, 150)); for (const kind of ["mousePressed", "mouseReleased"]) d.send({ type: "input.mouse", targetId: tid, kind, x, y, button: "left", buttons: kind === "mousePressed" ? 1 : 0, clickCount: count, modifiers: 0 }); };
+  const wait = async (f: () => boolean | Promise<boolean>, what: string, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await f()) return; await new Promise((r) => setTimeout(r, 100)); } assert.fail("timeout: " + what + " tabs=" + JSON.stringify(d.msgs.filter((m) => m.type === "tabs").pop()?.tabs.map((x: any) => x.url)) + " err=" + JSON.stringify(d.msgs.filter((m) => m.type === "error")) + d.stderr.slice(-300)); };
+  const lastTabs = () => d.msgs.filter((m) => m.type === "tabs").pop()?.tabs ?? [];
+  const goto = async (path: string) => { d.send({ type: "nav.go", targetId: tid, url: base + path }); await wait(() => lastTabs().some((x: any) => x.targetId === tid && x.url === base + path), "navigate to " + path); await new Promise((r) => setTimeout(r, 1500)); };
+
+  // alert, confirm and prompt reach the node one at a time and unblock the page when answered
+  const replies: Array<[boolean, string | undefined]> = [[true, undefined], [true, undefined], [true, "alice"]];
+  page.on("dialog", () => { /* a listener stops Playwright from auto-dismissing: the node answers */ });
+  await click(15, 98);
+  for (const [i, [accept, text]] of replies.entries()) {
+    const kind = ["alert", "confirm", "prompt"][i];
+    const dlg = await d.waitFor((m) => m.type === "dialog" && m.kind === kind && !m.seen && (m.seen = true), 8000);
+    assert.equal(dlg.targetId, tid);
+    assert.equal(dlg.message, ["hello", "sure?", "name?"][i]);
+    if (kind === "prompt") assert.equal(dlg.defaultPrompt, "bob");
+    d.send({ type: "dialog.reply", targetId: tid, accept, ...(text !== undefined ? { text } : {}) });
+    await d.waitFor((m) => m.type === "dialogClosed" && !m.seen && (m.seen = true));
+  }
+  await wait(async () => JSON.stringify(await page.evaluate("window.__r")) === '[null,true,"alice"]', "dialog answers reach the page");
+
+  // download: the node is told it started and finished
+  await click(15, 138);
+  await d.waitFor((m) => m.type === "download" && m.state === "started" && m.name === "report.txt");
+  await d.waitFor((m) => m.type === "download" && m.state === "done");
+  // (with an agent attached Playwright redirects the file to its own download directory, so only the events are checked here)
+
+  // Ctrl+A selects the input's text and Ctrl+C reports it for the user's clipboard
+  await click(20, 178);
+  await page.focus("#i");
+  const key = (kind: string, k: string, mod: number) => d.send({ type: "input.key", targetId: tid, kind, key: k, code: "Key" + k.toUpperCase(), modifiers: mod });
+  key("keyDown", "a", 2); key("keyUp", "a", 2);
+  await wait(async () => (await page.evaluate("document.activeElement.selectionEnd - document.activeElement.selectionStart")) === 7, "Ctrl+A selects all");
+  key("keyDown", "c", 2); key("keyUp", "c", 2);
+  assert.equal((await d.waitFor((m) => m.type === "clipboard")).text, "copy me");
+
+  // a crashed renderer is replaced and the node resumes its URL
+  await goto("/after-crash");
+  await wait(() => lastTabs().some((x: any) => x.targetId === tid && x.url === base + "/after-crash"), "url tracked before crash");
+  const before = d.msgs.length;
+  // Kill this daemon's renderer processes (one page): Chromium reports the target as crashed.
+  for (const pid of readdirSync("/proc").filter((x) => /^\d+$/.test(x))) {
+    try { const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8"); if (cmd.includes("--type=renderer") && cmd.includes(d.home)) process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ }
+  }
+  await d.waitFor((m) => d.msgs.indexOf(m) >= before && m.type === "pageGone" && m.nodeId === "n1");
+  d.send({ type: "page.open", nodeId: "n1" });
+  const again = await d.waitFor((m) => d.msgs.indexOf(m) > before && m.type === "page" && m.nodeId === "n1" && m.targetId !== tid);
+  await wait(() => lastTabs().some((x: any) => x.targetId === again.targetId && x.url === base + "/after-crash"), "crashed node resumes its last URL");
+});
+
+test("daemon helpers: sandbox failure reason is one clean line; editing shortcuts map to editor commands", () => {
+  const trace = "[1:1:1113/1.1:FATAL:zygote_host_impl_linux.cc:144] No usable sandbox! x\nReceived signal 6\n#0 0x57 (/opt/chrome+0x7)\n#1 0x58 (/opt/chrome+0x8)";
+  const r = sandboxFailureReason(133, trace);
+  assert.ok(!r.includes("\n") && !/#\d|signal/.test(r) && r.length < 160, r);
+  assert.equal(sandboxFailureReason(1, "[1:1:x:ERROR:foo.cc:1] Something odd\n#0 0x1"), "exit 1: Something odd");
+  assert.equal(sandboxFailureReason(2, "#0 0x1\n#1 0x2"), "exit 2");
+  assert.equal(shortcutCommand("a", 2), "selectAll");
+  assert.equal(shortcutCommand("C", 4), "copy");
+  assert.equal(shortcutCommand("x", 2), "cut");
+  assert.equal(shortcutCommand("z", 2), "undo");
+  assert.equal(shortcutCommand("z", 2 | 8), "redo");
+  assert.equal(shortcutCommand("c", 2 | 1), undefined);
+  assert.equal(shortcutCommand("q", 2), undefined);
 });
