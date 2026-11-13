@@ -6,7 +6,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,23 @@ import {
 const HOME = process.env.HOME || homedir();
 const BASE = join(HOME, ".floq", "browser");
 const PROFILE = join(BASE, "profile");
+/** Session cookies and each node's last URL, kept across daemon restarts (idle shutdown). Chromium drops session cookies when it exits. */
+const STATE_FILE = join(BASE, "session-state.json");
+type SavedState = { cookies: Array<Record<string, unknown>>; pages: Record<string, string> };
+export function readSavedState(file = STATE_FILE): SavedState {
+  try {
+    const j = JSON.parse(readFileSync(file, "utf8")) as Partial<SavedState>;
+    const pages: Record<string, string> = {};
+    for (const [k, v] of Object.entries(j.pages ?? {})) if (typeof v === "string" && /^https?:\/\//.test(v)) pages[k] = v;
+    return { cookies: Array.isArray(j.cookies) ? j.cookies.filter((c) => c && typeof c === "object") : [], pages };
+  } catch { return { cookies: [], pages: {} }; }
+}
+export function writeSavedState(st: SavedState, file = STATE_FILE): void {
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify(st), { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, file);
+}
 const DOWNLOADS = join(HOME, "Downloads");
 const BROWSERS = process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/floq/browsers";
 
@@ -58,6 +75,17 @@ export function chromiumArgs(opts: { sandbox: boolean; profile: string }): strin
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
     "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];
+}
+
+/** One clean line for `floq browser status`: never a crash trace. */
+export function sandboxFailureReason(code: number | null, stderrTail: string): string {
+  if (/No usable sandbox|setuid sandbox|namespace sandbox/i.test(stderrTail)) {
+    return "no usable sandbox: the kernel refuses user namespaces with a uid map inside the agent sandbox";
+  }
+  const line = stderrTail.split("\n").map((l) => l.trim())
+    .filter((l) => /FATAL|ERROR/.test(l) && !/crashpad|file_io_posix/.test(l))
+    .map((l) => l.replace(/^\[[^\]]*\]\s*/, "").replace(/^(FATAL|ERROR):\S+\]\s*/, ""))[0];
+  return ("exit " + code + (line ? ": " + line : "")).slice(0, 160);
 }
 
 type Running = { child: ChildProcess; stderrTail: () => string };
@@ -117,7 +145,7 @@ async function startChromium(exe: string, onExit: (code: number | null) => void)
         run.child.once("exit", onExit);
         return { run, mux, sandbox, reason };
       }
-      reason = "exit " + probe.code + ": " + run.stderrTail().split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 300);
+      reason = sandboxFailureReason(probe.code, run.stderrTail());
     } catch (e) {
       reason = (e as Error).message;
       run.child.kill("SIGKILL");
@@ -140,7 +168,8 @@ async function main() {
     if (stopping) return;
     stopping = true;
     // Browser.close lets Chromium flush its cookie store (session cookies included) before the signals follow.
-    try { void mux?.command("Browser.close", {}, undefined, 2000).catch(() => {}); } catch { /* not started yet */ }
+    const close = () => { try { void mux?.command("Browser.close", {}, undefined, 2000).catch(() => {}); } catch { /* not started yet */ } };
+    if (chromeRun) void Promise.race([saveState().catch(() => {}), new Promise((r) => setTimeout(r, 1500))]).then(close); else close();
     setTimeout(() => { try { chromeRun?.child.kill("SIGTERM"); } catch { /* gone */ } }, 3500).unref();
     setTimeout(() => { try { chromeRun?.child.kill("SIGKILL"); } catch { /* gone */ } out({ type: "exit" }); process.exit(code); }, 5000).unref();
     chromeRun?.child.once("exit", () => { out({ type: "exit" }); process.exit(code); });
@@ -168,6 +197,24 @@ async function main() {
   const lastActivity = new Map<string, number>();
   const navState = new Map<string, { loading: boolean; canBack: boolean; canForward: boolean }>();
 
+  const saved = readSavedState();
+  const lastUrls: Record<string, string> = { ...saved.pages };
+  /** Snapshot session cookies and each node's current http(s) URL to disk (0600, inside the user's encrypted home). */
+  async function saveState() {
+    let cookies = saved.cookies;
+    try {
+      const r = (await mux.command("Storage.getCookies", {}, undefined, 1500)).result as { cookies?: Array<Record<string, unknown>> } | undefined;
+      if (r?.cookies) cookies = r.cookies.filter((c) => c.session === true);
+    } catch { /* keep the previous snapshot */ }
+    for (const [nodeId, tid] of nodes) { const u = mux.targets.get(tid)?.url; if (u && /^https?:\/\//.test(u)) lastUrls[nodeId] = u; }
+    saved.cookies = cookies;
+    writeSavedState({ cookies, pages: lastUrls });
+  }
+  if (saved.cookies.length) {
+    const cookies = saved.cookies.map((c) => { const { size, ...rest } = c as Record<string, unknown>; void size; return rest; });
+    try { await mux.command("Storage.setCookies", { cookies }, undefined, 5000); log("browser.cookies_restored", { count: cookies.length }); } catch (e) { log("browser.cookies_restore_failed", { message: (e as Error).message }); }
+  }
+  const saveTimer = setInterval(() => { void saveState().catch(() => {}); }, 15000); saveTimer.unref();
   const pages = () => [...mux.targets.values()].filter((t) => t.type === "page");
   let lastTabs = "";
   const emitTabs = () => {
@@ -179,9 +226,46 @@ async function main() {
   mux.onTargetsChanged = () => {
     // A node's page that went away (closed by its linked agent, or crashed): forget it and let the runtime re-open it for a live viewer.
     for (const [nodeId, tid] of [...nodes]) if (!mux.targets.has(tid)) { nodes.delete(nodeId); casting.delete(tid); refreshScopes(); out({ type: "pageGone", nodeId }); }
+    adoptPopups();
     enforceTabCap(); emitTabs();
     for (const tid of nodes.values()) { const t = mux.targets.get(tid); if (t) void emitNav(t.targetId); }
   };
+  // A window opened by a node's page (target=_blank, window.open) loads in that same node page: the node shows one page, so the popup
+  // must not vanish into an unseen tab. The popup is closed once its URL is known and the opener navigates there instead.
+  const popupSeen = new Set<string>();
+  const resumedPages = new Set<string>(); // pages the daemon has started: a popup must be running before it is closed, or its renderer (shared with the opener) wedges
+  /** Page.windowOpen (window.open, target=_blank links) names the URL before the popup has loaded; the opener goes there and the popup is closed. */
+  const windowOpens = new Map<string, number>(); // opener target -> number of popups still to close
+  function adoptWindowOpen(openerTid: string, url: string) {
+    const sid = mux.sessionFor(openerTid);
+    if (!sid || !/^https?:\/\//.test(url)) return;
+    log("browser.popup_adopted", { url: url.slice(0, 120) });
+    windowOpens.set(openerTid, (windowOpens.get(openerTid) ?? 0) + 1);
+    void mux.command("Page.navigate", { url }, sid).catch(() => {});
+    setTimeout(() => { windowOpens.delete(openerTid); }, 5000).unref();
+    adoptPopups();
+  }
+  function adoptPopups() {
+    for (const t of pages()) {
+      if (popupSeen.has(t.targetId) || !t.openerId || mux.claimed.has(t.targetId) || mux.agentOpened.has(t.targetId)) continue;
+      if (![...nodes.values()].includes(t.openerId)) continue;
+      if (!resumedPages.has(t.targetId)) continue; // not started yet: closing it now would leave the opener's renderer stuck
+      const pending = windowOpens.get(t.openerId) ?? 0;
+      if (pending > 0) { // its URL was already taken from Page.windowOpen
+        popupSeen.add(t.targetId); windowOpens.set(t.openerId, pending - 1);
+        mux.command("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
+        continue;
+      }
+      if (!/^https?:\/\//.test(t.url)) continue;
+      popupSeen.add(t.targetId);
+      const sid = mux.sessionFor(t.openerId);
+      if (!sid) continue;
+      log("browser.popup_adopted", { url: t.url.slice(0, 120) });
+      void mux.command("Page.navigate", { url: t.url }, sid).catch(() => {});
+      mux.command("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
+    }
+    for (const id of [...popupSeen, ...resumedPages]) if (!mux.targets.has(id)) { popupSeen.delete(id); resumedPages.delete(id); }
+  }
   mux.onClientCount = (n) => out({ type: "clients", agents: n });
   mux.onActivity = (targetId) => {
     const now = Date.now();
@@ -210,6 +294,7 @@ async function main() {
     const prev = navState.get(targetId);
     const state = { loading: loading ?? prev?.loading ?? false, canBack, canForward };
     navState.set(targetId, state);
+    if (/^https?:\/\//.test(t.url)) for (const [nodeId, tid] of nodes) if (tid === targetId) lastUrls[nodeId] = t.url;
     out({ type: "nav", targetId, url: t.url, title: t.title, ...state });
   }
 
@@ -218,11 +303,20 @@ async function main() {
   mux.onDaemonAttached = (info: TargetInfo, sessionId: string) => {
     void (async () => {
       let protectedOk = true;
+      // A window opened by a page (target=_blank) starts with its renderer paused: commands the renderer answers (lifecycle events,
+      // child auto-attach) never return until it is resumed, which deadlocked the whole setup and left the popup blank forever.
+      // So a popup is resumed as soon as the browser-side hooks (Page, Fetch) are in place, and configured after.
+      const popup = info.type === "page" && !!info.openerId;
+      let resumed = false;
+      const resume = () => {
+        if (resumed || !protectedOk) return;
+        resumed = true;
+        void mux.command("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {}).then(() => { resumedPages.add(info.targetId); if (popup) setTimeout(adoptPopups, 150).unref(); });
+      };
       try {
         const intercepted = info.type === "page" || info.type === "iframe" || info.type === "worker" || info.type === "service_worker" || info.type === "shared_worker";
         if (intercepted) {
-          if (info.type !== "service_worker" && info.type !== "shared_worker") await mux.command("Page.enable", {}, sessionId).catch(() => {});
-          if (info.type === "page") await mux.command("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId).catch(() => {});
+          if (info.type !== "service_worker" && info.type !== "shared_worker") await mux.command("Page.enable", {}, sessionId, 5000).catch(() => {});
           if (blockPrivate) {
             try { await mux.command("Fetch.enable", { patterns: [{ urlPattern: "*" }] }, sessionId); }
             catch {
@@ -232,10 +326,12 @@ async function main() {
               await mux.command("Target.closeTarget", { targetId: info.targetId }).catch(() => {});
             }
           }
-          if (protectedOk) await mux.command("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId).catch(() => {});
+          if (popup) resume();
+          if (info.type === "page") await mux.command("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId, 5000).catch(() => {});
+          if (protectedOk) await mux.command("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId, 5000).catch(() => {});
         }
       } finally {
-        if (protectedOk) mux.command("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {});
+        resume();
       }
     })();
   };
@@ -267,17 +363,49 @@ async function main() {
       }
       return;
     }
+    if (msg.method === "Browser.downloadWillBegin" || msg.method === "Browser.downloadProgress") {
+      // frameId of a main frame is its target id; downloads started by other pages are not reported to a node.
+      if (msg.method === "Browser.downloadWillBegin") {
+        const guid = String(p.guid ?? ""), frame = String(p.frameId ?? "");
+        downloadFrames.set(guid, frame);
+        if (downloadFrames.size > 64) downloadFrames.delete(downloadFrames.keys().next().value as string);
+        out({ type: "download", targetId: frame, name: String(p.suggestedFilename ?? "file").slice(0, 200), state: "started" });
+      } else if (p.state === "completed" || p.state === "canceled") {
+        const frame = downloadFrames.get(String(p.guid ?? ""));
+        if (frame) out({ type: "download", targetId: frame, name: "", state: p.state === "completed" ? "done" : "failed" });
+      }
+      return;
+    }
+    if (msg.method === "Target.targetCrashed") {
+      const crashed = String(p.targetId ?? "");
+      for (const [nodeId, tid] of nodes) if (tid === crashed) {
+        // The renderer died: replace the page. Dropping it makes the runtime re-open the node, which resumes its last URL.
+        log("browser.page_crashed", { nodeId });
+        mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
+      }
+      return;
+    }
     const tid = msg.sessionId ? sessionTargetOf(msg.sessionId) : undefined;
     if (!tid) return;
+    if (msg.method === "Page.windowOpen" && nodes.size && [...nodes.values()].includes(tid)) { adoptWindowOpen(tid, String(p.url ?? "")); return; }
+    if (msg.method === "Page.javascriptDialogOpening") {
+      const kind = String(p.type ?? "alert");
+      if (kind === "beforeunload") { mux.command("Page.handleJavaScriptDialog", { accept: true }, msg.sessionId).catch(() => {}); return; } // never trap a navigation
+      const d = { type: "dialog", targetId: tid, kind, message: String(p.message ?? "").slice(0, 2000), defaultPrompt: String(p.defaultPrompt ?? "").slice(0, 500) };
+      dialogs.set(tid, d); out(d); return;
+    }
+    if (msg.method === "Page.javascriptDialogClosed") { if (dialogs.delete(tid)) out({ type: "dialogClosed", targetId: tid }); return; }
     if (msg.method === "Page.frameStartedLoading") void emitNav(tid, true);
     else if (msg.method === "Page.frameStoppedLoading" || msg.method === "Page.frameNavigated" || msg.method === "Page.navigatedWithinDocument") void emitNav(tid, msg.method === "Page.frameNavigated" ? undefined : false);
   };
+  const downloadFrames = new Map<string, string>(); // download guid -> target that started it
+  const dialogs = new Map<string, Record<string, unknown>>(); // open JS dialogs by target, replayed to a viewer that attaches later
   const sessionTargetOf = (sessionId: string): string | undefined => { for (const t of mux.targets.keys()) if (mux.sessionFor(t) === sessionId) return t; return undefined; };
 
   // ---- bootstrap Chromium state
   await mux.command("Target.setDiscoverTargets", { discover: true });
   await mux.command("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-  await mux.command("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOADS, eventsEnabled: false }).catch(() => {});
+  await mux.command("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOADS, eventsEnabled: true }).catch(() => {});
 
   // ---- node pages and agent scoping
   function refreshScopes() {
@@ -296,6 +424,7 @@ async function main() {
     return p;
   }
   async function doOpen(nodeId: string, url?: string): Promise<string> {
+    if (!url && lastUrls[nodeId]) url = lastUrls[nodeId]; // resume where the node was before the daemon stopped
     const have = nodes.get(nodeId);
     if (have && mux.targets.has(have)) { out({ type: "page", nodeId, targetId: have, created: false }); return have; }
     const free = pages().filter((t) => !mux.claimed.has(t.targetId) && !mux.agentOpened.has(t.targetId));
@@ -319,7 +448,7 @@ async function main() {
   }
   function closePage(nodeId: string) {
     const tid = nodes.get(nodeId); if (!tid) return;
-    nodes.delete(nodeId); casting.delete(tid);
+    nodes.delete(nodeId); casting.delete(tid); delete lastUrls[nodeId];
     for (const [agent, node] of agentScope) if (node === nodeId) agentScope.delete(agent);
     refreshScopes();
     mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
@@ -403,8 +532,14 @@ async function main() {
         refreshScopes();
         return;
       }
+      case "dialog.reply": {
+        const v = viewSession(c.targetId); if (!v) return noTarget();
+        await mux.command("Page.handleJavaScriptDialog", { accept: c.accept, ...(c.text !== undefined ? { promptText: c.text } : {}) }, v.sid).catch(() => {});
+        return;
+      }
       case "screencast.start": {
         const v = viewSession(c.targetId); if (!v) return noTarget();
+        const open = dialogs.get(v.targetId); if (open) out(open);
         await stopScreencast(v.targetId);
         casting.add(v.targetId);
         const start = () => mux.command("Page.startScreencast", { format: "jpeg", quality: c.quality, maxWidth: c.maxW, maxHeight: c.maxH, everyNthFrame: 1 }, v.sid);
@@ -441,7 +576,15 @@ async function main() {
       case "input.key": {
         const v = viewSession(c.targetId); if (!v) return noTarget();
         const text = c.text || ([...c.key].length === 1 ? c.key : "");
-        await mux.command("Input.dispatchKeyEvent", { type: c.kind === "keyDown" && text && !(c.modifiers & 6) ? "keyDown" : c.kind, key: c.key, code: c.code, modifiers: c.modifiers, ...(c.kind === "keyUp" ? {} : { text }), windowsVirtualKeyCode: vkey(c.key) }, v.sid);
+        // Headless Chromium has no menu accelerators: editing shortcuts only act when the editor command is named.
+        const command = c.kind === "keyDown" && c.modifiers & 6 ? shortcutCommand(c.key, c.modifiers) : undefined;
+        let copied: string | undefined;
+        if (command === "copy" || command === "cut") {
+          const r = (await mux.command("Runtime.evaluate", { expression: SELECTED_TEXT, returnByValue: true }, v.sid, 2000).catch(() => ({}))) as { result?: { result?: { value?: unknown } } };
+          if (typeof r.result?.result?.value === "string") copied = r.result.result.value.slice(0, 32768);
+        }
+        await mux.command("Input.dispatchKeyEvent", { type: c.kind === "keyDown" && text && !(c.modifiers & 6) ? "keyDown" : c.kind, key: c.key, code: c.code, modifiers: c.modifiers, ...(c.kind === "keyUp" ? {} : { text: command ? "" : text }), ...(command ? { commands: [command] } : {}), windowsVirtualKeyCode: vkey(c.key) }, v.sid);
+        if (copied) out({ type: "clipboard", targetId: v.targetId, text: copied }); // the node writes it to the user's clipboard
         return;
       }
       case "input.text": {
@@ -488,6 +631,21 @@ async function main() {
 
 function readVersionFile(): { chromium: string } | null {
   try { return JSON.parse(readFileSync(join(BROWSERS, "VERSION.json"), "utf8")) as { chromium: string }; } catch { return null; }
+}
+
+const SELECTED_TEXT = "(()=>{const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&typeof a.selectionStart==='number'&&a.selectionStart!==a.selectionEnd&&a.type!=='password')return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection())})()";
+/** Editor command for Ctrl/Cmd+key (paste is delivered as text by the node, so it is not here). */
+export function shortcutCommand(key: string, modifiers: number): string | undefined {
+  if (modifiers & 1) return undefined; // Alt combinations are not editing shortcuts
+  const shift = !!(modifiers & 8);
+  switch (key.toLowerCase()) {
+    case "a": return shift ? undefined : "selectAll";
+    case "c": return shift ? undefined : "copy";
+    case "x": return shift ? undefined : "cut";
+    case "z": return shift ? "redo" : "undo";
+    case "y": return shift ? undefined : "redo";
+    default: return undefined;
+  }
 }
 
 /** Windows virtual key codes for the named keys Chromium needs to act on (arrows, Enter, Backspace ...). */

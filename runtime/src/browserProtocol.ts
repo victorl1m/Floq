@@ -29,6 +29,8 @@ export type ClientMessage =
   | { type: "input.text"; text: string }
   | { type: "nav.go"; targetId?: string; url: string }
   | { type: "nav.back" } | { type: "nav.forward" } | { type: "nav.reload" } | { type: "nav.stop" }
+  /** Answer the page's open alert/confirm/prompt. */
+  | { type: "dialog.reply"; accept: boolean; text?: string }
   /** Follow the node's size (CSS px of the live view). Applied with Emulation.setDeviceMetricsOverride. */
   | { type: "viewport"; width: number; height: number; dpr: number }
   /** The user closed the node: its page is destroyed. */
@@ -123,6 +125,10 @@ export function validateClientMessage(input: unknown): ClientValidation {
     }
     case "nav.back": case "nav.forward": case "nav.reload": case "nav.stop":
       return { ok: true, msg: { type: m.type } };
+    case "dialog.reply": {
+      if (typeof m.accept !== "boolean" || (m.text !== undefined && (typeof m.text !== "string" || m.text.length > 4096))) return bad();
+      return { ok: true, msg: { type: "dialog.reply", accept: m.accept, ...(typeof m.text === "string" ? { text: m.text } : {}) } };
+    }
     case "viewport": {
       const width = int(m.width, 200, 3840), height = int(m.height, 200, 2160), dpr = num(m.dpr ?? 1, 0.5, 4);
       if (width === null || height === null || dpr === null) return bad();
@@ -143,6 +149,10 @@ export type ViewerMessage =
   | { type: "cursor"; cursor: string }
   | { type: "nav"; targetId: string; url: string; title: string; loading: boolean; canBack: boolean; canForward: boolean }
   | { type: "agentActivity"; targetId: string; at: number }
+  | { type: "dialog"; targetId: string; kind: "alert" | "confirm" | "prompt"; message: string; defaultPrompt: string }
+  | { type: "dialogClosed"; targetId: string }
+  | { type: "clipboard"; targetId: string; text: string }
+  | { type: "download"; targetId: string; name: string; state: "started" | "done" | "failed" }
   | { type: "clients"; agents: number }
   | { type: "error"; code: string };
 
@@ -182,6 +192,20 @@ export function toViewerMessage(raw: unknown): ViewerMessage | null {
     case "agentActivity": {
       const targetId = target(raw.targetId), at = num(raw.at, 0, Number.MAX_SAFE_INTEGER);
       return targetId && at !== null ? { type: "agentActivity", targetId, at } : null;
+    }
+    case "dialog": {
+      const targetId = target(raw.targetId);
+      if (!targetId) return null;
+      return { type: "dialog", targetId, kind: raw.kind === "confirm" ? "confirm" : raw.kind === "prompt" ? "prompt" : "alert", message: str(raw.message, 2000) ?? "", defaultPrompt: str(raw.defaultPrompt, 500) ?? "" };
+    }
+    case "dialogClosed": { const targetId = target(raw.targetId); return targetId ? { type: "dialogClosed", targetId } : null; }
+    case "clipboard": {
+      const targetId = target(raw.targetId), text = str(raw.text, 32768);
+      return targetId && text ? { type: "clipboard", targetId, text } : null;
+    }
+    case "download": {
+      const targetId = target(raw.targetId);
+      return targetId ? { type: "download", targetId, name: str(raw.name, 200) ?? "", state: raw.state === "done" ? "done" : raw.state === "failed" ? "failed" : "started" } : null;
     }
     case "clients": {
       const agents = int(raw.agents, 0, 1e6);
