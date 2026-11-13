@@ -25,6 +25,8 @@ export interface McpServerSpec {
   headerSecrets: Record<string, string>;
   /** Literal env/header names that look sensitive: refused unless the caller explicitly allows plain text. */
   plaintextSensitive: string[];
+  /** Codex only: forward FLOQ_API_URL / FLOQ_AGENT_TOKEN to this stdio server (Codex scrubs the child's env otherwise). Set only by Floq's own entries. */
+  forwardEnv?: boolean;
 }
 
 /** How the image's floq-vault is launched from a provider config. Tests and local checks can point it elsewhere. */
@@ -101,8 +103,21 @@ export function specSecretNames(spec: McpServerSpec): string[] {
   return [...names];
 }
 
+/** Entry names Floq manages itself; users and plugins cannot install, replace or (through the UI) remove them. */
+export const RESERVED_MCP_NAMES: ReadonlySet<string> = new Set(["floq-browser"]);
+export const isReservedMcpName = (name: string): boolean => RESERVED_MCP_NAMES.has(name.toLowerCase());
+
+/**
+ * The agent browser's MCP entry (docs/design/agent-browser.md §A.6). No secrets: the wrapper asks the runtime for the endpoint at start
+ * with the session's own FLOQ_API_URL / FLOQ_AGENT_TOKEN, so neither the endpoint nor its token is ever written to a config file.
+ */
+export const FLOQ_BROWSER_MCP_SPEC: McpServerSpec = {
+  name: "floq-browser", type: "stdio", command: "/usr/local/bin/floq-browser-mcp", args: [], env: {}, headers: {}, envSecrets: {}, headerSecrets: {}, plaintextSensitive: [], forwardEnv: true,
+};
+
 export function validateMcpName(value: unknown): string {
   if (typeof value !== "string" || !NAME.test(value)) throw invalid("name must be 1-64 letters, digits, hyphens or underscores, starting with a letter or digit");
+  if (isReservedMcpName(value)) throw invalid(value + " is reserved for Floq's browser; turn the browser on or off in Settings > Agents > Browser");
   return value;
 }
 
@@ -266,7 +281,7 @@ export function renderTomlTable(path: string[], table: Plain): string {
 function codexTable(spec: McpServerSpec, launcher: VaultLauncher): Plain {
   if (spec.type === "stdio") {
     const run = stdioCommand(spec, launcher);
-    return { command: run.command, args: run.args, ...(run.wrapped ? { env_vars: CODEX_FORWARDED_ENV } : {}), ...(Object.keys(spec.env).length ? { env: spec.env } : {}) };
+    return { command: run.command, args: run.args, ...(run.wrapped || spec.forwardEnv ? { env_vars: CODEX_FORWARDED_ENV } : {}), ...(Object.keys(spec.env).length ? { env: spec.env } : {}) };
   }
   // Verified with codex 0.166: its http_headers_helper runs with a scrubbed environment (no Floq session credentials),
   // so the wrapper cannot authenticate to the vault from there. Refuse instead of writing the value in plain text.
@@ -386,6 +401,33 @@ export function mergeGlobalCodexMcp(globalRaw: string, sessionRaw: string | null
     const merged = tomlServers(check, "session") ?? {};
     return Object.keys(merged).length === present.size + blocks.length ? next : null;
   } catch { return null; }
+}
+
+export type ReservedMcpState = "installed" | "removed" | "unchanged" | "edited";
+
+/**
+ * Brings one config file in line with whether Floq's own entry (`spec`) should exist. Pure: returns the new text (null = no change)
+ * and what happened. An entry with this name that differs from what Floq would write is the user's hand edit: it is reported as
+ * "edited" and never overwritten or removed. Comparison is structural (sameJson), not textual.
+ */
+export function reconcileReservedMcp(raw: string | null, kind: "json" | "toml", spec: McpServerSpec, desired: boolean, label: string): { next: string | null; state: ReservedMcpState } {
+  let existing: unknown;
+  if (kind === "json") {
+    const { servers } = parseJsonConfig(raw, label);
+    existing = servers && Object.prototype.hasOwnProperty.call(servers, spec.name) ? servers[spec.name] : undefined;
+  } else {
+    const servers = tomlServers(parseTomlConfig(raw, label), label);
+    existing = servers && Object.prototype.hasOwnProperty.call(servers, spec.name) ? servers[spec.name] : undefined;
+  }
+  const expected = kind === "json" ? claudeEntry(spec, DEFAULT_LAUNCHER) : codexTable(spec, DEFAULT_LAUNCHER);
+  if (existing === undefined) {
+    if (!desired) return { next: null, state: "unchanged" };
+    return { next: kind === "json" ? addToJsonConfig(raw, spec, label) : addToTomlConfig(raw, spec, label), state: "installed" };
+  }
+  if (!sameJson(existing, expected)) return { next: null, state: "edited" };
+  if (desired) return { next: null, state: "unchanged" };
+  const next = kind === "json" ? removeFromJsonConfig(raw, spec.name, label) : removeFromTomlConfig(raw, spec.name, label);
+  return { next, state: next === null ? "unchanged" : "removed" };
 }
 
 export const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");

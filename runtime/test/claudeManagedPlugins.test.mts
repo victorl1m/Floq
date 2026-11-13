@@ -101,3 +101,23 @@ test("disabled plugins, missing marketplaces, unlisted or non-relative plugins s
   assert.deepEqual(promoteUserPlugins({ ...paths, base: BASE, git }), []);
   assert.deepEqual(read(join(paths.managedDir, "managed-settings.json")), BASE);
 });
+
+test("claude.ai connectors: off writes disableClaudeAiConnectors, on or unset omits it, base keys stay", () => {
+  const off = buildClaudeManagedSettings(BASE, [], { claudeAiConnectors: false });
+  assert.equal(off.disableClaudeAiConnectors, true);
+  assert.deepEqual(off.permissions, BASE.permissions);
+  assert.ok(!("disableClaudeAiConnectors" in buildClaudeManagedSettings(BASE, [])));
+  assert.ok(!("disableClaudeAiConnectors" in buildClaudeManagedSettings(BASE, [], { claudeAiConnectors: true })));
+  assert.ok(!("disableClaudeAiConnectors" in BASE), "the base is not mutated");
+  const withPlugin = buildClaudeManagedSettings(BASE, [{ id: ID, marketplace: "m", path: "/p" }], { claudeAiConnectors: false });
+  assert.equal(withPlugin.disableClaudeAiConnectors, true);
+  assert.deepEqual(withPlugin.prependPlugins, [ID, SEC_DEFAULT_ID]);
+});
+
+test("promoteUserPlugins writes the connectors key into the managed file only when off", (t) => {
+  const h = home(t, {}, {});
+  promoteUserPlugins({ ...h, base: BASE, claudeAiConnectors: false });
+  assert.equal(read(join(h.managedDir, "managed-settings.json")).disableClaudeAiConnectors, true);
+  promoteUserPlugins({ ...h, base: BASE });
+  assert.ok(!("disableClaudeAiConnectors" in read(join(h.managedDir, "managed-settings.json"))));
+});

@@ -56,6 +56,7 @@ import { createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, 
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
+import { BrowserProvider, browserNodeTypes, isBrowserId, useCanvasBrowser } from "./browser-node";
 import { AppWindowProvider, appWindowNodeTypes, isAppWindowId, useCanvasAppWindows } from "./app-window-node";
 import { branchChangeToFollow, hiddenByBranch, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
@@ -102,7 +103,7 @@ function EmptyCanvasViewport({ empty, projectId }: { empty: boolean; projectId: 
   return null;
 }
 
-const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...appWindowNodeTypes };
+const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...appWindowNodeTypes, ...browserNodeTypes };
 const edgeTypes = { wire: WireEdgeView, ...noteEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
@@ -147,7 +148,7 @@ function AgentCanvas() {
   const canvasTheme: "light" | "dark" = resolvedTheme === "light" ? "light" : "dark";
   const {
     sessions, deleteSessions, projects, canvasProjectId, selectProject, setNewAgentOpen, activateSession, navigate, userPreferences, updateUserPreferences,
-    client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects, info: runtimeInfo,
+    client, upsertSession, canvasFocus, consumeCanvasFocus, refreshProjects, info: runtimeInfo, openSettings,
   } = useRuntime();
   const { fitView, getViewport, setViewport, zoomTo, zoomIn, zoomOut, screenToFlowPosition } = useReactFlow();
   // Fit options: with floors, leave room above the top band's label. Updated once the floors are known.
@@ -877,29 +878,35 @@ function AgentCanvas() {
   const emptyCanvas = projectSessions.length === 0;
   const appAnchor = useMemo(() => ({ x: nodes.reduce((max, node) => Math.max(max, node.position.x + (node.width ?? DEFAULT_NODE_SIZE.width)), 0) + 80, y: nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0 }), [nodes]);
   const appWindows = useCanvasAppWindows(client, projectSessions, appAnchor);
+  const browserAnchor = useMemo(() => ({ x: appAnchor.x, y: appAnchor.y + 40 + (appWindows.nodes.length * 480) }), [appAnchor, appWindows.nodes.length]);
+  const browser = useCanvasBrowser(client, activeProjectId ?? null, browserAnchor);
   otherNodesRef.current = {
-    nodes: [...notes.nodes, ...appWindows.nodes] as Node[],
-    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id)))],
+    nodes: [...notes.nodes, ...appWindows.nodes, ...browser.nodes] as Node[],
+    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id))), (c) => browser.onNodesChange(c.filter((x) => "id" in x && isBrowserId(x.id)))],
   };
+  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("agents"), close: browser.close }), [client, openSettings, browser.close]);
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
-    ...notes.nodes, ...appWindows.nodes, ...nodes,
+    ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...nodes,
     ...(emptyCanvas ? [{ id: EMPTY_CANVAS_ID, type: "empty", position: { x: 0, y: 0 },
       width: 360, height: 208, style: { width: 360, height: 208 },
       draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
       data: { projectName, disabled: !activeProjectId, onCreate: openNewAgent },
     }] : []),
-  ] as Node[], [notes.nodes, appWindows.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
+  ] as Node[], [notes.nodes, appWindows.nodes, browser.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
     const forApp = (change: NodeChange<Node>) => "id" in change && isAppWindowId(change.id);
+    const forBrowser = (change: NodeChange<Node>) => "id" in change && isBrowserId(change.id);
+    const browserChanges = changes.filter(forBrowser);
+    if (browserChanges.length) browser.onNodesChange(browserChanges);
     const appChanges = changes.filter(forApp);
     if (appChanges.length) appWindows.onNodesChange(appChanges);
-    const agentChanges = changes.filter((change) => !forNote(change) && !forApp(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
+    const agentChanges = changes.filter((change) => !forNote(change) && !forApp(change) && !forBrowser(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
     const noteChanges = changes.filter(forNote);
     if (agentChanges.length) onNodesChange(agentChanges as NodeChange<AgentNode>[]);
     if (noteChanges.length) notes.onNodesChange(noteChanges);
-  }, [onNodesChange, notes.onNodesChange, appWindows.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onNodesChange, notes.onNodesChange, appWindows.onNodesChange, browser.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addNoteAt = notes.add;
   const addNoteCenter = useCallback(() => {
@@ -926,6 +933,8 @@ function AgentCanvas() {
     showActivity,
     linkMode: linkMode !== null,
     nodeCount: nodes.length,
+    openBrowser: (flow) => browser.open(flow),
+    browserOpen: browser.isOpen,
     addNoteHere: (flow) => void addNoteAt({ x: Math.round(flow.x), y: Math.round(flow.y) }),
     noteInfo: (id) => { const note = notes.notes.find((item) => NOTE_PREFIX + item.id === id); return note ? { linked: note.linkedSessionIds.length } : undefined; },
     deleteNote: (id) => notes.remove(id.slice(NOTE_PREFIX.length)),
@@ -1092,6 +1101,7 @@ function AgentCanvas() {
     <CanvasCtx.Provider value={ctx}>
       <NoteProvider value={noteCtxValue}>
       <AppWindowProvider value={appWindowCtx}>
+      <BrowserProvider value={browserCtx}>
       <NoteWireCtx.Provider value={{ unlink: notes.unlink }}>
       <TooltipProvider>
       <ContextMenu>
@@ -1268,6 +1278,7 @@ function AgentCanvas() {
         </DialogContent>
       </Dialog>
       </NoteWireCtx.Provider>
+      </BrowserProvider>
       </AppWindowProvider>
       </NoteProvider>
     </CanvasCtx.Provider>

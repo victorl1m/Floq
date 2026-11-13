@@ -1,3 +1,4 @@
+import type { BrowserData, BrowserImportPreview, BrowserImportResult, BrowserStatus } from "./browser-types";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   PluginRepoPreview,
@@ -18,6 +19,7 @@ import type {
   CreateSessionInput,
   DeviceFlow,
   ClaudeOAuthResult,
+  ClaudeConnectors,
   ClaudeOAuthStart,
   DevicePoll,
   PortRequest,
@@ -403,6 +405,23 @@ export class RuntimeClient {
     url.search = new URLSearchParams({ boardId, token: this.token }).toString();
     return url.toString();
   }
+
+  /** Agent browser live stream (WebSocket); same auth as the other sockets. */
+  browserStreamUrl(): string {
+    if (!this.token) throw new RuntimeError(401, "unauthorized", "Sign in to use the browser");
+    const url = new URL(this.baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/v1/browser/stream";
+    url.search = new URLSearchParams({ token: this.token }).toString();
+    return url.toString();
+  }
+  browserStatus = () => this.call<BrowserStatus>("GET", "/v1/browser");
+  browserRestart = () => this.call<BrowserStatus>("POST", "/v1/browser/restart", {});
+  browserImportPreview = (content: string) => this.call<BrowserImportPreview>("POST", "/v1/browser/import/preview", { content });
+  browserImportCommit = (importId: string, domains: string[], bookmarks: boolean) => this.call<BrowserImportResult>("POST", "/v1/browser/import/commit", { importId, domains, bookmarks });
+  browserData = () => this.call<BrowserData>("GET", "/v1/browser/data");
+  browserRemoveDomain = (domain: string) => this.call<{ removed: number }>("POST", "/v1/browser/data/remove", { domain });
+  browserClearData = () => this.call<BrowserStatus>("POST", "/v1/browser/clear-data", { confirm: "clear" });
 
   async changePassword(currentPassword: string, newPassword: string, revokeOtherSessions = false): Promise<void> {
     await this.call("POST", "/api/auth/change-password", { currentPassword, newPassword, revokeOtherSessions });
@@ -800,6 +819,8 @@ export class RuntimeClient {
   async providerLogin(id: LoginProviderId): Promise<SessionSummary> {
     return (await this.call<{ session: SessionSummary }>("POST", `/v1/providers/${id}/login`, {})).session;
   }
+
+  claudeConnectors = (refresh = false) => this.call<ClaudeConnectors>("GET", "/v1/claude/connectors" + (refresh ? "?refresh=1" : ""));
 
   providersUsage = () => this.call<ProvidersUsage>("GET", "/v1/providers/usage");
 

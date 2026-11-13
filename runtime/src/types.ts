@@ -142,4 +142,6 @@ export interface ServerInfo {
   activeSessions: number;
   /** Optional features (see capabilities.ts). */
   capabilities?: string[];
+  /** Agent browser in this runtime's image: available, disabled (FLOQ_AGENT_BROWSER=off) or missing (older image). Absent on older runtimes. */
+  browser?: "available" | "disabled" | "missing";
 }

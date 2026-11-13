@@ -1,0 +1,1 @@
+{ "private": true, "name": "floq-browser", "dependencies": { "@playwright/mcp": "0.0.84" } }

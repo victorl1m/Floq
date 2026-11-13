@@ -171,6 +171,10 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, slot)
     );
+    -- claude.ai connectors in Claude sessions (NULL = on, the default).
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS claude_ai_connectors BOOLEAN;
+    -- Shared agent browser for this user's agents (NULL = on, the default; docs/design/agent-browser.md).
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_browser BOOLEAN;
     CREATE TABLE IF NOT EXISTS provider_credentials (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,

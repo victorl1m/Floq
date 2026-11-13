@@ -54,6 +54,10 @@ export interface PublicSettings {
   autoApproveAcknowledged: boolean;
   /** What happens when a Claude agent hits its plan usage limit (default: lower model only). */
   usageFallback: UsageFallback;
+  /** Claude sessions load the user's claude.ai connectors (default on; applies to new or restarted sessions). */
+  claudeAiConnectors: boolean;
+  /** Agents may use the shared headless browser (MCP server floq-browser); default on when the server allows it. */
+  agentBrowser: boolean;
   github: { login: string; connectedAt: string } | null;
 }
 
@@ -73,6 +77,8 @@ export interface SettingsPatch {
   autoApproveAcknowledged?: boolean;
   /** The whole chain; null resets to the defaults. */
   usageFallback?: UsageFallback | null;
+  claudeAiConnectors?: boolean;
+  agentBrowser?: boolean;
 }
 
 /** Decrypted values used to launch one user's agent session. */
@@ -85,6 +91,8 @@ export interface RuntimeProfile {
   /** The co-author identity to add to commits ("" when disabled by the server or the user). */
   gitCoauthor: string;
   githubToken: string | null;
+  /** The user's agent-browser toggle (the server-wide switch is separate: config.browser.mode). */
+  agentBrowser?: boolean;
 }
 
 const EMAIL = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
@@ -129,6 +137,8 @@ export class SettingsStore {
       subagentCeilings: this.subagentCeilings,
       autoApproveAcknowledged: Boolean(row?.auto_approve_ack_at),
       usageFallback: readUsageFallback(row?.usage_fallback),
+      claudeAiConnectors: row?.claude_ai_connectors !== false,
+      agentBrowser: row?.agent_browser !== false,
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
   }
@@ -178,6 +188,14 @@ export class SettingsStore {
       sets.push("auto_approve_ack_at = COALESCE(auto_approve_ack_at, now())");
     }
     if (patch.usageFallback !== undefined) push("usage_fallback", patch.usageFallback === null ? null : JSON.stringify(parseUsageFallback(patch.usageFallback)));
+    if (patch.claudeAiConnectors !== undefined) {
+      if (typeof patch.claudeAiConnectors !== "boolean") throw badRequest("claudeAiConnectors must be a boolean");
+      push("claude_ai_connectors", patch.claudeAiConnectors);
+    }
+    if (patch.agentBrowser !== undefined) {
+      if (typeof patch.agentBrowser !== "boolean") throw badRequest("agentBrowser must be a boolean");
+      push("agent_browser", patch.agentBrowser);
+    }
     if (patch.gitName !== undefined) push("git_name", cleanText(patch.gitName, "gitName", 100));
     if (patch.gitEmail !== undefined) {
       const email = cleanText(patch.gitEmail, "gitEmail", 200);
@@ -196,11 +214,24 @@ export class SettingsStore {
     return this.get(userId);
   }
 
+  /** Whether the user's Claude sessions load claude.ai connectors (default true). For manager.launch's promoteUserPlugins({ claudeAiConnectors }). */
+  async claudeAiConnectors(userId: string): Promise<boolean> {
+    const row = (await this.pool.query("SELECT claude_ai_connectors FROM user_settings WHERE user_id = $1", [userId])).rows[0];
+    return row?.claude_ai_connectors !== false;
+  }
+
+  /** The user's agent-browser toggle (default true). */
+  async agentBrowser(userId: string): Promise<boolean> {
+    const row = (await this.pool.query("SELECT agent_browser FROM user_settings WHERE user_id = $1", [userId])).rows[0];
+    return row?.agent_browser !== false;
+  }
+
   /** The user's fallback chain (defaults when unset). */
   async usageFallback(userId: string): Promise<UsageFallback> {
     const row = (await this.pool.query("SELECT usage_fallback FROM user_settings WHERE user_id = $1", [userId])).rows[0];
     return readUsageFallback(row?.usage_fallback);
   }
+
   async profile(userId: string): Promise<RuntimeProfile> {
     const [settings, github, account] = await Promise.all([
       this.pool.query("SELECT * FROM user_settings WHERE user_id = $1", [userId]),
@@ -221,6 +252,7 @@ export class SettingsStore {
       gitEmail: row?.git_email ?? ghIdentity?.email ?? me?.email ?? null,
       gitCoauthor: (row?.git_coauthor ?? true) ? this.config.gitCoauthor : "",
       githubToken: gh ? decryptSecret(key, gh.token_enc, this.aad(userId, "github")) : null,
+      agentBrowser: row?.agent_browser !== false,
     };
   }
 

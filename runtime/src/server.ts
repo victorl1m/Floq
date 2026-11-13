@@ -39,7 +39,9 @@ import { DownloadLinks } from "./downloadLinks.js";
 import { DavMounts, mountLocations } from "./davMounts.js";
 import { WebDav } from "./webdav.js";
 import type { ShardService } from "./shards.js";
-import { RUNTIME_CAPABILITIES } from "./capabilities.js";
+import { runtimeCapabilities } from "./capabilities.js";
+import type { BrowserService, ViewerHandle } from "./browser.js";
+import { BrowserImportService } from "./browserImport.js";
 import type { ClientFrame, CreateSessionInput, ProviderId, ServerFrame, ServerInfo } from "./types.js";
 import { TasksService } from "./tasks.js";
 import { OrganizationsService, organizationLimitsFromEnv, routeOrganizations } from "./organizations.js";
@@ -94,11 +96,12 @@ interface Deps {
   /** Enables the WebDAV mounts (Open in Explorer). */
   shards?: ShardService;
   tasks: TasksService;
-  /** Optional so existing callers keep working; absent = /v1/plugins is not served. */
+  /** Optional so existing callers keep working; absent = the browser routes answer "unavailable". */
   plugins?: PluginHost;
+  browser?: BrowserService;
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
@@ -178,7 +181,8 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     providers: listProviders(config).filter((p) => p.available).map((p) => p.id),
     maxSessions: config.maxSessions,
     activeSessions: manager.activeCount,
-    capabilities: [...RUNTIME_CAPABILITIES],
+    capabilities: runtimeCapabilities(browser?.capability() ?? "missing"),
+    browser: browser?.capability() ?? "missing",
   });
 
   function originAllowed(origin: string | undefined): boolean {
@@ -442,6 +446,18 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const pendingRequest = portRequests.request(userId, { sessionId, agentName: me.name, port: body.port, protocol: body.protocol, purpose: body.purpose });
           res.once("close", () => { if (!res.writableEnded) pendingRequest.abandon(); });
           return send(res, 200, await pendingRequest.promise);
+        }
+        case "browser/ensure": {
+          if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
+          const e = await browser.ensure(userId);
+          // The one place the endpoint token leaves the runtime: to the user's own agent, over its own authenticated internal channel.
+          return sendPlain(res, 200, e);
+        }
+        case "browser/status":
+          return send(res, 200, browser ? await browser.status(userId, { profileBytes: true }) : { state: "unavailable", agents: 0, tabs: 0, version: null, profile: "~/.floq/browser/profile" });
+        case "browser/restart": {
+          if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
+          return send(res, 200, await browser.restart(userId));
         }
         case "display/status": {
           const status = displayStatus(manager.displays.get(sessionId), await listSessionPorts(manager.getLive(sessionId, userId).pid, manager.inNetns(userId)));
@@ -840,11 +856,38 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       const limits = await requireSubagents().limitsFor(userId);
       return send(res, 200, { enabled: (await settings.get(userId)).alwaysRecruitSubagents, limits, tools: TOOL_SPECS, instruction: buildSubagentInstruction({ enabled: true, depth: 0, limits, crossProject: (await settings.get(userId)).allowCrossProjectAgents }) });
     }
+    // Agent browser (docs/design/agent-browser.md §A.5): status, restart, clear profile. Always about the caller's own browser.
+    if (url.pathname === "/v1/browser" && method === "GET") {
+      return send(res, 200, browser ? await browser.status(userId, { profileBytes: true }) : { state: "unavailable", agents: 0, tabs: 0, version: null, profile: "~/.floq/browser/profile" });
+    }
+    if (url.pathname === "/v1/browser/restart" && method === "POST") {
+      if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
+      return send(res, 200, await browser.restart(userId, { wake: true }));
+    }
+    if (url.pathname === "/v1/browser/clear-data" && method === "POST") {
+      if (!browser) throw unavailable("This Floq server has no browser", "unavailable");
+      const body = await readJson<{ confirm?: unknown }>(req);
+      if (body.confirm !== "clear") throw badRequest("Send {\"confirm\":\"clear\"} to remove the browser profile", "confirm_required");
+      return send(res, 200, await browser.clearData(userId));
+    }
+    // Cookie / bookmark import and managed list (docs/design/agent-browser.md §A.13). Bodies hold cookie files: 7 MiB cap, never logged.
+    if (url.pathname.startsWith("/v1/browser/import/") || url.pathname === "/v1/browser/data" || url.pathname === "/v1/browser/data/remove") {
+      if (!browser || !browserImport) throw unavailable("This Floq server has no browser", "unavailable");
+      await browser.assertAllowed(userId); // the toggle gates import, list and remove too, not only the live browser
+      if (url.pathname === "/v1/browser/import/preview" && method === "POST") return send(res, 200, browserImport.preview(userId, (await readJson<{ content?: unknown }>(req, 7 * 1024 * 1024)).content));
+      if (url.pathname === "/v1/browser/import/commit" && method === "POST") return send(res, 200, await browserImport.commit(userId, await readJson(req)));
+      if (url.pathname === "/v1/browser/data" && method === "GET") return send(res, 200, await browserImport.list(userId));
+      if (url.pathname === "/v1/browser/data/remove" && method === "POST") return send(res, 200, await browserImport.removeDomain(userId, (await readJson<{ domain?: unknown }>(req)).domain));
+    }
     if (url.pathname === "/v1/settings") {
       if (method === "GET") return send(res, 200, { settings: await settings.get(userId) });
       if (method === "PATCH" || method === "PUT") {
         const body = await readJson<SettingsPatch>(req);
-        return send(res, 200, { settings: await settings.update(userId, body) });
+        if (body.claudeAiConnectors !== undefined) claudeConnectors.invalidate(userId);
+        const updated = await settings.update(userId, body);
+        // The toggle changed: stop a running browser when it went off and fix the floq-browser MCP entries, without holding up the response.
+        if (browser && body.agentBrowser !== undefined) void browser.onToggle(userId).catch((error) => log.warn("browser.toggle_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
+        return send(res, 200, { settings: updated });
       }
     }
 
@@ -1034,6 +1077,10 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         if (accounts.length > 1 && active && active.slot !== "primary") all.claude = { ...all.claude, accountLabel: active.label };
       }
       return send(res, 200, all);
+    }
+    if (method === "GET" && url.pathname === "/v1/claude/connectors") {
+      if (url.searchParams.get("refresh") === "1") claudeConnectors.invalidate(userId, { minAgeMs: 5_000 });
+      return send(res, 200, await claudeConnectors.get(userId));
     }
     if (method === "POST" && url.pathname === "/v1/providers/claude/oauth/start") {
       return send(res, 200, claudeOauth.start(userId));
@@ -1585,6 +1632,22 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
         });
         return;
       }
+      if (url.pathname === "/v1/browser/stream") {
+        if (!browser) return reject(404, "Not Found");
+        if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
+        const token = wsToken(req, url);
+        const headers = { ...req.headers };
+        if (token) headers.authorization = "Bearer " + token;
+        // The socket belongs to the calling user's browser: there is no user id in the route to tamper with.
+        const { userId, authSessionId } = await authFor(headers);
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          const live: LivePeer = { ws, userId, authSessionId, headers };
+          livePeers.add(live);
+          ws.on("close", () => livePeers.delete(live));
+          attachBrowserViewer(ws, userId);
+        });
+        return;
+      }
       const tunnel = /^\/v1\/sessions\/([\w-]+)\/ports\/(\d{1,5})\/tunnel$/.exec(url.pathname);
       if (tunnel) {
         if (!originAllowed(req.headers.origin)) return reject(403, "Forbidden");
@@ -1642,6 +1705,30 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
     } catch (error) {
       reject(error instanceof HttpError ? error.status : 500, "Error");
     }
+  }
+
+  /** Relays one Browser node socket through BrowserService (allowlisted messages only). Messages that arrive before the attach finishes are queued. */
+  function attachBrowserViewer(ws: WebSocket, userId: string): void {
+    if (!browser) return void ws.close(1011, "Browser unavailable");
+    const pending: string[] = [];
+    let handle: ViewerHandle | null = null;
+    let gone = false;
+    ws.on("message", (data, isBinary) => {
+      if (isBinary) return;
+      const text = data.toString();
+      if (handle) handle.onMessage(text);
+      else if (pending.length < 64) pending.push(text);
+    });
+    let alive = true;
+    ws.on("pong", () => { alive = true; });
+    const heartbeat = setInterval(() => { if (!alive) return void ws.terminate(); alive = false; try { ws.ping(); } catch { /* closing */ } }, 25_000);
+    heartbeat.unref?.();
+    const done = () => { clearInterval(heartbeat); gone = true; handle?.close(); };
+    ws.on("close", done);
+    ws.on("error", done);
+    browser.attachViewer(userId, { send: (text) => { if (ws.readyState === ws.OPEN) ws.send(text); }, bufferedAmount: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) })
+      .then((h) => { if (gone) return h.close(); handle = h; for (const text of pending.splice(0)) h.onMessage(text); })
+      .catch((error) => { log.warn("browser.attach_failed", { userId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); ws.close(1011, "Browser unavailable"); });
   }
 
   function attachTaskPeer(ws: WebSocket, boardId: string, userId: string, name: string, authSessionId: string, headers: IncomingMessage["headers"]): void {

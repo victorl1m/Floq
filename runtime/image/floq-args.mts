@@ -419,3 +419,37 @@ export function renderTop(agents: AgentEntry[], opts: TopOptions): string[] {
   if (!rows.length) lines.push("no matching agents");
   return lines;
 }
+
+/** Reply of the runtime's browser/status route (the same data as GET /v1/browser), and the VERSION.json written at image build. */
+export type BrowserVersion = { chromium: string; revision: string | number; playwrightMcp: string };
+export type BrowserStatusReply = {
+  state: "starting" | "running" | "stopped" | "disabled" | "unavailable";
+  pid?: number; uptimeSec?: number; agents?: number; tabs?: number;
+  version?: BrowserVersion | null; profile?: string; profileBytes?: number; sandbox?: string;
+};
+
+export function formatBrowserVersion(v: BrowserVersion | null | undefined): string {
+  return v ? `${v.chromium} (headless shell r${v.revision}), playwright-mcp ${v.playwrightMcp}` : "unknown (no /opt/floq/browsers/VERSION.json: this image was built without a browser)";
+}
+
+function humanDuration(sec: number): string {
+  if (sec < 90) return Math.round(sec) + "s";
+  if (sec < 5400) return Math.round(sec / 60) + "m";
+  return Math.round(sec / 3600) + "h";
+}
+function humanBytes(n: number): string {
+  return n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : n < 1024 ** 3 ? Math.round(n / 1024 / 1024) + " MB" : (n / 1024 ** 3).toFixed(1) + " GB";
+}
+
+/** The `floq browser status` text and exit code: 0 running, 3 stopped (or starting), 4 disabled or missing. */
+export function formatBrowserStatus(s: BrowserStatusReply): { text: string; exitCode: number } {
+  const line1 =
+    s.state === "running" ? `browser: running (pid ${s.pid ?? "?"}, up ${humanDuration(s.uptimeSec ?? 0)}, ${s.agents ?? 0} agent connection${s.agents === 1 ? "" : "s"}, ${s.tabs ?? 0} tab${s.tabs === 1 ? "" : "s"})`
+    : s.state === "starting" ? "browser: starting"
+    : s.state === "stopped" ? "browser: stopped (it starts when an agent uses floq-browser or you open the Browser node)"
+    : s.state === "disabled" ? "browser: disabled (turned off in Settings > Agents > Browser or by the server admin)"
+    : "browser: unavailable (this image has no browser; rebuild without --build-arg FLOQ_BROWSER=0)";
+  const lines = [line1, "chromium: " + formatBrowserVersion(s.version), "profile: " + (s.profile ?? "~/.floq/browser/profile") + (s.profileBytes !== undefined ? " (" + humanBytes(s.profileBytes) + ")" : "")];
+  if (s.sandbox) lines.push("sandbox: " + s.sandbox);
+  return { text: lines.join("\n"), exitCode: s.state === "running" ? 0 : s.state === "stopped" || s.state === "starting" ? 3 : 4 };
+}

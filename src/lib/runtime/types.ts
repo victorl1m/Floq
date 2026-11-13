@@ -320,6 +320,27 @@ export interface UserSettings {
   autoApproveAcknowledged?: boolean;
   /** Absent on older runtimes. */
   usageFallback?: UsageFallback;
+  /** Shared agent browser toggle. Absent on older runtimes (treated as on). */
+  agentBrowser?: boolean;
+  /** Claude sessions load claude.ai connectors. Absent on older runtimes (treated as on). */
+  claudeAiConnectors?: boolean;
+}
+
+export type ConnectorDiagnostic = "api_key" | "needs_signin" | "missing_scope";
+
+export interface ClaudeConnector {
+  name: string;
+  displayName: string;
+  host: string;
+  connected: boolean;
+}
+
+/** GET /v1/claude/connectors (read-only; the runtime never returns tokens). */
+export interface ClaudeConnectors {
+  diagnostics: ConnectorDiagnostic[];
+  connectors: ClaudeConnector[];
+  error?: "unavailable";
+  fetchedAt: string;
 }
 
 export interface SettingsPatch {
@@ -334,6 +355,8 @@ export interface SettingsPatch {
   subagentMaxTotal?: number | null;
   autoApproveAcknowledged?: true;
   usageFallback?: UsageFallback | null;
+  agentBrowser?: boolean;
+  claudeAiConnectors?: boolean;
 }
 
 /** The fixed Floq subagent policy, read-only (GET /v1/subagents/policy). */

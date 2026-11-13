@@ -26,6 +26,8 @@ export function repairToolCaches(home: string, uid: number): void {
 export class ShardService {
   private readonly handles = new Map<string, ShardHandle>();
   private readonly locks = new Map<string, Promise<unknown>>();
+  /** Fired (not awaited, never throws into wake) each time a user's home was just unlocked. The agent browser uses it to sync its MCP entry. */
+  onWake?: (userId: string) => void;
 
   constructor(
     private readonly pool: pg.Pool,
@@ -76,6 +78,8 @@ export class ShardService {
       repairToolCaches(handle.mountPath, handle.uid);
       this.handles.set(userId, handle);
       await this.pool.query("UPDATE shards SET state = 'awake', last_active_at = now() WHERE user_id = $1", [userId]);
+      // After this serial task: the hook's own wake/activity calls queue behind it instead of deadlocking on it.
+      if (this.onWake) setImmediate(() => { try { this.onWake?.(userId); } catch { /* best effort */ } });
       return handle;
     });
   }

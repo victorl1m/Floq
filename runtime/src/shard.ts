@@ -109,6 +109,8 @@ export interface SpawnSpec {
   cwd: string;
   cols: number;
   rows: number;
+  /** spawnPipe only: give the child a stdin pipe (default: stdin is closed). For runtime-driven daemons such as floq-browserd. */
+  stdin?: boolean;
 }
 
 export interface ShardDriver {
@@ -443,7 +445,7 @@ export class LinuxShardDriver implements ShardDriver {
     const launch = this.sandboxLaunch(handle, spec);
     return spawn(launch.file, launch.args, {
       cwd: "/",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"],
       env: { ...spec.env, HOME: SANDBOX_HOME, USER: "agent", LOGNAME: "agent" },
       windowsHide: true,
     });
@@ -481,6 +483,10 @@ export class LinuxShardDriver implements ShardDriver {
       if (handle.netns && path === "/etc/resolv.conf") args.push("--ro-bind", this.netns!.resolvConfPath(uid), path);
       else if (existsSync(path)) args.push("--ro-bind", path, path);
     }
+    // Agent browser: the pinned Chromium + Playwright MCP live in /opt/floq (read-only, world-readable, root-owned), and fontconfig needs /etc/fonts
+    // (without it pages render as tofu). Both read-only: no other user's data is exposed.
+    if (existsSync("/opt/floq")) args.push("--perms", "0755", "--dir", "/opt", "--ro-bind", "/opt/floq", "/opt/floq");
+    if (existsSync("/etc/fonts")) args.push("--ro-bind", "/etc/fonts", "/etc/fonts");
     // apt's sources/keys and the image's dpkg database, read-only: /usr/local/bin/apt (image/floq-apt) runs apt rootless
     // with its lists, cache and unpacked packages in the user's home, resolving against the packages the image has.
     if (existsSync("/etc/apt")) args.push("--ro-bind", "/etc/apt", "/etc/apt");
@@ -570,7 +576,7 @@ export class LocalShardDriver implements ShardDriver {
   spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess {
     const cwd = this.hostPath(handle, spec.cwd);
     mkdirSync(cwd, { recursive: true });
-    return spawn(spec.file, spec.args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: spec.env, windowsHide: true });
+    return spawn(spec.file, spec.args, { cwd, stdio: [spec.stdin ? "pipe" : "ignore", "pipe", "pipe"], env: spec.env, windowsHide: true });
   }
 
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess {
