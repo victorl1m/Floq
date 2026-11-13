@@ -603,6 +603,41 @@ test("real Chromium: Playwright connects over CDP, two agents work at once, the 
 
 const realSkip = { skip: !REAL ? "no runnable chrome-headless-shell (set FLOQ_TEST_CHROMIUM)" : !PW ? "no playwright-core (set FLOQ_TEST_PLAYWRIGHT=<dir with node_modules>)" : false, timeout: 120000 };
 
+test("real Chromium: a cross-origin iframe (OOPIF) loads, is in the screencast and takes clicks from the node", realSkip, async (t) => {
+  // Turnstile-shaped: the parent page injects a different-site iframe (localhost vs 127.0.0.1) holding a button, after the agent attached.
+  const inner = createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end(`<body style="margin:0"><button id=b style="position:absolute;left:0;top:0;width:200px;height:60px;background:#c00" onclick="parent.postMessage('clicked','*')"></button>`); });
+  await new Promise<void>((r) => inner.listen(0, r));
+  const innerPort = (inner.address() as any).port;
+  const outer = createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end(`<title>outer</title><body style="margin:0"><script>window.__ev=[];addEventListener('message',e=>__ev.push(e.data))</script><script>setTimeout(()=>{const f=document.createElement('iframe');f.src="http://localhost:${innerPort}/";f.style.cssText="position:absolute;left:100px;top:100px;width:300px;height:100px;border:0";document.body.append(f)},2500)</script>`); });
+  await new Promise<void>((r) => outer.listen(0, "127.0.0.1", r));
+  t.after(() => { inner.close(); outer.close(); });
+  const d = await startDaemon(t, { exe: REAL! });
+  d.send({ type: "page.open", nodeId: "n1", url: `http://127.0.0.1:${(outer.address() as any).port}/` });
+  const node = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  const AGENT = "44444444-4444-4444-4444-444444444444";
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: "n1" });
+  d.send({ type: "viewport", targetId: node.targetId, width: 640, height: 400, dpr: 1 });
+  d.send({ type: "screencast.start", targetId: node.targetId, maxW: 800, maxH: 600, quality: 60 });
+  const w = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  for (let i = 0; i < 60 && w.contexts()[0].pages().length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  const view = w.contexts()[0].pages()[0];
+  // The daemon must resume the paused child target: the frame navigates to its real URL (it stayed an empty frame before).
+  for (let i = 0; i < 100 && !view.frames().some((f: any) => f.url().startsWith("http://localhost:")); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(view.frames().some((f: any) => f.url().startsWith("http://localhost:")), "cross-origin iframe loaded: " + JSON.stringify(view.frames().map((f: any) => f.url())));
+  const x = 150, y = 120; // inside the iframe's button
+  const mouse = (kind: string, extra: Record<string, unknown> = {}) => d.send({ type: "input.mouse", targetId: node.targetId, kind, x, y, button: "none", buttons: 0, clickCount: 0, modifiers: 0, ...extra });
+  await view.frames().find((f: any) => f.url().startsWith("http://localhost:")).waitForSelector("#b", { state: "visible" });
+  for (let i = 0; i < 10 && !(await view.evaluate(() => (window as any).__ev.includes("clicked"))); i++) { // retry: the first press can land before the child's first paint
+    mouse("mouseMoved"); mouse("mousePressed", { button: "left", buttons: 1, clickCount: 1 }); mouse("mouseReleased", { button: "left", buttons: 0, clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  assert.ok(await view.evaluate(() => (window as any).__ev.includes("clicked")), "a click from the node reaches the iframe");
+  // The screencast shows the iframe's pixels (red button) at the click point.
+  const jpeg = await (async () => { for (let i = 0; i < 40; i++) { const f = d.msgs.filter((m) => m.type === "frame" && m.targetId === node.targetId).pop(); if (f) return f; await new Promise((r) => setTimeout(r, 100)); } })();
+  assert.ok(jpeg, "screencast frames are streamed");
+  await w.close();
+});
+
 test("real Chromium: the private-network interceptor refuses loopback pages and leaves the switch-off case alone", realSkip, async (t) => {
   const site = createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end("<title>internal</title>secret"); });
   await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
