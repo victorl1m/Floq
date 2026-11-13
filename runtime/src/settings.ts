@@ -2,6 +2,7 @@ import type pg from "pg";
 import type { Config } from "./config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { badRequest } from "./errors.js";
+import { parseUsageFallback, readUsageFallback, type UsageFallback } from "./fallback.js";
 
 /** Hard bounds for the user-configurable subagent limits (defaults live in subagents.ts DEFAULT_LIMITS). */
 export const SUBAGENT_CHILDREN_RANGE = { min: 1, max: 32 } as const;
@@ -51,6 +52,8 @@ export interface PublicSettings {
   subagentCeilings: SubagentCeilings;
   /** The user has answered the one-time "auto-approve runs commands without prompts" confirmation. */
   autoApproveAcknowledged: boolean;
+  /** What happens when a Claude agent hits its plan usage limit (default: lower model only). */
+  usageFallback: UsageFallback;
   github: { login: string; connectedAt: string } | null;
 }
 
@@ -68,6 +71,8 @@ export interface SettingsPatch {
   subagentMaxTotal?: number | null;
   /** Only `true` is accepted: the acknowledgement cannot be withdrawn. */
   autoApproveAcknowledged?: boolean;
+  /** The whole chain; null resets to the defaults. */
+  usageFallback?: UsageFallback | null;
 }
 
 /** Decrypted values used to launch one user's agent session. */
@@ -123,6 +128,7 @@ export class SettingsStore {
       subagentMaxTotal: row?.subagent_max_total ?? null,
       subagentCeilings: this.subagentCeilings,
       autoApproveAcknowledged: Boolean(row?.auto_approve_ack_at),
+      usageFallback: readUsageFallback(row?.usage_fallback),
       github: gh ? { login: gh.login, connectedAt: new Date(gh.created_at).toISOString() } : null,
     };
   }
@@ -171,6 +177,7 @@ export class SettingsStore {
       if (patch.autoApproveAcknowledged !== true) throw badRequest("autoApproveAcknowledged can only be set to true");
       sets.push("auto_approve_ack_at = COALESCE(auto_approve_ack_at, now())");
     }
+    if (patch.usageFallback !== undefined) push("usage_fallback", patch.usageFallback === null ? null : JSON.stringify(parseUsageFallback(patch.usageFallback)));
     if (patch.gitName !== undefined) push("git_name", cleanText(patch.gitName, "gitName", 100));
     if (patch.gitEmail !== undefined) {
       const email = cleanText(patch.gitEmail, "gitEmail", 200);
@@ -189,6 +196,11 @@ export class SettingsStore {
     return this.get(userId);
   }
 
+  /** The user's fallback chain (defaults when unset). */
+  async usageFallback(userId: string): Promise<UsageFallback> {
+    const row = (await this.pool.query("SELECT usage_fallback FROM user_settings WHERE user_id = $1", [userId])).rows[0];
+    return readUsageFallback(row?.usage_fallback);
+  }
   async profile(userId: string): Promise<RuntimeProfile> {
     const [settings, github, account] = await Promise.all([
       this.pool.query("SELECT * FROM user_settings WHERE user_id = $1", [userId]),

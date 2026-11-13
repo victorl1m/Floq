@@ -18,6 +18,8 @@ interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onConnected?: () => void;
+    /** Connect this login as an extra Claude account (the active one stays as it is). */
+    addAccount?: boolean;
     /** The runtime has no oauth/start endpoint: use the terminal flow instead. */
     onUnsupported: () => void;
 }
@@ -33,7 +35,7 @@ const isMissing = (e: unknown) => e instanceof RuntimeError && (e.status === 404
 const isExpired = (e: unknown) =>
     e instanceof RuntimeError && (e.status === 410 || /expired|flow_not_found|unknown_flow/i.test(e.code + " " + e.message));
 
-export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnected, onUnsupported }: Props) {
+export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnected, onUnsupported, addAccount }: Props) {
     const { client } = useRuntime();
     const [flow, setFlow] = useState<ClaudeOAuthStart | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -118,11 +120,11 @@ export default function ClaudeOAuthDialog({ open: isOpen, onOpenChange, onConnec
         setCodeError(null);
         setNotice(null);
         try {
-            const result = await client.claudeOAuthFinish(flow.flowId, clean);
+            const result = await client.claudeOAuthFinish(flow.flowId, clean, addAccount ? { addAccount: true } : undefined);
             if (!result.connected) throw new Error("Claude did not connect. Try again.");
             setPlan(result.plan);
             setConnected(true);
-            toast.success("Claude connected", { description: "Claude sessions can now use your account." });
+            toast.success(addAccount ? "Claude account added" : "Claude connected", { description: addAccount ? "It stays in reserve until a usage limit moves your agents to it." : "Claude sessions can now use your account." });
             onConnected?.();
             setTimeout(() => close(false), 1000);
         } catch (e) {

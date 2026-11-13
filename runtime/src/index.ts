@@ -3,6 +3,9 @@ import { createAuth, migrateAuth } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { ClaudeOAuth } from "./claudeOauth.js";
 import { UsageService } from "./usage.js";
+import { FallbackService } from "./fallback.js";
+import { buildHandoff, parseClaudeContext } from "./handoff.js";
+import { ClaudeAccounts } from "./claudeAccounts.js";
 import { CredentialBroker } from "./credentials.js";
 import { createPool, migrateApp } from "./db.js";
 import { GithubLinker } from "./github.js";
@@ -75,6 +78,57 @@ const claudeOauth = new ClaudeOAuth(config, credentials);
 claudeOauth.onConnected = (userId, data) => void manager.distribute(userId, "claude", data).catch(() => undefined);
 credentials.start();
 const usage = new UsageService(credentials);
+// Extra Claude logins: the active one stays in provider_credentials, the others are reserves (see claudeAccounts.ts).
+const claudeAccounts = new ClaudeAccounts(pool, config, credentials, { fetchUsage: (data) => usage.claudeWindowsOf(data) });
+claudeAccounts.onActiveChanged = (userId, data) => { usage.invalidate(userId, "claude"); claudeConnectors.invalidate(userId); void manager.distribute(userId, "claude", data).catch(() => undefined); };
+claudeOauth.accounts = claudeAccounts;
+claudeAccounts.beforeSwitch = (userId) => manager.syncClaudeNow(userId);
+claudeAccounts.onReset = (userId) => void fallback.accountChangedByUser(userId).catch(() => undefined);
+manager.accounts = claudeAccounts;
+claudeAccounts.start();
+// Claude usage-limit fallback: lower model or pause at a limit block, and back again when the window resets.
+const fallback = new FallbackService(pool, {
+  readTranscript: (id, userId) => manager.readTranscriptText(id, userId),
+  isLive: (id, userId) => Boolean(manager.findLive(id, userId)?.isAlive),
+  quietMs: (id) => manager.outputQuietMs(id),
+  isIdle: (id, userId) => manager.readAgentTurn(id, userId)?.status !== "working",
+  queueNotice: (id, text) => manager.queueBootNotice(id, text),
+  dropNotice: (id) => manager.dropBootNotice(id),
+  transcriptStamp: (id, userId) => manager.transcriptStamp(id, userId),
+  restart: async (userId, id) => { await manager.restartSelf(userId, await settings.profile(userId), id); },
+  sleep: (id, reason) => manager.sleepSession(id, reason, { resumeOnBoot: false }),
+  notifyParent: async (userId, parentId, text) => { await manager.typeNotice(userId, parentId, text); },
+  buildHandoff: async ({ userId, id, direction, n, reason, previousHandoff }) => {
+    const found = (await pool.query("SELECT title, cwd, role, parent_session_id FROM agent_sessions WHERE id = $1 AND user_id = $2", [id, userId])).rows[0] as { title: string; cwd: string; role: string | null; parent_session_id: string | null } | undefined;
+    const git = await gitReview.changes(userId, id).then((c) => ({ branch: c.branch, changes: c.changes.map((x) => ({ status: x.status, path: x.path })), truncated: c.truncated })).catch(() => null);
+    const context = direction === "to-codex"
+      ? parseClaudeContext(manager.readTranscriptHeadText(id, userId, 256 * 1024) ?? "", manager.readTranscriptText(id, userId) ?? "")
+      : { firstPrompt: null, lastPrompts: [], lastReply: null, todos: [] };
+    const text = buildHandoff({
+      direction, title: found?.title ?? "Agent", cwd: found?.cwd ?? "", role: found?.role ?? null, parentSessionId: found?.parent_session_id ?? null,
+      reason, context, git, transcriptPath: direction === "to-codex" ? manager.transcriptSandboxPath(id, userId) : null,
+      codexReply: direction === "to-claude" ? manager.readAgentTurn(id, userId)?.reply ?? null : null, previousHandoff,
+    });
+    return manager.writeHandoffFile(userId, `${id}-${n}.md`, text);
+  },
+  switchProvider: async (userId, id, to) => { await manager.switchProvider(userId, await settings.profile(userId), id, to); },
+  resume: async (userId, id) => { await manager.resume(userId, await settings.profile(userId), id, { strict: true }); },
+}, (userId) => settings.usageFallback(userId));
+fallback.codex = {
+  usable: async (userId) => { const u = (await usage.get(userId)).codex; return Boolean(u?.connected) && (u?.windows.length ?? 0) > 0 && (u?.windows ?? []).every((w) => w.usedPercent < 100); },
+  defaultModel: async (userId) => (await manager.codexModels(userId))[0]?.id ?? null,
+};
+fallback.accounts = claudeAccounts;
+fallback.usage = {
+  claudeBlocked: async (userId) => {
+    const windows = (await usage.get(userId)).claude?.windows ?? [];
+    const full = windows.filter((w) => w.id !== "extra_usage" && w.usedPercent >= 100 && w.resetsAt && Date.parse(w.resetsAt) > Date.now());
+    full.sort((a, b) => Date.parse(b.resetsAt!) - Date.parse(a.resetsAt!));
+    return full[0] ? { window: full[0].id, resetsAt: full[0].resetsAt! } : null;
+  },
+  claudeWindow: async (userId, windowId) => (await usage.get(userId)).claude?.windows.find((w) => w.id === windowId) ?? null };
+manager.fallback = fallback;
+void fallback.start().catch((error) => log.error("fallback.start_failed", { error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
 const agentLinks = new AgentLinks(pool);
 const canvasNotes = new CanvasNotes(pool);
 const wired = new WiredContext(pool);

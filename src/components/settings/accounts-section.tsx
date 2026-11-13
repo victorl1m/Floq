@@ -9,6 +9,7 @@ import { errorMessage, useClient } from "@/lib/runtime/store";
 import type { LoginProviderId } from "@/lib/runtime/types";
 import ConnectProviderDialog from "./connect-provider-dialog";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { ClaudeAccountsGroup } from "./claude-accounts-group";
 import { useProviderStatus } from "./use-provider-status";
 
 const PROVIDERS: { id: LoginProviderId; label: string; subtitle: string }[] = [
@@ -76,6 +77,7 @@ export default function AccountsSection() {
                     );
                 })}
             </SettingsGroup>
+            {status?.claude.connected && !unsupported && <ClaudeAccountsGroup onChanged={() => void reload()} />}
             {connecting && (
                 <ConnectProviderDialog
                     provider={connecting}

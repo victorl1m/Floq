@@ -16,6 +16,7 @@ import { titleWithPending } from "./lib/approval-format";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SubagentToaster } from "./components/canvas/subagent-toaster";
+import { FallbackToaster } from "./components/canvas/fallback-toaster";
 import { AskDialogHost } from "./components/ui/ask-dialog";
 import { AutoApproveConfirmHost } from "./components/agents/auto-approve-confirm";
 import { CrossProjectToaster } from "./components/window/cross-project-toaster";
@@ -94,6 +95,7 @@ function App() {
       {/* Root-level and outside every view: user approvals must reach the user on any screen. */}
       {user && ready && <ApprovalHost suppressed={islandReady} />}
       {user && ready && <SubagentToaster />}
+      {user && ready && <FallbackToaster />}
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}
       {user && ready && <AutoApproveConfirmHost />}

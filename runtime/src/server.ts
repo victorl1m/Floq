@@ -6,6 +6,9 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type pg from "pg";
 import type { ClaudeOAuth } from "./claudeOauth.js";
 import type { UsageService } from "./usage.js";
+import type { ClaudeConnectors } from "./claudeConnectors.js";
+import type { FallbackService } from "./fallback.js";
+import type { ClaudeAccounts } from "./claudeAccounts.js";
 import type { SkillsService } from "./skills.js";
 import { loadSkillFromCatalog, previewCatalogSkill, searchSkillCatalog } from "./skillCatalog.js";
 import type { CredentialBroker } from "./credentials.js";
@@ -81,6 +84,9 @@ interface Deps {
   credentials: CredentialBroker;
   claudeOauth: ClaudeOAuth;
   usage: UsageService;
+  claudeConnectors: ClaudeConnectors;
+  fallback?: FallbackService;
+  claudeAccounts?: ClaudeAccounts;
   skills: SkillsService;
   gitReview: GitReview;
   workspaceFiles?: WorkspaceFiles;
@@ -202,6 +208,18 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     res.end(payload);
   }
 
+  /** `--fallback default|model|pause` at recruit time: validated before anything starts, applied to the new agent only. */
+  function recruitFallbackPolicy(value: unknown): "default" | "model" | "pause" | null {
+    if (value === undefined || value === null) return null;
+    if (value !== "default" && value !== "model" && value !== "pause") throw badRequest("fallback must be default, model or pause", "invalid_fallback");
+    return value;
+  }
+  async function applyRecruitFallback(userId: string, recruited: unknown, policy: "default" | "model" | "pause" | null): Promise<void> {
+    const id = (recruited as { id?: unknown } | null)?.id;
+    if (!policy || policy === "default" || !fallback || typeof id !== "string") return;
+    await fallback.act(userId, id, "override", policy);
+  }
+  const browserImport = browser ? new BrowserImportService(browser) : null;
   async function readJson<T>(req: IncomingMessage, limit = config.maxBodyBytes): Promise<T> {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -531,11 +549,19 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           return send(res, 200, await orchestrator.watch(userId, sessionId, body.name, body.since, Number(body.waitSec) || undefined, body.reply === true));
         case "agents/connect":
           return send(res, 200, await orchestrator.connect(userId, sessionId, body.from, body.to));
-        case "agents/recruit":
-          return send(res, 200, await orchestrator.recruit(userId, sessionId, body));
+        case "agents/recruit": {
+          const policy = recruitFallbackPolicy(body.fallback);
+          const recruited = await orchestrator.recruit(userId, sessionId, body);
+          await applyRecruitFallback(userId, recruited, policy);
+          return send(res, 200, recruited);
+        }
         // Always-recruit subagents (`floq subagent ...`): any agent session may use them; limits are enforced in SubagentService.
-        case "agents/subagent/recruit":
-          return send(res, 200, await requireSubagents().recruit(userId, sessionId, body));
+        case "agents/subagent/recruit": {
+          const policy = recruitFallbackPolicy(body.fallback);
+          const recruited = await requireSubagents().recruit(userId, sessionId, body);
+          await applyRecruitFallback(userId, recruited, policy);
+          return send(res, 200, recruited);
+        }
         case "agents/subagent/list":
           return send(res, 200, await requireSubagents().list(userId, sessionId));
         case "agents/subagent/ask":
@@ -1001,14 +1027,42 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, await credentials.status(userId));
     }
     if (method === "GET" && url.pathname === "/v1/providers/usage") {
-      return send(res, 200, await usage.get(userId));
+      const all = await usage.get(userId);
+      if (claudeAccounts && all.claude) {
+        const accounts = await claudeAccounts.list(userId).catch(() => []);
+        const active = accounts.find((a) => a.active);
+        if (accounts.length > 1 && active && active.slot !== "primary") all.claude = { ...all.claude, accountLabel: active.label };
+      }
+      return send(res, 200, all);
     }
     if (method === "POST" && url.pathname === "/v1/providers/claude/oauth/start") {
       return send(res, 200, claudeOauth.start(userId));
     }
     if (method === "POST" && url.pathname === "/v1/providers/claude/oauth/finish") {
-      const body = await readJson<{ flowId?: unknown; code?: unknown }>(req);
-      return send(res, 200, await claudeOauth.finish(userId, body.flowId, body.code));
+      const body = await readJson<{ flowId?: unknown; code?: unknown; addAccount?: unknown; label?: unknown }>(req);
+      return send(res, 200, await claudeOauth.finish(userId, body.flowId, body.code, { addAccount: body.addAccount === true, label: body.label }));
+    }
+    // Extra Claude logins (fallback account step). Per user; agents have no route to these.
+    if (claudeAccounts && url.pathname === "/v1/providers/claude/accounts" && method === "GET") {
+      return send(res, 200, { accounts: await claudeAccounts.list(userId) });
+    }
+    const accountMatch = /^\/v1\/providers\/claude\/accounts\/([\w]+?)(\/activate)?$/.exec(url.pathname);
+    if (claudeAccounts && accountMatch) {
+      const slot = accountMatch[1]!;
+      if (accountMatch[2] && method === "POST") {
+        await claudeAccounts.switchTo(userId, slot);
+        await fallback?.accountChangedByUser(userId); // a manual choice must not be undone by the automatic way back
+        return send(res, 200, { accounts: await claudeAccounts.list(userId) });
+      }
+      if (!accountMatch[2] && method === "PATCH") {
+        const body = await readJson<{ label?: unknown }>(req);
+        await claudeAccounts.rename(userId, slot, body.label);
+        return send(res, 200, { accounts: await claudeAccounts.list(userId) });
+      }
+      if (!accountMatch[2] && method === "DELETE") {
+        await claudeAccounts.remove(userId, slot);
+        return send(res, 200, { accounts: await claudeAccounts.list(userId) });
+      }
     }
     const login = /^\/v1\/providers\/(claude|codex)\/login$/.exec(url.pathname);
     if (login) {
@@ -1113,6 +1167,15 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, note);
     }
 
+    // Usage-limit fallback actions (return now / keep / per-agent override). User auth only: agents have no route to this.
+    const fallbackMatch = /^\/v1\/sessions\/([\w-]+)\/fallback$/.exec(url.pathname);
+    if (fallbackMatch && method === "POST") {
+      if (!fallback) throw notFound("Usage fallback is not available");
+      const body = await readJson<{ action?: unknown; override?: unknown }>(req);
+      if (body.action !== "return" && body.action !== "keep" && body.action !== "override") throw badRequest("action must be return, keep or override");
+      const result = await fallback.act(userId, fallbackMatch[1]!, body.action, body.override as never);
+      return send(res, 200, { session: await manager.get(fallbackMatch[1]!, userId), ...result });
+    }
     // Marking an orchestrator is a user decision: only reachable with the user's own auth (/v1), never with an agent's
     // per-session token (/internal has no such route).
     const sessionRoleMatch = /^\/v1\/sessions\/([\w-]+)\/role$/.exec(url.pathname);
@@ -1362,6 +1425,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         return send(res, 200, { ok: true });
       }
       if (action === "resume" && method === "POST") {
+        await fallback?.userResumed(match[1], userId);
         const session = await manager.resume(userId, await settings.profile(userId), match[1]);
         return send(res, 200, { session });
       }

@@ -131,7 +131,7 @@ function UsagePopoverContent({
         <PopoverContent align="start" side="top" sideOffset={8} className="w-[300px] gap-0 overflow-hidden p-0">
             <div className="flex items-center gap-2 px-3 pt-3">
                 <BrandIcon id={id} size={14} />
-                <p className="text-xs font-medium">{NAME[id]}</p>
+                <p className="text-xs font-medium">{NAME[id]}{data.accountLabel ? ` · ${data.accountLabel}` : ""}</p>
                 {data.plan && <Badge variant="secondary">{data.plan}</Badge>}
                 <Button
                     variant="ghost"

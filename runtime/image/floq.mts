@@ -57,8 +57,8 @@ Commands:
   floq progress "message" [--file PATH] [--percent N] [--status working|blocked|done]   (for subagents) report structured progress to the agent that recruited you; use --status done for your final report. blocked/done are pushed into its terminal (long text as a preview plus "floq inbox read ID"). Max 20000 chars, never cut: longer is rejected. Max 30 updates/min
   floq ask-parent "question" [--file PATH]   (for subagents) ask the agent that recruited you; it gets a notification (long text as a preview plus "floq inbox read ID") and answers with "floq ask <your UUID> ..."
   floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time; messages are printed in full
-  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only; other agents ask the orchestrator with "floq ask")
-  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
+  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]] [--fallback default|model|pause]   (orchestrator only; other agents ask the orchestrator with "floq ask")
+  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--fallback default|model|pause] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
   floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
@@ -233,7 +233,7 @@ const allowedOptions: Record<string, string[]> = {
   top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status", "file"], "ask-parent": ["file"], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
   session: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
-  recruit: ["provider", "model", "cwd", "role", "isolated", "skill"], subagent: ["task", "role", "provider", "model", "skill", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
+  recruit: ["provider", "model", "cwd", "role", "isolated", "skill", "fallback"], subagent: ["task", "role", "provider", "model", "skill", "fallback", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   project: ["name", "git-url"], setup: ["dry-run", "agents"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
@@ -706,7 +706,7 @@ switch (command) {
       if (!first) usage();
       const task = typeof named.task === "string" ? (named.task === "-" ? await readStdinText() : named.task) : rest.join(" ");
       if (!task.trim()) { console.error("floq: --task TEXT is required"); process.exit(2); }
-      const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean; skills?: string[] }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, skills: named.skill, wire: named["no-wire"] !== true });
+      const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean; skills?: string[] }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, skills: named.skill, fallback: named.fallback, wire: named["no-wire"] !== true });
       console.log(formatSubagentRecruit(r));
     } else if (sub === "list") {
       if (first) usage();

@@ -198,6 +198,24 @@ export function readTranscriptTail(path: string, maxBytes: number): { text: stri
   }
 }
 
+/** Read a transcript's first `maxBytes` as text; a line cut at the end is dropped. Null if unsafe or missing. */
+export function readTranscriptHead(path: string, maxBytes: number): string | null {
+  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER);
+  if (!opened) return null;
+  try {
+    const size = Math.min(opened.size, maxBytes);
+    const bytes = Buffer.allocUnsafe(size);
+    const count = readSync(opened.fd, bytes, 0, size, 0);
+    let text = bytes.subarray(0, count).toString("utf8");
+    if (opened.size > size) text = text.slice(0, text.lastIndexOf("\n") + 1);
+    return text;
+  } catch {
+    return null;
+  } finally {
+    closeSync(opened.fd);
+  }
+}
+
 /** Read only native title records for the exact Claude session UUID. */
 export function readClaudeNativeTitle(home: string, id: string): string | null {
   if (!UUID.test(id)) return null;

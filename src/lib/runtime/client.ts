@@ -51,6 +51,8 @@ import type {
   SessionDebugLink,
   SessionSummary,
   SettingsPatch,
+  ClaudeAccount,
+  FallbackActionResult,
   SubagentPolicy,
   UserSettings,
   Organization,
@@ -639,6 +641,11 @@ export class RuntimeClient {
     return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/resume`, {})).session;
   }
 
+  /** Usage-limit fallback actions from the agent badge: return to the original model now, keep the fallback, or set the per-agent policy. */
+  async fallbackAction(id: string, action: "return" | "keep" | "override", override?: "default" | "model" | "pause"): Promise<FallbackActionResult> {
+    return await this.call<FallbackActionResult>("POST", `/v1/sessions/${id}/fallback`, { action, ...(override ? { override } : {}) });
+  }
+
   async sleepSession(id: string): Promise<SessionSummary> {
     return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/sleep`, {})).session;
   }
@@ -798,8 +805,13 @@ export class RuntimeClient {
 
   claudeOAuthStart = () => this.call<ClaudeOAuthStart>("POST", "/v1/providers/claude/oauth/start", {});
 
-  claudeOAuthFinish = (flowId: string, code: string) =>
-    this.call<ClaudeOAuthResult>("POST", "/v1/providers/claude/oauth/finish", { flowId, code });
+  claudeOAuthFinish = (flowId: string, code: string, extra?: { addAccount?: boolean; label?: string }) =>
+    this.call<ClaudeOAuthResult>("POST", "/v1/providers/claude/oauth/finish", { flowId, code, ...(extra ?? {}) });
+
+  claudeAccounts = async () => (await this.call<{ accounts: ClaudeAccount[] }>("GET", "/v1/providers/claude/accounts")).accounts;
+  activateClaudeAccount = async (slot: string) => (await this.call<{ accounts: ClaudeAccount[] }>("POST", `/v1/providers/claude/accounts/${slot}/activate`, {})).accounts;
+  renameClaudeAccount = async (slot: string, label: string) => (await this.call<{ accounts: ClaudeAccount[] }>("PATCH", `/v1/providers/claude/accounts/${slot}`, { label })).accounts;
+  removeClaudeAccount = async (slot: string) => (await this.call<{ accounts: ClaudeAccount[] }>("DELETE", `/v1/providers/claude/accounts/${slot}`)).accounts;
 
   async providerLogout(id: LoginProviderId): Promise<void> {
     await this.call("DELETE", `/v1/providers/${id}/login`);
