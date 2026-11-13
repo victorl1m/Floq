@@ -9,6 +9,7 @@ import { BrowserImportDialog } from "@/components/canvas/browser-import-dialog";
 import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/canvas/wire-edge";
 import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
 import { robotAvatarSvg } from "@/lib/robot-avatar";
+import { egressBadge } from "@/lib/browser-egress";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels, type BrowserStreamState } from "@/lib/runtime/browser-stream";
 
@@ -55,7 +56,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   const { client, openSettings, close, linkedAgents, newBrowser } = useContext(BrowserCtx);
   const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
   const stream = useBrowserStream(client, true, nodeId);
-  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect, dialog, clipboard, download } = stream;
+  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect, dialog, clipboard, download, egress } = stream;
   // Ctrl/Cmd+C in the page: the daemon reports the selected text and it lands on the user's own clipboard.
   useEffect(() => { if (clipboard) void navigator.clipboard?.writeText(clipboard.text).catch(() => {}); }, [clipboard]);
   const linked = linkedAgents(id);
@@ -198,6 +199,17 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   const go = () => { const url = normalizeUrl(urlText); if (url) send({ type: "nav.go", url }); };
   const closeNode = () => { send({ type: "page.close" }); close(id); }; // only the user closing the node destroys the page
   const live = state === "running";
+  const badge = egressBadge(egress);
+  const [switching, setSwitching] = useState(false);
+  // Fail closed: the daemon answers every connection with "offline" while this shows, nothing leaves via the server.
+  const useServerNow = () => {
+    if (!client || switching) return;
+    setSwitching(true);
+    // Transient (never saved): the user's desktop choice survives and the relay keeps running for when the computer is back.
+    void client.browserEgressOverride(true)
+      .catch(() => undefined)
+      .finally(() => setSwitching(false));
+  };
   const [importOpen, setImportOpen] = useState(false);
 
   return (
@@ -219,6 +231,13 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 dangerouslySetInnerHTML={{ __html: robotAvatarSvg(a.sessionId, false) }} />
             ))}
             {linked.length > MAX_AVATARS && <span className="pl-1.5 text-[10px] text-muted-foreground">+{linked.length - MAX_AVATARS}</span>}
+          </span>
+        )}
+        {badge && (
+          <span data-testid="browser-egress-badge" data-tone={badge.tone} title={badge.title}
+            className={"flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px text-[10px] font-medium " + (badge.tone === "green" ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : badge.tone === "amber" ? "border-amber-500/40 text-amber-700 dark:text-amber-300" : "border-border text-muted-foreground")}>
+            <span className={"size-1.5 rounded-full " + (badge.tone === "green" ? "bg-emerald-500" : badge.tone === "amber" ? "bg-amber-500" : "bg-muted-foreground/60")} />
+            {badge.label}
           </span>
         )}
         <span className="flex-1" />
@@ -273,6 +292,16 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 onCompositionStart={() => { composing.current = true; }}
                 onCompositionEnd={(e) => { composing.current = false; const text = e.data; e.currentTarget.value = ""; if (text) send({ type: "input.text", text: text.slice(0, 4096) }); }} />
               {!frame && <Overlay title="Loading page…" />}
+              {badge?.paused && (
+                <div data-testid="browser-egress-paused" className="absolute inset-0 z-10 bg-black/80">
+                  <Overlay title="Paused" body="The browser uses your computer's connection and Floq isn't open there. Open Floq on your computer, or switch to the server connection.">
+                    <div className="flex gap-2">
+                      <Button size="sm" disabled={switching} onClick={useServerNow}>Use server connection this time</Button>
+                      {openSettings && <Button size="sm" variant="outline" onClick={() => openSettings()}>Settings</Button>}
+                    </div>
+                  </Overlay>
+                </div>
+              )}
               {dialog && <PageDialog key={dialog.message + dialog.kind} dialog={dialog} onReply={(accept, text) => { send({ type: "dialog.reply", accept, ...(text !== undefined ? { text } : {}) }); }} />}
             </>
           ) : state === "disabled" ? (

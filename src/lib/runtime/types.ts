@@ -322,6 +322,8 @@ export interface UserSettings {
   usageFallback?: UsageFallback;
   /** Shared agent browser toggle. Absent on older runtimes (treated as on). */
   agentBrowser?: boolean;
+  /** Where the agent browser's traffic leaves from. Absent on older runtimes (treated as "server"). */
+  agentBrowserEgress?: "server" | "desktop" | "desktop-fallback";
   /** Claude sessions load claude.ai connectors. Absent on older runtimes (treated as on). */
   claudeAiConnectors?: boolean;
 }
@@ -356,6 +358,7 @@ export interface SettingsPatch {
   autoApproveAcknowledged?: true;
   usageFallback?: UsageFallback | null;
   agentBrowser?: boolean;
+  agentBrowserEgress?: "server" | "desktop" | "desktop-fallback";
   claudeAiConnectors?: boolean;
 }
 

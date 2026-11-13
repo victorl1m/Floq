@@ -1,4 +1,4 @@
-import type { BrowserData, BrowserImportPreview, BrowserImportResult, BrowserStatus } from "./browser-types";
+import type { BrowserData, BrowserEgress, BrowserImportPreview, BrowserImportResult, BrowserStatus } from "./browser-types";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   PluginRepoPreview,
@@ -416,7 +416,19 @@ export class RuntimeClient {
     url.search = new URLSearchParams({ token: this.token, node: nodeId }).toString();
     return url.toString();
   }
+  /** The desktop app's egress relay dials this. No credentials in the URL: Rust sends the token in an Authorization header. */
+  browserEgressUrl(): string {
+    const url = new URL(this.baseUrl);
+    // The bearer token travels in a header of this socket: never over plain ws:// to another machine.
+    if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new RuntimeError(400, "insecure_server", "Use a secure (https) address to route the browser through this computer");
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/v1/browser/egress";
+    url.search = "";
+    return url.toString();
+  }
   browserStatus = () => this.call<BrowserStatus>("GET", "/v1/browser");
+  /** "Use the server connection this time": a transient runtime override, the saved egress mode is left alone. */
+  browserEgressOverride = (server: boolean) => this.call<BrowserEgress>("POST", "/v1/browser/egress/override", { server });
   browserRestart = () => this.call<BrowserStatus>("POST", "/v1/browser/restart", {});
   browserImportPreview = (content: string) => this.call<BrowserImportPreview>("POST", "/v1/browser/import/preview", { content });
   browserImportCommit = (importId: string, domains: string[], bookmarks: boolean) => this.call<BrowserImportResult>("POST", "/v1/browser/import/commit", { importId, domains, bookmarks });

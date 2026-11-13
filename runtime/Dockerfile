@@ -123,6 +123,8 @@ COPY --from=build /app/dist/image/floq-setup.mjs /usr/local/bin/floq-setup.mjs
 COPY --from=build /app/dist/image/floq-vault.mjs /usr/local/bin/floq-vault
 COPY --from=build /app/dist/image/floq-browserd.mjs /usr/local/bin/floq-browserd
 COPY --from=build /app/dist/image/floq-browserd-core.mjs /usr/local/bin/floq-browserd-core.mjs
+COPY --from=build /app/dist/image/floq-egress.mjs /usr/local/bin/floq-egress.mjs
+COPY --from=build /app/dist/image/floq-egress-codec.mjs /usr/local/bin/floq-egress-codec.mjs
 COPY --from=build /app/dist/image/floq-browser-mcp.mjs /usr/local/bin/floq-browser-mcp
 COPY --from=build /app/dist/image/floq-block-native-subagent.mjs /usr/local/bin/floq-block-native-subagent.mjs
 COPY --from=build /app/dist/image/floq-native-question.mjs /usr/local/bin/floq-native-question.mjs
@@ -130,8 +132,8 @@ COPY --from=build /app/dist/image/floq-permission-request.mjs /usr/local/bin/flo
 # Managed (policy) settings outrank user, project and local settings and are read-only to agents: native subagents stay denied.
 COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
-RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-browser-mcp \
-    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browser-mcp && chmod 644 /usr/local/bin/floq-browserd-core.mjs && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
+RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-egress.mjs /usr/local/bin/floq-egress-codec.mjs /usr/local/bin/floq-browser-mcp \
+    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browser-mcp && chmod 644 /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-egress.mjs /usr/local/bin/floq-egress-codec.mjs && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
 # Rootless apt/apt-get for agents (no root in the sandbox): per-user lists, packages unpacked under ~/.floq/apt, launchers in
 # ~/.local/bin. Root keeps the real tools (they sit later in PATH; the wrapper execs them for uid 0).
 COPY image/floq-apt /usr/local/bin/floq-apt

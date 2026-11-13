@@ -1,7 +1,7 @@
 // Live agent browser stream (docs/design/agent-browser.md §A.5): reconnecting WebSocket hook + pure input helpers.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RuntimeClient } from "./client";
-import type { BrowserClientMessage, BrowserFrame, BrowserNav, BrowserServerMessage, BrowserState } from "./browser-types";
+import type { BrowserClientMessage, BrowserEgress, BrowserFrame, BrowserNav, BrowserServerMessage, BrowserState } from "./browser-types";
 
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 export const MAX_FRAME = { w: 1600, h: 1200 };
@@ -26,8 +26,10 @@ export interface BrowserStreamState {
   clipboard: { text: string; seq: number } | null;
   /** Last download started from this page (files land in ~/Downloads in the sandbox). */
   download: { name: string; state: "started" | "done" | "failed" } | null;
+  /** Where the browser's traffic leaves from; null until the runtime says (older runtimes never do: "via server"). */
+  egress: BrowserEgress | null;
 }
-const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, cursor: "default", agents: 0, error: null, dialog: null, clipboard: null, download: null };
+const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, cursor: "default", agents: 0, error: null, dialog: null, clipboard: null, download: null, egress: null };
 
 const CURSORS = new Set(["default", "pointer", "text", "vertical-text", "grab", "grabbing", "crosshair", "move", "wait", "progress", "help", "not-allowed", "no-drop", "copy", "alias", "context-menu", "cell", "zoom-in", "zoom-out", "all-scroll", "col-resize", "row-resize", "n-resize", "e-resize", "s-resize", "w-resize", "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize"]);
 /** Unknown cursor names fall back to `default` (never feed page-controlled text into CSS). */
@@ -56,6 +58,7 @@ export function reduceBrowser(prev: BrowserStreamState, msg: BrowserServerMessag
     case "cursor": return { ...prev, cursor: normalizeCursor(msg.cursor) };
     case "agentActivity": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, activity: msg.at };
     case "clients": return { ...prev, agents: msg.agents };
+    case "egress": { const { type: _t, ...egress } = msg; return { ...prev, egress }; }
     case "error": return { ...prev, error: msg.code };
     default: return prev;
   }

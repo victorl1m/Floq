@@ -15,6 +15,9 @@ import {
   AGENT_ID, CdpMux, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
+import { EgressMux, PeerChecker, attachMuxToStream, socketSink, startSocksListener } from "./floq-egress.mjs";
+import { Socket } from "node:net";
+import { fstatSync } from "node:fs";
 
 const HOME = process.env.HOME || homedir();
 const BASE = join(HOME, ".floq", "browser");
@@ -69,11 +72,28 @@ function defaultAlive(pid: number): boolean {
   try { return /chrome/.test(readFileSync("/proc/" + pid + "/cmdline", "utf8")); } catch { return false; }
 }
 
-export function chromiumArgs(opts: { sandbox: boolean; profile: string }): string[] {
+/**
+ * Chromium flags that send ALL network traffic through the egress SOCKS listener (docs/design/browser-user-egress.md §2.2).
+ * Only egress routing is changed: no user agent, webdriver, timezone or fingerprint flag. Loopback keeps bypassing the proxy (Chromium default).
+ */
+export function egressFlags(port: number): string[] {
+  return [
+    "--proxy-server=socks5://127.0.0.1:" + port,
+    "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1 , EXCLUDE localhost",
+    "--disable-quic",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--dns-prefetch-disable",
+  ];
+}
+
+/** Egress state shared by the launch code: the listener port (when egress is on) and the current Chromium root pid for the peer check. */
+const egressRuntime: { port: number | null; rootPid?: number } = { port: null };
+
+export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number }): string[] {
   return [
     "--headless=new", "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
-    "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
+    "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.egressPort ? egressFlags(opts.egressPort) : []), ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];
 }
 
@@ -91,16 +111,17 @@ export function sandboxFailureReason(code: number | null, stderrTail: string): s
 type Running = { child: ChildProcess; stderrTail: () => string };
 
 function launchChromium(exe: string, sandbox: boolean): Running {
-  const args = chromiumArgs({ sandbox, profile: PROFILE });
+  const args = chromiumArgs({ sandbox, profile: PROFILE, ...(egressRuntime.port ? { egressPort: egressRuntime.port } : {}) });
   const limitMb = Number(process.env.FLOQ_BROWSER_MEM_MB);
   // Optional address-space cap (FLOQ_BROWSER_MEM_MB). Off unless the runtime passes it: RLIMIT_AS is hard on Chromium's large reservations.
-  const [file, argv] = limitMb > 0 && spawnSync("sh", ["-c", "command -v prlimit"], { stdio: "ignore" }).status === 0
+  const [file, argv] = limitMb > 0 && spawnSync("sh", ["-c", "command -v prlimit"], { stdio: ["ignore", "ignore", "ignore", "ignore"] }).status === 0
     ? ["prlimit", ["--as=" + limitMb * 1024 * 1024, "--", exe, ...args]] as const
     : [exe, args] as const;
   const child = spawn(file, argv, {
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
     env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", HOME },
   });
+  egressRuntime.rootPid = child.pid;
   let tail = "";
   for (const s of [child.stdio[3], child.stdio[4], child.stderr]) s?.on("error", () => { /* Chromium went away; the exit handler reports it */ });
   child.on("error", (e) => log("browser.spawn_error", { message: e.message }));
@@ -134,6 +155,7 @@ async function startChromium(exe: string, onExit: (code: number | null) => void)
     const run = launchChromium(exe, sandbox);
     let pipe!: Pipe;
     const mux = new CdpMux((m) => pipe.write(m));
+    mux.lockProxy = egressRuntime.port !== null;
     pipe = new Pipe(run.child, (m) => mux.fromChrome(m));
     const died = new Promise<number | null>((resolve) => run.child.once("exit", resolve));
     try {
@@ -161,7 +183,7 @@ async function main() {
   chmodSync(PROFILE, 0o700);
   mkdirSync(DOWNLOADS, { recursive: true });
   const exe = findChromium();
-  const chromiumVersion = spawnSync(exe, ["--version"], { encoding: "utf8", timeout: 10000 }).stdout?.trim() ?? "";
+  const chromiumVersion = spawnSync(exe, ["--version"], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe", "ignore"] }) /* fd 3 (relay pipe) is never inherited by helpers: slot 3 is /dev/null */.stdout?.trim() ?? "";
   const blockPrivate = process.env.FLOQ_BROWSER_BLOCK_PRIVATE === "1";
   let stopping = false;
   const shutdown = (code = 0) => {
@@ -176,6 +198,19 @@ async function main() {
     if (!chromeRun) { out({ type: "exit" }); process.exit(code); }
   };
   let chromeRun: Running | undefined;
+  // User-IP egress (FLOQ_BROWSER_EGRESS=desktop): the SOCKS listener and the fd 3 mux must be up BEFORE Chromium, which then gets the proxy flags.
+  // Fail closed: if the pipe or the listener is not there, the daemon does not start (Chromium never runs unproxied in this mode).
+  const egressOn = process.env.FLOQ_BROWSER_EGRESS === "desktop";
+  if (egressOn) {
+    try { fstatSync(3); } catch { throw new Error("egress needs fd 3 (the runtime relay pipe)"); }
+    const fd3 = new Socket({ fd: 3, readable: true, writable: true });
+    const egressMux = new EgressMux(socketSink(fd3), { log, onState: (up) => { log("egress.link", { up }); out({ type: "egress", state: up ? "up" : "down" }); } });
+    attachMuxToStream(egressMux, fd3);
+    const peers = new PeerChecker({ uid: process.getuid?.() ?? -1, rootPid: () => egressRuntime.rootPid, strictness: process.env.FLOQ_BROWSER_EGRESS_PEER === "uid" ? "uid" : "tree" });
+    const { port } = await startSocksListener({ mux: egressMux, peers, log });
+    egressRuntime.port = port;
+    log("egress.listening", { port });
+  }
   const started = await startChromium(exe, () => { log("browser.chromium_exit"); if (!stopping) { stopping = true; out({ type: "exit" }); process.exit(1); } });
   chromeRun = started.run;
   const mux = started.mux;
@@ -341,7 +376,7 @@ async function main() {
       const sid = msg.sessionId, requestId = String(p.requestId);
       const url = String((p.request as { url?: string } | undefined)?.url ?? "");
       const host = requestHost(url);
-      const go = host ? shouldBlockHost(host, resolver) : Promise.resolve(false);
+      const go = host ? shouldBlockHost(host, resolver, { literalOnly: egressOn }) : Promise.resolve(false);
       void go.then((blocked) => {
         if (blocked) log("browser.private_blocked", { host });
         return mux.command(blocked ? "Fetch.failRequest" : "Fetch.continueRequest", blocked ? { requestId, errorReason: "AccessDenied" } : { requestId }, sid);

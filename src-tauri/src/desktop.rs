@@ -209,20 +209,24 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
+    // Kill switch for "browser traffic through this computer"; enabled only while the relay runs.
+    let stop_egress = MenuItem::with_id(app, "egress_stop", "Stop using my connection", false, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    app.state::<crate::egress::Egress>().set_stop_item(stop_egress.clone());
     let quit =
         MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let menu =
-        Menu::with_items(app, &[&open, &startup, &quit]).map_err(|e| e.to_string())?;
+        Menu::with_items(app, &[&open, &startup, &stop_egress, &quit]).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
-    let menu = Menu::with_items(app, &[&open, &quit]).map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&open, &stop_egress, &quit]).map_err(|e| e.to_string())?;
     let icon = app
         .default_window_icon()
         .cloned()
         .ok_or("No app icon is available for the tray")?;
     #[cfg(windows)]
     let startup_item = startup.clone();
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id("floq-tray")
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -260,6 +264,7 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
                     let _ = persist_preferences(app, &preferences);
                 }
             }
+            "egress_stop" => crate::egress::kill_from_tray(app),
             "quit" => app.exit(0),
             _ => {}
         })

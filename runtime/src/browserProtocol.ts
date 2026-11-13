@@ -154,6 +154,8 @@ export type ViewerMessage =
   | { type: "clipboard"; targetId: string; text: string }
   | { type: "download"; targetId: string; name: string; state: "started" | "done" | "failed" }
   | { type: "clients"; agents: number }
+  /** Runtime-originated (never from the daemon): where the browser's traffic leaves from (docs/design/browser-user-egress.md §4.2). */
+  | { type: "egress"; mode: "server" | "desktop" | "desktop-fallback"; effective: "server" | "desktop"; state: "up" | "down"; machine?: string; rttMs?: number }
   | { type: "error"; code: string };
 
 const str = (v: unknown, max: number): string | null => (typeof v === "string" ? (v.length > max ? v.slice(0, max) : v) : null);

@@ -1,3 +1,4 @@
+mod egress;
 mod port_forward;
 mod island;
 mod desktop;
@@ -1008,6 +1009,32 @@ fn port_forward_stop(
     Ok(())
 }
 
+#[tauri::command]
+fn egress_start(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, egress::Egress>,
+    url: String,
+    token: String,
+    policy: egress::Policy,
+) -> Result<(), String> {
+    require_main(&window)?;
+    egress::egress_start(app, state, url, token, policy)
+}
+
+#[tauri::command]
+fn egress_stop(window: WebviewWindow, state: tauri::State<'_, egress::Egress>) -> Result<(), String> {
+    require_main(&window)?;
+    egress::egress_stop(state);
+    Ok(())
+}
+
+#[tauri::command]
+fn egress_status(window: WebviewWindow, state: tauri::State<'_, egress::Egress>) -> Result<egress::StatusFull, String> {
+    require_main(&window)?;
+    Ok(egress::egress_status(state))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
@@ -1022,6 +1049,7 @@ pub fn run() {
             }
         }))
         .manage(port_forward::Forwards::default())
+        .manage(egress::Egress::default())
         .manage(Uploads::default())
         .manage(DroppedPaths::default())
         .manage(RuntimeOrigin::default())
@@ -1061,6 +1089,9 @@ pub fn run() {
             set_native_material,
             port_forward_start,
             port_forward_stop,
+            egress_start,
+            egress_stop,
+            egress_status,
             island::island_publish,
             island::island_intent,
             island::island_set_layout,
