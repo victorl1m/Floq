@@ -145,6 +145,32 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS subagent_max_total INTEGER;
     -- Set when the user answered the one-time auto-approve confirmation before their first agent session.
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_approve_ack_at TIMESTAMPTZ;
+    -- Claude usage-limit fallback: user chain (NULL = defaults) and per-agent override/state (docs/design/claude-swap-fallback.md).
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS usage_fallback JSONB;
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS fallback_override JSONB;
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS fallback_state JSONB;
+    -- uuid of the last usage-limit record acted on: survives a cleared fallback_state so the same record is never handled twice.
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS fallback_last_event TEXT;
+    -- Extra Claude accounts. provider_credentials(claude) always holds the ACTIVE slot's credential (so refresh, syncBack
+    -- and usage are unchanged); the credentials of the other slots are kept here, encrypted with a per-slot AAD.
+    -- The active slot has a metadata row with data_enc NULL.
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS active_claude_slot TEXT NOT NULL DEFAULT 'primary';
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS active_claude_since TIMESTAMPTZ;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS claude_account_return JSONB;
+    CREATE TABLE IF NOT EXISTS claude_accounts (
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      slot TEXT NOT NULL,
+      label TEXT NOT NULL,
+      account_uuid TEXT,
+      plan TEXT,
+      data_enc TEXT,
+      status TEXT NOT NULL DEFAULT 'connected',
+      expires_at TIMESTAMPTZ,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, slot)
+    );
     CREATE TABLE IF NOT EXISTS provider_credentials (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,

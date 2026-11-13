@@ -40,6 +40,40 @@ export interface SessionSummary {
   parentSessionId?: string | null;
   /** Turn status of a running agent; only present on polled session lists. */
   activity?: "working" | "idle" | "waiting-for-input";
+  /** Set while the agent runs on a usage-limit fallback (or waits, paused, for the limit to reset). */
+  fallback?: SessionFallback | null;
+  /** Per-agent usage-limit policy; absent/null = the default chain. */
+  fallbackOverride?: "model" | "pause" | null;
+}
+
+export interface SessionFallback {
+  kind: "model" | "account" | "codex" | "paused";
+  label: string;
+  originLabel: string;
+  resetsAt: string | null;
+  keep: boolean;
+  /** Paused only: why the agent is paused. */
+  reason?: "no_step" | "pause_override" | "fallback_loop" | "steps_unavailable";
+}
+
+/** Result of a badge action: `applied: false` says it changed nothing (no fallback any more, or the limit is still on). */
+export interface FallbackActionResult {
+  session: SessionSummary;
+  applied: boolean;
+  reason?: "no_fallback" | "still_limited";
+  resetsAt?: string;
+}
+
+export type FallbackStep =
+  | { kind: "model"; enabled: boolean; ladder: string[] }
+  | { kind: "account"; enabled: boolean; slots: string[] }
+  | { kind: "codex"; enabled: boolean; model: string };
+
+/** What happens when a Claude agent hits its plan usage limit. */
+export interface UsageFallback {
+  enabled: boolean;
+  steps: FallbackStep[];
+  swapBack: boolean;
 }
 
 export interface AgentRole {
@@ -284,6 +318,8 @@ export interface UserSettings {
   subagentCeilings?: { maxChildren: number; maxTotal: number };
   /** Absent on older runtimes (treated as acknowledged). */
   autoApproveAcknowledged?: boolean;
+  /** Absent on older runtimes. */
+  usageFallback?: UsageFallback;
 }
 
 export interface SettingsPatch {
@@ -297,6 +333,7 @@ export interface SettingsPatch {
   subagentMaxChildren?: number | null;
   subagentMaxTotal?: number | null;
   autoApproveAcknowledged?: true;
+  usageFallback?: UsageFallback | null;
 }
 
 /** The fixed Floq subagent policy, read-only (GET /v1/subagents/policy). */
@@ -459,6 +496,15 @@ export interface ClaudeOAuthStart {
   authorizeUrl: string;
 }
 
+/** One connected Claude login (the fallback's "another account" step). */
+export interface ClaudeAccount {
+  slot: string;
+  label: string;
+  plan: string | null;
+  active: boolean;
+  status: "connected" | "disconnected";
+}
+
 export interface ClaudeOAuthResult {
   connected: boolean;
   plan?: string | null;
@@ -478,6 +524,8 @@ export interface ProviderUsage {
   windows: UsageWindow[];
   fetchedAt?: string | null;
   error?: string | null;
+  /** Active Claude account label when it is not the primary one. */
+  accountLabel?: string;
 }
 
 export type ProvidersUsage = Record<LoginProviderId, ProviderUsage | null>;

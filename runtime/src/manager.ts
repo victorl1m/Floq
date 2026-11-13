@@ -29,7 +29,8 @@ import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, typ
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { moveProjectsInFolders, pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
-import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptTail } from "./nativeTitle.js";
+import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptHead, readTranscriptTail } from "./nativeTitle.js";
+import { fallbackBadge, type FallbackState } from "./fallback.js";
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
 import { composeRolePrompt, parseRoleId, pickModelForCapability } from "./roles.js";
 import { buildRecruitSkillsBlock, storedRecruitSkills } from "./recruitSkills.js";
@@ -137,6 +138,13 @@ interface Row {
   parent_session_id?: string | null;
   recruit_skills?: string[] | null;
   archived_at?: Date | null;
+  fallback_state?: FallbackState | null;
+  fallback_override?: { mode?: string } | null;
+}
+
+function overrideOf(row: Row): "model" | "pause" | null {
+  const mode = row.fallback_override?.mode;
+  return mode === "model" || mode === "pause" ? mode : null;
 }
 
 function summaryFromRow(row: Row): SessionSummary {
@@ -168,6 +176,8 @@ function summaryFromRow(row: Row): SessionSummary {
     role: row.role ?? null,
     parentSessionId: row.parent_session_id ?? null,
     archived: row.archived_at != null,
+    fallback: fallbackBadge(row.fallback_state),
+    fallbackOverride: overrideOf(row),
   };
 }
 
@@ -350,6 +360,10 @@ export class SessionManager {
   private shuttingDown = false;
   private readyListeners?: Array<(userId: string, sessionId: string) => void>;
   private bootNotices?: Map<string, string>;
+  /** Usage-limit fallback (set by index.ts); fed every Claude PTY output frame. */
+  fallback?: { onOutput(id: string, userId: string): void; sweep?(live: Array<{ id: string; userId: string }>): void; beforeLaunch?(row: { id: string; user_id: string; provider: string; model: string | null }): Promise<{ model: string | null; notice?: string } | null> };
+  /** Extra Claude logins (set by index.ts): attributes CLI-refreshed credentials to the right account and forgets extras on disconnect. */
+  accounts?: { adoptAttributed(userId: string, data: CredentialData): Promise<"single" | "active" | "reserve" | "unmatched" | "retry">; reset(userId: string): Promise<void> };
   /** Test hook: overrides the TUI-ready detection timing. */
   readyTiming?: { quietMs: number; timeoutMs: number };
   private readonly reaper: NodeJS.Timeout;
@@ -555,6 +569,47 @@ export class SessionManager {
     const tail = readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES);
     if (!tail) return null;
     return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
+  }
+
+  /** Tail text of a live Claude agent's transcript (the usage-limit fallback reads it); null when unavailable. */
+  readTranscriptText(id: string, userId: string): string | null {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || state.userId !== userId || state.provider !== "claude") return null;
+    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES)?.text ?? null : null;
+  }
+
+  /** ms since a live session last wrote terminal output (Infinity when it is not live). */
+  outputQuietMs(id: string): number {
+    const live = this.live.get(id);
+    return live ? Date.now() - live.lastActivity : Infinity;
+  }
+
+  /** Change marker of a live Claude agent's transcript (mtime:size) for the usage-limit fallback's cheap pre-check. */
+  transcriptStamp(id: string, userId: string): string | null {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || state.userId !== userId || state.provider !== "claude") return null;
+    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    if (!path) return null;
+    try { const st = statSync(path); return st.mtimeMs + ":" + st.size; } catch { return null; }
+  }
+
+  /** Drop a queued boot notice (the launch it was meant for failed). */
+  dropBootNotice(id: string): void {
+    this.bootNotices?.delete(id);
+  }
+
+  /** Type a short trusted notice into a live Claude/Codex agent's terminal (used to tell a parent about a child's usage-limit fallback). False when it is not live. */
+  async typeNotice(userId: string, id: string, text: string): Promise<boolean> {
+    const session = this.live.get(id);
+    if (!session || session.userId !== userId || !session.isAlive || session.provider === "shell" || this.logins.has(id)) return false;
+    await serialPerTarget(id, () => typeMessage((d) => session.write(d), text, { bracketed: session.provider === "claude" || session.provider === "codex", trusted: true }));
+    return true;
+  }
+
+  /** Queue a trusted notice typed once after the session's next launch is ready (used by the usage-limit fallback). */
+  queueBootNotice(id: string, text: string): void {
+    (this.bootNotices ??= new Map()).set(id, text);
   }
 
   /** uid the user's sandboxed processes run as, while their shard is awake; null when unknown. */
@@ -1236,7 +1291,7 @@ export class SessionManager {
       const live = this.live.get(row.id);
       const organizationId = orgId ? String((row as Row & { org_id?: string | null }).org_id ?? orgId) : undefined;
       if (!live) return { ...summaryFromRow(row), ...(organizationId ? { organizationId } : {}) };
-      const summary = { ...live.toSummary(), ...(organizationId ? { organizationId } : {}) };
+      const summary = { ...live.toSummary(), ...(organizationId ? { organizationId } : {}), fallback: fallbackBadge(row.fallback_state), fallbackOverride: overrideOf(row) };
       // Turn status only for live agents (not shells); reads a bounded transcript tail.
       if (live.state === "running" && live.provider !== "shell") {
         const turn = this.readAgentTurn(live.id, userId);
@@ -1430,6 +1485,14 @@ export class SessionManager {
 
   /** Start (or restart) the PTY for a session row inside the user's shard. */
   private async launch(row: Row, profile: RuntimeProfile, handle: ShardHandle, resume: boolean, prompt?: string, strictResume = false): Promise<Session> {
+    // Usage-limit fallback, proactive: a full plan window is handled BEFORE the process starts (model or account step), so no turn is wasted.
+    if (row.provider === "claude" && this.fallback?.beforeLaunch) {
+      const pre = await this.fallback.beforeLaunch(row).catch(() => null);
+      if (pre) {
+        row = { ...row, model: pre.model };
+        if (pre.notice) this.queueBootNotice(row.id, pre.notice);
+      }
+    }
     const definition = getProviderDefinition(row.provider, this.config);
     // Claude's conversation id is the Floq session id; Codex's is discovered and stored.
     const providerId = row.provider === "claude" ? row.id : row.provider_session_id;
@@ -1614,6 +1677,7 @@ export class SessionManager {
     session.subscribe((frame) => {
       if (frame.type === "output") {
         void this.updateNativeTitle(row.id);
+        if (row.provider === "claude") this.fallback?.onOutput(row.id, row.user_id);
         return;
       }
       if (frame.type === "exit") void this.onExit(session, frame.session.state, !strictResume && resuming && Date.now() - launchedAt < RESUME_FALLBACK_MS, profile, handle);
@@ -1944,7 +2008,7 @@ export class SessionManager {
     }
   }
 
-  private async resumeOnce(userId: string, profile: RuntimeProfile, id: string, strictResume = false): Promise<SessionSummary> {
+  private async resumeOnce(userId: string, profile: RuntimeProfile, id: string, strictResume = false, launchOpts: { fresh?: boolean; prompt?: string } = {}): Promise<SessionSummary> {
     this.assertLifecycleOpen();
     const stopping = this.stoppingSessions.get(id);
     if (stopping && stopping.userId !== userId) throw notFound("Session " + id + " not found");
@@ -1963,12 +2027,81 @@ export class SessionManager {
     try {
       const handle = await this.shards.wake(userId);
       this.assertLifecycleOpen();
-      const session = await this.launch(row, profile, handle, true, undefined, strictResume);
+      const session = await this.launch(row, profile, handle, launchOpts.fresh !== true, launchOpts.prompt, strictResume);
       log.info("session.resume", { sessionId: id, userId, count: session.resumeCount });
       return session.toSummary();
     } finally {
       releaseCapacity();
     }
+  }
+
+  /**
+   * Usage-limit fallback: move an agent to another provider IN PLACE (same row, UUID, canvas node, wires, inbox). The old
+   * process is stopped first (strict), then the new provider starts: `prompt` is the first message of a fresh conversation,
+   * `notice` is typed after a resumed one is ready. Claude conversations resume by the row id; Codex ones by provider_session_id.
+   */
+  async switchProvider(userId: string, profile: RuntimeProfile, id: string, to: { provider: "claude" | "codex"; model: string | null; prompt?: string; notice?: string }): Promise<SessionSummary> {
+    this.assertLifecycleOpen();
+    return coalesce(this.restartTasks, userId + ":" + id, async () => {
+      const row = await this.row(id, userId);
+      if (row.provider !== "claude" && row.provider !== "codex") throw badRequest("Only Claude and Codex agents can switch provider", "invalid_provider");
+      let stopped = false;
+      try {
+        await this.sleepSession(id, "usage-fallback", { waitForExit: true });
+        stopped = true;
+        await this.pool.query("UPDATE agent_sessions SET provider = $3, model = $4 WHERE id = $1 AND user_id = $2", [id, userId, to.provider, to.model]);
+        if (to.notice) this.queueBootNotice(id, to.notice);
+        // A Codex conversation that already exists resumes; without one (or when starting Codex the first time) it is a fresh start with the prompt.
+        const resumeCodex = to.provider === "codex" && Boolean((await this.row(id, userId)).provider_session_id);
+        return await this.resumeOnce(userId, profile, id, true, { fresh: to.provider === "codex" && !resumeCodex, prompt: to.prompt });
+      } catch (error) {
+        this.dropBootNotice(id);
+        // The row keeps the provider it had. It is only marked failed when the old process is really gone and the new one did not start;
+        // if the old process could not be stopped, sleepSession already left the row sleeping and the process is still tracked.
+        if (stopped) await this.pool.query("UPDATE agent_sessions SET provider = $3, model = $4, state = 'failed', sleep_reason = 'fallback-switch-failed', slept_at = now() WHERE id = $1 AND user_id = $2 AND state IN ('running','sleeping')", [id, userId, row.provider, row.model]).catch(() => undefined);
+        throw error;
+      } finally {
+        this.intentionalSleep.delete(id);
+      }
+    });
+  }
+
+  /** First bytes of a live Claude agent's transcript (the original task is there); null when unavailable. */
+  readTranscriptHeadText(id: string, userId: string, maxBytes: number): string | null {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || state.userId !== userId || state.provider !== "claude") return null;
+    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    return path ? readTranscriptHead(path, maxBytes) : null;
+  }
+
+  /** Sandbox path of a live Claude agent's transcript (given to the Codex agent in the handoff). */
+  transcriptSandboxPath(id: string, userId: string): string | null {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || state.userId !== userId || state.provider !== "claude") return null;
+    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    if (!path) return null;
+    const home = realpathSync(this.hostHome(state.handle));
+    const rel = relative(home, realpathSync(path));
+    return rel.startsWith("..") ? null : this.shards.driver.homePath(state.handle) + "/" + rel;
+  }
+
+  /**
+   * Write a handoff file as the user's uid, mode 0600, under ~/.floq/handoff (files older than 7 days are pruned on every write).
+   * Returns the path as the sandbox sees it.
+   */
+  async writeHandoffFile(userId: string, name: string, content: string): Promise<string> {
+    if (!/^[\w-]{1,80}\.md$/.test(name)) throw badRequest("invalid handoff name");
+    const handle = await this.shards.wake(userId);
+    const dir = this.shards.driver.hostPath(handle, ".floq/handoff");
+    mkdirOwned(handle.mountPath, dir, handle.uid);
+    try {
+      for (const entry of readdirSync(dir)) {
+        const file = join(dir, entry);
+        try { const st = lstatSync(file); if (st.isFile() && Date.now() - st.mtimeMs > 7 * 86_400_000) rmSync(file, { force: true }); } catch { /* best effort */ }
+      }
+    } catch { /* first write */ }
+    writeFileOwned(join(dir, name), content, handle.uid, 0o600);
+    return this.shards.driver.homePath(handle) + "/.floq/handoff/" + name;
   }
 
   /** Validate that this live agent can be restarted without losing its provider conversation. */
@@ -2082,6 +2215,28 @@ export class SessionManager {
     writeFileOwned(path, JSON.stringify(settings, null, 2), handle.uid, 0o644);
   }
 
+  /**
+   * Adopt a credential the CLI rotated in the user's sandbox file right now (used before an account switch, so the outgoing
+   * account's rotated refresh token is stored with it). Same attribution rules as syncBack; failures are not fatal.
+   */
+  async syncClaudeNow(userId: string): Promise<void> {
+    if (!this.shards.isAwake(userId)) return;
+    const handle = await this.shards.wake(userId);
+    const path = this.claudeCredPath(handle);
+    let data: unknown;
+    try {
+      data = (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>).claudeAiOauth;
+      this.credMtime.set(path, statSync(path).mtimeMs);
+    } catch { return; }
+    if (!validCredential("claude", data)) return;
+    if (this.accounts) {
+      const where = await this.accounts.adoptAttributed(userId, data).catch(() => "retry" as const);
+      if (where === "retry") { this.credMtime.delete(path); return; }
+      if (where === "reserve" || where === "unmatched") return;
+    }
+    await this.credentials.adopt(userId, "claude", data);
+  }
+
   /** Hand a fresh credential to the user's running CLIs. */
   async distribute(userId: string, provider: OAuthProvider, data: CredentialData): Promise<void> {
     if (!this.shards.isAwake(userId)) return;
@@ -2123,6 +2278,13 @@ export class SessionManager {
         data = s.provider === "claude" ? parsed.claudeAiOauth : parsed;
       } catch {
         continue;
+      }
+      // Several Claude logins: only adopt a rewritten file into the account it belongs to (profile account uuid).
+      if (s.provider === "claude" && this.accounts && validCredential("claude", data)) {
+        const where = await this.accounts.adoptAttributed(s.userId, data).catch(() => "retry" as const);
+        // "retry": the account could not be identified just now. Look at this file again next time instead of dropping its rotated token.
+        if (where === "retry") { this.credMtime.delete(path); continue; }
+        if (where === "reserve" || where === "unmatched") continue;
       }
       if (validCredential(s.provider, data) && (await this.credentials.adopt(s.userId, s.provider, data))) {
         await this.distribute(s.userId, s.provider, data);
@@ -2283,6 +2445,7 @@ export class SessionManager {
     if (provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex", "invalid_provider");
     for (const [id, state] of this.logins) if (state.userId === userId && state.provider === provider) this.endLogin(id);
     await this.credentials.remove(userId, provider);
+    if (provider === "claude") await this.accounts?.reset(userId);
     if (provider === "codex") this.invalidateCodexModels(userId);
     const handle = await this.shards.wake(userId);
     if (provider === "claude") {
@@ -2462,6 +2625,8 @@ export class SessionManager {
   }
 
   private async reap(): Promise<void> {
+    // Usage-limit fallback safety net: the CLI can write its limit record without any later terminal output, so look at every live Claude agent now and then (cheap: a stat unless the transcript changed).
+    this.fallback?.sweep?.([...this.live.values()].filter((s) => s.isAlive && s.provider === "claude" && !this.logins.has(s.id)).map((s) => ({ id: s.id, userId: s.userId })));
     await this.syncBack().catch((error) => log.error("credentials.sync_failed", { error: error instanceof Error ? error.message : String(error) }));
     await Promise.all([...this.nativeTitleSessions.keys()].map((id) => this.updateNativeTitle(id)));
     const now = Date.now();

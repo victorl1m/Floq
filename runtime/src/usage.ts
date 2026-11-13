@@ -16,6 +16,8 @@ export interface ProviderUsage {
   windows: UsageWindow[];
   fetchedAt: string;
   error?: string;
+  /** Label of the active Claude account when it is not the primary one (set by the route, not cached). */
+  accountLabel?: string;
 }
 
 const CACHE_MS = 60_000;
@@ -157,6 +159,16 @@ export class UsageService {
       log.info("usage.shape", { provider, keys: Object.keys(body) }); // key names only, no values
     }
     return body;
+  }
+
+  /** Forget the cached usage of a provider (the active Claude account changed: the old account's numbers must not be reported for the new one). */
+  invalidate(userId: string, provider: OAuthProvider): void {
+    this.cache.delete(userId + ":" + provider);
+  }
+
+  /** Windows for a Claude credential that is not necessarily the stored one (a reserve account). Throws on HTTP errors. */
+  claudeWindowsOf(data: CredentialData): Promise<UsageWindow[]> {
+    return this.claude(data);
   }
 
   private async claude(data: CredentialData): Promise<UsageWindow[]> {

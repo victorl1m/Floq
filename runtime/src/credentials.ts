@@ -65,7 +65,7 @@ export function validCredential(provider: OAuthProvider, data: unknown): data is
   return typeof tokens?.access_token === "string" && typeof tokens?.refresh_token === "string";
 }
 
-class RefreshFailure extends Error {
+export class RefreshFailure extends Error {
   constructor(
     readonly permanent: boolean,
     message: string,
@@ -105,16 +105,16 @@ export class CredentialBroker {
     return `${userId}:${provider}_oauth`;
   }
 
-  async get(userId: string, provider: OAuthProvider): Promise<CredentialData | null> {
-    const row = (await this.pool.query("SELECT data_enc, status FROM provider_credentials WHERE user_id = $1 AND provider = $2", [userId, provider])).rows[0];
+  async get(userId: string, provider: OAuthProvider, db: { query: pg.Pool["query"] } = this.pool): Promise<CredentialData | null> {
+    const row = (await db.query("SELECT data_enc, status FROM provider_credentials WHERE user_id = $1 AND provider = $2", [userId, provider])).rows[0];
     if (!row?.data_enc || row.status !== "connected") return null;
     return JSON.parse(decryptSecret(this.config.encryptionKey, row.data_enc, this.aad(userId, provider))) as CredentialData;
   }
 
-  async save(userId: string, provider: OAuthProvider, data: CredentialData): Promise<void> {
+  async save(userId: string, provider: OAuthProvider, data: CredentialData, db: { query: pg.Pool["query"] } = this.pool): Promise<void> {
     const enc = encryptSecret(this.config.encryptionKey, JSON.stringify(data), this.aad(userId, provider));
     const expires = expiryOf(provider, data);
-    await this.pool.query(
+    await db.query(
       `INSERT INTO provider_credentials (user_id, provider, data_enc, expires_at, status, detail, fail_count, next_attempt_at, plan, updated_at)
        VALUES ($1,$2,$3,$4,'connected',NULL,0,NULL,$5, now())
        ON CONFLICT (user_id, provider) DO UPDATE SET data_enc = $3, expires_at = $4, status = 'connected', detail = NULL,
@@ -161,6 +161,13 @@ export class CredentialBroker {
       log.info("credentials.adopted", { userId, provider });
       return true;
     });
+  }
+
+  /** Exchange the refresh token of a credential that is NOT the stored one (a reserve Claude account). Throws RefreshFailure; persists nothing. */
+  refreshData(provider: OAuthProvider, data: CredentialData): Promise<CredentialData> {
+    const refreshToken = refreshTokenOf(provider, data);
+    if (!refreshToken) return Promise.reject(new RefreshFailure(true, "no refresh token"));
+    return this.exchange(provider, data, refreshToken);
   }
 
   /** Refresh now if the credential is close to expiry (or `force`). Never throws. */

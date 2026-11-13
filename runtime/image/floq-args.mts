@@ -69,6 +69,7 @@ export function buildRecruitPayload(positional: string[], named: NamedArgs) {
     role: named.role,
     isolated: named.isolated === true,
     skills: named.skill,
+    ...(named.fallback !== undefined ? { fallback: named.fallback } : {}),
   };
 }
 

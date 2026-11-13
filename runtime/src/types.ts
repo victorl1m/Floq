@@ -42,6 +42,10 @@ export interface SessionSummary {
   parentSessionId?: string | null;
   /** Turn status of a running agent; only set on the session list (polled), absent otherwise. */
   activity?: "working" | "idle" | "waiting-for-input";
+  /** Set while the agent runs on a usage-limit fallback (or is paused until the limit resets). */
+  /** Per-agent usage-limit policy: "model" = model step only, "pause" = pause instead of any change; null/absent = the default chain. */
+  fallbackOverride?: "model" | "pause" | null;
+  fallback?: { kind: "model" | "account" | "codex" | "paused"; label: string; originLabel: string; resetsAt: string | null; keep: boolean; reason?: "no_step" | "pause_override" | "fallback_loop" | "steps_unavailable" } | null;
 }
 
 export interface ProjectWorkspace {

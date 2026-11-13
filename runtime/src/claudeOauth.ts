@@ -3,6 +3,7 @@ import type { Config } from "./config.js";
 import type { CredentialBroker, CredentialData } from "./credentials.js";
 import { HttpError, badRequest } from "./errors.js";
 import { log } from "./logger.js";
+import type { ClaudeAccounts } from "./claudeAccounts.js";
 
 /** Same values the Claude Code CLI uses for its manual (copy-the-code) login. */
 const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
@@ -38,6 +39,8 @@ export class ClaudeOAuth {
 
   /** Called with the new credential once it is stored (distribute to running sessions). */
   onConnected: (userId: string, data: CredentialData) => void = () => undefined;
+  /** When set, a login started with addAccount is stored as a reserve account instead of replacing the active one. */
+  accounts?: ClaudeAccounts;
 
   constructor(
     private readonly config: Config,
@@ -74,7 +77,7 @@ export class ClaudeOAuth {
     return { flowId, authorizeUrl: url.toString() };
   }
 
-  async finish(userId: string, flowId: unknown, pasted: unknown): Promise<{ connected: true; plan: string | null }> {
+  async finish(userId: string, flowId: unknown, pasted: unknown, extra: { addAccount?: boolean; label?: unknown } = {}): Promise<{ connected: true; plan: string | null; slot?: string }> {
     this.prune();
     if (typeof flowId !== "string" || typeof pasted !== "string" || !pasted.trim() || pasted.length > 2000) {
       throw badRequest("flowId and code are required");
@@ -129,6 +132,12 @@ export class ClaudeOAuth {
       scopes: typeof payload.scope === "string" && payload.scope ? payload.scope.split(" ") : CLAUDE_SCOPES,
       ...(await this.profile(payload.access_token)),
     };
+    if (extra.addAccount) {
+      if (!this.accounts) throw badRequest("Multiple Claude accounts are not available", "accounts_unavailable");
+      const added = await this.accounts.add(userId, data, extra.label);
+      log.info("login.connected", { userId, provider: "claude", via: "oauth", slot: added.slot });
+      return { connected: true, plan: added.plan, slot: added.slot };
+    }
     await this.credentials.save(userId, "claude", data);
     this.onConnected(userId, data);
     log.info("login.connected", { userId, provider: "claude", via: "oauth" });

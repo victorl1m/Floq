@@ -5,6 +5,8 @@ import { ORCHESTRATOR_TEXT, orchestratorLabel } from "@/lib/runtime/orchestrator
 import { IconChevronDown, IconChevronRight, IconLink, IconNote, IconPlayerPlay, IconRefresh, IconWindowMaximize } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
+import { FallbackBadge } from "./fallback-badge";
+import { FallbackPolicyMenu } from "./fallback-policy-menu";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ActivityIndicator } from "@/components/agents/activity-indicator";
@@ -99,6 +101,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={session.title}>{session.title}</span>
           <ActivityIndicator session={session} />
           {session.state === "failed" && <span data-testid="agent-state" className="shrink-0 text-[10px] font-medium text-destructive">Failed</span>}
+          {session.fallback && <FallbackBadge sessionId={session.id} fallback={session.fallback} />}
           {session.parentSessionId && (
             <Badge variant="outline" className="h-4 shrink-0 gap-0.5 px-1.5 text-[10px] font-normal text-muted-foreground" title={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`} aria-label={`Subagent of ${sessions.find((item) => item.id === session.parentSessionId)?.title ?? "its parent"}`}>
               <RoleGlyph roleId="subagent" size={10} />{roleLabel("subagent")}
@@ -127,6 +130,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
               <IconNote size={12} />{ctx.noteCounts[id]}
             </span>
           )}
+          {session.provider === "claude" && (selected || session.fallbackOverride) && <FallbackPolicyMenu sessionId={session.id} value={session.fallbackOverride} />}
           <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Open ${session.title}`} title="Open terminal" onClick={() => ctx.focus(session)}>
             <IconWindowMaximize size={14} />
           </Button>

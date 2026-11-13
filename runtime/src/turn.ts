@@ -1,3 +1,5 @@
+import { log } from "./logger.js";
+
 /** Pure helpers that read an agent's native transcript (Claude projects jsonl, Codex rollout jsonl). */
 
 export type TurnStatus = "working" | "idle";
@@ -134,4 +136,58 @@ export function agentStatus(input: StatusInput): AgentStatus {
   if (turn.status === "idle") return "idle";
   if (turn.trailingAssistantText && input.transcriptQuietMs >= TRAILING_TEXT_IDLE_MS && input.outputQuietMs >= TERMINAL_QUIET_MS) return "idle";
   return input.outputQuietMs >= WAITING_INPUT_QUIET_MS ? "waiting-for-input" : "working";
+}
+
+/** A usage-limit block the Claude CLI wrote into the transcript (a synthetic assistant record, never model output). */
+export interface ClaudeLimitEvent {
+  /** Record uuid, for dedupe. */
+  uuid: string;
+  /** Rate-limit window as the CLI names it: five_hour, seven_day, seven_day_opus, seven_day_sonnet, ... */
+  rateLimitType: string;
+  /** UTC ISO reset time, or null when the record carries none. */
+  resetsAt: string | null;
+  /** When the CLI wrote the record (ISO), or null. */
+  timestamp: string | null;
+  /** Text of the CLI message ("You've hit your 5-hour limit · resets 4:20am (UTC)"). */
+  text: string;
+  /** True when no real user prompt follows this record (the block ended the current turn). */
+  latest: boolean;
+}
+
+const warnedApiErrors = new Set<string>();
+/** A CLI update that renames the limit class would silently turn detection off: say so once per value (values only, no record content). */
+function warnUnknownApiError(value: unknown): void {
+  const key = String(value).slice(0, 60);
+  if (warnedApiErrors.has(key) || warnedApiErrors.size > 50) return;
+  warnedApiErrors.add(key);
+  log.warn("fallback.unknown_api_error", { apiError: key });
+}
+
+/**
+ * The latest usage-limit block in a Claude transcript tail. Detected only from fields the CLI sets on its own synthetic
+ * record (isApiErrorMessage + apiError "usage_limit_reached" + apiErrorParams.rate_limit_info, shape captured from CLI
+ * 2.1.319, see test/fixtures/claude-usage-limit-2.1.319.jsonl). Model text, tool results, user prompts and sidechain
+ * records can never match. Null when the last real prompt came after the block or there is none.
+ */
+export function claudeLimitEvent(text: string): ClaudeLimitEvent | null {
+  let found: ClaudeLimitEvent | null = null;
+  for (const rec of parseLines(text)) {
+    if (rec.isSidechain === true) continue;
+    if (rec.type === "user" && isRec(rec.message) && rec.isMeta !== true) {
+      const content = rec.message.content;
+      if (typeof content === "string" ? content.trim() !== "" : blocks(content).some((b) => b.type === "text")) found = null;
+      continue;
+    }
+    if (rec.type === "assistant" && rec.isApiErrorMessage === true && typeof rec.apiError === "string" && rec.apiError !== "usage_limit_reached") warnUnknownApiError(rec.apiError);
+    if (rec.type !== "assistant" || rec.isApiErrorMessage !== true || rec.apiError !== "usage_limit_reached") continue;
+    const message = isRec(rec.message) ? rec.message : null;
+    if (!message || message.model !== "<synthetic>" || typeof rec.uuid !== "string") continue;
+    const params = isRec(rec.apiErrorParams) ? rec.apiErrorParams : null;
+    const info = params && isRec(params.rate_limit_info) ? params.rate_limit_info : null;
+    if (!info || info.status !== "rejected" || typeof info.rateLimitType !== "string" || !/^[a-z0-9_]{1,40}$/.test(info.rateLimitType)) continue;
+    const resets = typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt) ? new Date(info.resetsAt * 1000).toISOString() : null;
+    const body = blocks(message.content).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("").slice(0, 300);
+    found = { uuid: rec.uuid, rateLimitType: info.rateLimitType, resetsAt: resets, timestamp: typeof rec.timestamp === "string" && Number.isFinite(Date.parse(rec.timestamp)) ? new Date(rec.timestamp).toISOString() : null, text: body, latest: true };
+  }
+  return found;
 }

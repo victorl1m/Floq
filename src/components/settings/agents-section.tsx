@@ -11,6 +11,7 @@ import { errorMessage, useClient } from "@/lib/runtime/store";
 import { pendingCount, reopenApprovals, useApprovalState } from "@/lib/approvals";
 import type { ProviderId, SettingsPatch, SubagentPolicy, UserSettings } from "@/lib/runtime/types";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { UsageFallbackGroup } from "./usage-fallback-group";
 
 interface Props {
     settings: UserSettings;
@@ -242,6 +243,8 @@ export default function AgentsSection({ settings, onChange }: Props) {
                 </SettingRow>
                 <FixedInstructionPreview />
             </SettingsGroup>
+
+            <UsageFallbackGroup settings={settings} patch={patch} />
 
             <SettingsGroup title="Permissions">
                 <SettingRow
