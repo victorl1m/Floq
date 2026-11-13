@@ -6,10 +6,12 @@ import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
 import { cn } from "cn";
 import { errorMessage, useClient } from "@/lib/runtime/store";
-import type { LoginProviderId } from "@/lib/runtime/types";
+import type { LoginProviderId, UserSettings } from "@/lib/runtime/types";
 import ConnectProviderDialog from "./connect-provider-dialog";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
 import { ClaudeAccountsGroup } from "./claude-accounts-group";
+import { UsageFallbackGroup } from "./usage-fallback-group";
+import { useSettingsPatch } from "./use-settings-patch";
 import { useProviderStatus } from "./use-provider-status";
 
 const PROVIDERS: { id: LoginProviderId; label: string; subtitle: string }[] = [
@@ -17,8 +19,9 @@ const PROVIDERS: { id: LoginProviderId; label: string; subtitle: string }[] = [
     { id: "codex", label: "Codex", subtitle: "ChatGPT subscription" },
 ];
 
-export default function AccountsSection() {
+export default function AccountsSection({ settings, onChange }: { settings: UserSettings; onChange: (settings: UserSettings) => void }) {
     const client = useClient();
+    const patch = useSettingsPatch(settings, onChange);
     const { status, unsupported, reload } = useProviderStatus();
     const [connecting, setConnecting] = useState<LoginProviderId | null>(null);
     const [busy, setBusy] = useState<LoginProviderId | null>(null);
@@ -78,6 +81,7 @@ export default function AccountsSection() {
                 })}
             </SettingsGroup>
             {status?.claude.connected && !unsupported && <ClaudeAccountsGroup onChanged={() => void reload()} />}
+            <UsageFallbackGroup settings={settings} patch={patch} />
             {connecting && (
                 <ConnectProviderDialog
                     provider={connecting}

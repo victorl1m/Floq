@@ -3,6 +3,7 @@ import {
     IconAdjustmentsAlt,
     IconBrandGithub,
     IconBuilding,
+    IconWorldWww,
     IconInfoCircle,
     IconPlug,
     IconCreditCard,
@@ -26,6 +27,7 @@ import AdvancedSection from "./advanced-section";
 import AboutSection from "./about-section";
 import AccountSection from "./account-section";
 import AgentsSection from "./agents-section";
+import BrowserSection from "./browser-section";
 import AppearanceSection from "./appearance-section";
 import PerformanceSection from "./performance-section";
 import OrganizationSection from "./organization-section";
@@ -55,6 +57,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
         title: "Agents",
         items: [
             { id: "agents", label: "Agents", icon: IconRobot },
+            { id: "browser", label: "Browser", icon: IconWorldWww },
             { id: "git", label: "Git & GitHub", icon: IconBrandGithub },
         ],
     },
@@ -95,7 +98,7 @@ export default function SettingsDialog() {
         if (settingsOpen) void reload();
     }, [settingsOpen, reload]);
 
-    const needsSettings = ["agents", "git", "advanced"].includes(section);
+    const needsSettings = ["agents", "browser", "accounts", "git", "advanced"].includes(section);
 
     let content;
     if (needsSettings && !settings) {
@@ -113,7 +116,8 @@ export default function SettingsDialog() {
     else if (section === "performance") content = <PerformanceSection />;
     else if (section === "agents" && settings) content = <AgentsSection settings={settings} onChange={setSettings} />;
     else if (section === "organization") content = <OrganizationSection />;
-    else if (section === "accounts") content = <AccountsSection />;
+    else if (section === "browser" && settings) content = <BrowserSection settings={settings} onChange={setSettings} />;
+    else if (section === "accounts" && settings) content = <AccountsSection settings={settings} onChange={setSettings} />;
     else if (section === "git" && settings) content = <GitSection settings={settings} onChange={setSettings} reload={reload} />;
     else if (section === "desktop") content = <DesktopSection />;
     else if (section === "runtime") content = <RuntimeSection />;

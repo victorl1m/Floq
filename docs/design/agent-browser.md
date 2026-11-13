@@ -92,7 +92,7 @@ The daemon validates every inbound field: types, coordinates within the viewport
 ### A.7 Settings and flags
 
 - Admin/env: `FLOQ_AGENT_BROWSER=on|off` (default `on` when `/opt/floq/browsers` contains the pinned Chromium, `off` otherwise), `FLOQ_BROWSER_IDLE_MS`, `FLOQ_BROWSER_MEM_MB`. `capabilities.ts` reports `browser: "available"|"disabled"|"missing"`.
-- Per user (`settings.ts` `PublicSettings`/`SettingsPatch`/`RuntimeProfile`): `agentBrowser: boolean`, default `true` when the admin allows it. Settings > Agents gets a "Browser" group with:
+- Per user (`settings.ts` `PublicSettings`/`SettingsPatch`/`RuntimeProfile`): `agentBrowser: boolean`, default `true` when the admin allows it. Settings > Browser (own section) has a "Browser" group with:
   - the toggle;
   - **Clear browser data**, which stops the daemon and removes `~/.floq/browser/profile` after a typed confirmation;
   - **Restart browser**;
@@ -109,7 +109,7 @@ The daemon validates every inbound field: types, coordinates within the viewport
 
 ### A.8b Settings shows the version
 
-Settings > Agents > Browser shows "Chromium 157.0.8103.15 (headless shell r1252) · Playwright MCP 0.0.84 · profile ~/.floq/browser/profile". The data comes from `GET /v1/browser` (`version`, read once at boot from `/opt/floq/browsers/VERSION.json`, §A.12.4).
+Settings > Browser shows "Chromium 157.0.8103.15 (headless shell r1252) · Playwright MCP 0.0.84 · profile ~/.floq/browser/profile". The data comes from `GET /v1/browser` (`version`, read once at boot from `/opt/floq/browsers/VERSION.json`, §A.12.4).
 
 ### A.9 Threat model
 
@@ -156,7 +156,7 @@ Settings > Agents > Browser shows "Chromium 157.0.8103.15 (headless shell r1252)
 - `runtime/src/wiredContext.ts`: the one-line browser hint when it is enabled.
 
 **Frontend**
-- `src/components/canvas/browser-node.tsx` (new), `src/lib/runtime/browser-stream.ts` (new), `src/lib/runtime/client.ts` (URL and REST methods), `src/lib/runtime/types.ts` (types), `src/components/canvas/agent-canvas-page.tsx` (node type and hook), `src/components/canvas/canvas-menu.tsx` ("Open browser"), `src/components/canvas/canvas-kbd.tsx` (suppress while the browser is focused), `src/components/settings/agents-section.tsx` (the Browser group).
+- `src/components/canvas/browser-node.tsx` (new), `src/lib/runtime/browser-stream.ts` (new), `src/lib/runtime/client.ts` (URL and REST methods), `src/lib/runtime/types.ts` (types), `src/components/canvas/agent-canvas-page.tsx` (node type and hook), `src/components/canvas/canvas-menu.tsx` ("Open browser"), `src/components/canvas/canvas-kbd.tsx` (suppress while the browser is focused), `src/components/settings/browser-section.tsx` (the Browser group).
 
 **Docs**
 - `docs/runtime-agents.md` (agent-facing usage), `SECURITY.md` (T4–T7), and a release note.
@@ -384,7 +384,7 @@ Task 7 (after task 2): design details (parsers, preview/commit API, import via C
 - `POST /v1/browser/data/remove {domain}` → clears that domain's cookies (`context.clearCookies`). `POST /v1/browser/clear-data` (existing) clears everything.
 - Cookies exist only in the sandbox helper's stdin, the user's browser profile and the in-memory preview; the runtime logs counts and status codes only.
 
-**UI.** `src/components/canvas/browser-import-dialog.tsx`: pick file → preview table with a checkbox per domain (all on), a bookmarks checkbox, the warning "Agents will act as you on these sites", Import. Entry points: a header button on the Browser node and Settings > Agents > Browser. Settings also lists imported domains with a Remove button per domain. Client: `browserImportPreview/Commit`, `browserData`, `browserRemoveDomain`.
+**UI.** `src/components/canvas/browser-import-dialog.tsx`: pick file → preview table with a checkbox per domain (all on), a bookmarks checkbox, the warning "Agents will act as you on these sites", Import. Entry points: a header button on the Browser node and Settings > Browser. Settings also lists imported domains with a Remove button per domain. Client: `browserImportPreview/Commit`, `browserData`, `browserRemoveDomain`.
 
 **Tests.** `runtime/test/browserImport.test.mts` (parsers: expired, httpOnly, sameSite, host-only vs domain, malformed, prefixes, limits, bookmarks; service: preview/commit with a fake sandbox, single use, per-user isolation, no content in logs) and `e2e/browser-import.spec.ts`.
 

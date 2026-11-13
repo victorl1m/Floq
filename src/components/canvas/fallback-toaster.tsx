@@ -29,7 +29,7 @@ export function FallbackToaster() {
         const why = fb.reason === "pause_override" ? "Its policy is \"Pause instead\"."
           : fb.reason === "fallback_loop" ? "It was moved too many times in an hour."
           : fb.reason === "steps_unavailable" ? "No fallback has room right now (your other account is full, or Codex is at its limit)."
-          : "No fallback applies to this limit. Add a second Claude account or enable Codex in Settings > Agents to keep working.";
+          : "No fallback applies to this limit. Add a second Claude account or enable Codex in Settings > LLM Providers to keep working.";
         toast.warning(`${session.title} paused: Claude usage limit`, { description: `${fallbackBadgeText(fb)}. It continues on its own when the limit resets. ${why}` });
       } else if (fb.kind === "account") toast.info(`Claude account switched to ${fb.label}`, { description: `${session.title} hit a usage limit. Your main account comes back when its limit resets.` });
       else if (fb.kind === "codex") toast.info(`${session.title} continues on Codex`, { description: "It hit a Claude usage limit; Codex picks up from a handoff summary and asks for approvals if its auto-approve is off. It returns to Claude at the reset." });
