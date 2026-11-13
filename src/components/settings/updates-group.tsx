@@ -62,7 +62,7 @@ export default function UpdatesGroup() {
 
     return (
         <SettingsGroup title="Updates">
-            <SettingRow
+            <SettingRow settingId="about-updates"
                 label="Check for updates"
                 description={status ? `Last checked ${new Date(status.checkedAt).toLocaleTimeString()}` : "Compares installed versions with the latest releases."}
             >

@@ -113,3 +113,11 @@ html button[data-cursor="add-note"]:not(:disabled):not([aria-disabled="true"]):n
 
 /* Global drag states (sidebar project drag and drop). */
 html[data-dnd-dragging], html[data-dnd-dragging] * { cursor: var(--cursor-grabbing) !important; }
+
+/* Ctrl+K search: the sidebar trigger and palette use the native pointer / text cursors
+ * (the custom artwork read as odd on these small, dense targets). The :root chain outranks the
+ * generic button / option pointer rule above. */
+html:root:root:root .sidebar-search, html:root:root:root .sidebar-search * { cursor: pointer; }
+html:root:root:root [data-slot="command"] [cmdk-item], html:root:root:root [data-slot="command"] [cmdk-item] * { cursor: pointer; }
+html:root:root:root [data-slot="command"] [cmdk-input] { cursor: text; }
+html:root:root:root [data-slot="command"] [cmdk-item][aria-disabled="true"], html:root:root:root [data-slot="command"] [cmdk-item][aria-disabled="true"] * { cursor: default; }

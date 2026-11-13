@@ -51,7 +51,7 @@ export default function ClaudeConnectorsGroup({ enabled, onToggle }: { enabled: 
 
     return (
         <SettingsGroup title="claude.ai connectors">
-            <SettingRow
+            <SettingRow settingId="accounts-connectors"
                 label="Use my claude.ai connectors"
                 htmlFor="claude-connectors"
                 description="Claude agents can use the connectors you added at claude.ai (mail, drive, calendar and so on), with the access you granted there. Applies to new or restarted Claude sessions. Codex sessions do not use claude.ai connectors."

@@ -29,7 +29,7 @@ export default function AdvancedSection({ settings, onChange }: Props) {
     return (
         <SettingsPage title="Advanced" description="How Floq and the runtime behave on your behalf.">
             <SettingsGroup title="Sessions">
-                <SettingRow
+                <SettingRow settingId="advanced-auto-resume"
                     label="Resume sleeping agents when opened"
                     htmlFor="auto-resume-on-click"
                     description="Clicking a sleeping agent in the sidebar or a tab resumes it right away. Stored on this device only."
@@ -39,7 +39,7 @@ export default function AdvancedSection({ settings, onChange }: Props) {
             </SettingsGroup>
             {settings.gitCoauthor !== undefined && (
                 <SettingsGroup>
-                    <SettingRow
+                    <SettingRow settingId="advanced-coauthor"
                         label="Floq co-author on commits"
                         htmlFor="git-coauthor"
                         description={

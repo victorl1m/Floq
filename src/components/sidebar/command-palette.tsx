@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { IconHome, IconPlus, IconSettings, IconSparkles, IconTerminal2, IconChecklist, IconLock, IconFolder, IconX } from "@tabler/icons-react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import {
+    IconAdjustmentsAlt, IconBrandGithub, IconBuilding, IconChecklist, IconCreditCard, IconFolder, IconGauge, IconHome, IconInfoCircle,
+    IconLock, IconPalette, IconPlug, IconPlus, IconRobot, IconServer, IconSettings, IconSparkles, IconTerminal2, IconUser, IconUsers,
+    IconWorldWww, IconX,
+} from "@tabler/icons-react";
+import { useIsAdmin } from "@/components/settings/use-admin";
+import { requestSettingFocus, searchSettings, type SettingsEntry } from "@/lib/settings-index";
 import { Button } from "@/components/ui/button";
 import {
     Command,
@@ -15,6 +22,12 @@ import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { projectLabel } from "@/lib/runtime/projects";
 import { useRuntime } from "@/lib/runtime/store";
 
+const SECTION_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+    account: IconUser, organization: IconBuilding, accounts: IconCreditCard, appearance: IconPalette, performance: IconGauge,
+    plugins: IconPlug, agents: IconRobot, browser: IconWorldWww, git: IconBrandGithub, desktop: IconServer, runtime: IconServer,
+    advanced: IconAdjustmentsAlt, about: IconInfoCircle, users: IconUsers,
+};
+
 /** Ctrl/Cmd+K palette to jump to views, sessions and settings. */
 export default function CommandPalette() {
     const { sessions, projects, searchOpen, setSearchOpen, navigate, openCanvas, openSession, openSettings, setNewAgentOpen } =
@@ -23,6 +36,16 @@ export default function CommandPalette() {
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => { if (!searchOpen) setQuery(""); }, [searchOpen]);
+
+    const isAdmin = useIsAdmin();
+    const settingsHits = useMemo(
+        () => searchSettings(query, { admin: isAdmin, desktopWindows: isTauri() && /Windows/i.test(navigator.userAgent) }),
+        [query, isAdmin],
+    );
+    const openSetting = (entry: SettingsEntry) => run(() => {
+        requestSettingFocus(entry.id);
+        openSettings(entry.section);
+    });
 
     const agents = sessions.filter((s) => s.provider !== "shell");
 
@@ -93,6 +116,15 @@ export default function CommandPalette() {
                             New agent
                         </CommandItem>
                     </CommandGroup>
+                    {settingsHits.length > 0 && <CommandGroup heading="Settings">
+                        {settingsHits.map((entry) => {
+                            const Icon = SECTION_ICONS[entry.section] ?? IconSettings;
+                            return <CommandItem key={entry.id ?? entry.section} data-setting-result={entry.id ?? entry.section} value={`${query} ${entry.id ?? entry.section} settings ${entry.sectionLabel} ${entry.label} ${entry.keywords ?? ""} ${entry.description ?? ""}`} onSelect={openSetting(entry)}>
+                                <Icon /><span className="min-w-0 flex-1 truncate">{entry.id ? <><span className="text-muted-foreground">{entry.sectionLabel} › </span>{entry.label}</> : entry.label}</span>
+                                {!entry.id && <CommandShortcut>Settings</CommandShortcut>}
+                            </CommandItem>;
+                        })}
+                    </CommandGroup>}
                     {projects.length > 0 && <CommandGroup heading="Projects">
                         {projects.map((project) => <CommandItem key={project.id} value={`project ${project.displayName || project.name} ${project.id}`} onSelect={run(() => openCanvas(project.id))}>
                             <IconFolder /><span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span><CommandShortcut>Canvas</CommandShortcut>

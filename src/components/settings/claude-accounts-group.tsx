@@ -66,7 +66,7 @@ export function ClaudeAccountsGroup({ onChanged }: { onChanged?: () => void }) {
                     </div>
                 </SettingRow>
             ))}
-            <SettingRow label="Add another Claude account" description="A second login stays in reserve. When an agent hits a usage limit, the “Another Claude account” fallback step can switch to it.">
+            <SettingRow settingId="accounts-add-claude" label="Add another Claude account" description="A second login stays in reserve. When an agent hits a usage limit, the “Another Claude account” fallback step can switch to it.">
                 <Button size="sm" onClick={() => setAdding(true)}>Add account</Button>
             </SettingRow>
             {adding && (
