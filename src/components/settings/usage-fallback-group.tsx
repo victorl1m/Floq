@@ -22,7 +22,7 @@ const STEP_TEXT: Record<FallbackStep["kind"], { label: string; description: stri
     codex: { label: "Codex", description: "Continues in a new Codex conversation (same agent) with a handoff summary, then returns to Claude at the reset. Codex will ask for approvals if its auto-approve setting is off." },
 };
 
-/** Settings > Agents: the usage-limit fallback chain. Every step is optional and the order can be changed. */
+/** Settings > LLM Providers: the usage-limit fallback chain. Every step is optional and the order can be changed. */
 export function UsageFallbackGroup({ settings, patch }: { settings: UserSettings; patch: (update: SettingsPatch & Partial<UserSettings>) => Promise<void> }) {
     const client = useClient();
     const value = settings.usageFallback ?? DEFAULT_USAGE_FALLBACK;

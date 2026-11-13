@@ -900,7 +900,7 @@ function AgentCanvas() {
   };
   const closeBrowser = useCallback((nodeId: string) => { browser.close(nodeId); browserLinks.dropNode(nodeId); }, [browser.close, browserLinks.dropNode]);
   const newBrowser = useCallback(() => { browser.open(); }, [browser.open]);
-  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("agents"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser]);
+  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("browser"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser]);
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
     ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...nodes,

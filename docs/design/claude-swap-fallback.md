@@ -178,7 +178,7 @@ When the primary slot's window resets, the scheduler writes the primary credenti
 
 ## 5. Settings UI
 
-New group **"When Claude hits a usage limit"** in `src/components/settings/agents-section.tsx`, after "Subagents". Account management stays in `accounts-section.tsx`.
+New group **"When Claude hits a usage limit"** in `src/components/settings/accounts-section.tsx` (Settings > LLM Providers), below the Claude accounts.
 
 ```
 When Claude hits a usage limit
