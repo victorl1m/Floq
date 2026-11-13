@@ -141,7 +141,7 @@ function BrowserControls({ enabled }: { enabled: boolean }) {
             + (status.state === "running" ? ` · ${status.agents ?? 0} agent${status.agents === 1 ? "" : "s"} connected · ${status.tabs ?? 0} tab${status.tabs === 1 ? "" : "s"}` : "");
     return (
         <>
-            <SettingRow label="Status" description={v ? `Chromium ${v.chromium} (headless shell r${v.revision}) · Playwright MCP ${v.playwrightMcp} · profile ${status?.profile ?? "~/.floq/browser/profile"}` : "Chromium version appears when the browser is installed."}>
+            <SettingRow label="Status" description={v ? `Chromium ${v.chromium} (${v.build === 'chromium' ? 'full build, new headless' : 'headless shell'} r${v.revision}) · Playwright MCP ${v.playwrightMcp} · profile ${status?.profile ?? "~/.floq/browser/profile"}` : "Chromium version appears when the browser is installed."}>
                 <span role="status" data-testid="browser-status" className="text-xs text-muted-foreground">{line}</span>
             </SettingRow>
             <SettingRow label="Restart browser" description="Closes and reopens the browser. Open tabs are lost; logins stay.">

@@ -364,7 +364,7 @@ One headless Chromium per user, running inside that user's sandbox. Claude Code 
 ### 9.1 Behaviour
 
 - One daemon (`floq-browserd`) per user, started on demand and spawned through the user's sandbox (`ShardDriver.spawnPipe`). It stops after the idle timeout. The runtime never runs the browser binary on the host (`runtime/src/browser.ts`).
-- Chromium is `chromium-headless-shell` r1252 (Chromium 157.0.8103.15), installed at build time in `/opt/floq/browsers`. Nothing is downloaded at runtime.
+- Chromium is the full Playwright `chromium` build r1252 (Chromium 157.0.8103.15), run with `--headless=new` and its normal user agent (no stealth or fingerprint changes), installed at build time in `/opt/floq/browsers`. Nothing is downloaded at runtime.
 - All agents of a user share one profile, so one login serves every project.
 - **Cookie import:** the user uploads a Netscape `cookies.txt`, a JSON cookie export or a bookmarks HTML file. The runtime parses it, keeps the parsed result in memory for 10 minutes (single use), and never logs it or writes it to disk. Only the selected cookies are applied, inside the sandbox. Floq never reads local Chrome, Edge or Firefox stores.
 - **Settings > Agents > Browser:** the per-user `agentBrowser` toggle, status, **Restart browser**, and **Clear browser data** (stops the daemon and removes the profile).
