@@ -244,9 +244,11 @@ No push, release or deploy is part of these tasks.
 
 ## A.12 Chromium packaging (user addendum: "add chromium in a nice way")
 
-### A.12.1 Source: Playwright's pinned `chromium-headless-shell`
+### A.12.1 Source: Playwright's pinned full `chromium`, run with `--headless=new`
 
-**Choice:** `playwright-core install --only-shell chromium`, run with the playwright-core that `@playwright/mcp@0.0.84` itself depends on. This gives `chromium_headless_shell-1252` (Chromium 157.0.8103.15).
+**Update (2026-11-13):** the image now installs the full build instead of the headless shell: `playwright-core install --no-shell chromium` gives `chromium-1252/chrome-linux64/chrome` (Chromium 157.0.8103.15, 412 MB on disk versus 280 MB for the shell, +132 MB), launched with `--headless=new` and its normal, unmodified user agent (no stealth, no fingerprint changes). It needs three more libraries than the shell: libcups2, libcairo2 and libpango-1.0-0 (their transitive bookworm deps are pulled by apt). Measured with the downloaded build: the UA still contains `HeadlessChrome`, `navigator.webdriver` is false over CDP without the automation flag, g2.com still answers 403, nowsecure.nl loads. `VERSION.json` carries `build: "chromium"`. The rest of this section describes the original headless-shell choice and is kept for the reasoning; the shell-specific paths and sizes below no longer apply.
+
+**Original choice:** `playwright-core install --only-shell chromium`, run with the playwright-core that `@playwright/mcp@0.0.84` itself depends on. This gave `chromium_headless_shell-1252` (Chromium 157.0.8103.15).
 
 Why:
 - **Reproducible and version-locked to the MCP.** The revision comes from playwright-core's `browsers.json`, which is fixed by the npm lockfile. The download comes from Playwright's CDN over HTTPS; the zip is not pinned by a sha256 in the Dockerfile (only the revision is), so the CDN and TLS are trusted for that artifact. There can be no MCP/browser protocol drift.
@@ -344,7 +346,7 @@ The Chromium revision follows from the playwright-core in the committed lockfile
 - **Chromium's sandbox (try first, avoid `--no-sandbox`):** at start, `floq-browserd` runs `chrome-headless-shell --version` once, and then a probe launch *with* the sandbox. Chromium's sandbox uses user namespaces when no setuid helper exists. If bwrap allows nested userns (bwrap is not started with `--disable-userns`, and the kernel `user.max_user_namespaces` > 0), the probe succeeds and we run with the sandbox. Otherwise we fall back to `--no-sandbox` and log the reason (`browser.chromium_sandbox_off {reason}`). This shows in `floq browser status` and Settings. Today's bwrap argv (`shard.ts` ~L467) uses `--unshare-pid/ipc/uts/cgroup-try` and neither `--unshare-user` nor `--disable-userns`, so the probe succeeds whenever the host kernel and the container's seccomp profile allow unprivileged `CLONE_NEWUSER`. Docker's default seccomp profile usually denies it, so expect the `--no-sandbox` fallback on stock Docker. **Implementer action:** test both paths, and document the host setting that turns the Chromium sandbox on (a seccomp profile that allows userns, or `kernel.unprivileged_userns_clone=1`) in docs/runtime-agents.md. Do not add a setuid `chrome-sandbox`: a setuid binary inside the sandbox is a worse trade than relying on bwrap.
 - **Profile:** `~/.floq/browser/profile` in the gocryptfs home, created 0700 by the daemon. Clear browser data removes only that directory.
 - **Build checks** (a `RUN` at the end of the runtime stage when `FLOQ_BROWSER=1`):
-  - `ldd /opt/floq/browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | grep -q 'not found' && exit 1`;
+  - `ldd /opt/floq/browsers/chromium-*/chrome-linux64/chrome | grep -q 'not found' && exit 1`;
   - `fc-list | grep -qi 'Noto Color Emoji'` and `fc-list | grep -qi 'Noto Sans CJK'`;
   - `test -s /opt/floq/browsers/VERSION.json`.
 

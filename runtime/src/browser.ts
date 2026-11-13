@@ -19,7 +19,7 @@ import {
  */
 
 export type BrowserState = "starting" | "running" | "stopped" | "disabled" | "unavailable";
-export interface BrowserVersion { chromium: string; revision: string | number; playwrightMcp: string }
+export interface BrowserVersion { chromium: string; revision: string | number; playwrightMcp: string; /** "chromium" (full build, --headless=new) or "headless-shell"; absent in older images. */ build?: string }
 export type McpSyncState = "installed" | "removed" | "unchanged" | "edited";
 export interface McpSyncResult { claude: McpSyncState; codex: McpSyncState }
 
@@ -154,7 +154,7 @@ export class BrowserService {
     try {
       const raw = JSON.parse(readFileSync(join(dir, "VERSION.json"), "utf8")) as Record<string, unknown>;
       if (typeof raw.chromium !== "string" || !raw.chromium) return null;
-      return { chromium: raw.chromium, revision: typeof raw.revision === "string" || typeof raw.revision === "number" ? raw.revision : "", playwrightMcp: typeof raw.playwrightMcp === "string" ? raw.playwrightMcp : "" };
+      return { chromium: raw.chromium, revision: typeof raw.revision === "string" || typeof raw.revision === "number" ? raw.revision : "", playwrightMcp: typeof raw.playwrightMcp === "string" ? raw.playwrightMcp : "", ...(typeof raw.build === "string" ? { build: raw.build } : {}) };
     } catch { return null; }
   }
 

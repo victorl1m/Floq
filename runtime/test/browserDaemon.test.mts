@@ -124,10 +124,10 @@ test("FrameDecoder handles fragmentation, split reads and refuses bad frames", (
 });
 
 test("floq browser status text and exit codes", () => {
-  const v = { chromium: "157.0.8103.15", revision: "1252", playwrightMcp: "0.0.84" };
+  const v = { chromium: "157.0.8103.15", revision: "1252", playwrightMcp: "0.0.84", build: "chromium" };
   const running = formatBrowserStatus({ state: "running", pid: 4123, uptimeSec: 720, agents: 2, tabs: 3, version: v, profile: "~/.floq/browser/profile", profileBytes: 38 * 1024 * 1024, sandbox: "chromium sandbox on" });
   assert.equal(running.exitCode, 0);
-  assert.equal(running.text, "browser: running (pid 4123, up 12m, 2 agent connections, 3 tabs)\nchromium: 157.0.8103.15 (headless shell r1252), playwright-mcp 0.0.84\nprofile: ~/.floq/browser/profile (38 MB)\nsandbox: chromium sandbox on");
+  assert.equal(running.text, "browser: running (pid 4123, up 12m, 2 agent connections, 3 tabs)\nchromium: 157.0.8103.15 (full build, new headless r1252), playwright-mcp 0.0.84\nprofile: ~/.floq/browser/profile (38 MB)\nsandbox: chromium sandbox on");
   assert.equal(formatBrowserStatus({ state: "stopped", version: v }).exitCode, 3);
   assert.equal(formatBrowserStatus({ state: "disabled" }).exitCode, 4);
   assert.equal(formatBrowserStatus({ state: "unavailable" }).exitCode, 4);
@@ -489,7 +489,7 @@ function realChromium(): string | null {
   if (process.env.FLOQ_TEST_CHROMIUM) candidates.push(process.env.FLOQ_TEST_CHROMIUM);
   for (const root of [process.env.PLAYWRIGHT_BROWSERS_PATH, "/opt/floq/browsers", join(process.env.HOME ?? "", ".cache/ms-playwright")]) {
     if (!root || !existsSync(root)) continue;
-    for (const d of readdirSync(root).filter((x) => x.startsWith("chromium_headless_shell-")).sort().reverse()) candidates.push(join(root, d, "chrome-headless-shell-linux64/chrome-headless-shell"));
+    for (const d of readdirSync(root).filter((x) => /^chromium-\d+$/.test(x)).sort().reverse()) candidates.push(join(root, d, "chrome-linux64/chrome"));
   }
   for (const c of candidates) if (existsSync(c) && spawnSync(c, ["--version"], { timeout: 10000 }).status === 0) return c;
   return null;

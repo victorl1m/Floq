@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // floq-browserd: one headless Chromium per user, INSIDE that user's sandbox (docs/design/agent-browser.md §A.2).
-//   runtime <-- stdin/stdout JSON lines --> floq-browserd --CDP over fds 3/4--> chrome-headless-shell
+//   runtime <-- stdin/stdout JSON lines --> floq-browserd --CDP over fds 3/4--> chrome --headless=new
 //                                           floq-browserd --ws://127.0.0.1:<ephemeral>/devtools/browser (bearer token)--> agents' @playwright/mcp
 // Chromium itself opens no TCP port. Logs are JSON lines on stderr; stdout carries only protocol messages.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -28,12 +28,12 @@ const out = (msg: Record<string, unknown>) => process.stdout.write(JSON.stringif
 function findChromium(): string {
   const given = process.env.FLOQ_BROWSER_EXECUTABLE;
   if (given) return given;
-  const dirs = existsSync(BROWSERS) ? readdirSync(BROWSERS).filter((d) => d.startsWith("chromium_headless_shell-")).sort() : [];
+  const dirs = existsSync(BROWSERS) ? readdirSync(BROWSERS).filter((d) => /^chromium-\d+$/.test(d)).sort() : [];
   for (const d of dirs.reverse()) {
-    const exe = join(BROWSERS, d, "chrome-headless-shell-linux64", "chrome-headless-shell");
+    const exe = join(BROWSERS, d, "chrome-linux64", "chrome");
     if (existsSync(exe)) return exe;
   }
-  throw new Error("no chrome-headless-shell under " + BROWSERS);
+  throw new Error("no chromium build under " + BROWSERS);
 }
 
 /** Remove a SingletonLock left by a crashed Chromium, but only when the pid in it is gone from this sandbox. */
@@ -54,7 +54,7 @@ function defaultAlive(pid: number): boolean {
 
 export function chromiumArgs(opts: { sandbox: boolean; profile: string }): string[] {
   return [
-    "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+    "--headless=new", "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
     "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];

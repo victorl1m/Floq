@@ -421,7 +421,7 @@ export function renderTop(agents: AgentEntry[], opts: TopOptions): string[] {
 }
 
 /** Reply of the runtime's browser/status route (the same data as GET /v1/browser), and the VERSION.json written at image build. */
-export type BrowserVersion = { chromium: string; revision: string | number; playwrightMcp: string };
+export type BrowserVersion = { chromium: string; revision: string | number; playwrightMcp: string; build?: string };
 export type BrowserStatusReply = {
   state: "starting" | "running" | "stopped" | "disabled" | "unavailable";
   pid?: number; uptimeSec?: number; agents?: number; tabs?: number;
@@ -429,7 +429,7 @@ export type BrowserStatusReply = {
 };
 
 export function formatBrowserVersion(v: BrowserVersion | null | undefined): string {
-  return v ? `${v.chromium} (headless shell r${v.revision}), playwright-mcp ${v.playwrightMcp}` : "unknown (no /opt/floq/browsers/VERSION.json: this image was built without a browser)";
+  return v ? `${v.chromium} (${v.build === "chromium" ? "full build, new headless" : "headless shell"} r${v.revision}), playwright-mcp ${v.playwrightMcp}` : "unknown (no /opt/floq/browsers/VERSION.json: this image was built without a browser)";
 }
 
 function humanDuration(sec: number): string {

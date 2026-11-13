@@ -33,18 +33,18 @@ RUN curl -fsSL -o /tmp/passt.tgz "https://passt.top/passt/snapshot/passt-${PASST
     && install -m 755 pasta /out-pasta \
     && /out-pasta --help 2>&1 | grep -q -- --map-host-loopback
 
-# ---- browser: pinned Playwright MCP + Chromium headless shell (independent of the app build; cached until image/browser/package*.json changes) ----
+# ---- browser: pinned Playwright MCP + full Chromium (independent of the app build; cached until image/browser/package*.json changes) ----
 # The pin lives in image/browser/package.json only. The Chromium revision follows from the playwright-core in the committed lockfile
-# (chromium-headless-shell, downloaded over HTTPS from Playwright's CDN; the zip is NOT pinned by a sha256 here, only the revision is, so
+# (the full `chromium` build, run with --headless=new; downloaded over HTTPS from Playwright's CDN; the zip is NOT pinned by a sha256 here, only the revision is, so
 # the CDN and TLS are trusted for that one artifact). See docs/design/agent-browser.md section A.12.
 FROM node:22-bookworm-slim AS browser
 WORKDIR /opt/floq/playwright-mcp
 COPY image/browser/package.json image/browser/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/floq/browsers
-RUN node node_modules/playwright-core/cli.js install --only-shell chromium \
+RUN node node_modules/playwright-core/cli.js install --no-shell chromium \
     && rm -rf /opt/floq/browsers/ffmpeg-* \
-    && node -e 'const fs=require("fs");const rd=(p)=>JSON.parse(fs.readFileSync(p,"utf8"));const b=rd("node_modules/playwright-core/browsers.json").browsers.find(x=>x.name==="chromium-headless-shell");const m=rd("node_modules/@playwright/mcp/package.json");if(!b)throw new Error("no chromium-headless-shell in browsers.json");fs.writeFileSync("/opt/floq/browsers/VERSION.json",JSON.stringify({chromium:b.browserVersion,revision:b.revision,playwrightMcp:m.version}))' \
+    && node -e 'const fs=require("fs");const rd=(p)=>JSON.parse(fs.readFileSync(p,"utf8"));const b=rd("node_modules/playwright-core/browsers.json").browsers.find(x=>x.name==="chromium");const m=rd("node_modules/@playwright/mcp/package.json");if(!b)throw new Error("no chromium in browsers.json");fs.writeFileSync("/opt/floq/browsers/VERSION.json",JSON.stringify({chromium:b.browserVersion,revision:b.revision,build:"chromium",playwrightMcp:m.version}))' \
     && test -s /opt/floq/browsers/VERSION.json
 
 FROM node:22-bookworm-slim AS runtime
@@ -62,11 +62,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 \
     && npm cache clean --force
-# Agent browser, layer 1: only the shared libraries chrome-headless-shell links against (ldd) + fontconfig + fonts. No X server, no GTK.
+# Agent browser, layer 1: only the shared libraries the full chrome binary links against (ldd; adds libcups2, libcairo2, libpango to the shell's set) + fontconfig + fonts. No X server, no GTK.
 # fonts-noto-cjk is ~91 MB: swap for fonts-wqy-zenhei (~17 MB) if size matters more than CJK quality.
 RUN if [ "$FLOQ_BROWSER" = 1 ]; then apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libdbus-1-3 \
-        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libxkbcommon0 libgbm1 libasound2 \
+        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libxkbcommon0 libgbm1 libasound2 libcups2 libcairo2 libpango-1.0-0 \
         fontconfig fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*; fi
 # gocryptfs from the pinned upstream static release, NOT Debian's 2.3 package. Debian bookworm builds 2.3 against a
@@ -149,7 +149,7 @@ COPY image/skills /tmp/floq-skills
 COPY image/build-skel.sh /tmp/build-skel.sh
 RUN sed -i 's/\r$//' /tmp/build-skel.sh && SUPERPOWERS_REF=${SUPERPOWERS_REF} HUMANIZER_REF=${HUMANIZER_REF} ANTHROPIC_SKILLS_REF=${ANTHROPIC_SKILLS_REF} sh /tmp/build-skel.sh && rm -rf /tmp/build-skel.sh /tmp/floq-skills
 
-# Agent browser, layer 2: Playwright MCP + Chromium headless shell from the browser stage. Copied after the CLI/app layers so source
+# Agent browser, layer 2: Playwright MCP + full Chromium from the browser stage. Copied after the CLI/app layers so source
 # edits never invalidate it and a browser bump never rebuilds the apt layer. /opt/floq is bound read-only into sandboxes (shard.ts).
 COPY --from=browser --chown=root:root /opt/floq /opt/floq
 RUN [ "$FLOQ_BROWSER" = 1 ] || rm -rf /opt/floq/browsers /opt/floq/playwright-mcp; \
@@ -157,7 +157,7 @@ RUN [ "$FLOQ_BROWSER" = 1 ] || rm -rf /opt/floq/browsers /opt/floq/playwright-mc
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/floq/browsers
 # Build checks (FLOQ_BROWSER=1): every shared library resolves, the emoji and CJK fonts are visible to fontconfig, VERSION.json exists.
 RUN if [ "$FLOQ_BROWSER" = 1 ]; then \
-      exe="$(ls /opt/floq/browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell)" \
+      exe="$(ls /opt/floq/browsers/chromium-*/chrome-linux64/chrome)" \
       && ! ldd "$exe" | grep 'not found' \
       && fc-list | grep -qi 'Noto Color Emoji' && fc-list | grep -qi 'Noto Sans CJK' \
       && test -s /opt/floq/browsers/VERSION.json \
