@@ -995,13 +995,13 @@
   border-color: color-mix(in oklab, var(--border) 62%, transparent);
   background-color: color-mix(in oklab, var(--card) 88%, transparent);
   background-image: linear-gradient(135deg, color-mix(in oklab, white 12%, transparent), transparent 34%);
-  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+  box-shadow: var(--shadow-elev-rim);
 }
 .dark .floq-surface[data-slot="dialog-content"] {
   border-color: rgb(255 255 255 / 0.13);
   background-color: rgb(28 28 30 / 0.88);
   background-image: linear-gradient(135deg, rgb(255 255 255 / 0.08), transparent 34%);
-  box-shadow: var(--shadow-elev-rim), var(--shadow-elev-3);
+  box-shadow: var(--shadow-elev-rim);
 }
 
 /* Popup material stays local to floating menus and dialog surfaces. */
