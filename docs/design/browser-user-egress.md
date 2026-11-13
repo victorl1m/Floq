@@ -1,6 +1,6 @@
 # Agent browser egress through the user's computer
 
-Status: design, not implemented. Companion to `docs/design/agent-browser.md` (§A.2 architecture, §A.9 threat model).
+Status: implemented in v1.0.10 (off by default, desktop app only). Wire protocol: `docs/design/browser-user-egress-protocol.md`. Companion to `docs/design/agent-browser.md` (§A.2 architecture, §A.9 threat model).
 
 **Goal.** When the user turns it on, every network connection the agent browser (Chromium inside the user's sandbox on the VPS) makes leaves the internet from the **user's own computer**, through the Floq desktop app. Sites see the user's residential IP and location, not the VPS.
 
