@@ -348,8 +348,11 @@ const REAL = realChromium();
 const PW = playwright();
 
 /** The "desktop": speaks the mux over the hub, resolves names through its own table and connects from 127.0.0.2, so a stub can tell it from the daemon (127.0.0.1). */
-function fakeDesktop(hub: EgressHub, userId: string, resolve: Record<string, { host: string; port: number }>, opts: { machine?: string } = {}) {
+function fakeDesktop(hub: EgressHub, userId: string, resolve: Record<string, { host: string; port: number }>, opts: { machine?: string; realistic?: boolean } = {}) {
   const seen: string[] = [];
+  // `realistic` mimics the shipped desktop app (src-tauri/src/egress.rs): OPEN ids must be odd and strictly increasing for the whole
+  // WebSocket (a regression drops the link) and DATA toward the daemon never exceeds the window the daemon granted.
+  let lastId = 0; const violations: string[] = []; const sendCredit = new Map<number, number>(); const pausedOut = new Map<number, Buffer[]>();
   const socks = new Map<number, Socket>();
   const out: Buffer[] = [];
   const peer = hub.attachDesktop(userId, { send: (f) => onFrame(f), close: () => undefined });
@@ -362,21 +365,40 @@ function fakeDesktop(hub: EgressHub, userId: string, resolve: Record<string, { h
     if (f.type === T.OPEN) {
       const target = parseOpen(f.payload)!;
       seen.push(`${target.host}:${target.port}`);
+      if (opts.realistic) {
+        if (f.streamId % 2 === 0 || f.streamId <= lastId) { violations.push(`OPEN ${f.streamId} after ${lastId}`); peer.onClose(); return; }
+        lastId = f.streamId; sendCredit.set(f.streamId, INIT_CREDIT);
+      }
       const to = resolve[target.host];
       if (!to) return send(encodeFrame(T.OPENED, f.streamId, Buffer.from([REP.HOST_UNREACHABLE])));
       const s = tcpConnect({ host: to.host, port: to.port, localAddress: "127.0.0.2" });
       socks.set(f.streamId, s);
       s.once("connect", () => send(encodeFrame(T.OPENED, f.streamId, Buffer.from([0]))));
       s.once("error", () => { if (socks.delete(f.streamId)) send(encodeFrame(T.OPENED, f.streamId, Buffer.from([REP.REFUSED]))); });
-      s.on("data", (c) => { for (let o = 0; o < c.length; o += 32768) send(encodeFrame(T.DATA, f.streamId, c.subarray(o, o + 32768))); });
+      s.on("data", (c) => {
+        if (!opts.realistic) { for (let o = 0; o < c.length; o += 32768) send(encodeFrame(T.DATA, f.streamId, c.subarray(o, o + 32768))); return; }
+        const q = pausedOut.get(f.streamId) ?? []; q.push(c); pausedOut.set(f.streamId, q); drain(f.streamId, s);
+      });
       s.on("end", () => send(encodeFrame(T.FIN, f.streamId)));
       s.on("close", () => { if (socks.delete(f.streamId)) send(encodeFrame(T.RST, f.streamId, Buffer.from([0]))); });
     } else if (f.type === T.DATA) { const s = socks.get(f.streamId); if (s) { s.write(f.payload); const n = Buffer.alloc(4); n.writeUInt32BE(f.payload.length); out.push(n); send(encodeFrame(T.CREDIT, f.streamId, n)); } }
+    else if (f.type === T.CREDIT && opts.realistic) { sendCredit.set(f.streamId, (sendCredit.get(f.streamId) ?? 0) + f.payload.readUInt32BE(0)); const s = socks.get(f.streamId); if (s) drain(f.streamId, s); }
     else if (f.type === T.FIN) socks.get(f.streamId)?.end();
     else if (f.type === T.RST) { socks.get(f.streamId)?.destroy(); socks.delete(f.streamId); }
     else if (f.type === T.PING) send(encodeFrame(T.PONG, 0, f.payload));
   }
-  return { seen, drop: () => { for (const s of socks.values()) s.destroy(); socks.clear(); peer.onClose(); } };
+  /** Sends queued socket bytes while the daemon's window allows; pauses the socket otherwise. */
+  function drain(id: number, s: Socket) {
+    const q = pausedOut.get(id) ?? [];
+    while (q.length && (sendCredit.get(id) ?? 0) > 0) {
+      const head = q[0]; const n = Math.min(head.length, 32768, sendCredit.get(id)!);
+      q[0] = head.subarray(n); if (!q[0].length) q.shift();
+      sendCredit.set(id, sendCredit.get(id)! - n);
+      send(encodeFrame(T.DATA, id, head.subarray(0, n)));
+    }
+    if (q.length) s.pause(); else s.resume();
+  }
+  return { seen, violations, drop: () => { for (const s of socks.values()) s.destroy(); socks.clear(); peer.onClose(); } };
 }
 
 const realSkip = { skip: !REAL ? "no runnable chrome" : !PW ? "no playwright-core (set FLOQ_TEST_PLAYWRIGHT)" : false, timeout: 150000 };
@@ -434,6 +456,61 @@ test("end to end (real Chromium): the page sees the desktop's source address, no
   await assert.rejects(page3.goto("http://ipify.test/again", { timeout: 15000 }), /ERR_/);
   assert.equal(peersSeen.length, before, "no request leaked");
   void (null as unknown as Server);
+});
+
+test("end to end (real Chromium, HTTPS): a big TLS page loads through daemon + hub + desktop, and still loads after the daemon restarts (v1.0.11 blank page)", realSkip, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "floq-egress-tls-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const gen = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(dir, "k.pem"), "-out", join(dir, "c.pem"), "-days", "1", "-subj", "/CN=secure.test", "-addext", "subjectAltName=DNS:secure.test"], { encoding: "utf8" });
+  if (gen.status !== 0) return t.skip("no openssl");
+  const filler = Buffer.alloc(900_000); for (let i = 0; i < filler.length; i++) filler[i] = 97 + ((i * 7919) % 26); // incompressible enough, > 3 windows of credit
+  const big = Buffer.alloc(3_000_000, 7);
+  const { createServer: createTlsServer } = await import("node:https");
+  const site = createTlsServer({ key: readFileSync(join(dir, "k.pem")), cert: readFileSync(join(dir, "c.pem")) }, (rq, rs) => {
+    if (rq.url === "/big") { rs.setHeader("content-type", "application/octet-stream"); return void rs.end(big); }
+    rs.setHeader("content-type", "text/html"); rs.end(`<title>secure-ok</title><body><h1>secure hello</h1><!-- ${filler.toString("latin1")} -->`);
+  });
+  await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
+  t.after(() => site.close());
+  const hub = new EgressHub();
+  t.after(() => hub.close());
+  const userId = "u-tls";
+  const desktop = fakeDesktop(hub, userId, { "secure.test": { host: "127.0.0.1", port: (site.address() as { port: number }).port } }, { realistic: true });
+  await waitUntil(() => hub.isUp(userId), 5000, "hub up");
+
+  async function session(label: string) {
+    const home = mkdtempSync(join(tmpdir(), "floq-egress-e2e-"));
+    t.after(() => rmSync(home, { recursive: true, force: true }));
+    const d = startEgressDaemon(t, { FLOQ_BROWSER_EGRESS: "desktop" }, { exe: REAL!, home });
+    const handle = hub.attachDaemon(userId, { write: (b) => { if (d.fd3.writable) d.fd3.write(b); }, close: () => d.fd3.destroy() });
+    d.fd3.on("data", (c) => handle.push(c));
+    d.fd3.on("close", () => handle.close());
+    await waitUntil(() => d.msgs.some((m) => m.type === "ready"), 30000, label + " ready\n" + d.stderr());
+    const ready = d.msgs.find((m) => m.type === "ready");
+    const browser = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${ready.port}/devtools/browser`, { headers: { Authorization: "Bearer " + ready.token } });
+    const page = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage(); // the stub's certificate is self-signed
+    await wait(150); // LINK reaches the daemon
+    return { d, browser, page };
+  }
+  async function loads(s: Awaited<ReturnType<typeof session>>, label: string) {
+    const resp = await s.page.goto("https://secure.test/", { timeout: 30000 }).catch((e: Error) => { throw new Error(label + ": " + e.message.split("\n")[0] + " | desktop: " + desktop.seen.join(",") + " | violations: " + desktop.violations.join(",") + "\n" + s.d.stderr().split("\n").filter((l) => /egress/.test(l)).slice(-6).join("\n")); });
+    assert.equal(resp!.status(), 200, label);
+    assert.equal(await s.page.title(), "secure-ok", label);
+    assert.equal((await s.page.content()).length > 900_000, true, label + ": the whole 900 KB document arrived");
+    const got = await s.page.evaluate(async () => (await (await fetch("/big")).arrayBuffer()).byteLength);
+    assert.equal(got, 3_000_000, label + ": a 3 MB body crosses the window repeatedly");
+  }
+
+  const first = await session("first daemon");
+  t.after(() => first.browser.close().catch(() => undefined));
+  await loads(first, "first daemon");
+  await first.browser.close().catch(() => undefined);
+  await first.d.stop(); // the daemon restarts (egress switch, idle stop, crash): the desktop's WebSocket stays up
+  const second = await session("restarted daemon");
+  t.after(() => second.browser.close().catch(() => undefined));
+  await loads(second, "restarted daemon");
+  assert.deepEqual(desktop.violations, [], "the desktop never saw a stream id go backwards");
+  assert.equal(hub.isUp(userId), true, "the desktop link survived the restart");
 });
 
 test("daemon mux: a large upload never exceeds the desktop's window; the rest waits for CREDIT and the FIN comes after the last byte (M2)", async (t) => {

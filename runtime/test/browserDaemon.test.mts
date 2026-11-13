@@ -468,7 +468,11 @@ test("floq-browser-mcp: asks the runtime, keeps the token off disk, passes the C
   assert.equal(ok.status, 0, ok.stderr);
   assert.deepEqual(seen[0], { url: "/internal/browser/ensure", auth: "Bearer agent-tok" });
   const argv = JSON.parse(ok.stdout);
-  assert.deepEqual(argv, ["--cdp-endpoint", "ws://127.0.0.1:41234/devtools/browser", "--cdp-header", "Authorization: Bearer tok-ABC", "--output-dir", join(home, ".floq/browser/output"), "--image-responses", "omit"]);
+  // Playwright gets a stable loopback forwarder (it re-resolves the daemon on every connection), never the daemon's port or token.
+  assert.match(argv[1], /^ws:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{48}\/devtools\/browser$/);
+  assert.notEqual(argv[1], "ws://127.0.0.1:41234/devtools/browser");
+  assert.deepEqual([argv[0], ...argv.slice(2)], ["--cdp-endpoint", "--output-dir", join(home, ".floq/browser/output"), "--image-responses", "omit"]);
+  assert.doesNotMatch(ok.stdout, /tok-ABC/, "the token is not in the MCP's argv");
   assert.equal(statSync(join(home, ".floq/browser/output")).mode & 0o777, 0o700);
   // no credentials -> clear error
   const none = spawnSync(process.execPath, [MCP], { encoding: "utf8", env: { PATH: process.env.PATH!, HOME: home } });
@@ -482,6 +486,44 @@ test("floq-browser-mcp: asks the runtime, keeps the token off disk, passes the C
   const evil = await run();
   assert.equal(evil.status, 1); assert.match(evil.stderr, /unexpected endpoint/);
   assert.doesNotMatch(evil.stdout + evil.stderr, /tok-ABC/);
+});
+
+test("floq-browser-mcp: after a daemon restart (new port, new token) the next CDP connection reaches the NEW daemon with the NEW token, and strangers are refused", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "floq-mcp-restart-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const ws = createRequire(import.meta.url)("ws");
+  // Two fake daemons, like a daemon before and after a restart: each accepts only its own bearer token.
+  const daemons = ["tok-OLD", "tok-NEW"].map((tok) => {
+    const seen: Array<{ url?: string; auth?: string }> = [];
+    const wss = new ws.WebSocketServer({ host: "127.0.0.1", port: 0, verifyClient: (i: any) => { seen.push({ url: i.req.url, auth: i.req.headers.authorization }); return i.req.headers.authorization === "Bearer " + tok; } });
+    wss.on("connection", (c: any) => c.on("message", (m: Buffer) => c.send("echo:" + tok + ":" + m)));
+    t.after(() => wss.close());
+    return { tok, wss, seen, port: () => (wss.address() as any).port as number };
+  });
+  await Promise.all(daemons.map((d) => new Promise((r) => d.wss.once("listening", r))));
+  let current = 0;
+  const runtime = createServer((_req, res) => { const d = daemons[current]; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ wsEndpoint: `ws://127.0.0.1:${d.port()}/devtools/browser?agent=agent-0000-1111`, token: d.tok })); });
+  await new Promise<void>((r) => runtime.listen(0, "127.0.0.1", r));
+  t.after(() => runtime.close());
+  const cli = join(home, "cli.js");
+  writeFileSync(cli, "console.log(process.argv[3]); setInterval(() => {}, 1000);");
+  const child = spawn(process.execPath, [MCP], { env: { PATH: process.env.PATH!, HOME: home, FLOQ_API_URL: `http://127.0.0.1:${(runtime.address() as any).port}`, FLOQ_AGENT_TOKEN: "agent", FLOQ_BROWSER_MCP_CLI: cli } });
+  t.after(() => child.kill("SIGTERM")); // the MCP forwards it to the fake CLI, which would otherwise outlive the test
+  const endpoint = await new Promise<string>((resolve) => child.stdout.once("data", (c) => resolve(String(c).trim())));
+  const talk = (url: string) => new Promise<string>((resolve, reject) => {
+    const c = new ws.WebSocket(url);
+    c.on("open", () => c.send("hi")); c.on("message", (m: Buffer) => { resolve(String(m)); c.close(); }); c.on("error", reject);
+    c.on("unexpected-response", (_rq: unknown, rs: any) => reject(new Error("HTTP " + rs.statusCode)));
+  });
+  assert.equal(await talk(endpoint), "echo:tok-OLD:hi");
+  daemons[0].wss.close(); current = 1; // the old daemon is gone; the runtime now points at the restarted one
+  assert.equal(await talk(endpoint), "echo:tok-NEW:hi", "same endpoint for Playwright, new daemon behind it");
+  assert.equal(daemons[1].seen[0].url, "/devtools/browser?agent=agent-0000-1111");
+  // A local stranger without the per-process secret gets nothing, and no token is ever handed out.
+  const port = new URL(endpoint).port;
+  await assert.rejects(talk(`ws://127.0.0.1:${port}/devtools/browser`));
+  await assert.rejects(talk(`ws://127.0.0.1:${port}/${"0".repeat(48)}/devtools/browser`));
+  assert.equal(daemons[1].seen.length, 1, "refused connections never reached a daemon");
 });
 
 // ------------------------------------------------- real Chromium (skipped when it cannot run here)

@@ -110,6 +110,38 @@ test("hub: LINK follows the desktop; frames flow between a user's own daemon and
   hub.close();
 });
 
+test("hub: a restarted daemon starts at id 1 again but the desktop only ever sees strictly increasing OPEN ids, and its replies map back (v1.0.11 blank-page bug)", () => {
+  // The desktop app admits OPEN ids that are odd and strictly increasing for the life of its WebSocket (src-tauri/src/egress.rs Admission).
+  const { hub, daemon, desktop } = rig();
+  const w = desktop("A"); w.hello();
+  const seen: number[] = [];
+  const opensSeen = () => w.frames().filter((f) => f.type === T.OPEN).map((f) => f.streamId);
+  const d1 = daemon("A");
+  for (const id of [1, 3, 5, 7]) { d1.send(open(id)); }
+  d1.detach(); // daemon restart (egress switch, crash, idle stop)
+  const d2 = daemon("A");
+  for (const id of [1, 3, 5]) d2.send(open(id));
+  const d3 = daemon("A"); // and again, with the previous daemon replaced rather than detached
+  d3.send(open(1));
+  for (const id of opensSeen()) seen.push(id);
+  assert.equal(seen.length, 8);
+  for (let i = 0; i < seen.length; i++) { assert.equal(seen[i] % 2, 1, "odd"); if (i) assert.ok(seen[i] > seen[i - 1], "strictly increasing: " + seen.join(",")); }
+  // Replies for the current daemon's streams (desktop numbering) reach the daemon under ITS numbering.
+  const deskId = seen[7];
+  w.send(opened(deskId)); w.send(data(deskId, 100)); w.send(encodeFrame(T.FIN, deskId));
+  assert.deepEqual(d3.frames().filter((f) => f.type !== T.LINK).map((f) => [f.type, f.streamId]), [[T.OPENED, 1], [T.DATA, 1], [T.FIN, 1]]);
+  // And the daemon's frames reach the desktop under the desktop's numbering (DATA, CREDIT, FIN, RST).
+  d3.send(data(1, 10)); d3.send(credit(1, 100)); d3.send(encodeFrame(T.FIN, 1));
+  assert.deepEqual(w.frames().slice(-3).map((f) => [f.type, f.streamId]), [[T.DATA, deskId], [T.CREDIT, deskId], [T.FIN, deskId]]);
+  // A late frame from the desktop about a stream of an earlier daemon names nothing live: ignored, never mistaken for a new stream.
+  const before = d3.frames().length;
+  w.send(opened(seen[0])); w.send(data(seen[0], 10));
+  assert.equal(d3.frames().length, before);
+  // Streams of the replaced daemon were reset toward the desktop with the OLD numbering.
+  assert.ok(w.frames().some((f) => f.type === T.RST && f.streamId === seen[3]), "the old daemon's last stream is reset under its own id");
+  hub.close();
+});
+
 test("hub: user A's daemon never reaches user B's desktop, and the other way round", () => {
   const { hub, daemon, desktop } = rig();
   const da = daemon("A"), db = daemon("B");
@@ -167,9 +199,10 @@ test("hub: RST-all when either side goes away, LINK 0 when the last desktop leav
   const w2 = desktop("A"); w2.hello();
   const d2 = daemon("A");
   d2.send(open(1));
-  w2.send(opened(1));
+  const o2 = w2.frames().filter((f) => f.type === T.OPEN).at(-1)!.streamId; // the second daemon's stream 1, as the desktop numbers it
+  w2.send(opened(o2));
   d2.detach();
-  assert.ok(w2.frames().some((f) => f.type === T.RST && f.streamId === 1), "the desktop is told its stream is over");
+  assert.ok(w2.frames().some((f) => f.type === T.RST && f.streamId === o2), "the desktop is told its stream is over");
   assert.equal(d2.closed(), true);
   hub.close();
 });
