@@ -49,6 +49,10 @@ interface UserHub {
   d2uTotal: number;
   u2dTotal: number;
   linkSent: boolean | null;
+  /** Added to every daemon stream id on the way to the desktop (and removed on the way back); see attachDaemon. */
+  idBase: number;
+  /** Highest desktop-side id handed out so far, across daemon restarts. */
+  maxDeskId: number;
 }
 
 export interface EgressHubOptions {
@@ -83,7 +87,7 @@ export class EgressHub {
 
   private hub(userId: string): UserHub {
     let h = this.users.get(userId);
-    if (!h) { h = { daemon: null, desktops: [], flows: new Map(), lastOpenId: 0, d2uTotal: 0, u2dTotal: 0, linkSent: null }; this.users.set(userId, h); }
+    if (!h) { h = { daemon: null, desktops: [], flows: new Map(), lastOpenId: 0, d2uTotal: 0, u2dTotal: 0, linkSent: null, idBase: 0, maxDeskId: 0 }; this.users.set(userId, h); }
     return h;
   }
 
@@ -115,6 +119,10 @@ export class EgressHub {
     h.daemon = { sink, records, id };
     h.linkSent = null;
     h.lastOpenId = 0; // a new daemon numbers its streams from 1 again
+    // The desktop (a separate, already-installed app) requires OPEN ids to increase for the whole life of its WebSocket and treats a
+    // regression as a protocol error (it drops the link). A restarted daemon starts over at 1, so its ids are shifted past everything the
+    // desktop has seen: odd stays odd (the base is even) and no old id can ever collide with a new one.
+    h.idBase = h.maxDeskId + (h.maxDeskId % 2);
     this.syncLink(userId, h);
     return { push: (chunk) => { if (h.daemon?.id === id) records.push(chunk); }, close: () => this.detachDaemon(userId, id) };
   }
@@ -129,6 +137,9 @@ export class EgressHub {
     this.prune(userId, h);
   }
 
+  /** The same frame with its stream id moved between the daemon's numbering and the desktop's. */
+  private reid(frame: Buffer, id: number): Buffer { const out = Buffer.from(frame); out.writeUInt32BE(id >>> 0, 1); return out; }
+  private toDesktopFlow(h: UserHub, frame: Buffer, daemonId: number): void { this.toDesktop(h, this.reid(frame, daemonId + h.idBase)); }
   private toDaemon(h: UserHub, frame: Buffer): void { try { h.daemon?.sink.write(lengthPrefixed(frame)); } catch { /* pipe closed: detach follows */ } }
   private toDesktop(h: UserHub, frame: Buffer): void { const a = h.activeDesk; if (a) { try { a.sink.send(frame); } catch { /* socket closing */ } } }
 
@@ -156,7 +167,7 @@ export class EgressHub {
         if (!flow || !flow.opened) return; // data before the desktop accepted: drop (the daemon only sends after OPENED)
         flow.d2u += f.payload.length; h.d2uTotal += f.payload.length;
         if (flow.d2u > INIT_CREDIT || h.d2uTotal > CONN_UNACKED_CAP) return this.killFlow(h, f.streamId, RST_REASON.PROTOCOL);
-        return this.toDesktop(h, record);
+        return this.toDesktopFlow(h, record, f.streamId);
       }
       case T.CREDIT: {
         const flow = h.flows.get(f.streamId);
@@ -164,19 +175,19 @@ export class EgressHub {
         const n = Math.min(f.payload.readUInt32BE(0), flow.u2d);
         flow.u2d -= n; h.u2dTotal -= n;
         // Forward the CLAMPED grant: the peer must never hold more credit than the window we account for.
-        return n > 0 ? this.toDesktop(h, encodeFrame(T.CREDIT, f.streamId, u32(n))) : undefined;
+        return n > 0 ? this.toDesktop(h, encodeFrame(T.CREDIT, f.streamId + h.idBase, u32(n))) : undefined;
       }
       case T.FIN: {
         const flow = h.flows.get(f.streamId);
         if (!flow) return;
         flow.finD = true;
-        this.toDesktop(h, record);
+        this.toDesktopFlow(h, record, f.streamId);
         if (flow.finU) this.endFlow(h, f.streamId);
         return;
       }
       case T.RST: {
         if (!h.flows.has(f.streamId)) return;
-        this.toDesktop(h, record);
+        this.toDesktopFlow(h, record, f.streamId);
         this.endFlow(h, f.streamId);
         return;
       }
@@ -193,7 +204,8 @@ export class EgressHub {
     if (!h.activeDesk) return this.toDaemon(h, encodeFrame(T.RST, id, Buffer.from([RST_REASON.LINK_DOWN])));
     if (h.flows.size >= MAX_STREAMS) return this.toDaemon(h, encodeFrame(T.RST, id, Buffer.from([RST_REASON.STREAMS])));
     h.flows.set(id, { d2u: 0, u2d: 0, opened: false, finD: false, finU: false });
-    this.toDesktop(h, encodeFrame(T.OPEN, id, f.payload));
+    h.maxDeskId = Math.max(h.maxDeskId, id + h.idBase);
+    this.toDesktop(h, encodeFrame(T.OPEN, id + h.idBase, f.payload));
     void userId;
   }
 
@@ -271,40 +283,44 @@ export class EgressHub {
       default: break;
     }
     if (!isActive) return;
+    // Desktop numbering -> daemon numbering. A frame for a stream of an earlier daemon (id <= base) names nothing live: ignored.
+    const sid = f.streamId - h.idBase;
+    if (sid <= 0) return;
+    const fwd = this.reid(data, sid);
     switch (f.type) {
       case T.OPENED: {
-        const flow = h.flows.get(f.streamId);
+        const flow = h.flows.get(sid);
         if (!flow || flow.opened) return;
-        if (f.payload[0] === 0) flow.opened = true; else this.endFlow(h, f.streamId);
-        return this.toDaemon(h, data);
+        if (f.payload[0] === 0) flow.opened = true; else this.endFlow(h, sid);
+        return this.toDaemon(h, fwd);
       }
       case T.DATA: {
-        const flow = h.flows.get(f.streamId);
+        const flow = h.flows.get(sid);
         if (!flow) return;
-        if (!flow.opened) return this.killFlow(h, f.streamId, RST_REASON.PROTOCOL);
+        if (!flow.opened) return this.killFlow(h, sid, RST_REASON.PROTOCOL);
         flow.u2d += f.payload.length; h.u2dTotal += f.payload.length;
-        if (flow.u2d > INIT_CREDIT || h.u2dTotal > CONN_UNACKED_CAP) return this.killFlow(h, f.streamId, RST_REASON.PROTOCOL);
-        return this.toDaemon(h, data);
+        if (flow.u2d > INIT_CREDIT || h.u2dTotal > CONN_UNACKED_CAP) return this.killFlow(h, sid, RST_REASON.PROTOCOL);
+        return this.toDaemon(h, fwd);
       }
       case T.CREDIT: {
-        const flow = h.flows.get(f.streamId);
+        const flow = h.flows.get(sid);
         if (!flow) return;
         const n = Math.min(f.payload.readUInt32BE(0), flow.d2u);
         flow.d2u -= n; h.d2uTotal -= n;
-        return n > 0 ? this.toDaemon(h, encodeFrame(T.CREDIT, f.streamId, u32(n))) : undefined;
+        return n > 0 ? this.toDaemon(h, encodeFrame(T.CREDIT, sid, u32(n))) : undefined;
       }
       case T.FIN: {
-        const flow = h.flows.get(f.streamId);
+        const flow = h.flows.get(sid);
         if (!flow) return;
         flow.finU = true;
-        this.toDaemon(h, data);
-        if (flow.finD) this.endFlow(h, f.streamId);
+        this.toDaemon(h, fwd);
+        if (flow.finD) this.endFlow(h, sid);
         return;
       }
       case T.RST: {
-        if (!h.flows.has(f.streamId)) return;
-        this.toDaemon(h, data);
-        this.endFlow(h, f.streamId);
+        if (!h.flows.has(sid)) return;
+        this.toDaemon(h, fwd);
+        this.endFlow(h, sid);
         return;
       }
       default: return;
@@ -328,9 +344,8 @@ export class EgressHub {
     if (a !== prev) {
       // The streams belonged to the old desktop: they end now, toward the daemon, and toward the old desktop if it is still connected.
       for (const id of [...h.flows.keys()]) {
-        const rst = encodeFrame(T.RST, id, Buffer.from([RST_REASON.LINK_DOWN]));
-        this.toDaemon(h, rst);
-        if (prev && h.desktops.includes(prev)) { try { prev.sink.send(rst); } catch { /* closing */ } }
+        this.toDaemon(h, encodeFrame(T.RST, id, Buffer.from([RST_REASON.LINK_DOWN])));
+        if (prev && h.desktops.includes(prev)) { try { prev.sink.send(encodeFrame(T.RST, id + h.idBase, Buffer.from([RST_REASON.LINK_DOWN]))); } catch { /* closing */ } }
         this.endFlow(h, id);
       }
       h.d2uTotal = 0; h.u2dTotal = 0;
@@ -363,7 +378,7 @@ export class EgressHub {
   private killFlow(h: UserHub, id: number, reason: number): void {
     if (!h.flows.has(id)) return;
     const rst = encodeFrame(T.RST, id, Buffer.from([reason]));
-    this.toDaemon(h, rst); this.toDesktop(h, rst);
+    this.toDaemon(h, rst); this.toDesktopFlow(h, rst, id);
     this.endFlow(h, id);
   }
   /** Every stream is over: tell the surviving end(s). `toDesk`: also tell the active desktop (false when the desktop is the one that left or the daemon went away and its streams are moot). */
@@ -371,7 +386,7 @@ export class EgressHub {
     void userId;
     for (const id of [...h.flows.keys()]) {
       const rst = encodeFrame(T.RST, id, Buffer.from([reason]));
-      if (toDaemon) this.toDaemon(h, rst); else this.toDesktop(h, rst);
+      if (toDaemon) this.toDaemon(h, rst); else this.toDesktopFlow(h, rst, id);
       this.endFlow(h, id);
     }
     h.d2uTotal = 0; h.u2dTotal = 0;

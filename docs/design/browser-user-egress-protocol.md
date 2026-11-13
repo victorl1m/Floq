@@ -93,3 +93,11 @@ Not part of the wire, but the runtime/UI halves rely on these:
 - **Peer check** is `uid == daemon uid` AND the connection's socket inode is held by a process in the Chromium tree (`/proc/<pid>/fd`). Verified with the real full Chromium (network service is a child utility process whose fds are readable by the same uid, also under `--no-sandbox`). `FLOQ_BROWSER_EGRESS_PEER=uid` is the documented fallback (uid only) if a future Chromium makes those fds unreadable.
 - **CDP:** in desktop mode the CdpMux strips `proxyServer`, `proxyBypassList` and `proxyBypassRules` from `Target.createBrowserContext`, so an agent cannot give a context its own route (`direct://` would leave from the server).
 - **fd 3 hygiene:** helper processes the daemon spawns (`--version`, `command -v prlimit`) get `/dev/null` in slot 3; Chromium overwrites slot 3 with its own CDP pipe.
+
+## Stream ids across daemon restarts (fix in v1.0.12)
+
+The desktop admits OPEN ids that are odd and strictly increasing for the whole life of its WebSocket and answers a regression with a
+protocol error (it drops the link). A restarted daemon numbers its streams from 1 again while the desktop WebSocket stays up, so the
+runtime hub shifts every daemon stream id by an even per-user base (the highest desktop-side id handed out so far) on the way to the
+desktop and removes it on the way back. The daemon and the desktop are unchanged; frames for an earlier daemon's streams arrive with
+ids at or below the base and are ignored.
