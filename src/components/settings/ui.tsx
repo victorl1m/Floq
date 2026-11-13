@@ -25,12 +25,15 @@ export function SettingsGroup({ title, children, className }: { title?: string; 
 }
 
 export function SettingRow({
+    settingId,
     label,
     description,
     htmlFor,
     children,
     stack = false,
 }: {
+    /** Stable id the Ctrl+K settings search scrolls to and highlights (see src/lib/settings-index.ts). */
+    settingId?: string;
     label: ReactNode;
     description?: ReactNode;
     htmlFor?: string;
@@ -39,7 +42,7 @@ export function SettingRow({
     stack?: boolean;
 }) {
     return (
-        <div className={cn("flex gap-4 p-4", stack ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between")}>
+        <div data-setting-id={settingId} className={cn("flex gap-4 p-4", stack ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between")}>
             <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <label htmlFor={htmlFor} className="text-sm font-medium">
                     {label}

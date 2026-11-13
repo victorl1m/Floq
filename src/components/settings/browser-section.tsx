@@ -75,12 +75,12 @@ function BrowserControls({ enabled }: { enabled: boolean }) {
             <SettingRow label="Status" description={v ? `Chromium ${v.chromium} (${v.build === 'chromium' ? 'full build, new headless' : 'headless shell'} r${v.revision}) · Playwright MCP ${v.playwrightMcp} · profile ${status?.profile ?? "~/.floq/browser/profile"}` : "Chromium version appears when the browser is installed."}>
                 <span role="status" data-testid="browser-status" className="text-xs text-muted-foreground">{line}</span>
             </SettingRow>
-            <SettingRow label="Restart browser" description="Closes and reopens the browser. Each Browser node reopens its last page; logins stay.">
+            <SettingRow settingId="browser-restart" label="Restart browser" description="Closes and reopens the browser. Each Browser node reopens its last page; logins stay.">
                 <Button type="button" variant="outline" size="sm" disabled={!enabled || unavailable || busy !== null} onClick={() => void run("restart")}>
                     {busy === "restart" ? "Restarting…" : "Restart"}
                 </Button>
             </SettingRow>
-            <SettingRow label="Import cookies & data" description="Import a cookies.txt, JSON cookie export or bookmarks file you exported yourself, so agents can use sites you are already logged in to.">
+            <SettingRow settingId="browser-import" label="Import cookies & data" description="Import a cookies.txt, JSON cookie export or bookmarks file you exported yourself, so agents can use sites you are already logged in to.">
                 <Button type="button" variant="outline" size="sm" data-testid="browser-import-open" disabled={!enabled || unavailable} onClick={() => setImportOpen(true)}>Import…</Button>
             </SettingRow>
             {data && (data.domains.length > 0 || data.bookmarks > 0) && (
@@ -96,7 +96,7 @@ function BrowserControls({ enabled }: { enabled: boolean }) {
                 </SettingRow>
             )}
             <BrowserImportDialog client={client} open={importOpen} onOpenChange={setImportOpen} onDone={() => void loadData()} />
-            <SettingRow label="Clear browser data" description="Stops the browser and deletes its profile: cookies, logins and site data. Agents lose access to every site you logged in to.">
+            <SettingRow settingId="browser-clear" label="Clear browser data" description="Stops the browser and deletes its profile: cookies, logins and site data. Agents lose access to every site you logged in to.">
                 <Button type="button" variant="outline" size="sm" disabled={unavailable || busy !== null} onClick={() => setConfirmOpen(true)}>Clear data…</Button>
             </SettingRow>
             <AlertDialog open={confirmOpen} onOpenChange={(open) => { setConfirmOpen(open); if (!open) setTyped(""); }}>
@@ -122,7 +122,7 @@ export default function BrowserSection({ settings, onChange }: Props) {
     return (
         <SettingsPage title="Browser" description="The shared headless browser your agents use, and how its traffic leaves your network.">
             <SettingsGroup title="Browser">
-                <SettingRow
+                <SettingRow settingId="browser-agent"
                     label="Agent browser"
                     htmlFor="agent-browser"
                     description="Gives your agents one shared headless browser (MCP server floq-browser) that you can watch and use on the canvas Browser node, for example to log in to a site. Agents can use sites you log in to here. Applies to new or restarted sessions."

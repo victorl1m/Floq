@@ -53,7 +53,7 @@ export function UsageFallbackGroup({ settings, patch }: { settings: UserSettings
 
     return (
         <SettingsGroup title="When Claude hits a usage limit">
-            <SettingRow
+            <SettingRow settingId="accounts-fallback"
                 label="Keep agents working with a fallback"
                 htmlFor="usage-fallback-enabled"
                 description="When a Claude agent reaches its plan limit, Floq tries the steps below in order. If none applies, the agent pauses and continues on its own when the limit resets."
@@ -80,7 +80,7 @@ export function UsageFallbackGroup({ settings, patch }: { settings: UserSettings
                     );
                 })}
             </div>
-            <SettingRow label="Switch back automatically" htmlFor="usage-fallback-swapback" description="When the limit resets, agents return to their original model once they are idle. A model you pick by hand is never changed back.">
+            <SettingRow settingId="accounts-swapback" label="Switch back automatically" htmlFor="usage-fallback-swapback" description="When the limit resets, agents return to their original model once they are idle. A model you pick by hand is never changed back.">
                 <Switch id="usage-fallback-swapback" checked={value.swapBack} disabled={!value.enabled} onCheckedChange={(v) => save({ ...value, swapBack: v })} />
             </SettingRow>
         </SettingsGroup>

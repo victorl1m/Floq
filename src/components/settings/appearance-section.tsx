@@ -36,13 +36,13 @@ export default function AppearanceSection() {
     return (
         <SettingsPage title="Appearance" description="Theme and terminal look. Stored on this device only.">
             <SettingsGroup title="App">
-                <SettingRow label="Material" htmlFor="appearance-material" description={materialDescription}>
+                <SettingRow settingId="appearance-material" label="Material" htmlFor="appearance-material" description={materialDescription}>
                     <Select value={materialValue} onValueChange={(value) => setMaterial(value as MaterialPreference)} disabled={support.length === 0}>
                         <SelectTrigger id="appearance-material" className="w-36"><SelectValue /></SelectTrigger>
                         <SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
                     </Select>
                 </SettingRow>
-                <SettingRow label="Theme" htmlFor="appearance-theme" description="Follow the system or force light or dark.">
+                <SettingRow settingId="appearance-theme" label="Theme" htmlFor="appearance-theme" description="Follow the system or force light or dark.">
                     <Select value={theme} onValueChange={setTheme}>
                         <SelectTrigger id="appearance-theme" className="w-36">
                             <SelectValue />
@@ -54,16 +54,16 @@ export default function AppearanceSection() {
                         </SelectContent>
                     </Select>
                 </SettingRow>
-                <SettingRow label="Custom cursors" htmlFor="appearance-custom-cursors" description="Floq’s own pointer set inside this window only. Turn off to use your system cursors. Terminals always keep the native cursor.">
+                <SettingRow settingId="appearance-cursors" label="Custom cursors" htmlFor="appearance-custom-cursors" description="Floq’s own pointer set inside this window only. Turn off to use your system cursors. Terminals always keep the native cursor.">
                     <Switch id="appearance-custom-cursors" checked={cursors === "custom"} onCheckedChange={(v) => setCursors(v ? "custom" : "system")} />
                 </SettingRow>
-                <SettingRow label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated Floq avatar, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
+                <SettingRow settingId="appearance-robot-avatars" label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated Floq avatar, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
                     <Switch id="appearance-robot-avatars" checked={avatars === "on"} onCheckedChange={(v) => setAvatars(v ? "on" : "off")} />
                 </SettingRow>
             </SettingsGroup>
 
             <SettingsGroup title="Terminal">
-                <SettingRow label="Font size" description="Applies to open terminals immediately.">
+                <SettingRow settingId="appearance-font-size" label="Font size" description="Applies to open terminals immediately.">
                     <span className="w-10 text-right text-sm tabular-nums text-muted-foreground">{terminal.fontSize}px</span>
                     <Slider
                         aria-label="Terminal font size"
@@ -75,7 +75,7 @@ export default function AppearanceSection() {
                         onValueChange={([v]) => setTerminal({ fontSize: v })}
                     />
                 </SettingRow>
-                <SettingRow label="Cursor style" htmlFor="appearance-cursor">
+                <SettingRow settingId="appearance-cursor-style" label="Cursor style" htmlFor="appearance-cursor">
                     <Select value={terminal.cursorStyle} onValueChange={(v) => setTerminal({ cursorStyle: v as CursorStyle })}>
                         <SelectTrigger id="appearance-cursor" className="w-36">
                             <SelectValue />
@@ -87,7 +87,7 @@ export default function AppearanceSection() {
                         </SelectContent>
                     </Select>
                 </SettingRow>
-                <SettingRow label="Cursor blink" htmlFor="appearance-cursor-blink">
+                <SettingRow settingId="appearance-cursor-blink" label="Cursor blink" htmlFor="appearance-cursor-blink">
                     <Switch id="appearance-cursor-blink" checked={terminal.cursorBlink} onCheckedChange={(v) => setTerminal({ cursorBlink: v })} />
                 </SettingRow>
             </SettingsGroup>

@@ -38,6 +38,7 @@ import PluginsSection from "./plugins-section";
 import DesktopSection from "./desktop-section";
 import { isTauri } from "@tauri-apps/api/core";
 import { useIsAdmin } from "./use-admin";
+import { SETTING_FOCUS_EVENT, peekSettingFocus, takeSettingFocus } from "@/lib/settings-index";
 
 type Item = { id: string; label: string; icon: ComponentType<{ className?: string }> };
 
@@ -97,6 +98,41 @@ export default function SettingsDialog() {
     useEffect(() => {
         if (settingsOpen) void reload();
     }, [settingsOpen, reload]);
+
+    // Ctrl+K settings search: once the target section has rendered, scroll to its row and flash it.
+    const [focusTick, setFocusTick] = useState(0);
+    useEffect(() => {
+        const bump = () => setFocusTick((n) => n + 1);
+        window.addEventListener(SETTING_FOCUS_EVENT, bump);
+        return () => window.removeEventListener(SETTING_FOCUS_EVENT, bump);
+    }, []);
+    const contentReady = !(["agents", "browser", "accounts", "git", "advanced"].includes(section) && !settings);
+    useEffect(() => {
+        if (!settingsOpen || !contentReady || !peekSettingFocus()) return;
+        let frame = 0;
+        let el: Element | null = null;
+        const started = performance.now();
+        const find = () => {
+            const id = peekSettingFocus();
+            if (!id) return;
+            el = document.querySelector(`.settings-dialog [data-setting-id="${id}"]`);
+            if (!el) {
+                if (performance.now() - started < 2500) frame = requestAnimationFrame(find);
+                else takeSettingFocus();
+                return;
+            }
+            takeSettingFocus();
+            const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches || document.documentElement.classList.contains("floq-reduced-motion");
+            el.scrollIntoView({ block: "center", behavior: reduced ? "auto" : "smooth" });
+            el.classList.remove("setting-flash");
+            void (el as HTMLElement).offsetWidth;
+            el.classList.add("setting-flash");
+            const target = el;
+            setTimeout(() => target.classList.remove("setting-flash"), 2200);
+        };
+        frame = requestAnimationFrame(find);
+        return () => { cancelAnimationFrame(frame); };
+    }, [settingsOpen, contentReady, section, focusTick]);
 
     const needsSettings = ["agents", "browser", "accounts", "git", "advanced"].includes(section);
 

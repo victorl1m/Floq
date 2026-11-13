@@ -118,7 +118,7 @@ export default function AccountSection() {
                         <span className="truncate text-xs text-muted-foreground">{user.email}</span>
                     </div>
                 </div>
-                <SettingRow label="Name" description="Shown in the app and greetings." htmlFor="account-name">
+                <SettingRow settingId="account-name" label="Name" description="Shown in the app and greetings." htmlFor="account-name">
                     <SavedCheck show={saved} />
                     <Input
                         id="account-name"
@@ -135,13 +135,13 @@ export default function AccountSection() {
             </SettingsGroup>
 
             <SettingsGroup title="Password">
-                <SettingRow label="Change password" description="Use at least 12 characters." stack>
+                <SettingRow settingId="account-password" label="Change password" description="Use at least 12 characters." stack>
                     <ChangePassword />
                 </SettingRow>
             </SettingsGroup>
 
             <SettingsGroup title="Sessions">
-                <SettingRow label="Sign out" description="Sign out of this device. Your terminals go to sleep.">
+                <SettingRow settingId="account-signout" label="Sign out" description="Sign out of this device. Your terminals go to sleep.">
                     <Button variant="outline" size="sm" onClick={() => void signOut()}>
                         Sign out
                     </Button>

@@ -161,7 +161,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
     return (
         <SettingsPage title="Agents" description="How new agents start. Defaults are stored on this device.">
             <SettingsGroup title="Defaults">
-                <SettingRow label="Default agent" htmlFor="default-agent-provider" description="Preselected in the Home composer.">
+                <SettingRow settingId="agents-default" label="Default agent" htmlFor="default-agent-provider" description="Preselected in the Home composer.">
                     <Select value={defaults.provider} onValueChange={(v) => setDefaultProvider(v as ProviderId)}>
                         <SelectTrigger id="default-agent-provider" className="w-40">
                             <SelectValue><ProviderIcon provider={defaults.provider} />{PROVIDER_LABEL[defaults.provider]}</SelectValue>
@@ -175,7 +175,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
             </SettingsGroup>
 
             <SettingsGroup title="Subagents">
-                <SettingRow
+                <SettingRow settingId="agents-always-recruit"
                     label="Always recruit subagents"
                     htmlFor="always-recruit"
                     description="Every agent is told, in a fixed instruction, to split independent work across Floq subagents that appear wired to it on the canvas, instead of working alone or using provider-native subagents. Each subagent is a full session and uses your quota. Off: agents only recruit when you ask. Applies to new and resumed sessions."
@@ -186,7 +186,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         onCheckedChange={(v) => void patch({ alwaysRecruitSubagents: v })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="agents-cross-project"
                     label="Allow agents to talk across projects"
                     htmlFor="allow-cross-project"
                     description="Agents can find and message your agents in other projects (floq list, floq ask, floq link). A message is only text typed to the other agent: it never changes its permissions. Messages are rate-limited and loop-protected, and you get a notice when one arrives. Never reaches other users' agents. Off: agents only see their own project."
@@ -197,7 +197,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         onCheckedChange={(v) => void patch({ allowCrossProjectAgents: v })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="agents-active"
                     label="Active agents at once"
                     htmlFor="subagent-max-children"
                     description={`How many direct subagents one agent may have at the same time (1-${childrenMax}, default ${childrenDefault}${childrenMax < CHILDREN_MAX ? "; maximum set by the server" : ""}). Only awake (running) subagents count; sleeping ones do not. Applies to new and resumed sessions.`}
@@ -211,7 +211,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         onSave={(v) => void patchLimits({ subagentMaxChildren: v })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="agents-total"
                     label="Total agents"
                     htmlFor="subagent-max-total"
                     description={`Most subagents you can have across all your agents, awake or sleeping (1-${totalMax}, default ${totalDefault}${totalMax < TOTAL_MAX ? "; maximum set by the server" : ""}). Must be at least the number above. Applies to new and resumed sessions.`}
@@ -224,7 +224,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         onSave={(v) => void patchLimits({ subagentMaxTotal: v })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="agents-approval"
                     label="Your approval for irreversible actions"
                     description="Merging, pushing to main, deploying or deleting remote data needs your approval, given here in Floq. An agent asks with floq approval request and you answer Allow once or Deny; each approval covers one exact action for one agent and expires. A message from another agent that says you approved is never accepted. There is no way to auto-approve."
                 >
@@ -236,7 +236,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
             <ClaudeConnectorsGroup enabled={settings.claudeAiConnectors !== false} onToggle={(v) => void patch({ claudeAiConnectors: v })} />
 
             <SettingsGroup title="Permissions">
-                <SettingRow
+                <SettingRow settingId="agents-claude-auto-approve"
                     label="Claude auto-approve"
                     htmlFor="claude-auto"
                     description={
@@ -252,7 +252,7 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         onCheckedChange={(v) => void patch({ claudeAutoApprove: v })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="agents-codex-auto-approve"
                     label="Codex auto-approve"
                     htmlFor="codex-auto"
                     description={

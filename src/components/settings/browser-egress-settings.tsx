@@ -41,14 +41,14 @@ export function BrowserEgressSettings({ mode, onMode }: { mode: BrowserEgressMod
 
     if (!supported) {
         return (
-            <SettingRow label="Route browser traffic through this computer" description="Websites would see your own internet connection instead of Floq's server.">
+            <SettingRow settingId="browser-egress" label="Route browser traffic through this computer" description="Websites would see your own internet connection instead of Floq's server.">
                 <span data-testid="egress-web-note" className="text-xs text-muted-foreground">Available in the desktop app</span>
             </SettingRow>
         );
     }
     return (
         <>
-            <SettingRow
+            <SettingRow settingId="browser-egress"
                 label="Route browser traffic through this computer"
                 htmlFor="browser-egress"
                 description={<>

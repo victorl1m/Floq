@@ -74,7 +74,7 @@ function GithubRow({ settings, reload }: { settings: UserSettings; reload: () =>
 
     if (info && !info.githubConfigured) {
         return (
-            <SettingRow
+            <SettingRow settingId="git-github"
                 label="GitHub"
                 description="GitHub is not configured on this runtime. Ask the operator to set a GitHub OAuth client id."
             />
@@ -100,7 +100,7 @@ function GithubRow({ settings, reload }: { settings: UserSettings; reload: () =>
     }
 
     return settings.github ? (
-        <SettingRow
+        <SettingRow settingId="git-github"
             label="GitHub"
             description={
                 <span className="flex items-center gap-1.5">
@@ -114,7 +114,7 @@ function GithubRow({ settings, reload }: { settings: UserSettings; reload: () =>
             </Button>
         </SettingRow>
     ) : (
-        <SettingRow label="GitHub" description="Connect GitHub so agents can clone private repositories and push.">
+        <SettingRow settingId="git-github" label="GitHub" description="Connect GitHub so agents can clone private repositories and push.">
             <Button size="sm" disabled={device.starting} onClick={() => void device.start()}>
                 {device.starting ? <Spinner /> : <IconBrandGithub />}
                 Connect

@@ -18,7 +18,7 @@ export default function PerformanceSection() {
         <SettingsPage title="Performance" description="Choose terminal history and motion preferences. These settings are saved on this device.">
             <SettingsGroup title="Terminal memory">
                 <div className="divide-y divide-border">
-                    <SettingRow
+                    <SettingRow settingId="performance-history"
                         label="History profile"
                         description={`${prefs.mode === "automatic" ? "Currently keeps" : "Keeps"} ${currentLimit.toLocaleString()} lines per terminal.`}
                     >
@@ -35,7 +35,7 @@ export default function PerformanceSection() {
                         </Select>
                     </SettingRow>
                     {prefs.mode === "custom" && (
-                        <SettingRow label="Scrollback lines" description="Older output is removed as new lines arrive.">
+                        <SettingRow settingId="performance-scrollback" label="Scrollback lines" description="Older output is removed as new lines arrive.">
                             <span className="w-16 text-right text-sm tabular-nums text-muted-foreground">{prefs.scrollback.toLocaleString()}</span>
                             <Slider
                                 className="w-40"
@@ -48,7 +48,7 @@ export default function PerformanceSection() {
                             />
                         </SettingRow>
                     )}
-                    <SettingRow label="Background terminals" description="Hidden tabs of the current project kept loaded. Others reload when you open them; 0 uses the least memory.">
+                    <SettingRow settingId="performance-background-terminals" label="Background terminals" description="Hidden tabs of the current project kept loaded. Others reload when you open them; 0 uses the least memory.">
                         <span className="w-16 text-right text-sm tabular-nums text-muted-foreground">{prefs.warmTerminals}</span>
                         <Slider
                             className="w-40"
@@ -67,7 +67,7 @@ export default function PerformanceSection() {
             </SettingsGroup>
 
             <SettingsGroup title="Interface">
-                <SettingRow
+                <SettingRow settingId="performance-reduce-motion"
                     label="Reduce interface motion"
                     htmlFor="performance-reduce-motion"
                     description="Reduces interface transitions and animations. Terminal cursor blink follows Appearance."
@@ -78,7 +78,7 @@ export default function PerformanceSection() {
                         onCheckedChange={(reduceMotion) => setPrefs({ reduceMotion })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="performance-smooth-scroll"
                     label="Smooth terminal scrolling"
                     htmlFor="performance-smooth-terminal-scroll"
                     description="Adds a brief animation as new terminal output scrolls into view."
@@ -89,7 +89,7 @@ export default function PerformanceSection() {
                         onCheckedChange={(smoothTerminalScrolling) => setPrefs({ smoothTerminalScrolling })}
                     />
                 </SettingRow>
-                <SettingRow
+                <SettingRow settingId="performance-reduce-refresh"
                     label="Reduce background refresh"
                     htmlFor="performance-background-refresh"
                     description="Checks session and project status every 30 seconds instead of 5 while the app is hidden."
