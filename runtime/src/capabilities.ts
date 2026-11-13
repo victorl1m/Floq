@@ -5,3 +5,11 @@
  *   asleep, and lets git decide about local changes.
  */
 export const RUNTIME_CAPABILITIES: readonly string[] = ["branch-switch-v2"];
+
+/** The agent browser in this runtime's image: "available", "disabled" (FLOQ_AGENT_BROWSER=off) or "missing" (image built without it). */
+export type BrowserCapability = "available" | "disabled" | "missing";
+
+/** The base capability list plus "agent-browser" when the browser is usable on this server. */
+export function runtimeCapabilities(browser: BrowserCapability = "missing"): string[] {
+  return [...RUNTIME_CAPABILITIES, ...(browser === "available" ? ["agent-browser"] : [])];
+}

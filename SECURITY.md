@@ -24,6 +24,9 @@ Floq is designed for **one owner running their own server**, optionally shared w
 - **Accounts.** better-auth with scrypt password hashes, rate limits and 7-day sessions; signup is closed by default.
 - **Known limitations.** The Tauri window currently sets `"csp": null`; Windows installers are unsigned; the isolation has not been independently reviewed.
 
+- **Browser network limits.** Without `FLOQ_NETNS=required`, the agent browser blocks loopback and private addresses for web pages and workers through a CDP interceptor, but cannot see WebSocket/WebTransport handshakes, so use `FLOQ_NETNS=required` on multi-user hosts. The Chromium download in the image build is pinned by revision over HTTPS, not by a sha256. Session cookies do not survive a browser restart.
+- **Browser cookie import.** Users can import cookies (Netscape cookies.txt, JSON exports) and bookmarks they exported themselves into the shared agent browser (Settings > Agents > Browser, or the Browser node). The file is uploaded over the authenticated API (5 MiB limit), parsed on the runtime, and only the parsed result is kept in memory for 10 minutes, per user and single use; it is never written to the host disk and neither file text nor cookie values are logged (counts only). Chosen cookies are applied through CDP by a helper inside that user's own sandbox, so they live only in the user's encrypted home. Imported sessions can be used by all of that user's agents ("agents act as you on those sites"); the UI says so. Users can list, remove per domain or clear everything. Floq never reads local Chrome/Edge/Firefox stores, and does not import Chromium profile folders (OS-keyring-encrypted blobs). Details: `docs/design/agent-browser.md` §A.13.
+
 Reports about these documented limitations are welcome as hardening suggestions, but they are known and not treated as vulnerabilities by themselves.
 
 ## Operating a runtime safely

@@ -33,7 +33,23 @@ RUN curl -fsSL -o /tmp/passt.tgz "https://passt.top/passt/snapshot/passt-${PASST
     && install -m 755 pasta /out-pasta \
     && /out-pasta --help 2>&1 | grep -q -- --map-host-loopback
 
+# ---- browser: pinned Playwright MCP + Chromium headless shell (independent of the app build; cached until image/browser/package*.json changes) ----
+# The pin lives in image/browser/package.json only. The Chromium revision follows from the playwright-core in the committed lockfile
+# (chromium-headless-shell, downloaded over HTTPS from Playwright's CDN; the zip is NOT pinned by a sha256 here, only the revision is, so
+# the CDN and TLS are trusted for that one artifact). See docs/design/agent-browser.md section A.12.
+FROM node:22-bookworm-slim AS browser
+WORKDIR /opt/floq/playwright-mcp
+COPY image/browser/package.json image/browser/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/floq/browsers
+RUN node node_modules/playwright-core/cli.js install --only-shell chromium \
+    && rm -rf /opt/floq/browsers/ffmpeg-* \
+    && node -e 'const fs=require("fs");const rd=(p)=>JSON.parse(fs.readFileSync(p,"utf8"));const b=rd("node_modules/playwright-core/browsers.json").browsers.find(x=>x.name==="chromium-headless-shell");const m=rd("node_modules/@playwright/mcp/package.json");if(!b)throw new Error("no chromium-headless-shell in browsers.json");fs.writeFileSync("/opt/floq/browsers/VERSION.json",JSON.stringify({chromium:b.browserVersion,revision:b.revision,playwrightMcp:m.version}))' \
+    && test -s /opt/floq/browsers/VERSION.json
+
 FROM node:22-bookworm-slim AS runtime
+# --build-arg FLOQ_BROWSER=0 builds the image without the agent browser (no Chromium, libs or fonts; capabilities.browser = "missing").
+ARG FLOQ_BROWSER=1
 ENV NODE_ENV=production \
     FLOQ_SHARD_ROOT=/var/lib/floq/shards \
     FLOQ_SHARD_DRIVER=linux \
@@ -46,6 +62,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 \
     && npm cache clean --force
+# Agent browser, layer 1: only the shared libraries chrome-headless-shell links against (ldd) + fontconfig + fonts. No X server, no GTK.
+# fonts-noto-cjk is ~91 MB: swap for fonts-wqy-zenhei (~17 MB) if size matters more than CJK quality.
+RUN if [ "$FLOQ_BROWSER" = 1 ]; then apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libdbus-1-3 \
+        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libxkbcommon0 libgbm1 libasound2 \
+        fontconfig fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*; fi
 # gocryptfs from the pinned upstream static release, NOT Debian's 2.3 package. Debian bookworm builds 2.3 against a
 # newer golang.org/x/sys whose Setreuid/Setregid affect every thread, which breaks gocryptfs's per-request uid switch
 # when run as root with -allow_other: concurrent mkdir/open(O_CREAT) fail randomly with EPERM
@@ -98,14 +121,17 @@ COPY --from=build /app/dist/image/floq.mjs /usr/local/bin/floq
 COPY --from=build /app/dist/image/floq-args.mjs /usr/local/bin/floq-args.mjs
 COPY --from=build /app/dist/image/floq-setup.mjs /usr/local/bin/floq-setup.mjs
 COPY --from=build /app/dist/image/floq-vault.mjs /usr/local/bin/floq-vault
+COPY --from=build /app/dist/image/floq-browserd.mjs /usr/local/bin/floq-browserd
+COPY --from=build /app/dist/image/floq-browserd-core.mjs /usr/local/bin/floq-browserd-core.mjs
+COPY --from=build /app/dist/image/floq-browser-mcp.mjs /usr/local/bin/floq-browser-mcp
 COPY --from=build /app/dist/image/floq-block-native-subagent.mjs /usr/local/bin/floq-block-native-subagent.mjs
 COPY --from=build /app/dist/image/floq-native-question.mjs /usr/local/bin/floq-native-question.mjs
 COPY --from=build /app/dist/image/floq-permission-request.mjs /usr/local/bin/floq-permission-request.mjs
 # Managed (policy) settings outrank user, project and local settings and are read-only to agents: native subagents stay denied.
 COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
-RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault \
-    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
+RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-browser-mcp \
+    && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browser-mcp && chmod 644 /usr/local/bin/floq-browserd-core.mjs && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
 # Rootless apt/apt-get for agents (no root in the sandbox): per-user lists, packages unpacked under ~/.floq/apt, launchers in
 # ~/.local/bin. Root keeps the real tools (they sit later in PATH; the wrapper execs them for uid 0).
 COPY image/floq-apt /usr/local/bin/floq-apt
@@ -122,6 +148,21 @@ RUN sed -i 's/\r$//' /usr/local/share/floq/git-hooks/* && chmod -R a+rX /usr/loc
 COPY image/skills /tmp/floq-skills
 COPY image/build-skel.sh /tmp/build-skel.sh
 RUN sed -i 's/\r$//' /tmp/build-skel.sh && SUPERPOWERS_REF=${SUPERPOWERS_REF} HUMANIZER_REF=${HUMANIZER_REF} ANTHROPIC_SKILLS_REF=${ANTHROPIC_SKILLS_REF} sh /tmp/build-skel.sh && rm -rf /tmp/build-skel.sh /tmp/floq-skills
+
+# Agent browser, layer 2: Playwright MCP + Chromium headless shell from the browser stage. Copied after the CLI/app layers so source
+# edits never invalidate it and a browser bump never rebuilds the apt layer. /opt/floq is bound read-only into sandboxes (shard.ts).
+COPY --from=browser --chown=root:root /opt/floq /opt/floq
+RUN [ "$FLOQ_BROWSER" = 1 ] || rm -rf /opt/floq/browsers /opt/floq/playwright-mcp; \
+    [ ! -d /opt/floq ] || chmod -R a+rX,go-w /opt/floq
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/floq/browsers
+# Build checks (FLOQ_BROWSER=1): every shared library resolves, the emoji and CJK fonts are visible to fontconfig, VERSION.json exists.
+RUN if [ "$FLOQ_BROWSER" = 1 ]; then \
+      exe="$(ls /opt/floq/browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell)" \
+      && ! ldd "$exe" | grep 'not found' \
+      && fc-list | grep -qi 'Noto Color Emoji' && fc-list | grep -qi 'Noto Sans CJK' \
+      && test -s /opt/floq/browsers/VERSION.json \
+      && "$exe" --version; \
+    fi
 
 # The runtime runs as root so it can mount each user's encrypted home and start
 # agent processes under a per-user uid inside a bubblewrap sandbox. Agents never run as root.

@@ -366,6 +366,11 @@ export class SessionManager {
   accounts?: { adoptAttributed(userId: string, data: CredentialData): Promise<"single" | "active" | "reserve" | "unmatched" | "retry">; reset(userId: string): Promise<void> };
   /** Test hook: overrides the TUI-ready detection timing. */
   readyTiming?: { quietMs: number; timeoutMs: number };
+  /** Agent browser (set by index.ts): its daemon holds the shard awake and is stopped before the home locks. */
+  browser?: { stop(userId: string, reason?: string): Promise<void>; onActivity?: (userId: string, running: boolean) => void };
+  /** Per-user toggles the manager reads at launch (set by index.ts); absent = defaults. */
+  settings?: { claudeAiConnectors(userId: string): Promise<boolean> };
+  private readonly browserRunning = new Set<string>();
   private readonly reaper: NodeJS.Timeout;
 
   constructor(
@@ -377,6 +382,27 @@ export class SessionManager {
     this.codexModelCatalog = new CodexModelCatalog((userId) => this.discoverCodexModels(userId), config.models.codex);
     this.reaper = setInterval(() => void this.reap(), REAP_INTERVAL_MS);
     this.reaper.unref();
+  }
+
+  /** Wire the agent browser: a running daemon counts as shard activity (no idle lock) until it has fully stopped. */
+  attachBrowser(browser: NonNullable<SessionManager["browser"]>): void {
+    this.browser = browser;
+    browser.onActivity = (userId, running) => this.browserActivity(userId, running);
+  }
+
+  browserActivity(userId: string, running: boolean): void {
+    if (running === this.browserRunning.has(userId)) return;
+    if (running) {
+      this.browserRunning.add(userId);
+      this.cancelLock(userId);
+      this.shardActivityCounts.set(userId, (this.shardActivityCounts.get(userId) ?? 0) + 1);
+      return;
+    }
+    this.browserRunning.delete(userId);
+    const remaining = (this.shardActivityCounts.get(userId) ?? 1) - 1;
+    if (remaining <= 0) this.shardActivityCounts.delete(userId);
+    else this.shardActivityCounts.set(userId, remaining);
+    if (remaining <= 0 && !this.shuttingDown && !this.hasActiveProcess(userId)) this.scheduleLock(userId);
   }
 
   get activeCount(): number {
@@ -1581,7 +1607,7 @@ export class SessionManager {
       if (managedDir) {
         try {
           const base = JSON.parse(readFileSync(IMAGE_MANAGED_SETTINGS, "utf8")) as Record<string, unknown>;
-          const promoted = promoteUserPlugins({ home: this.shards.driver.hostPath(handle, "."), managedDir, base });
+          const promoted = promoteUserPlugins({ home: this.shards.driver.hostPath(handle, "."), managedDir, base, claudeAiConnectors: (await this.settings?.claudeAiConnectors(row.user_id)) ?? true });
           if (promoted.length) log.info("claude.user_plugins_managed", { sessionId: row.id, plugins: promoted.map((p) => p.id) });
         } catch (error) {
           // Without the image's base file there is nothing to extend: the sandbox falls back to the image's settings.
@@ -2508,6 +2534,7 @@ export class SessionManager {
       return;
     }
     this.cancelLock(userId);
+    await this.browser?.stop(userId, "sleep").catch(() => undefined);
     await this.shards.sleep(userId);
   }
 
@@ -2612,7 +2639,7 @@ export class SessionManager {
       this.lockTimers.delete(userId);
       if ((this.shardActivityCounts.get(userId) ?? 0) > 0) return;
       const busy = this.hasActiveProcess(userId);
-      if (!busy) void this.shards.sleep(userId).catch((error) => log.error("shard.lock_failed", { userId, error: String(error) }));
+      if (!busy) void (this.browser?.stop(userId, "sleep").catch(() => undefined) ?? Promise.resolve()).then(() => this.shards.sleep(userId)).catch((error) => log.error("shard.lock_failed", { userId, error: String(error) }));
     }, this.config.shardLockDelayMs);
     timer.unref();
     this.lockTimers.set(userId, timer);

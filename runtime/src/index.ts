@@ -3,6 +3,7 @@ import { createAuth, migrateAuth } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { ClaudeOAuth } from "./claudeOauth.js";
 import { UsageService } from "./usage.js";
+import { ClaudeConnectors, apiKeyReachesSessions } from "./claudeConnectors.js";
 import { FallbackService } from "./fallback.js";
 import { buildHandoff, parseClaudeContext } from "./handoff.js";
 import { ClaudeAccounts } from "./claudeAccounts.js";
@@ -38,6 +39,8 @@ import { removeOwnedPluginSkill } from "./plugins/skillOwnership.js";
 import { CatalogClient } from "./plugins/catalog.js";
 import { loadInstalledPackages, pluginDirFromEnv } from "./plugins/installed.js";
 import { PluginInstaller } from "./plugins/installer.js";
+import { BrowserService } from "./browser.js";
+import { FLOQ_BROWSER_MCP_SPEC } from "./mcpConfig.js";
 import { sha256Hex } from "./plugins/package.js";
 
 process.on("uncaughtException", (error) => log.error("process.uncaught", { error: error instanceof Error ? error.message : String(error) }));
@@ -71,11 +74,17 @@ await shards.driver.init?.();
 const vault = new Vault(pool, config);
 const manager = new SessionManager(config, pool, shards, vault);
 const skills = new SkillsService(config, shards, pool, (userId, operation) => manager.withUserShardActivity(userId, operation));
+// Agent browser: one sandboxed Chromium daemon per user (docs/design/agent-browser.md). The floq-browser MCP entry follows the user's toggle.
+const browser = new BrowserService(shards, settings, { sync: (userId, desired) => skills.syncReservedMcp(userId, FLOQ_BROWSER_MCP_SPEC, desired) }, config.browser, (userId) => manager.inNetns(userId));
+manager.settings = settings;
+manager.attachBrowser(browser);
+shards.onWake = (userId) => void browser.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
 const credentials = new CredentialBroker(pool, config);
 manager.credentials = credentials;
 credentials.onChange = (userId, provider, data) => void manager.distribute(userId, provider, data).catch(() => undefined);
 const claudeOauth = new ClaudeOAuth(config, credentials);
-claudeOauth.onConnected = (userId, data) => void manager.distribute(userId, "claude", data).catch(() => undefined);
+const claudeConnectors = new ClaudeConnectors({ credentials, apiKeyInEnv: () => apiKeyReachesSessions(config) });
+claudeOauth.onConnected = (userId, data) => { claudeConnectors.invalidate(userId); void manager.distribute(userId, "claude", data).catch(() => undefined); };
 credentials.start();
 const usage = new UsageService(credentials);
 // Extra Claude logins: the active one stays in provider_credentials, the others are reserves (see claudeAccounts.ts).
@@ -132,6 +141,7 @@ void fallback.start().catch((error) => log.error("fallback.start_failed", { erro
 const agentLinks = new AgentLinks(pool);
 const canvasNotes = new CanvasNotes(pool);
 const wired = new WiredContext(pool);
+wired.browserEnabled = async (userId) => browser.capability() === "available" && (await settings.agentBrowser(userId));
 manager.wired = wired;
 // Agent memory is on only when FLOQ_REDIS_URL is set. It connects in the background and never delays boot.
 const memories = new MemoryService(pool, { url: config.redisUrl ?? undefined, embedder: createEmbedder({ ...process.env, FLOQ_EMBEDDINGS: config.embeddings }, { cacheDir: process.env.FLOQ_EMBEDDINGS_CACHE?.trim() || join(dirname(config.shardRoot), "embeddings") }) });
@@ -171,7 +181,7 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins });
+const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser });
 
 await server.listen();
 log.info("runtime.listening", {
@@ -194,6 +204,7 @@ async function stop(signal: string): Promise<void> {
   log.info("runtime.stopping", { signal });
   credentials.stop();
   await plugins.stopAll();
+  await browser.shutdown();
   await manager.shutdown();
   await server.close();
   await pool.end();

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parse as parseToml } from "smol-toml";
 import {
+  FLOQ_BROWSER_MCP_SPEC, isReservedMcpName, reconcileReservedMcp,
   addToJsonConfig, addToTomlConfig, describeMcp, mergeGlobalCodexMcp, normalizeMcpInput, removeFromJsonConfig, removeFromTomlConfig,
 } from "../dist/mcpConfig.js";
 
@@ -180,3 +181,74 @@ test("global Codex servers are copied into a session config without touching its
   assert.equal(mergeGlobalCodexMcp("broken [", session), null);
   assert.equal(mergeGlobalCodexMcp(global, "broken ["), null);
 });
+
+// ---------- floq-browser: Floq's own reserved entry (docs/design/agent-browser.md §A.6) ----------
+
+test("floq-browser is reserved: users and plugins cannot install it, in any letter case", () => {
+  assert.equal(isReservedMcpName("floq-browser"), true);
+  assert.equal(isReservedMcpName("Floq-Browser"), true);
+  assert.equal(isReservedMcpName("floq-browser2"), false);
+  for (const name of ["floq-browser", "FLOQ-BROWSER", "Floq-browser"]) {
+    assert.throws(() => normalizeMcpInput({ name, command: "node" }), (error) => error.status === 400 && error.code === "invalid_mcp" && /reserved for Floq's browser/.test(error.message), name);
+    assert.throws(() => normalizeMcpInput({ mcpServers: { [name]: { command: "node" } } }), /reserved for Floq's browser/);
+  }
+  assert.equal(normalizeMcpInput({ name: "floq-browser-notes", command: "node" }).name, "floq-browser-notes");
+});
+
+test("the browser spec carries no secrets and no endpoint: only the wrapper, with the session env forwarded for Codex", () => {
+  assert.deepEqual(FLOQ_BROWSER_MCP_SPEC, { name: "floq-browser", type: "stdio", command: "/usr/local/bin/floq-browser-mcp", args: [], env: {}, headers: {}, envSecrets: {}, headerSecrets: {}, plaintextSensitive: [], forwardEnv: true });
+  const claude = JSON.parse(addToJsonConfig(null, FLOQ_BROWSER_MCP_SPEC, "c"));
+  assert.deepEqual(claude.mcpServers["floq-browser"], { type: "stdio", command: "/usr/local/bin/floq-browser-mcp", args: [] });
+  const toml = parseToml(addToTomlConfig(null, FLOQ_BROWSER_MCP_SPEC, "c"));
+  assert.deepEqual(plain(toml.mcp_servers["floq-browser"]), { command: "/usr/local/bin/floq-browser-mcp", args: [], env_vars: ["FLOQ_API_URL", "FLOQ_AGENT_TOKEN"] });
+  for (const text of [JSON.stringify(claude), JSON.stringify(toml)]) assert.ok(!/token=|Bearer|ws:\/\//i.test(text.replace("FLOQ_AGENT_TOKEN", "")), "no endpoint or token in the config");
+});
+
+for (const kind of ["json", "toml"]) {
+  const label = kind === "json" ? "The Claude config" : "The Codex config";
+  const spec = FLOQ_BROWSER_MCP_SPEC;
+  const apply = (raw, desired) => reconcileReservedMcp(raw, kind, spec, desired, label);
+  const parsed = (raw) => (kind === "json" ? JSON.parse(raw).mcpServers : parseToml(raw).mcp_servers);
+  const base = kind === "json" ? claudeFile : '# my settings\nmodel = "gpt-6"\n\n[mcp_servers.other]\ncommand = "npx"\nargs = ["-y", "x"]\n';
+
+  test(`reconcile (${kind}): installs when wanted, keeps everything else, and is idempotent`, () => {
+    const first = apply(base, true);
+    assert.equal(first.state, "installed");
+    assert.ok(parsed(first.next)["floq-browser"]);
+    assert.ok(first.next.includes(kind === "json" ? '"theme": "dark"' : "# my settings"), "the rest of the file is untouched");
+    assert.equal(Object.keys(parsed(first.next)).length, Object.keys(parsed(base)).length + 1);
+    const second = apply(first.next, true);
+    assert.deepEqual(second, { next: null, state: "unchanged" }, "a second sync changes nothing");
+    const fromNothing = apply(null, true);
+    assert.equal(fromNothing.state, "installed");
+    assert.deepEqual(apply(fromNothing.next, true), { next: null, state: "unchanged" });
+    assert.equal(apply("", true).state, "installed");
+  });
+
+  test(`reconcile (${kind}): removes only its own entry when no longer wanted, and removing again is a no-op`, () => {
+    const installed = apply(base, true).next;
+    const removed = apply(installed, false);
+    assert.equal(removed.state, "removed");
+    assert.equal(parsed(removed.next)?.["floq-browser"], undefined);
+    assert.deepEqual(Object.keys(parsed(removed.next) ?? {}), Object.keys(parsed(base)), "other servers survive");
+    assert.deepEqual(apply(removed.next, false), { next: null, state: "unchanged" });
+    assert.deepEqual(apply(null, false), { next: null, state: "unchanged" });
+    assert.deepEqual(apply(base, false), { next: null, state: "unchanged" });
+  });
+
+  test(`reconcile (${kind}): a hand-edited entry is reported, never overwritten and never removed`, () => {
+    const edited = kind === "json"
+      ? JSON.stringify({ mcpServers: { "floq-browser": { type: "stdio", command: "/usr/local/bin/floq-browser-mcp", args: ["--my-flag"] } } }, null, 2) + "\n"
+      : '[mcp_servers.floq-browser]\ncommand = "/home/me/my-browser"\nargs = []\n';
+    for (const desired of [true, false]) {
+      const r = apply(edited, desired);
+      assert.deepEqual(r, { next: null, state: "edited" }, "desired=" + desired);
+    }
+    // Different key case or a missing forwarded env also counts as an edit.
+    if (kind === "toml") assert.equal(apply('[mcp_servers.floq-browser]\ncommand = "/usr/local/bin/floq-browser-mcp"\nargs = []\n', true).state, "edited");
+  });
+
+  test(`reconcile (${kind}): a malformed config is refused, not rewritten`, () => {
+    assert.throws(() => apply(kind === "json" ? "{not json" : "[mcp_servers\nbroken", true), (error) => error.status === 400 && error.code === "mcp_config_malformed");
+  });
+}

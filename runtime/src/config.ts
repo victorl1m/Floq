@@ -127,6 +127,19 @@ export interface Config {
   defaultCols: number;
   defaultRows: number;
   logLevel: "debug" | "info" | "warn" | "error";
+  /** Agent browser (docs/design/agent-browser.md §A.7). */
+  browser: {
+    /** FLOQ_AGENT_BROWSER=on|off; unset = auto (on when the pinned Chromium is installed). */
+    mode: "on" | "off" | "auto";
+    /** FLOQ_BROWSER_IDLE_MS: stop the daemon after this long with no agent connection and no viewer (default 10 min, 0 = never). */
+    idleMs: number;
+    /** FLOQ_BROWSER_MEM_MB: prlimit address-space cap for the daemon (default 0 = off; see the design notes on Chromium's address-space use). */
+    memMb: number;
+    /** FLOQ_BROWSER_ALLOW_PRIVATE=1: let web content reach loopback and private ranges when there is no per-user netns. */
+    allowPrivate: boolean;
+    /** Where the image keeps the pinned Chromium and VERSION.json (PLAYWRIGHT_BROWSERS_PATH, default /opt/floq/browsers). */
+    browsersDir: string;
+  };
 }
 
 function readInt(raw: string | undefined, fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER): number {
@@ -256,5 +269,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     defaultCols: readInt(env.FLOQ_DEFAULT_COLS, DEFAULTS.defaultCols, 20, 500),
     defaultRows: readInt(env.FLOQ_DEFAULT_ROWS, DEFAULTS.defaultRows, 5, 200),
     logLevel: (env.FLOQ_LOG_LEVEL?.trim() as Config["logLevel"]) || "info",
+    browser: {
+      mode: ((v) => (["1", "true", "yes", "on"].includes(v) ? "on" : ["0", "false", "no", "off"].includes(v) ? "off" : "auto"))((env.FLOQ_AGENT_BROWSER ?? "").trim().toLowerCase()),
+      idleMs: readInt(env.FLOQ_BROWSER_IDLE_MS, 10 * 60_000, 0),
+      memMb: readInt(env.FLOQ_BROWSER_MEM_MB, 0, 0, 1024 * 1024),
+      allowPrivate: readBool(env.FLOQ_BROWSER_ALLOW_PRIVATE, false),
+      browsersDir: resolve(env.PLAYWRIGHT_BROWSERS_PATH?.trim() || "/opt/floq/browsers"),
+    },
   };
 }

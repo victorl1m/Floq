@@ -40,8 +40,11 @@ const GITHUB = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 const REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/;
 
 /** Floq's base managed settings plus the promoted plugins. With none, the base is returned unchanged. */
-export function buildClaudeManagedSettings(base: Record<string, unknown>, plugins: readonly PromotedPlugin[]): Record<string, unknown> {
-  if (!plugins.length) return base;
+export function buildClaudeManagedSettings(base: Record<string, unknown>, plugins: readonly PromotedPlugin[], options: { claudeAiConnectors?: boolean } = {}): Record<string, unknown> {
+  // Connectors are on by default (Claude Code loads them natively): only "off" writes anything, as a managed key the agent cannot undo.
+  const withConnectors = options.claudeAiConnectors === false ? { ...base, disableClaudeAiConnectors: true } : base;
+  if (!plugins.length) return withConnectors;
+  base = withConnectors;
   const enabled = { ...((base.enabledPlugins as Record<string, unknown> | undefined) ?? {}) };
   const markets = { ...((base.extraKnownMarketplaces as Record<string, unknown> | undefined) ?? {}) };
   for (const plugin of plugins) {
@@ -127,6 +130,8 @@ export interface PromoteOptions {
   sandboxDir?: string;
   git?: (args: string[]) => void;
   now?: () => number;
+  /** The user's claude.ai connectors toggle (default on). Off writes `disableClaudeAiConnectors: true` into the managed settings. */
+  claudeAiConnectors?: boolean;
 }
 
 /**
@@ -211,7 +216,7 @@ export function promoteUserPlugins(options: PromoteOptions): PromotedPlugin[] {
   if (knownChanged && existsSync(knownPath)) writeJsonKeepOwner(knownPath, known);
   if (settingsChanged && existsSync(settingsPath)) writeJsonKeepOwner(settingsPath, settings);
 
-  const managed = buildClaudeManagedSettings(base, promoted);
+  const managed = buildClaudeManagedSettings(base, promoted, { claudeAiConnectors: options.claudeAiConnectors });
   const target = join(managedDir, MANAGED_FILE);
   const temporary = target + ".tmp-" + process.pid;
   writeFileSync(temporary, JSON.stringify(managed, null, 2) + "\n", { mode: 0o644 });

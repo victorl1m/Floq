@@ -5,7 +5,7 @@ import type pg from "pg";
 import { parse as parseToml } from "smol-toml";
 import type { Config } from "./config.js";
 import { HttpError, badRequest, conflict, forbidden, notFound } from "./errors.js";
-import { DEFAULT_LAUNCHER, MCP_FILE_SCRIPT, addToJsonConfig, describeMcp, specSecretNames, vaultUsage, type VaultLauncher, addToTomlConfig, mcpHelperError, normalizeMcpInput, removeFromJsonConfig, removeFromTomlConfig, sha256, type McpProvider } from "./mcpConfig.js";
+import { DEFAULT_LAUNCHER, MCP_FILE_SCRIPT, addToJsonConfig, describeMcp, specSecretNames, vaultUsage, type VaultLauncher, addToTomlConfig, mcpHelperError, normalizeMcpInput, removeFromJsonConfig, removeFromTomlConfig, sha256, isReservedMcpName, reconcileReservedMcp, type McpProvider, type McpServerSpec, type ReservedMcpState } from "./mcpConfig.js";
 import { safeRelative, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 
@@ -702,6 +702,7 @@ export class SkillsService {
     if (!Array.isArray(rawProviders) || rawProviders.length < 1 || rawProviders.length > 2 || rawProviders.some((p) => p !== "claude" && p !== "codex") || new Set(rawProviders).size !== rawProviders.length) throw badRequest("providers must be claude, codex or both", "invalid_mcp");
     const providers = rawProviders as McpProvider[];
     const spec = normalizeMcpInput(input.server ?? input.config, input.name);
+    if (isReservedMcpName(spec.name)) throw forbidden(spec.name + " is managed by Floq. Turn the browser on in Settings > Agents > Browser instead.");
     const secretNames = specSecretNames(spec);
     const installed: McpReview = {
       name: spec.name, type: spec.type, summary: describeMcp(spec),
@@ -743,6 +744,29 @@ export class SkillsService {
   }
 
   /**
+   * Floq's own global MCP entry (the agent browser): present in both providers' configs when `desired`, absent otherwise. Idempotent;
+   * an entry the user edited by hand is reported ("edited") and left alone. Works through the same sandboxed read-merge-write helper.
+   */
+  async syncReservedMcp(userId: string, spec: McpServerSpec, desired: boolean): Promise<{ claude: ReservedMcpState; codex: ReservedMcpState }> {
+    try {
+      return await this.withShardActivity(userId, async (handle) => {
+        const out: Record<McpProvider, ReservedMcpState> = { claude: "unchanged", codex: "unchanged" };
+        for (const target of await this.mcpTargets(userId, handle, "global", undefined, ["claude", "codex"])) {
+          await this.editMcpFile(handle, target, (raw) => {
+            const r = reconcileReservedMcp(raw, target.json ? "json" : "toml", spec, desired, target.label);
+            out[target.provider] = r.state;
+            return r.next;
+          });
+        }
+        return out;
+      });
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(503, "shard_unavailable", "Your home could not be unlocked right now. Try again in a moment.");
+    }
+  }
+
+  /**
    * Removes exactly one named entry from one provider's config for this scope; everything else in the file is kept.
    * For global Codex it also removes that same name from this user's per-session Codex homes, where copies are made.
    * Servers bundled with the image (for example context7) are refused.
@@ -753,6 +777,7 @@ export class SkillsService {
     const provider = input.provider;
     if (typeof input.name !== "string" || !input.name || input.name.length > 120 || /[\u0000-\u001f\u007f]/.test(input.name)) throw badRequest("name is invalid", "invalid_mcp");
     const name = input.name;
+    if (isReservedMcpName(name)) throw forbidden(name + " is managed by Floq. Turn the browser off in Settings > Agents > Browser to remove it.");
     try {
       return await this.withShardActivity(userId, async (handle) => {
         if (scope === "global" && this.scanBundledMcp(provider).servers.some((server) => server.name.toLowerCase() === name.toLowerCase())) throw forbidden(name + " is bundled with Floq and cannot be removed");

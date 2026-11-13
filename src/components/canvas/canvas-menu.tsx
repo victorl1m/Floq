@@ -1,7 +1,7 @@
 import {
   IconArrowsExchange, IconArrowsMaximize, IconCopy, IconLayoutDistributeHorizontal, IconLink, IconLinkOff,
   IconMessages, IconPencil, IconPlayerPlay, IconPlus, IconSelectAll, IconSquareArrowUp, IconRefresh, IconWindowMaximize, IconTextResize,
-  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconNote, IconCrown, IconCrownOff,
+  IconTrash, IconZoomReset, IconChevronsDown, IconChevronsUp, IconActivity, IconRulerMeasure, IconNote, IconCrown, IconCrownOff, IconWorld,
 } from "@tabler/icons-react";
 import {
   ContextMenuCheckboxItem, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuSub,
@@ -32,6 +32,8 @@ export interface MenuApi {
   linkMode: boolean;
   newAgentHere: (flow: { x: number; y: number }) => void;
   addNoteHere: (flow: { x: number; y: number }) => void;
+  openBrowser: (flow: { x: number; y: number }) => void;
+  browserOpen: boolean;
   noteInfo: (nodeId: string) => { linked: number } | undefined;
   deleteNote: (nodeId: string) => void;
   unlinkNoteAgents: (nodeId: string) => void;
@@ -80,6 +82,7 @@ function PaneMenu({ flow, api }: { flow: { x: number; y: number }; api: MenuApi 
     <ContextMenuContent className="min-w-56">
       <ContextMenuItem onSelect={() => api.newAgentHere(flow)}><IconPlus />New agent here</ContextMenuItem>
       <ContextMenuItem onSelect={() => api.addNoteHere(flow)}><IconNote />Add note here<Keys keys="N" /></ContextMenuItem>
+      {!api.browserOpen && <ContextMenuItem onSelect={() => api.openBrowser(flow)}><IconWorld />Open browser</ContextMenuItem>}
       {hasNodes && (
         <>
           <ContextMenuSeparator />

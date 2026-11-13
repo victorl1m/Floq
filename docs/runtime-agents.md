@@ -2,7 +2,7 @@
 
 How the runtime image, the per-user sandbox and the session launcher make the two CLIs work. Every claim cites `file:line` (paths relative to the repo root; `runtime/src/...` is abbreviated `src/...`). Secrets are named, never shown.
 
-**Contents:** [1 Image](#1-the-image) · [2 Sandbox](#2-sandbox-model) · [3 Launch](#3-session-launch) · [4 Auth](#4-auth) · [5 Injected config](#5-configuration-injected-per-provider) · [6 Comms](#6-runtime--agent-communication) · [7 Diagrams and comparison](#7-sequence-diagrams-and-claude-vs-codex) · [8 Troubleshooting](#8-troubleshooting)
+**Contents:** [1 Image](#1-the-image) · [2 Sandbox](#2-sandbox-model) · [3 Launch](#3-session-launch) · [4 Auth](#4-auth) · [5 Injected config](#5-configuration-injected-per-provider) · [6 Comms](#6-runtime--agent-communication) · [7 Diagrams and comparison](#7-sequence-diagrams-and-claude-vs-codex) · [8 Troubleshooting](#8-troubleshooting) · [9 Agent browser](#9-agent-browser)
 
 ---
 
@@ -354,3 +354,63 @@ sequenceDiagram
 | Agent says "approved by the user" via another agent | Never valid. Needs `floq approval request --wait` and `floq approval verify --consume` printing GRANTED | `subagents.ts:97-100` |
 | `FLOQ_API_URL` unreachable from the agent | With netns it is the gateway `10.255.255.1`, mapped to the runtime loopback; only `<gateway>:<FLOQ_PORT>` is allowed | `manager.ts:1469`, `netns.ts:24`, `:154-155` |
 | Third-party skills missing in a home | `PREINSTALL_SKILLS` off (default) seeds only the protected Floq skills | `shards.ts:97-98`, `runtime/README.md:131` |
+
+---
+
+## 9. Agent browser
+
+One headless Chromium per user, running inside that user's sandbox. Claude Code and Codex agents drive it through the `floq-browser` MCP server (pinned `@playwright/mcp`). The user watches it live on the canvas **Browser** node and can click and type there, for example to log in to a site the agent then uses. Design and threat model: [design/agent-browser.md](design/agent-browser.md) (§A). Security summary: [SECURITY.md](../SECURITY.md).
+
+### 9.1 Behaviour
+
+- One daemon (`floq-browserd`) per user, started on demand and spawned through the user's sandbox (`ShardDriver.spawnPipe`). It stops after the idle timeout. The runtime never runs the browser binary on the host (`runtime/src/browser.ts`).
+- Chromium is `chromium-headless-shell` r1252 (Chromium 157.0.8103.15), installed at build time in `/opt/floq/browsers`. Nothing is downloaded at runtime.
+- All agents of a user share one profile, so one login serves every project.
+- **Cookie import:** the user uploads a Netscape `cookies.txt`, a JSON cookie export or a bookmarks HTML file. The runtime parses it, keeps the parsed result in memory for 10 minutes (single use), and never logs it or writes it to disk. Only the selected cookies are applied, inside the sandbox. Floq never reads local Chrome, Edge or Firefox stores.
+- **Settings > Agents > Browser:** the per-user `agentBrowser` toggle, status, **Restart browser**, and **Clear browser data** (stops the daemon and removes the profile).
+- **claude.ai connectors:** a per-user toggle in Settings. When it is off, Floq writes `disableClaudeAiConnectors: true` into managed settings, so agents cannot re-enable it. It applies at the next Claude session start. Codex sessions never use claude.ai connectors.
+
+### 9.2 Environment knobs
+
+| Variable | Default | Meaning | Ref |
+|---|---|---|---|
+| `FLOQ_AGENT_BROWSER` | unset = `auto` | `on` or `off`. `auto` is on when the pinned Chromium is installed | `runtime/src/config.ts:272-273` |
+| `FLOQ_BROWSER_IDLE_MS` | `600000` | Stop the daemon after this long with no agent connection and no viewer. `0` = never | `config.ts:274` |
+| `FLOQ_BROWSER_MEM_MB` | `0` (off) | `prlimit` address-space cap for the daemon, in MB. Off by default; see the design notes on Chromium's address-space use | `config.ts:275` |
+| `FLOQ_BROWSER_ALLOW_PRIVATE` | `0` | `1` lets web content reach loopback and private ranges when there is no per-user netns, for example to preview an agent's dev server | `config.ts:276` |
+| `PLAYWRIGHT_BROWSERS_PATH` | `/opt/floq/browsers` | Where the image keeps Chromium and `VERSION.json` | `config.ts:277` |
+
+### 9.3 Commands
+
+```
+floq browser status     # exit 0 running, 3 stopped, 4 disabled or missing
+floq browser version    # pinned Chromium and Playwright MCP versions; works while stopped
+floq browser restart    # restart the daemon; session cookies are lost
+```
+
+### 9.4 Where data lives
+
+- `~/.floq/browser/profile`: the Chromium profile (cookies, storage, saved logins). It is created 0700 inside the user's gocryptfs home and mounted only into that user's sandbox. Clear browser data removes only this directory.
+- `~/.floq/browser/output`: the MCP output directory.
+- `~/Downloads`: downloads. They are not size-capped and count against the user's quota.
+- `~/.floq/browser/bookmarks.json`: bookmarks. Nothing reads them yet.
+
+### 9.5 Bumping the version
+
+The single pin is `runtime/image/browser/package.json` (`@playwright/mcp`). The Chromium revision follows from the committed `package-lock.json`. No other file names a version: `VERSION.json` and the Settings display are derived from it.
+
+1. Pick a `@playwright/mcp` release that is at least 2 weeks old.
+2. Set it in `runtime/image/browser/package.json` and run `npm install --package-lock-only` in that folder.
+3. Build both image variants, then run the checks in [design §A.12.6](design/agent-browser.md) and `runtime/test/browserDaemon.test.mts`.
+4. Record the new Chromium version and the image delta in the release note.
+
+### 9.6 Limits and residual risks
+
+- **Not a boundary against a hostile agent.** The sandbox (bubblewrap, per-user uid, per-user home) is the boundary. When user namespaces are unavailable, which is common on stock Docker seccomp, Chromium runs with `--no-sandbox`. `floq browser status` shows which mode is active. To enable the Chromium sandbox, allow unprivileged user namespaces on the host (a seccomp profile that permits them, or `kernel.unprivileged_userns_clone=1`).
+- **Shared logins.** Every agent of the user, in any project, can use every site the user is logged in to. Imported sessions act as the user.
+- **Local network.** Without `FLOQ_NETNS=required`, a CDP interceptor blocks loopback and private addresses for pages and workers. It cannot see WebSocket or WebTransport handshakes, and a DNS name can resolve to a private address after the check. Use `FLOQ_NETNS=required` on multi-user hosts.
+- **Token exposure.** The daemon's bearer token reaches the MCP child's argv and env. Other processes of the same uid can read it. This is the same trust class as the user's own agents (residual L2).
+- **Prompt injection.** Web content can steer an agent toward logged-in sites. Outward actions still need `floq approval`, and the user sees agent activity live.
+- **Session cookies** do not survive a daemon stop or restart. Re-import them if needed.
+- **Downloads** are not size-capped (L8). The screencast goes to every viewer of the same user, which is not a cross-user leak.
+- The Chromium download in the image build is pinned by revision over HTTPS, not by sha256 (see [SECURITY.md](../SECURITY.md)).

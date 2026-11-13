@@ -29,7 +29,7 @@
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { runSetup, SETUP_BLOCK } from "./floq-setup.mjs";
-import { abstractSocketProblems, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
+import { abstractSocketProblems, formatBrowserStatus, type BrowserStatusReply, type BrowserVersion, DISPLAY_PATHS, displayEnvExports, displayFromEnv, parseAbstractListeners, xpraStartArgs, xpraStopArgs } from "./floq-args.mjs";
 import { buildRecruitPayload, checkProvider, cleanSecretInput, formatAgentListEntry, renderTop, formatAgentReply, formatDelivery, messageSource, formatMcpReview, formatMcpServer, formatModel, formatRecruitment, formatRoleLine, formatSubagentLine, formatSubagentRecruit, type SubagentEntry, type RoleEntry, formatSkill, parseArgs, readSkillDirectory, scopeFields, scopeLabel, splitDashDash, type AgentEntry, type AgentReply, type McpReview, type McpServer, type ModelEntry, type NamedArgs, type ScopeResult, type SkillSummary } from "./floq-args.mjs";
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -81,6 +81,7 @@ Commands:
   floq plugin list                       plugins the user enabled that agents may call, with their routes
   floq plugin call ID PATH [--json BODY]   call a plugin route as this session (output is sanitized); outward-facing writes ask the user for approval first
   floq display start | env | stop | status   virtual display (Xpra) for GUI apps (Tauri, Flutter Linux, any X11 app). Before launching a GUI app run: floq display start && eval "$(floq display env)" (DISPLAY is not set by default; "env" prints it only for your verified running display). The user sees and uses the apps in Floq's App window panel
+  floq browser status | version | restart   the shared headless browser (MCP server floq-browser; the user sees it on the canvas Browser node). status exits 0 running, 3 stopped, 4 disabled/missing; version prints the pinned Chromium and Playwright MCP versions and works while it is stopped
   floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
   (without --wait, Floq types "[FLOQ DECISION <id> ANSWERED] question -> answer" into your terminal when the user answers; full text via status)
@@ -232,7 +233,7 @@ const usage = (): never => {
 const allowedOptions: Record<string, string[]> = {
   top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status", "file"], "ask-parent": ["file"], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
-  session: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
+  session: [], browser: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill", "fallback"], subagent: ["task", "role", "provider", "model", "skill", "fallback", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   project: ["name", "git-url"], setup: ["dry-run", "agents"],
@@ -429,6 +430,26 @@ switch (command) {
     const r = await call<{ status: string; message: string; port: number; localUrl?: string }>("ports/open", { port: Number(rawPort), protocol: named.protocol, purpose: named.reason });
     console.log(r.status === "accepted" ? "accepted: " + r.message + (r.localUrl ? " URL: " + r.localUrl : "") : r.status + ": " + r.message);
     process.exitCode = r.status === "accepted" ? 0 : 1;
+    break;
+  }
+  case "browser": {
+    const [sub, ...extra] = positional;
+    if (extra.length || (sub !== "status" && sub !== "version" && sub !== "restart")) usage();
+    if (sub === "version") {
+      let version: BrowserVersion | null = null;
+      try { version = JSON.parse(readFileSync((process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/floq/browsers") + "/VERSION.json", "utf8")) as BrowserVersion; } catch { /* not installed */ }
+      console.log(version ? JSON.stringify(version) : "{}");
+      process.exitCode = version ? 0 : 4;
+      break;
+    }
+    if (sub === "restart") {
+      const r = await call<{ state: string }>("browser/restart");
+      console.log("browser: " + r.state);
+      break;
+    }
+    const r = formatBrowserStatus(await call<BrowserStatusReply>("browser/status"));
+    console.log(r.text);
+    process.exitCode = r.exitCode;
     break;
   }
   case "display": {
