@@ -56,6 +56,10 @@ Invalid values fall back to `auto`.
 - Network isolation is on by default (`FLOQ_NETNS=required`, below): every user's sandboxes run in their own network namespace, so an agent cannot reach other users' loopback ports or abstract sockets, the `db` host, or the runtime port except the API gateway; outbound internet still works through pasta. The runtime refuses to start if the host cannot provide this. `FLOQ_NETNS=off` restores the old shared network (single-tenant or fully trusted hosts only: agents can then reach the runtime port, the `db` host and other users' loopback). If you opt out, keep `POSTGRES_PASSWORD` strong and add egress rules on the VM.
 - Put it behind TLS (Dokploy/Traefik does this) and keep Postgres unpublished.
 
+## HTTPS dev servers (mkcert)
+
+`next dev --experimental-https` and similar tools work in agent sandboxes. The image ships `mkcert` (1.4.4, sha256-pinned in the Dockerfile) and `certutil` (`libnss3-tools`). Agent sessions get `CAROOT=$HOME/.local/share/mkcert` and `TRUST_STORES=nss`, so `mkcert -install` needs no root: it creates the CA in the user's encrypted home and adds it to `$HOME/.pki/nssdb`, an empty NSS database seeded into every home from the skeleton (`image/build-skel.sh`). The shared agent Chromium (`floq-browserd`) runs as the same user with the same `HOME` and reads that database, so `https://localhost:PORT` of a dev server in that sandbox loads without a certificate warning (reload the page; restart the browser if a warning persists after installing the CA while it was running). The CA is per user and only trusted by that user's own browser; nothing is installed system-wide (see [SECURITY.md](../SECURITY.md)).
+
 ## Chromium's own sandbox (`FLOQ_BROWSER_SANDBOX`)
 
 The agent browser runs Chromium inside the user's bubblewrap sandbox. Chromium adds its own namespace sandbox on top (user, PID and network namespaces plus seccomp-bpf), which needs `unshare(CLONE_NEWUSER)` and a write to `/proc/self/uid_map`.

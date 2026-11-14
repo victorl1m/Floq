@@ -169,6 +169,14 @@ export function withUserBin(home: string, path: string | undefined): string {
   return [bin, ...rest].join(":");
 }
 
+/**
+ * mkcert (HTTPS dev servers, e.g. `next dev --experimental-https`): the CA lives in the user's own home and `mkcert -install` only
+ * touches the user's NSS database (~/.pki/nssdb, trusted by the shared agent Chromium), never the read-only system store.
+ */
+export function mkcertEnv(home: string): Record<string, string> {
+  return { CAROOT: home.replace(/\/+$/, "") + "/.local/share/mkcert", TRUST_STORES: "nss" };
+}
+
 export function buildSessionEnv(
   config: Config,
   provider: ProviderId,
