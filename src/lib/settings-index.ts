@@ -44,6 +44,7 @@ const ROWS: { section: string; id: string; label: string; description: string; k
     { section: "appearance", id: "appearance-theme", label: "Theme", description: "Follow the system or force light or dark.", keywords: "dark light mode color system" },
     { section: "appearance", id: "appearance-cursors", label: "Custom cursors", description: "Floq's own pointer set inside this window.", keywords: "mouse pointer system cursors" },
     { section: "appearance", id: "appearance-robot-avatars", label: "Robot avatars", description: "Give each agent its own generated Floq avatar.", keywords: "avatar agent picture icon provider logo badge" },
+    { section: "appearance", id: "appearance-canvas-scroll", label: "Canvas scroll", description: "Touchpad scroll pans, pinch zooms; choose Auto, Trackpad or Mouse.", keywords: "touchpad trackpad mouse wheel pinch zoom pan gesture notebook laptop canvas memory graph" },
     { section: "appearance", id: "appearance-font-size", label: "Font size", description: "Terminal font size.", keywords: "text zoom terminal" },
     { section: "appearance", id: "appearance-cursor-style", label: "Cursor style", description: "Terminal cursor shape.", keywords: "block bar underline caret terminal" },
     { section: "appearance", id: "appearance-cursor-blink", label: "Cursor blink", description: "Terminal cursor blinking.", keywords: "caret terminal" },
