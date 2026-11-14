@@ -30,9 +30,12 @@
 #   the other reuses it.
 #
 # Secrets: none required. Only the built-in GITHUB_TOKEN is used.
-#   Windows code signing is not configured (installers are unsigned, so
-#   SmartScreen will warn). Add it later (e.g. Azure Trusted Signing or a
-#   certificate via bundle.windows.signCommand) without changing this layout.
+#   Optional code signing through the free SignPath Foundation OSS program, see docs/code-signing.md.
+#   Signing runs ONLY on a v* tag push and ONLY when the secret SIGNPATH_API_TOKEN and the repository
+#   variables SIGNPATH_ORGANIZATION_ID and SIGNPATH_PROJECT_SLUG exist (variables SIGNPATH_SIGNING_POLICY_SLUG,
+#   default release-signing, and SIGNPATH_ARTIFACT_CONFIGURATION_SLUG are optional). Without them the build
+#   is the plain unsigned one, exactly as before (SmartScreen will warn). When signing is on, the app exe and
+#   then the NSIS installer are each sent to SignPath; the release job hashes the files that were published.
 #
 # Repo settings: Actions enabled. Workflow permissions can stay "Read repository
 #   contents" because the release job requests `contents: write` itself.
@@ -68,11 +71,21 @@ jobs:
   build:
     name: Build (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Signed tag builds wait for a manual SignPath approval (release-signing policy), hence the long limit.
+    timeout-minutes: 180
     permissions:
       contents: read
       id-token: write
       attestations: write
+      # Needed by the SignPath action to read job details when the repo is private and the SignPath GitHub App is absent.
+      actions: read
+    env:
+      # Secrets cannot be tested in `if:` directly, so the decision is made once here.
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' && vars.SIGNPATH_PROJECT_SLUG != '' }}
+      SP_ORG: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SP_PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      SP_POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+      SP_ARTIFACT_CONFIG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || '' }}
     outputs:
       artifact: ${{ steps.meta.outputs.artifact }}
     steps:
@@ -100,11 +113,102 @@ jobs:
 
       - run: npm ci
 
+      # Unsigned path (default): identical to the previous behaviour.
       - name: Build with Tauri
+        if: env.SIGN != 'true'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         with:
           projectPath: .
           args: --bundles nsis
+
+      # Signed path (v* tags with SignPath configured): build the app exe, sign it, bundle the NSIS installer
+      # around the signed exe, then sign the installer. Each signing request needs a manual approval in SignPath.
+      - name: Build app binary (signed path)
+        if: env.SIGN == 'true'
+        shell: bash
+        run: npx tauri build --no-bundle
+
+      - name: Upload unsigned app exe
+        if: env.SIGN == 'true'
+        id: unsigned-exe
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-app-exe
+          path: src-tauri/target/release/floq.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign app exe with SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SP_ORG }}
+          project-slug: ${{ env.SP_PROJECT }}
+          signing-policy-slug: ${{ env.SP_POLICY }}
+          artifact-configuration-slug: ${{ env.SP_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed/app
+          skip-decompress: true
+
+      - name: Replace app exe with the signed one and bundle the installer
+        if: env.SIGN == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l signed/app
+          cp -f signed/app/floq.exe src-tauri/target/release/floq.exe
+          npx tauri bundle --bundles nsis
+
+      - name: Upload unsigned installer
+        if: env.SIGN == 'true'
+        id: unsigned-installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Single installer expected; fail loudly otherwise (archive:false needs exactly one file).
+          [ "$(ls src-tauri/target/release/bundle/nsis/*.exe | wc -l)" = 1 ]
+          echo "path=$(ls src-tauri/target/release/bundle/nsis/*.exe)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned installer artifact
+        if: env.SIGN == 'true'
+        id: unsigned-installer-artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-installer
+          path: ${{ steps.unsigned-installer.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign installer with SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SP_ORG }}
+          project-slug: ${{ env.SP_PROJECT }}
+          signing-policy-slug: ${{ env.SP_POLICY }}
+          artifact-configuration-slug: ${{ env.SP_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.unsigned-installer-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed/installer
+          skip-decompress: true
+
+      - name: Replace installer with the signed one
+        if: env.SIGN == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l signed/installer
+          for f in src-tauri/target/release/bundle/nsis/*.exe; do
+            cp -f "signed/installer/$(basename "$f")" "$f"
+          done
+          powershell -NoProfile -Command "Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Get-AuthenticodeSignature | Format-List Path,Status,SignerCertificate"
 
       # GitHub offers attestations only for public repositories (user-owned private repos get a 422 and fail the build), so
       # this step runs only when the repo is public. SHA256SUMS on the release still covers integrity either way.
