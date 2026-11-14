@@ -16,6 +16,7 @@ import { titleWithPending } from "./lib/approval-format";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SubagentToaster } from "./components/canvas/subagent-toaster";
+import { NotificationToaster } from "./components/notifications/notification-toaster";
 import { FallbackToaster } from "./components/canvas/fallback-toaster";
 import { BrowserEgressRelay } from "./components/canvas/browser-egress-relay";
 import { AskDialogHost } from "./components/ui/ask-dialog";
@@ -97,6 +98,7 @@ function App() {
       {user && ready && <ApprovalHost suppressed={islandReady} />}
       {user && ready && <SubagentToaster />}
       {user && ready && <FallbackToaster />}
+      {user && ready && <NotificationToaster />}
       {user && ready && <BrowserEgressRelay />}
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}

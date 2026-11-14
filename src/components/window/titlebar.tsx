@@ -13,6 +13,7 @@ import { SidebarTrigger, useSidebar } from "../ui/sidebar";
 import IconBrandFloq from "@/components/ui/brand/IconBrandFloq";
 import { Button } from "@/components/ui/button"
 import { useRuntime } from "@/lib/runtime/store";
+import { NotificationBell } from "@/components/notifications/notification-center";
 import { toggleRightSidebar, useRightSidebar } from "@/lib/right-sidebar";
 
 
@@ -135,6 +136,8 @@ export default function Titlebar() {
                     <IconLayoutSidebarRight />
                 </Button>
             )}
+
+            {!auth && <NotificationBell />}
 
             <div className="flex h-full items-stretch">
                 <TitlebarButton

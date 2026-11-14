@@ -7,6 +7,7 @@ import IslandBoundary from "@/components/island/island-boundary";
 import { applyCursorPreference } from "@/lib/cursor-preference";
 
 
+import { NotificationsProvider } from "@/components/notifications/notifications-provider";
 import Titlebar from "@/components/window/titlebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import Footer from "@/components/window/footer";
@@ -35,6 +36,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(islan
   <React.StrictMode>
     <RuntimeProvider>
     <PluginsProvider>
+    <NotificationsProvider>
     <PersistedSidebarProvider>
 
       <Titlebar />
@@ -50,6 +52,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(islan
       </ThemeProvider>
     </PersistedSidebarProvider>
     <Footer />
+    </NotificationsProvider>
     </PluginsProvider>
     </RuntimeProvider>
   </React.StrictMode>
