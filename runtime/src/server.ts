@@ -53,6 +53,7 @@ import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from 
 import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
 import { Decisions } from "./decisions.js";
+import { Notifications } from "./notifications.js";
 import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
 import { visibleDebugLinks } from "./debugLinks.js";
@@ -142,6 +143,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   const memoryOff = () => new HttpError(503, "memory_disabled", "Memory is disabled on this Floq server (set FLOQ_REDIS_URL)");
   const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text) });
   const decisionsReady = decisions.init();
+  const notifications = new Notifications({ pool });
   plugins?.setAttention({ approvals, decisions });
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.
@@ -768,7 +770,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (!name || name.length > 100) throw badRequest("Name must be 1-100 characters");
       if (typeof password !== "string" || password.length < 12 || password.length > 128) throw badRequest("Password must be 12-128 characters", "invalid_password");
       const context = await auth.$context;
-      const registered = await registerWithInvitation(pool, { token, email, name, password }, (value) => context.password.hash(value));
+      const registered = await registerWithInvitation(pool, { token, email, name, password }, (value) => context.password.hash(value), config.bootstrapAdminEmail);
       return send(res, 201, { ok: true, organizationId: registered.organizationId });
     }
 
@@ -1486,6 +1488,19 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, await decisions.resolve(userId, decisionAnswer[1], body.answers));
     }
 
+    // User-only and org-scoped (x-floq-organization): notifications of projects outside the active organization are hidden.
+    if (url.pathname === "/v1/notifications" && method === "GET") {
+      const limit = Number(url.searchParams.get("limit")) || undefined;
+      const projectId = url.searchParams.get("projectId") || undefined;
+      const before = url.searchParams.get("before") || undefined;
+      if (before && Number.isNaN(Date.parse(before))) throw badRequest("before must be an ISO date");
+      return send(res, 200, { notifications: await notifications.list(userId, { unreadOnly: url.searchParams.get("unreadOnly") === "true", projectId, before, limit, organizationId: await activeOrg() }) });
+    }
+    if ((url.pathname === "/v1/notifications/read" || url.pathname === "/v1/notifications/clear") && method === "POST") {
+      const body = await readJson<{ ids?: unknown }>(req);
+      return send(res, 200, url.pathname.endsWith("/read") ? await notifications.markRead(userId, body.ids ?? "all") : await notifications.clear(userId, body.ids ?? "all"));
+    }
+
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
     if (portsMatch && method === "GET") {
       const live = manager.getLive(portsMatch[1], userId);
@@ -1684,9 +1699,10 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const offPorts = portRequests.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDecisions = decisions.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offNotifications = notifications.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offPlugins = plugins ? plugins.events.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) : () => undefined;
-          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offDisplays(); offPlugins(); };
+          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offNotifications(); offDisplays(); offPlugins(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });
