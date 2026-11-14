@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { PERMISSION_HOOK_PATH, claudeBlockSettings, nativeSubagentBlockArgs } from '../src/nativeSubagentBlock.ts';
+import { ARTIFACT_HOOK_PATH, PERMISSION_HOOK_PATH, claudeBlockSettings, nativeSubagentBlockArgs } from '../src/nativeSubagentBlock.ts';
 
 const hook = new URL('../image/floq-permission-request.mts', import.meta.url).pathname;
 const payload = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf "$DIR"/build', description: 'Clean' } };
@@ -57,7 +57,7 @@ test('offline, malformed, other event or question tools fall through silently, n
 test('settings install the hook for claude sessions only when the file exists and the version supports it', () => {
   const on = JSON.parse(nativeSubagentBlockArgs('claude', { hookExists: () => true, version: '2.1.319' }).at(-1)!);
   assert.equal(on.hooks.PermissionRequest[0].hooks[0].command, `node ${PERMISSION_HOOK_PATH}`);
-  assert.deepEqual(on, claudeBlockSettings(undefined, '/usr/local/bin/floq-native-question.mjs', PERMISSION_HOOK_PATH));
+  assert.deepEqual(on, claudeBlockSettings(undefined, '/usr/local/bin/floq-native-question.mjs', PERMISSION_HOOK_PATH, ARTIFACT_HOOK_PATH));
   const old = JSON.parse(nativeSubagentBlockArgs('claude', { hookExists: () => true, version: '2.0.10' }).at(-1)!);
   assert.equal(old.hooks.PermissionRequest, undefined);
 });
