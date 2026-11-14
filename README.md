@@ -32,7 +32,7 @@ Floq is a Tauri desktop app that connects to a **runtime** you host. The runtime
 
 ## Install
 
-- **Prebuilt installers:** The Windows installer (`.exe`) is attached to GitHub Releases. It is unsigned. Installing it over an older version (including an old `.msi` install) replaces it; a running Floq is closed first. macOS binaries are not published yet.
+- **Prebuilt installers:** The Windows installer (`.exe`) is attached to GitHub Releases. It is unsigned until SignPath signing is enabled (see [Code signing policy](#code-signing-policy)). Installing it over an older version (including an old `.msi` install) replaces it; a running Floq is closed first. macOS binaries are not published yet.
 - **From source:** see below.
 
 ### Build from source
@@ -142,7 +142,17 @@ docs/            orchestration, secrets, plugins, release notes and UI notes (se
 - [`docs/DESIGN.md`](docs/DESIGN.md): interface design rules
 - [`docs/UX-CONTRACT.md`](docs/UX-CONTRACT.md): canonical UI behavior map
 - [`docs/PRODUCT.md`](docs/PRODUCT.md): product context
+- [`docs/code-signing.md`](docs/code-signing.md): Windows code signing with SignPath
 - [`docs/releases/`](docs/releases): release notes
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Windows release installers (and the app executable inside) are signed only when built from a version tag in this repository's GitHub Actions workflow, and each release is approved manually. Builds from other branches are unsigned. See [`docs/code-signing.md`](docs/code-signing.md).
+
+- Authors, reviewers and approvers: [@victorl1m](https://github.com/victorl1m) (sole maintainer).
+- Privacy: Floq sends no data to any system except the runtime you configure and services you explicitly use in your agents. See [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
