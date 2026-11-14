@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { BrowserService, PROFILE_DIR } from "../dist/browser.js";
+import { BrowserService, PROFILE_DIR, agentToken } from "../dist/browser.js";
 
 const TOKEN = "t".repeat(64);
 const TID = "C711BB681855D07964DB653782FFBE88";
@@ -99,8 +99,14 @@ test("ensure spawns the daemon in the sandbox with a stdin pipe, shares one star
   assert.equal(spec.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, "1");
   assert.equal(spec.env.FLOQ_BROWSER_MEM_MB, undefined, "address-space cap is opt-in");
   assert.deepEqual(a, b);
-  assert.equal(a.wsEndpoint, "ws://127.0.0.1:40111/devtools/browser");
-  assert.equal(a.token, TOKEN);
+  assert.equal(a.wsEndpoint, "ws://127.0.0.1:40111/devtools/browser?agent=floq-runtime-helper");
+  assert.equal(a.token, agentToken(TOKEN, "floq-runtime-helper"));
+  assert.notEqual(a.token, TOKEN, "the daemon-wide token never leaves the runtime");
+  const one = await service.ensure("alice", { agentId: "11111111-1111-1111-1111-111111111111" });
+  const two = await service.ensure("alice", { agentId: "22222222-2222-2222-2222-222222222222" });
+  assert.notEqual(one.token, two.token, "each agent gets its own token");
+  assert.equal(one.token, agentToken(TOKEN, "11111111-1111-1111-1111-111111111111"));
+  assert.match(one.wsEndpoint, /\?agent=11111111-1111-1111-1111-111111111111$/);
   assert.deepEqual(state.activity, [["alice", true]]);
   const status = await service.status("alice");
   assert.equal(status.state, "running");
@@ -345,7 +351,7 @@ test("a crash moves to stopped for viewers; the next ensure starts a fresh daemo
   assert.equal((await service.status("alice")).tabs, 0);
 
   const again = await service.ensure("alice");
-  assert.equal(again.wsEndpoint, "ws://127.0.0.1:40112/devtools/browser");
+  assert.equal(again.wsEndpoint, "ws://127.0.0.1:40112/devtools/browser?agent=floq-runtime-helper");
   assert.equal(state.spawns.length, 2);
   assert.equal(s.msgs("state").at(-1).state, "running", "the same viewer sees it come back");
   state.children[0].emit("exit", 0, null); // a stale event from the first child

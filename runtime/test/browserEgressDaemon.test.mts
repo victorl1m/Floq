@@ -540,7 +540,7 @@ test("daemon mux: a large upload never exceeds the desktop's window; the rest wa
   assert.equal(runtime.get().at(-1)!.type, T.FIN);
 });
 
-test("daemon listener: connects beyond the per-second accept budget are dropped before any /proc read, and refusals are logged at most once a second (L1)", async (t) => {
+test("daemon listener: a flood of refused connects is logged at most once a second (L1)", async (t) => {
   const pair = await fd3Pair();
   const mux = new EgressMux(socketSink(pair.daemonEnd), { log: () => undefined });
   attachMuxToStream(mux, pair.daemonEnd);
@@ -551,9 +551,31 @@ test("daemon listener: connects beyond the per-second accept budget are dropped 
   t.after(() => { server.close(); pair.close(); });
   const socks = await Promise.all(Array.from({ length: 40 }, async () => { const s = tcpConnect(port, "127.0.0.1"); s.on("error", () => undefined); await new Promise<void>((r) => s.once("connect", () => r())); return s; }));
   await wait(200);
-  assert.ok(checks <= 5, "peer checks (= /proc reads) bounded by the budget: " + checks);
+  assert.ok(checks >= 1);
   assert.ok(logs.filter((e) => e === "egress.peer_refused").length <= 2, "refusal log is rate limited: " + logs.length);
   socks.forEach((s) => s.destroy());
+});
+
+test("daemon listener: a flood of unauthorized connects does not starve the legitimate peer (budget charged only to refusals)", async (t) => {
+  const pair = await fd3Pair();
+  const mux = new EgressMux(socketSink(pair.daemonEnd), { log: () => undefined });
+  attachMuxToStream(mux, pair.daemonEnd);
+  let legit = 0;
+  const peers = { check: (p: { port: number }) => (p.port === legit ? { ok: true as const } : { ok: false as const, reason: "uid" as const }), treeSize: 0, unreadable: 0 } as unknown as PeerChecker;
+  const { server, port } = await startSocksListener({ mux, peers, log: () => undefined, acceptBudgetPerSec: 5 });
+  t.after(() => { server.close(); pair.close(); });
+  const flood = await Promise.all(Array.from({ length: 60 }, async () => { const s = tcpConnect(port, "127.0.0.1"); s.on("error", () => undefined); await new Promise<void>((r) => s.once("connect", () => r())); return s; }));
+  // Pin the legitimate client's source port so the stub checker can recognise it at accept time.
+  legit = 41000 + Math.floor(Math.random() * 1000);
+  const s2 = tcpConnect({ port, host: "127.0.0.1", localPort: legit, localAddress: "127.0.0.1" } as never);
+  s2.on("error", () => undefined);
+  let greeted = Buffer.alloc(0);
+  s2.on("data", (c) => { greeted = Buffer.concat([greeted, c]); });
+  await new Promise<void>((r) => s2.once("connect", () => r()));
+  s2.write(Buffer.from([5, 1, 0]));
+  await waitUntil(() => greeted.length >= 2, 3000, "legit peer got the SOCKS greeting after the flood");
+  assert.deepEqual([...greeted.subarray(0, 2)], [5, 0]);
+  flood.forEach((s) => s.destroy()); s2.destroy();
 });
 
 test("CDP mux: in egress mode Target.createBrowserContext loses proxyServer / proxyBypassList; without egress it is untouched (M1)", () => {

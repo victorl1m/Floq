@@ -393,17 +393,18 @@ export function startSocksListener(opts: ListenerOptions): Promise<{ server: Ser
   let budgetStart = 0, budgetUsed = 0, refusedLogged = 0, suppressed = 0;
   const server = createServer({ allowHalfOpen: true, pauseOnConnect: true }, (socket) => {
     const nowMs = Date.now();
-    if (nowMs - budgetStart >= 1000) { budgetStart = nowMs; budgetUsed = 0; }
-    if (++budgetUsed > (opts.acceptBudgetPerSec ?? ACCEPT_BUDGET_PER_SEC)) { socket.on("error", () => undefined); socket.destroy(); suppressed++; return; }
     const peer = { address: socket.remoteAddress ?? "", port: socket.remotePort ?? 0 };
     const listen = { address: socket.localAddress ?? "127.0.0.1", port: socket.localPort ?? 0 };
     socket.on("error", () => undefined);
+    // The peer check runs FIRST: only refused connections are charged to the budget, so a co-tenant's flood can never starve the owner.
     let verdict;
     try { verdict = opts.peers.check(peer, listen); } catch (e) { verdict = { ok: false as const, reason: "no_row" as const }; opts.log("egress.peer_check_failed", { message: (e as Error).message }); }
     if (!verdict.ok) {
-      // One log line per second at most (with the count it stands for), so a stranger cannot fill the log either.
+      if (nowMs - budgetStart >= 1000) { budgetStart = nowMs; budgetUsed = 0; }
       suppressed++;
-      if (nowMs - refusedLogged >= 1000) { opts.log("egress.peer_refused", { reason: verdict.reason, tree: opts.peers.treeSize, unreadable: opts.peers.unreadable, count: suppressed }); refusedLogged = nowMs; suppressed = 0; }
+      budgetUsed++;
+      // One log line per second at most (with the count it stands for), so a stranger cannot fill the log either.
+      if (nowMs - refusedLogged >= 1000) { opts.log("egress.peer_refused", { reason: verdict.reason, tree: opts.peers.treeSize, unreadable: opts.peers.unreadable, count: suppressed, overBudget: budgetUsed > (opts.acceptBudgetPerSec ?? ACCEPT_BUDGET_PER_SEC) }); refusedLogged = nowMs; suppressed = 0; }
       socket.destroy(); return;
     }
     let buf = Buffer.alloc(0);

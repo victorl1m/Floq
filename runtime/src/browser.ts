@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HttpError, unavailable } from "./errors.js";
 import { log } from "./logger.js";
+import { createHmac } from "node:crypto";
 import type { EgressHub } from "./browserEgress.js";
 import type { BrowserEgressMode } from "./settings.js";
 import type { ShardDriver, ShardHandle } from "./shard.js";
@@ -59,6 +60,9 @@ export interface BrowserShards {
   wake(userId: string): Promise<ShardHandle>;
   driver: Pick<ShardDriver, "spawnPipe" | "hostPath">;
 }
+/** Must match agentToken() in image/floq-browserd-core.mts (the daemon recomputes it from `?agent=`). */
+export const agentToken = (master: string, agent: string): string => createHmac("sha256", master).update("floq-browser-agent:" + agent).digest("hex");
+
 /** Source of the user's agent <-> Browser node links (the browser_links table). */
 export interface BrowserLinkPort { forUser(userId: string): Promise<Array<{ sessionId: string; nodeId: string }>>; removeNode(userId: string, nodeId: string): Promise<string[]> }
 export interface BrowserSettingsPort { agentBrowser(userId: string): Promise<boolean>; /** The user's egress choice; absent in older callers = "server". */ agentBrowserEgress?(userId: string): Promise<BrowserEgressMode> }
@@ -229,8 +233,9 @@ export class BrowserService {
     if (entry.state !== "running") throw unavailable("The browser stopped while starting. Try again.", "browser_start_failed");
     this.armIdle(entry);
     // `?agent=` names the agent session so the daemon can scope it to the Browser node the user linked it to (see setAgentScope).
-    const agent = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? `?agent=${opts.agentId}` : "";
-    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser${agent}`, token: entry.token, chromium: this.installed?.chromium, ...(entry.egressMode === "desktop" && !this.egress?.isUp(userId) ? { egress: "paused" as const } : {}) };
+    // The daemon-wide token never leaves the runtime: each caller gets a token derived for its own agent id, which the daemon checks against `?agent=`.
+    const agentId = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? opts.agentId : "floq-runtime-helper";
+    return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser?agent=${agentId}`, token: agentToken(entry.token, agentId), chromium: this.installed?.chromium, ...(entry.egressMode === "desktop" && !this.egress?.isUp(userId) ? { egress: "paused" as const } : {}) };
   }
 
   /** One Entry per user for the life of the runtime: viewers hold it across daemon restarts. */

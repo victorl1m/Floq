@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  AGENT_ID, CdpMux, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
+  AGENT_ID, CdpMux, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
 import { EgressMux, PeerChecker, attachMuxToStream, socketSink, startSocksListener } from "./floq-egress.mjs";
@@ -515,7 +515,7 @@ async function main() {
     acceptUpgrade(req, socket);
     const id = nextClient++;
     let closed = false;
-    const agentParam = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("agent");
+    const agentParam = claimedAgent(req.url) ?? null; // already authenticated by checkUpgrade: the token belongs to this agent
     const client: MuxClient = {
       id,
       ...(agentParam && AGENT_ID.test(agentParam) ? { agent: agentParam } : {}),

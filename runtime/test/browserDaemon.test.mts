@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
-import { FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
+import { agentToken, FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
 import { sandboxFailureReason, shortcutCommand } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
@@ -219,6 +219,22 @@ test("daemon: authenticated endpoint refuses missing/wrong token, any Origin, wr
   assert.equal(res.status, 404);
 });
 
+test("daemon: the claimed ?agent= is authenticated by a per-agent token, so one agent cannot assume another's scope", async (t) => {
+  const d = await startDaemon(t);
+  const A = "11111111-1111-1111-1111-111111111111", B = "22222222-2222-2222-2222-222222222222";
+  const at = (agent: string) => agentToken(d.ready.token, agent);
+  assert.notEqual(at(A), at(B));
+  assert.notEqual(at(A), d.ready.token);
+  const to = (agent: string, tok: string) => refused(d, { Authorization: "Bearer " + tok }, "/devtools/browser?agent=" + agent);
+  assert.equal(await to(A, at(B)), 401, "B's token cannot claim A's id");
+  assert.equal(await to(A, d.ready.token), 401, "the daemon-wide token cannot claim any agent id");
+  assert.equal(await to("bad id!", at(A)), 401);
+  assert.equal(await refused(d, { Authorization: "Bearer " + at(A) }), 401, "an agent token does not pass without its ?agent=");
+  const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${A}`, { headers: { Authorization: "Bearer " + at(A) } });
+  await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+  ws.close();
+});
+
 test("daemon: listens on loopback only, endpoint.json is 0600, profile is 0700", async (t) => {
   const d = await startDaemon(t);
   const hex = d.ready.port.toString(16).toUpperCase().padStart(4, "0");
@@ -364,7 +380,7 @@ test("daemon: a linked agent sees exactly its node's page; unlinked agents never
   d.send({ type: "agent.scope", agent: AGENT, nodeId: "n2" });
 
   const connectAs = async (agent?: string) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser${agent ? "?agent=" + agent : ""}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+    const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser${agent ? "?agent=" + agent : ""}`, { headers: { Authorization: "Bearer " + (agent ? agentToken(d.ready.token, agent) : d.ready.token) } });
     await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
     let id = 0; const pending = new Map<number, (m: any) => void>(); const events: any[] = [];
     ws.on("message", (raw) => { const m = JSON.parse(String(raw)); if (m.id !== undefined) pending.get(m.id)?.(m); else events.push(m); });
@@ -593,7 +609,7 @@ test("real Chromium: Playwright connects over CDP, two agents work at once, the 
   const frame = await d.waitFor((m) => m.type === "frame" && m.targetId === node.targetId, 15000);
   assert.equal(Buffer.from(frame.jpeg, "base64").subarray(0, 2).toString("hex"), "ffd8");
   d.send({ type: "frame.ack", n: frame.n });
-  const watcher = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${NODE_AGENT}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  const watcher = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${NODE_AGENT}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, NODE_AGENT) } });
   for (let i = 0; i < 60 && watcher.contexts()[0].pages().length < 1; i++) await new Promise((r) => setTimeout(r, 50));
   const seen = watcher.contexts()[0].pages();
   assert.equal(seen.length, 1, "the linked agent drives exactly the node's page, not the agents' own tabs");
@@ -662,7 +678,7 @@ test("real Chromium: a cross-origin iframe (OOPIF) loads, is in the screencast a
   d.send({ type: "agent.scope", agent: AGENT, nodeId: "n1" });
   d.send({ type: "viewport", targetId: node.targetId, width: 640, height: 400, dpr: 1 });
   d.send({ type: "screencast.start", targetId: node.targetId, maxW: 800, maxH: 600, quality: 60 });
-  const w = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  const w = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, AGENT) } });
   for (let i = 0; i < 60 && w.contexts()[0].pages().length < 1; i++) await new Promise((r) => setTimeout(r, 50));
   const view = w.contexts()[0].pages()[0];
   // The daemon must resume the paused child target: the frame navigates to its real URL (it stayed an empty frame before).
@@ -794,7 +810,7 @@ test("real Chromium: target=_blank and window.open load in the node page instead
   const opened = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
   const tid = opened.targetId;
   d.send({ type: "agent.scope", agent: AGENT_ID, nodeId: "n1" });
-  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, AGENT_ID) } });
   t.after(() => b.close().catch(() => {}));
   let page: any;
   for (let i = 0; i < 60 && !page; i++) { page = b.contexts()[0]?.pages().find((p: any) => p.url().startsWith(base)); await new Promise((r) => setTimeout(r, 100)); }
@@ -835,7 +851,7 @@ test("real Chromium: dialogs, downloads, copy shortcuts and a crashed page work 
   const opened = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
   const tid = opened.targetId;
   d.send({ type: "agent.scope", agent: AGENT_ID, nodeId: "n1" });
-  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT_ID}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, AGENT_ID) } });
   t.after(() => b.close().catch(() => {}));
   let page: any;
   for (let i = 0; i < 60 && !page; i++) { page = b.contexts()[0]?.pages().find((p: any) => p.url().startsWith(base)); await new Promise((r) => setTimeout(r, 100)); }

@@ -4,7 +4,7 @@
 //   - CdpMux: shares ONE CDP pipe between several agents' clients (session ids stay unique per client; commands, responses
 //     and events are routed by id/sessionId; a client can never use another client's or the daemon's session)
 //   - private-network host check used by the optional Fetch interceptor (T6)
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -225,11 +225,27 @@ export function tokenMatches(given: string | undefined, expected: string): boole
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/** The upgrade gate (T1, T2): path, Host, Origin and bearer token. Returns an HTTP status to refuse with, or 0 to accept. */
+/** Per-agent endpoint token: HMAC of the agent id under the daemon-wide secret, which never leaves the runtime. */
+export function agentToken(master: string, agent: string): string {
+  return createHmac("sha256", master).update("floq-browser-agent:" + agent).digest("hex");
+}
+
+/** The agent a connection claims through `?agent=`: undefined = none, null = malformed. */
+export function claimedAgent(url: string | undefined): string | null | undefined {
+  const v = new URL(url ?? "/", "http://127.0.0.1").searchParams.get("agent");
+  if (v === null) return undefined;
+  return AGENT_ID.test(v) ? v : null;
+}
+
+/** The upgrade gate (T1, T2): path, Host, Origin and bearer token. Returns an HTTP status to refuse with, or 0 to accept.
+ *  A connection naming an agent must present THAT agent's token (the claimed id is authenticated, never trusted); with no `?agent=` the daemon-wide token is required. */
 export function checkUpgrade(req: IncomingMessage, port: number, token: string, path = "/devtools/browser"): number {
   if (req.headers.origin !== undefined) return 403;
   if (req.headers.host !== "127.0.0.1:" + port) return 403;
-  if (!tokenMatches(req.headers.authorization, token)) return 401;
+  let claimed: string | null | undefined;
+  try { claimed = claimedAgent(req.url); } catch { return 400; }
+  if (claimed === null) return 401;
+  if (!tokenMatches(req.headers.authorization, claimed === undefined ? token : agentToken(token, claimed))) return 401;
   if ((req.url ?? "").split("?")[0] !== path) return 404;
   if (String(req.headers.upgrade ?? "").toLowerCase() !== "websocket" || req.headers["sec-websocket-version"] !== "13") return 400;
   const key = req.headers["sec-websocket-key"];
