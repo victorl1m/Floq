@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
 import { agentToken, FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
-import { sandboxFailureReason, shortcutCommand } from "../dist/image/floq-browserd.mjs";
+import { sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
 const DAEMON = fileURLToPath(new URL("../dist/image/floq-browserd.mjs", import.meta.url));
@@ -918,4 +918,22 @@ test("daemon helpers: sandbox failure reason is one clean line; editing shortcut
   assert.equal(shortcutCommand("z", 2 | 8), "redo");
   assert.equal(shortcutCommand("c", 2 | 1), undefined);
   assert.equal(shortcutCommand("q", 2), undefined);
+});
+
+test("sandbox policy: required never drops the sandbox, auto falls back, legacy flag still forces", () => {
+  assert.equal(sandboxPolicy({}), "auto");
+  assert.equal(sandboxPolicy({ FLOQ_BROWSER_SANDBOX: "Required" }), "required");
+  assert.equal(sandboxPolicy({ FLOQ_BROWSER_SANDBOX: "bogus" }), "auto");
+  assert.equal(sandboxPolicy({ FLOQ_BROWSER_NO_SANDBOX: "1", FLOQ_BROWSER_SANDBOX: "required" }), "off");
+  assert.equal(sandboxPolicy({ FLOQ_BROWSER_NO_SANDBOX: "0" }), "required");
+  assert.deepEqual(sandboxAttempts("required"), [true]);
+  assert.deepEqual(sandboxAttempts("auto"), [true, false]);
+  assert.deepEqual(sandboxAttempts("off"), [false]);
+});
+
+test("userNsHint names AppArmor only when the restriction is on", () => {
+  const mk = (restrict: string) => (p: string) => { if (p.endsWith("apparmor_restrict_unprivileged_userns")) return restrict; if (p.endsWith("attr/current")) return "unconfined\n"; throw new Error("x"); };
+  assert.match(userNsHint(mk("1\n")), /apparmor_restrict_unprivileged_userns=1.*unconfined.*floq-runtime/);
+  assert.equal(userNsHint(mk("0\n")), "");
+  assert.equal(userNsHint(() => { throw new Error("no file"); }), "");
 });

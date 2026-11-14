@@ -56,6 +56,27 @@ Invalid values fall back to `auto`.
 - Network isolation is on by default (`FLOQ_NETNS=required`, below): every user's sandboxes run in their own network namespace, so an agent cannot reach other users' loopback ports or abstract sockets, the `db` host, or the runtime port except the API gateway; outbound internet still works through pasta. The runtime refuses to start if the host cannot provide this. `FLOQ_NETNS=off` restores the old shared network (single-tenant or fully trusted hosts only: agents can then reach the runtime port, the `db` host and other users' loopback). If you opt out, keep `POSTGRES_PASSWORD` strong and add egress rules on the VM.
 - Put it behind TLS (Dokploy/Traefik does this) and keep Postgres unpublished.
 
+## Chromium's own sandbox (`FLOQ_BROWSER_SANDBOX`)
+
+The agent browser runs Chromium inside the user's bubblewrap sandbox. Chromium adds its own namespace sandbox on top (user, PID and network namespaces plus seccomp-bpf), which needs `unshare(CLONE_NEWUSER)` and a write to `/proc/self/uid_map`.
+
+**Why it failed in production.** The container ran with `apparmor:unconfined`. On Ubuntu 23.10+/24.04 hosts `kernel.apparmor_restrict_unprivileged_userns=1` lets an unconfined process create a user namespace but gives it no capabilities there, so `unshare -U` works while the uid_map write fails with `EPERM` and Chromium aborts with "No usable sandbox". The seccomp filter, `max_user_namespaces`, `NoNewPrivs` and the empty capability set are not the cause. The setuid `chrome-sandbox` is not an option (`no-new-privs`).
+
+**Fix (host, once).** Load the shipped profile, which only adds `userns,` to the old unconfined behaviour, and start the stack with it:
+
+```
+sudo cp runtime/apparmor/floq-runtime /etc/apparmor.d/floq-runtime
+sudo apparmor_parser -r /etc/apparmor.d/floq-runtime
+FLOQ_APPARMOR_PROFILE=floq-runtime docker compose up -d     # default is still `unconfined`
+```
+
+Check from an agent terminal: `cat /proc/self/attr/current` prints `floq-runtime (unconfined)` and `unshare -Ur true` succeeds; then `floq browser status` shows `sandbox: chromium sandbox on`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLOQ_BROWSER_SANDBOX` | `auto` | `required`: Chromium must start with its sandbox, otherwise the browser fails to start with a clear error (no `--no-sandbox`). `auto`: try the sandbox, fall back to `--no-sandbox` and log `browser.chromium_sandbox_off` at warn level with the reason. Set `required` once the profile is loaded. |
+| `FLOQ_APPARMOR_PROFILE` | `unconfined` | AppArmor profile name for the runtime container in `docker-compose.yml`. |
+
 ## Per-user network namespaces (`FLOQ_NETNS`, on by default)
 
 `FLOQ_NETNS` unset or `required` (the default) gives every user one persistent network namespace (`/run/floq/netns/<uid>`, created with `unshare --net=<file>`); all of that user's sessions share it, other users cannot see its loopback ports or abstract sockets (X11 `@/tmp/.X11-unix/Xn`). The runtime refuses to start when namespaces are unavailable (fail fast: the error names the missing piece, the host requirements and the opt-out). `FLOQ_NETNS=1` isolates when possible but logs `netns.disabled` and falls back to the shared network on a failed probe. `FLOQ_NETNS=off` (or `0`) disables isolation: single-tenant or fully trusted hosts only.

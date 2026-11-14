@@ -97,6 +97,26 @@ export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPo
   ];
 }
 
+/** Why a user namespace has no capabilities here: the host AppArmor restricts unconfined processes (Ubuntu >= 23.10/24.04). Empty when it is not the cause. */
+export function userNsHint(read: (p: string) => string = (p) => readFileSync(p, "utf8")): string {
+  const get = (p: string) => { try { return read(p).trim(); } catch { return ""; } };
+  if (get("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") !== "1") return "";
+  const label = get("/proc/self/attr/current") || "unknown";
+  return " (kernel.apparmor_restrict_unprivileged_userns=1 and the process is " + label + ": run the runtime container under the floq-runtime AppArmor profile, see runtime/README.md)";
+}
+
+/** FLOQ_BROWSER_SANDBOX=required|auto (default auto). The legacy FLOQ_BROWSER_NO_SANDBOX=1 still forces --no-sandbox, =0 means required. */
+export function sandboxPolicy(env: Record<string, string | undefined>): "required" | "auto" | "off" {
+  if (env.FLOQ_BROWSER_NO_SANDBOX === "1") return "off";
+  if (env.FLOQ_BROWSER_NO_SANDBOX === "0") return "required";
+  return env.FLOQ_BROWSER_SANDBOX?.trim().toLowerCase() === "required" ? "required" : "auto";
+}
+
+/** Launch attempts in order: true = with Chromium's sandbox, false = --no-sandbox. Only `auto` (and an explicit `off`) ever drops the sandbox. */
+export function sandboxAttempts(policy: "required" | "auto" | "off"): boolean[] {
+  return policy === "off" ? [false] : policy === "required" ? [true] : [true, false];
+}
+
 /** One clean line for `floq browser status`: never a crash trace. */
 export function sandboxFailureReason(code: number | null, stderrTail: string): string {
   if (/No usable sandbox|setuid sandbox|namespace sandbox/i.test(stderrTail)) {
@@ -147,8 +167,8 @@ class Pipe {
 
 /** First launch tries Chromium's own sandbox; if it cannot start (no nested userns in bwrap/seccomp), relaunch with --no-sandbox. */
 async function startChromium(exe: string, onExit: (code: number | null) => void): Promise<{ run: Running; mux: CdpMux; sandbox: boolean; reason?: string }> {
-  const forced = process.env.FLOQ_BROWSER_NO_SANDBOX;
-  const attempts = forced === "1" ? [false] : forced === "0" ? [true] : [true, false];
+  const policy = sandboxPolicy(process.env);
+  const attempts = sandboxAttempts(policy);
   let reason: string | undefined;
   for (const sandbox of attempts) {
     clearStaleSingleton(PROFILE);
@@ -172,8 +192,9 @@ async function startChromium(exe: string, onExit: (code: number | null) => void)
       reason = (e as Error).message;
       run.child.kill("SIGKILL");
     }
-    if (sandbox && attempts.length > 1) log("browser.chromium_sandbox_off", { reason });
+    if (sandbox && attempts.length > 1) log("browser.chromium_sandbox_off", { level: "warn", policy, reason, hint: userNsHint().trim(), warning: "Chromium is running WITHOUT its own sandbox; set FLOQ_BROWSER_SANDBOX=required once the host allows user namespaces (runtime/README.md)" });
   }
+  if (policy === "required") throw new Error("chromium sandbox required (FLOQ_BROWSER_SANDBOX=required) but unavailable: " + reason);
   throw new Error("chromium did not start: " + reason);
 }
 

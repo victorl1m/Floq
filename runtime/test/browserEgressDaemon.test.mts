@@ -203,8 +203,11 @@ test("daemon mux: OPEN carries the hostname (never resolved here), OPENED(0) com
   const big = Buffer.alloc(100 * 1024, 7);
   for (let off = 0; off < big.length; off += 32768) send(pair.runtimeEnd, encodeFrame(T.DATA, 1, big.subarray(off, off + 32768)));
   await waitUntil(() => Buffer.concat(c.data).length >= big.length);
+  const creditedNow = () => runtime.get().filter((f) => f.type === T.CREDIT).reduce((n, f) => n + f.payload.readUInt32BE(0), 0);
   await waitUntil(() => runtime.get().some((f) => f.type === T.CREDIT && f.streamId === 1));
-  const credited = runtime.get().filter((f) => f.type === T.CREDIT).reduce((n, f) => n + f.payload.readUInt32BE(0), 0);
+  // Credit trickles back as the socket drains; on a loaded host the first frame arrives well before the sum reaches 64 KiB.
+  await waitUntil(() => creditedNow() >= 64 * 1024);
+  const credited = creditedNow();
   assert.ok(credited >= 64 * 1024 && credited <= big.length, "credit is returned as the socket consumed the bytes: " + credited);
   // half close both ways, then reset
   c.sock.end();
@@ -251,7 +254,7 @@ test("daemon mux: streams are capped at 256 (the 257th gets REP 1) and an unknow
 type Spawned = { child: ChildProcess; msgs: any[]; stderr: () => string; fd3: Socket; home: string; log(): string; stop(): Promise<void> };
 function startEgressDaemon(t: test.TestContext, env: Record<string, string>, opts: { exe?: string; fd3?: boolean; home?: string } = {}): Spawned {
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "floq-egress-"));
-  if (!opts.home) t.after(() => rmSync(home, { recursive: true, force: true }));
+  if (!opts.home) t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const child = spawn(process.execPath, [DAEMON], {
     env: { PATH: process.env.PATH!, HOME: home, FLOQ_BROWSER_EXECUTABLE: opts.exe ?? FAKE, FAKE_CHROMIUM_LOG: join(home, "chromium.log"), ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}), ...env },
     stdio: opts.fd3 === false ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
@@ -414,7 +417,7 @@ test("end to end (real Chromium): the page sees the desktop's source address, no
   t.after(() => hub.close());
   const userId = "u-e2e";
   const home = mkdtempSync(join(tmpdir(), "floq-egress-e2e-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const d = startEgressDaemon(t, { FLOQ_BROWSER_EGRESS: "desktop" }, { exe: REAL!, home });
   const daemonHandle = hub.attachDaemon(userId, { write: (b) => { if (d.fd3.writable) d.fd3.write(b); }, close: () => d.fd3.destroy() });
   d.fd3.on("data", (c) => daemonHandle.push(c));
@@ -460,7 +463,7 @@ test("end to end (real Chromium): the page sees the desktop's source address, no
 
 test("end to end (real Chromium, HTTPS): a big TLS page loads through daemon + hub + desktop, and still loads after the daemon restarts (v1.0.11 blank page)", realSkip, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "floq-egress-tls-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const gen = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(dir, "k.pem"), "-out", join(dir, "c.pem"), "-days", "1", "-subj", "/CN=secure.test", "-addext", "subjectAltName=DNS:secure.test"], { encoding: "utf8" });
   if (gen.status !== 0) return t.skip("no openssl");
   const filler = Buffer.alloc(900_000); for (let i = 0; i < filler.length; i++) filler[i] = 97 + ((i * 7919) % 26); // incompressible enough, > 3 windows of credit
@@ -480,7 +483,7 @@ test("end to end (real Chromium, HTTPS): a big TLS page loads through daemon + h
 
   async function session(label: string) {
     const home = mkdtempSync(join(tmpdir(), "floq-egress-e2e-"));
-    t.after(() => rmSync(home, { recursive: true, force: true }));
+    t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
     const d = startEgressDaemon(t, { FLOQ_BROWSER_EGRESS: "desktop" }, { exe: REAL!, home });
     const handle = hub.attachDaemon(userId, { write: (b) => { if (d.fd3.writable) d.fd3.write(b); }, close: () => d.fd3.destroy() });
     d.fd3.on("data", (c) => handle.push(c));
@@ -565,13 +568,20 @@ test("daemon listener: a flood of unauthorized connects does not starve the legi
   const { server, port } = await startSocksListener({ mux, peers, log: () => undefined, acceptBudgetPerSec: 5 });
   t.after(() => { server.close(); pair.close(); });
   const flood = await Promise.all(Array.from({ length: 60 }, async () => { const s = tcpConnect(port, "127.0.0.1"); s.on("error", () => undefined); await new Promise<void>((r) => s.once("connect", () => r())); return s; }));
-  // Pin the legitimate client's source port so the stub checker can recognise it at accept time.
-  legit = 41000 + Math.floor(Math.random() * 1000);
-  const s2 = tcpConnect({ port, host: "127.0.0.1", localPort: legit, localAddress: "127.0.0.1" } as never);
-  s2.on("error", () => undefined);
+  // Pin the legitimate client's source port so the stub checker can recognise it at accept time. The port is picked from a range
+  // other processes on the host also use, so a collision (EADDRINUSE / EADDRNOTAVAIL) retries with another port instead of hanging.
   let greeted = Buffer.alloc(0);
-  s2.on("data", (c) => { greeted = Buffer.concat([greeted, c]); });
-  await new Promise<void>((r) => s2.once("connect", () => r()));
+  let s2!: ReturnType<typeof tcpConnect>;
+  for (let attempt = 0; ; attempt++) {
+    legit = 41000 + Math.floor(Math.random() * 1000);
+    s2 = tcpConnect({ port, host: "127.0.0.1", localPort: legit, localAddress: "127.0.0.1" } as never);
+    s2.on("data", (c) => { greeted = Buffer.concat([greeted, c]); });
+    const ok = await new Promise<boolean>((r) => { s2.once("connect", () => r(true)); s2.once("error", () => r(false)); });
+    if (ok) break;
+    s2.destroy();
+    assert.ok(attempt < 20, "could not bind a free pinned source port");
+  }
+  s2.on("error", () => undefined);
   s2.write(Buffer.from([5, 1, 0]));
   await waitUntil(() => greeted.length >= 2, 3000, "legit peer got the SOCKS greeting after the flood");
   assert.deepEqual([...greeted.subarray(0, 2)], [5, 0]);
