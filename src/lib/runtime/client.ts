@@ -1071,6 +1071,12 @@ export class RuntimeClient {
   resolveDecision = (id: string, answers: DecisionAnswer[]) => this.call<{ status: string }>("POST", `/v1/decisions/${encodeURIComponent(id)}/resolve`, { answers });
   decisionTerminal = (id: string) => this.call<{ status: string }>("POST", `/v1/decisions/${encodeURIComponent(id)}/terminal`, {});
 
+  /** Notification Center (docs/design/notifications.md). The list body is assumed to be { notifications }. */
+  notifications = async (query: { limit?: number } = {}) =>
+    (await this.call<{ notifications: import("@/lib/notifications").AppNotification[] }>("GET", `/v1/notifications${query.limit ? `?limit=${query.limit}` : ""}`)).notifications;
+  markNotificationsRead = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/read", { ids });
+  clearNotifications = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/clear", { ids });
+
   /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
   eventsUrl(): string {
     const url = new URL(this.baseUrl + "/v1/events");
