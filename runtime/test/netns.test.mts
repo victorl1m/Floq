@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import {
-  NETNS_DNS, NETNS_GATEWAY, acquireTunnelSlot, duplexFromChild, netnsMode, netnsPath, nextRestart, nftRuleset, nsenterArgv,
+  NETNS_DNS, NETNS_GATEWAY, acquireTunnelSlot, duplexFromChild, netnsMode, netnsPath, netnsRequiredMessage, NetnsManager, nextRestart, nftRuleset, nsenterArgv,
   parseAllowList, parseHostAddresses, pastaArgv, procNetTcpPaths, tunnelLimit, resolvConf, tunnelHelperArgv, unshareArgv, wrapLaunch,
 } from "../dist/netns.js";
 import { listAllListeners, listSessionPorts } from "../dist/ports.js";
@@ -23,9 +26,12 @@ test("flag on: nsenter joins the namespace and runs the unchanged bwrap argv; no
   assert.ok(!w.args.includes("--unshare-net"));
 });
 
-test("mode parsing: default off, 1 on, required", () => {
-  assert.equal(netnsMode({}), "off");
+test("mode parsing: default required, off/0 opt out, 1 on", () => {
+  assert.equal(netnsMode({}), "required");
+  assert.equal(netnsMode({ FLOQ_NETNS: "" }), "required");
+  assert.equal(netnsMode({ FLOQ_NETNS: "typo" }), "required");
   assert.equal(netnsMode({ FLOQ_NETNS: "0" }), "off");
+  assert.equal(netnsMode({ FLOQ_NETNS: "off" }), "off");
   assert.equal(netnsMode({ FLOQ_NETNS: "1" }), "on");
   assert.equal(netnsMode({ FLOQ_NETNS: "required" }), "required");
 });
@@ -169,4 +175,24 @@ test("duplexFromChild moves bytes both ways and fails on a bad exit", async () =
   const failed = new Promise((r) => duplex.once("error", r));
   child.emit("exit", 1);
   assert.match(String(await failed), /exited with 1/);
+});
+
+test("fail fast: mode required with an unusable host throws an actionable error naming FLOQ_NETNS=off", async () => {
+  const msg = netnsRequiredMessage("boom");
+  assert.match(msg, /FLOQ_NETNS=off/);
+  assert.match(msg, /CAP_NET_ADMIN/);
+  assert.match(msg, /boom/);
+  const dir = mkdtempSync(join(tmpdir(), "netns-ff-"));
+  const bogus = { PATH: "/nonexistent" };
+  const saved = process.env.PATH;
+  process.env.PATH = bogus.PATH; // socat/nsenter/setpriv cannot be found: the probe fails before touching the host
+  try {
+    const required = new NetnsManager({ mode: "required", runtimePort: 1, metaDir: dir, dir: join(dir, "ns") });
+    await assert.rejects(required.init(), /FLOQ_NETNS=off/);
+    const soft = new NetnsManager({ mode: "on", runtimePort: 1, metaDir: dir, dir: join(dir, "ns2") });
+    await soft.init();
+    assert.equal(soft.isEnabled, false);
+  } finally {
+    process.env.PATH = saved;
+  }
 });

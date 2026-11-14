@@ -130,6 +130,11 @@ services:
       FLOQ_PORT: "8787"
       FLOQ_HOST: "0.0.0.0"
       FLOQ_SHARD_DRIVER: linux
+      # Per-tenant network isolation: every user's sandboxes get their own network namespace (pasta gives them outbound
+      # internet; the runtime port is the only host service they reach). Default: required = the runtime refuses to start
+      # if the host cannot provide it (needs CAP_SYS_ADMIN + CAP_NET_ADMIN below, nftables in the kernel).
+      # off = all sandboxes share one network: single-tenant / fully trusted hosts only. 1 = isolate, but fall back to off if the probe fails.
+      FLOQ_NETNS: ${FLOQ_NETNS:-required}
       FLOQ_SHARD_ROOT: /var/lib/floq/shards
       FLOQ_SHARD_LOCK_DELAY_MS: ${FLOQ_SHARD_LOCK_DELAY_MS:-30000}
       FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
@@ -166,6 +171,8 @@ services:
       - ALL
     cap_add:
       - SYS_ADMIN
+      # FLOQ_NETNS: configure the per-user namespaces (lo, nft egress rules, pasta tap) from the runtime.
+      - NET_ADMIN
       - SETUID
       - SETGID
       - SETPCAP

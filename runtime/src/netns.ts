@@ -6,13 +6,13 @@ import { promisify } from "node:util";
 import { log } from "./logger.js";
 
 /**
- * Optional per-user network namespace for agent sandboxes (feature flag FLOQ_NETNS, default OFF).
- * See the Floq note netns-isolation-spec and runtime/README.md. With the flag off nothing in this file runs
- * and the sandbox argv is byte-identical to before (wrapLaunch is the identity without a netns path).
+ * Per-user network namespace for agent sandboxes (FLOQ_NETNS, default REQUIRED on the linux shard driver).
+ * See runtime/README.md. With mode off nothing in this file runs and the sandbox argv is byte-identical to the
+ * shared-network launch (wrapLaunch is the identity without a netns path).
  *
- *   FLOQ_NETNS unset/0   off: sandboxes share the runtime's network namespace (old behaviour)
- *   FLOQ_NETNS=1         on: one persistent netns per user uid; falls back to off (loud log) if the startup probe fails
- *   FLOQ_NETNS=required  on, and the runtime refuses to start when the probe fails
+ *   FLOQ_NETNS unset/required  on, and the runtime refuses to start when the startup probe fails (fail fast)
+ *   FLOQ_NETNS=1               on: one persistent netns per user uid; falls back to off (loud log) if the probe fails
+ *   FLOQ_NETNS=off|0           off: sandboxes share the runtime's network (single-tenant / trusted hosts only)
  */
 
 const run = promisify(execFile);
@@ -48,10 +48,21 @@ export const NETNS_BLOCKED_RANGES: readonly string[] = [
   "224.0.0.0/3",
 ];
 
+/** Unset (or anything unrecognised) is "required": isolation is the default, sharing the network needs an explicit opt-out. */
 export function netnsMode(env: NodeJS.ProcessEnv = process.env): NetnsMode {
   const raw = env.FLOQ_NETNS?.trim().toLowerCase();
-  if (raw === "required") return "required";
-  return raw === "1" || raw === "true" || raw === "on" || raw === "yes" ? "on" : "off";
+  if (raw === "0" || raw === "off" || raw === "false" || raw === "no" || raw === "disabled") return "off";
+  if (raw === "1" || raw === "true" || raw === "on" || raw === "yes") return "on";
+  return "required";
+}
+
+/** Actionable text for a failed startup probe in mode required (what is missing, and the explicit opt-out). */
+export function netnsRequiredMessage(detail: string): string {
+  return "Per-user network isolation (FLOQ_NETNS, on by default) is unavailable on this host: " + detail +
+    ". Requirements: a Linux kernel with network namespaces and nftables, CAP_SYS_ADMIN + CAP_NET_ADMIN for the runtime container" +
+    " (see runtime/docker-compose.yml), and the tools unshare, nsenter, setpriv, socat, nft, ip and floq-pasta (passt) in the image." +
+    " Fix the host, or set FLOQ_NETNS=off to let all agent sandboxes share one network (only acceptable on a single-tenant or fully trusted host)." +
+    " FLOQ_NETNS=1 keeps isolation when available and logs a fallback instead of refusing to start.";
 }
 
 const CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/;
@@ -356,7 +367,7 @@ export class NetnsManager {
       log.info("netns.ready", { dir: this.dir });
     } catch (error) {
       const detail = error instanceof Error ? error.message.split("\n").slice(0, 2).join(" | ") : String(error);
-      if (this.options.mode === "required") throw new Error("FLOQ_NETNS=required but network namespaces are unavailable: " + detail);
+      if (this.options.mode === "required") throw new Error(netnsRequiredMessage(detail));
       this.enabled = false;
       log.error("netns.disabled", { error: detail, message: "FLOQ_NETNS is set but the namespace probe failed; sandboxes share the host network again" });
     }
