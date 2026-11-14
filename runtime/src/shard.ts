@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, fstatSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, type Stats, existsSync, fchmodSync, fchownSync, fstatSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { opendir, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { promisify } from "node:util";
@@ -85,6 +85,28 @@ export async function pruneOldEntriesAsync(dir: string, maxAgeMs: number, now = 
   return removed;
 }
 
+/**
+ * pruneOldEntriesAsync for a directory inside a user home: the directory is opened by descriptor (no symlinked ancestor), its
+ * entries are listed and aged through that descriptor, and each stale entry is removed with removeHomeTree, which pins every
+ * directory it descends into. A swapped link can only make root unlink the link itself.
+ */
+export async function pruneHomeEntriesAsync(home: string, dir: string, maxAgeMs: number, now = Date.now()): Promise<number> {
+  const held = openHomeDir(home, dir);
+  if (!held) return 0;
+  let removed = 0;
+  try {
+    const names = readdirSync(held.path).slice(0, PRUNE_MAX_CHILDREN);
+    for (const name of names) {
+      try {
+        const newest = newestMtime(join(held.path, name), { left: PRUNE_MAX_ENTRIES });
+        if (newest !== null && now - newest > maxAgeMs && removeHomeTree(home, join(dir, name))) removed++;
+      } catch { /* raced with a running process; keep it */ }
+      await new Promise<void>((done) => setImmediate(done));
+    }
+  } finally { held.close(); }
+  return removed;
+}
+
 /** Path of a user's home as seen from inside the sandbox. */
 export const SANDBOX_HOME = "/home/agent";
 
@@ -157,68 +179,186 @@ export function ownTree(path: string, uid: number, maxDepth = Infinity): void {
   if (stat.isDirectory() && maxDepth > 0) for (const entry of readdirSync(path)) ownTree(join(path, entry), uid, maxDepth - 1);
 }
 
+/** An ENOENT-shaped error for a pinned parent that does not exist (callers treat it like the fs error they used to get). */
+function missingParent(): NodeJS.ErrnoException {
+  return Object.assign(new Error("ENOENT: parent directory does not exist"), { code: "ENOENT" });
+}
+
 /**
- * Create one directory under `home` owned by `uid`, without letting a swapped parent redirect root: the new directory is
- * opened with O_NOFOLLOW and proven (on the descriptor) to live inside the real home before it is chowned.
+ * mkdir `name` inside the pinned directory `parent` and return it opened (O_NOFOLLOW|O_DIRECTORY) and handed to `uid`: the
+ * mkdir, the open and the fchown all go through the parent's descriptor, so a swapped ancestor cannot redirect root.
  */
-export function mkdirOwnedSegment(home: string, path: string, uid: number | null, mode = 0o777): void {
-  mkdirSync(path, { mode });
+function makeOwnedChild(parent: HomeDir, name: string, uid: number | null, mode: number): HomeDir {
+  if (!name || name === "." || name === ".." || /[\0/\\]/.test(name)) throw new UnsafeHomePathError("bad path segment");
+  const target = join(parent.path, name);
+  mkdirSync(target, { mode });
   let fd: number | null = null;
   try {
-    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY);
-    let inside = true;
-    try {
-      const actual = realpathSync(`/proc/self/fd/${fd}`);
-      const rel = relative(realpathSync(home), actual);
-      inside = rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !rel.startsWith("/");
-    } catch { /* no /proc: lstat checks above are all we have */ }
-    if (!inside) throw new Error("path escapes the home directory");
+    fd = openSync(target, DIR_FLAGS);
     if (uid !== null) fchownSync(fd, uid, uid);
   } catch (error) {
-    try { rmdirSync(path); } catch { /* best effort */ }
+    if (fd !== null) { try { closeSync(fd); } catch { /* already closed */ } }
+    try { rmdirSync(target); } catch { /* best effort */ }
     throw error;
-  } finally {
-    if (fd !== null) closeSync(fd);
   }
-}
-
-/** mkdir -p inside a mounted home, creating every missing segment owned by the user. Symlinked segments are rejected, never followed. */
-export function mkdirOwned(root: string, dir: string, uid: number | null): void {
-  const rel = relative(root, dir);
-  if (rel.startsWith("..")) throw new Error("path escapes the home directory");
-  let current = root;
-  for (const part of rel.split(sep).filter(Boolean)) {
-    current = join(current, part);
-    let info;
-    try { info = lstatSync(current); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      mkdirOwnedSegment(root, current, uid);
-      continue;
-    }
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("path crosses a symlink or non-directory in the home directory");
-  }
+  const held = fd;
+  return { path: existsSync(PROC_FD) ? `${PROC_FD}/${held}` : target, fd: held, close: () => { try { closeSync(held); } catch { /* already closed */ } } };
 }
 
 /**
- * Write a file inside a mounted home as root without ever following a planted symlink: a fresh O_EXCL|O_NOFOLLOW temp file
- * (mode set with fchmod on the descriptor, owner with fchown) is renamed over the destination, which replaces a symlink itself.
+ * Create one directory under `home` owned by `uid`. The parent is opened by descriptor without following links (UnsafeHomePathError
+ * on a symlinked ancestor), and the directory is created, opened and chowned relative to it. Throws ENOENT when the parent is missing.
  */
-export function writeFileOwned(path: string, data: string | Buffer, uid: number | null, mode = 0o600): void {
-  const temp = join(dirname(path), `.${randomBytes(8).toString("hex")}.tmp`);
-  const fd = openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode);
+export function mkdirOwnedSegment(home: string, path: string, uid: number | null, mode = 0o777): void {
+  const parent = openHomeDir(home, dirname(path));
+  if (!parent) throw missingParent();
+  try { makeOwnedChild(parent, basename(path), uid, mode).close(); } finally { parent.close(); }
+}
+
+/**
+ * mkdir -p inside a mounted home, creating every missing segment owned by the user. Every directory is held open by descriptor
+ * (never through a symlink) while the next segment is opened or created, so there is no check-then-use window. A symlink or a
+ * non-directory in the way raises UnsafeHomePathError.
+ */
+export function mkdirOwned(root: string, dir: string, uid: number | null, mode = 0o777): void {
+  const rel = relative(root, dir);
+  if (rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("/")) throw new UnsafeHomePathError("path escapes the home directory");
+  const parts = rel.split(sep).filter(Boolean);
+  if (parts.length === 0) return; // the home itself: nothing to create (a missing mount is the mounter's concern, as before)
+  let current = openHomeDir(root, root);
+  if (!current) throw missingParent();
   try {
-    try {
-      writeSync(fd, typeof data === "string" ? Buffer.from(data) : data);
-      fchmodSync(fd, mode);
-      if (uid !== null) { try { fchownSync(fd, uid, uid); } catch (error) { if (process.getuid?.() === 0) throw error; /* unprivileged (tests): the file stays ours */ } }
-    } finally {
-      closeSync(fd);
+    for (const part of parts) {
+      let next: HomeDir | null;
+      try { next = openChildDir(current, part); } catch (error) {
+        if (error instanceof UnsafeHomePathError) throw new UnsafeHomePathError("path crosses a symlink in the home directory");
+        throw error;
+      }
+      if (!next) {
+        try { next = makeOwnedChild(current, part, uid, mode); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          // Either a racing creator made it (fine) or something that is not a directory sits there (refused).
+          try { next = openChildDir(current, part); } catch { next = null; }
+          if (!next) throw new UnsafeHomePathError("path crosses a non-directory in the home directory");
+        }
+      }
+      current.close();
+      current = next;
     }
-    renameSync(temp, path);
-  } catch (error) {
-    try { rmSync(temp, { force: true }); } catch { /* best effort */ }
+  } finally { current.close(); }
+}
+
+/** chmod a directory inside a home through a descriptor opened without following links (a path chmod would follow a swapped link). */
+export function chmodHomeDir(home: string, dir: string, mode: number): void {
+  const held = openHomeDir(home, dir);
+  if (!held) throw missingParent();
+  try { fchmodSync(held.fd, mode); } finally { held.close(); }
+}
+
+/** lstat a path inside a home with every ancestor pinned; null when it (or an ancestor) does not exist. */
+export function lstatHome(home: string, path: string): Stats | null {
+  const rel = relative(home, path);
+  if (rel === "" || rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("/")) throw new UnsafeHomePathError("path escapes the home directory");
+  const parent = openHomeDir(home, dirname(path));
+  if (!parent) return null;
+  try { return lstatSync(join(parent.path, basename(path))); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
-  }
+  } finally { parent.close(); }
+}
+
+/** Delete regular files older than maxAgeMs directly inside a home directory, relative to a pinned descriptor. Returns how many went. */
+export function pruneHomeFiles(home: string, dir: string, maxAgeMs: number, now = Date.now()): number {
+  const held = openHomeDir(home, dir);
+  if (!held) return 0;
+  let removed = 0;
+  try {
+    for (const name of readdirSync(held.path)) {
+      try {
+        const entry = join(held.path, name);
+        const info = lstatSync(entry);
+        if (info.isFile() && now - info.mtimeMs > maxAgeMs) { unlinkSync(entry); removed++; }
+      } catch { /* best effort */ }
+    }
+  } finally { held.close(); }
+  return removed;
+}
+
+/**
+ * Write a file as root without ever following a planted symlink. With `home`, the destination directory is opened by descriptor
+ * (no component may be a link) and everything happens relative to it; `home: null` is only for a `path` that already runs
+ * through a pinned descriptor (/proc/self/fd/N/...). A fresh O_EXCL|O_NOFOLLOW temp file (mode set with fchmod on the descriptor,
+ * owner with fchown) is renamed over the destination, which replaces a symlink or FIFO there instead of opening it.
+ */
+export function writeFileOwned(home: string | null, path: string, data: string | Buffer, uid: number | null, mode = 0o600): void {
+  const parent = home === null ? null : openHomeDir(home, dirname(path));
+  if (home !== null && !parent) throw missingParent();
+  const dir = parent ? parent.path : dirname(path);
+  const destination = join(dir, basename(path));
+  const temp = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    const fd = openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode);
+    try {
+      try {
+        writeSync(fd, typeof data === "string" ? Buffer.from(data) : data);
+        fchmodSync(fd, mode);
+        if (uid !== null) { try { fchownSync(fd, uid, uid); } catch (error) { if (process.getuid?.() === 0) throw error; /* unprivileged (tests): the file stays ours */ } }
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(temp, destination);
+    } catch (error) {
+      try { rmSync(temp, { force: true }); } catch { /* best effort */ }
+      throw error;
+    }
+  } finally { parent?.close(); }
+}
+
+/**
+ * Copy a trusted (root-owned) tree into a directory the agent can write, never overwriting and never following anything the agent
+ * planted: the destination and every subdirectory are held open by descriptor (opened O_NOFOLLOW, or created and handed to `uid`),
+ * files are created O_EXCL|O_NOFOLLOW inside them and chowned on the descriptor, and an existing entry of any kind is left alone
+ * (a planted link or FIFO is skipped, not written through). Symlinks in the source are recreated as links, never followed.
+ * `filter` sees the source path of each entry and returns false to skip it.
+ */
+export function copySeedTree(home: string, source: string, destination: string, uid: number | null, filter: (src: string) => boolean = () => true): void {
+  const root = openHomeDir(home, destination);
+  if (!root) throw new UnsafeHomePathError("seed destination does not exist");
+  const walk = (src: string, dir: HomeDir): void => {
+    for (const entry of readdirSync(src, { withFileTypes: true })) {
+      const from = join(src, entry.name);
+      if (!filter(from)) continue;
+      const target = join(dir.path, entry.name);
+      let existing: Stats | null = null;
+      try { existing = lstatSync(target); } catch { /* not there yet */ }
+      if (entry.isDirectory()) {
+        let child: HomeDir | null = null;
+        if (existing) {
+          if (existing.isSymbolicLink() || !existing.isDirectory()) continue;
+          try { child = openChildDir(dir, entry.name); } catch (error) { if (error instanceof UnsafeHomePathError) continue; throw error; }
+        } else {
+          try { child = makeOwnedChild(dir, entry.name, uid, 0o755); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") continue; throw error; }
+        }
+        if (!child) continue;
+        try { walk(from, child); } finally { child.close(); }
+      } else if (entry.isSymbolicLink()) {
+        if (existing) continue;
+        symlinkSync(readlinkSync(from), target);
+        if (uid !== null) { try { lchownSync(target, uid, uid); } catch (error) { if (process.getuid?.() === 0) throw error; } }
+      } else if (entry.isFile()) {
+        if (existing) continue;
+        const mode = statSync(from).mode & 0o777;
+        let fd: number;
+        try { fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") continue; throw error; }
+        try {
+          writeSync(fd, readFileSync(from));
+          fchmodSync(fd, mode);
+          if (uid !== null) { try { fchownSync(fd, uid, uid); } catch (error) { if (process.getuid?.() === 0) throw error; } }
+        } finally { closeSync(fd); }
+      }
+    }
+  };
+  try { walk(source, root); } finally { root.close(); }
 }
 
 /** Thrown by readHomeFile when an agent-planted path is unsafe to read (symlink, FIFO/device, foreign owner, oversize). */
@@ -659,8 +799,8 @@ export class LinuxShardDriver implements ShardDriver {
     const dir = this.tmpPath(handle);
     try {
       mkdirOwned(handle.mountPath, dir, handle.uid);
-      chmodSync(dir, 0o1777);
-      return pruneOldEntriesAsync(dir, TMP_MAX_AGE_MS).catch((error) => log.warn("shard.tmp_prune_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }));
+      chmodHomeDir(handle.mountPath, dir, 0o1777);
+      return pruneHomeEntriesAsync(handle.mountPath, dir, TMP_MAX_AGE_MS).catch((error) => log.warn("shard.tmp_prune_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }));
     } catch (error) {
       log.warn("shard.tmp_prepare_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
       return Promise.resolve();

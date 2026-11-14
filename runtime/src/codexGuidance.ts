@@ -67,7 +67,7 @@ export function syncCodexManagedGuidance(codeHome: string, uid?: number, extra =
     const next = mergeFloqGuidance(current, extra);
     const name = basename(selected);
     if (next === current) return join(root, name);
-    writeFileOwned(selected, next, uid ?? null, selectedInfo ? selectedInfo.mode & 0o777 : 0o644);
+    writeFileOwned(null, selected, next, uid ?? null, selectedInfo ? selectedInfo.mode & 0o777 : 0o644);
     return join(root, name);
   } finally { dir.close(); }
 }
@@ -102,7 +102,7 @@ export function syncProtectedFloqSkill(agentHome: string, sourceSkillDir: string
       let targetStat = null;
       try { targetStat = lstatSync(target); } catch { /* new file */ }
       if (targetStat && (targetStat.isSymbolicLink() || !targetStat.isFile())) throw new Error("Refusing unsafe protected Floq skill file");
-      writeFileOwned(target, readFileSync(join(source, relativePath)), uid ?? null, 0o644);
+      writeFileOwned(null, target, readFileSync(join(source, relativePath)), uid ?? null, 0o644);
     } finally { parent.close(); }
   }
 }
