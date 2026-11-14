@@ -167,6 +167,8 @@ services:
     # Agent processes are started with no-new-privs under a per-user uid, never as root.
     devices:
       - /dev/fuse:/dev/fuse
+      # FLOQ_NETNS: pasta builds the per-user tap device through /dev/net/tun.
+      - /dev/net/tun:/dev/net/tun
     cap_drop:
       - ALL
     cap_add:
