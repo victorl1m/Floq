@@ -8,9 +8,14 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 const empty = new URLSearchParams(location.search).get("empty") === "1";
 const now = Date.now();
+const d = new Date();
+const todayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+// Three local days: today, yesterday (two files) and six days ago.
 const entries = empty ? [] : [
   { name: "report.md", path: "report.md", size: 2048, modifiedAt: now - 5 * 60_000 },
-  { name: "chart.png", path: "charts/chart.png", size: 90_000, modifiedAt: now - 3 * 3600_000 },
+  { name: "chart.png", path: "charts/chart.png", size: 90_000, modifiedAt: todayStart - 3600_000 },
+  { name: "q3-summary.pdf", path: "notes/q3-summary.pdf", size: 4096, modifiedAt: todayStart - 2 * 3600_000 },
+  { name: "archive.zip", path: "old/archive.zip", size: 1_500_000, modifiedAt: todayStart - 6 * 86_400_000 + 3600_000 },
 ];
 const links: string[] = [];
 (window as unknown as { __links: string[] }).__links = links;
