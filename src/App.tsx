@@ -21,6 +21,7 @@ import { FallbackToaster } from "./components/canvas/fallback-toaster";
 import { BrowserEgressRelay } from "./components/canvas/browser-egress-relay";
 import { AskDialogHost } from "./components/ui/ask-dialog";
 import { AutoApproveConfirmHost } from "./components/agents/auto-approve-confirm";
+import { AutoApproveNotice } from "./components/onboarding/auto-approve-notice";
 import { CrossProjectToaster } from "./components/window/cross-project-toaster";
 import HomeView from "./components/home/home-view";
 import SettingsDialog from "./components/settings/settings-dialog";
@@ -103,6 +104,7 @@ function App() {
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}
       {user && ready && <AutoApproveConfirmHost />}
+      {user && ready && <AutoApproveNotice />}
       {ready && !user && <LoginScreen />}
       {user && (
         <>
