@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import {
   NETNS_DNS, NETNS_GATEWAY, acquireTunnelSlot, duplexFromChild, netnsMode, netnsPath, netnsRequiredMessage, NetnsManager, nextRestart, nftRuleset, nsenterArgv,
-  parseAllowList, parseHostAddresses, pastaArgv, procNetTcpPaths, tunnelLimit, resolvConf, tunnelHelperArgv, unshareArgv, wrapLaunch,
+  parseAllowList, parseHostAddresses, parsePublicIps, parseIpEcho, detectPublicIp, publicIpUrl, pastaArgv, procNetTcpPaths, tunnelLimit, resolvConf, tunnelHelperArgv, unshareArgv, wrapLaunch,
 } from "../dist/netns.js";
 import { listAllListeners, listSessionPorts } from "../dist/ports.js";
 import { portIsFreeInNetns } from "../dist/display.js";
@@ -49,6 +49,9 @@ test("pasta argv: attached by path, no inbound forwards, DNS forwarder, host loo
   assert.equal(pair("--netns"), "/run/floq/netns/1");
   assert.equal(pair("-t"), "none");
   assert.equal(pair("-u"), "none");
+  // outbound loopback forwarding (pasta default "auto") would mirror the runtime container's listeners onto the tenant's 127.0.0.1
+  assert.equal(pair("-T"), "none");
+  assert.equal(pair("-U"), "none");
   assert.equal(pair("--map-host-loopback"), NETNS_GATEWAY);
   assert.equal(pair("--gateway"), NETNS_GATEWAY);
   assert.equal(pair("--dns-forward"), NETNS_DNS);
@@ -195,4 +198,55 @@ test("fail fast: mode required with an unusable host throws an actionable error 
   } finally {
     process.env.PATH = saved;
   }
+});
+
+test("public addresses: validated, dropped after the gateway rules and before the public accept, v6 needs no rule", () => {
+  assert.deepEqual(parsePublicIps(" 203.0.113.10, 2001:db8::1,203.0.113.10,"), ["203.0.113.10", "2001:db8::1"]);
+  assert.deepEqual(parsePublicIps(undefined), []);
+  for (const bad of ["1.2.3.0/24", "300.1.1.1", "1.1.1.1; flush ruleset", "example.com", "1.1.1.1\n}"]) assert.throws(() => parsePublicIps(bad), bad);
+  const r = nftRuleset({ runtimePort: 8787, publicAddresses: ["203.0.113.10", "2001:db8::1"], hostAddresses: ["172.17.0.2/32"] });
+  assert.ok(r.includes("ip daddr { 172.17.0.2/32, 203.0.113.10/32 } drop"));
+  assert.ok(!r.includes("2001:db8"), "v6 stays out of the ip daddr set (all IPv6 is dropped already)");
+  assert.ok(r.indexOf("tcp dport 8787 accept") < r.indexOf("203.0.113.10"));
+  assert.ok(r.indexOf("203.0.113.10") < r.indexOf("meta nfproto ipv4 accept"));
+  assert.ok(r.indexOf("meta nfproto ipv6 drop") < r.indexOf("meta nfproto ipv4 accept"));
+  assert.ok(r.indexOf("delete table inet floq_egress") < r.indexOf("table inet floq_egress {"), "re-applicable atomically");
+  assert.throws(() => nftRuleset({ runtimePort: 80, publicAddresses: ["1.1.1.1; drop"] }));
+  assert.ok(!nftRuleset({ runtimePort: 8787 }).includes("193.202"));
+});
+
+test("IP echo: only a bare IP literal is accepted; fetch errors and junk give null; URL option", async () => {
+  assert.equal(parseIpEcho("203.0.113.10\n"), "203.0.113.10");
+  assert.equal(parseIpEcho("2001:db8::1"), "2001:db8::1");
+  for (const bad of ["", "<html>1.2.3.4</html>", "1.2.3.4\n5.6.7.8", "999.1.1.1", "x".repeat(100)]) assert.equal(parseIpEcho(bad), null, bad);
+  const ok = (async () => new Response("203.0.114.9\n")) as unknown as typeof fetch;
+  assert.equal(await detectPublicIp("https://x.invalid", 500, ok), "203.0.114.9");
+  assert.equal(await detectPublicIp("https://x.invalid", 500, (async () => new Response("no", { status: 500 })) as unknown as typeof fetch), null);
+  assert.equal(await detectPublicIp("https://x.invalid", 500, (async () => { throw new Error("down"); }) as unknown as typeof fetch), null);
+  const hang = ((_u: string, init: RequestInit) => new Promise((_r, rej) => init.signal?.addEventListener("abort", () => rej(new Error("aborted"))))) as unknown as typeof fetch;
+  assert.equal(await detectPublicIp("https://x.invalid", 50, hang), null, "short timeout");
+  assert.equal(publicIpUrl({}), "https://api.ipify.org");
+  assert.equal(publicIpUrl({ FLOQ_HOST_PUBLIC_IP_URL: "off" }), null);
+  assert.equal(publicIpUrl({ FLOQ_HOST_PUBLIC_IP_URL: "https://ip.example/" }), "https://ip.example/");
+  assert.throws(() => publicIpUrl({ FLOQ_HOST_PUBLIC_IP_URL: "file:///etc/passwd" }));
+});
+
+test("manager: configured + detected addresses are merged and a changed egress address is picked up", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "netns-pub-"));
+  let answer: string | null = "198.18.0.9";
+  const m = new NetnsManager({ mode: "on", runtimePort: 1, metaDir: dir, dir: join(dir, "ns"), publicIps: ["203.0.113.10"], publicIpUrl: "https://echo.invalid", detectIp: async () => answer });
+  assert.deepEqual(m.publicAddresses(), ["203.0.113.10"]);
+  assert.equal(await m.refreshPublicIp(), true);
+  assert.deepEqual(m.publicAddresses(), ["203.0.113.10", "198.18.0.9"]);
+  assert.equal(await m.refreshPublicIp(), false, "unchanged");
+  answer = null;
+  assert.equal(await m.refreshPublicIp(), false, "failed detection keeps the last known address");
+  assert.deepEqual(m.publicAddresses(), ["203.0.113.10", "198.18.0.9"]);
+  answer = "198.18.0.10";
+  assert.equal(await m.refreshPublicIp(), true);
+  assert.deepEqual(m.publicAddresses(), ["203.0.113.10", "198.18.0.10"], "old address replaced");
+  const off = new NetnsManager({ mode: "on", runtimePort: 1, metaDir: dir, publicIps: [], publicIpUrl: null, detectIp: async () => "1.1.1.1" });
+  assert.equal(await off.refreshPublicIp(), false);
+  assert.throws(() => new NetnsManager({ mode: "on", runtimePort: 1, metaDir: dir, publicIps: ["bogus"] }));
+  await m.shutdown();
 });
