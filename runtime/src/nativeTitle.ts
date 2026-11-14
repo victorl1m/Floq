@@ -17,12 +17,23 @@ function cleanTitle(value: unknown): string | null {
   return title || null;
 }
 
-function safeOpen(path: string, maxBytes: number): { fd: number; size: number } | null {
+/** True when the open descriptor really lives under `home` (no symlinked ancestor redirected it); true without /proc. */
+function descriptorInside(fd: number, home: string): boolean {
+  let actual: string;
+  try { actual = realpathSync(`/proc/self/fd/${fd}`); } catch { return true; }
+  const rel = relative(realpathSync(home), actual);
+  return rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !rel.startsWith("/");
+}
+
+/** With `home`, the opened file must also resolve inside that home and, when `uid` is given, belong to it. */
+function safeOpen(path: string, maxBytes: number, home?: string, uid?: number): { fd: number; size: number } | null {
   let fd: number | undefined;
   try {
     if (lstatSync(path).isSymbolicLink()) return null;
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = fstatSync(fd);
+    if (home !== undefined && !descriptorInside(fd, home)) { closeSync(fd); fd = undefined; return null; }
+    if (uid !== undefined && stat.uid !== uid) { closeSync(fd); fd = undefined; return null; }
     if (!stat.isFile() || stat.size > maxBytes) {
       closeSync(fd);
       fd = undefined;
@@ -181,8 +192,8 @@ export function claudeTranscriptPath(home: string, id: string): string | null {
 }
 
 /** Read a transcript's last `maxBytes` as text; a line cut by the range start is dropped. Null if unsafe or missing. */
-export function readTranscriptTail(path: string, maxBytes: number): { text: string; mtimeMs: number } | null {
-  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER);
+export function readTranscriptTail(path: string, maxBytes: number, confine?: { home: string; uid?: number }): { text: string; mtimeMs: number } | null {
+  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER, confine?.home, confine?.uid);
   if (!opened) return null;
   try {
     const size = Math.min(opened.size, maxBytes);
@@ -199,8 +210,8 @@ export function readTranscriptTail(path: string, maxBytes: number): { text: stri
 }
 
 /** Read a transcript's first `maxBytes` as text; a line cut at the end is dropped. Null if unsafe or missing. */
-export function readTranscriptHead(path: string, maxBytes: number): string | null {
-  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER);
+export function readTranscriptHead(path: string, maxBytes: number, confine?: { home: string; uid?: number }): string | null {
+  const opened = safeOpen(path, Number.MAX_SAFE_INTEGER, confine?.home, confine?.uid);
   if (!opened) return null;
   try {
     const size = Math.min(opened.size, maxBytes);

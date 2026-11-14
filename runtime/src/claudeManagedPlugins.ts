@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { log } from "./logger.js";
-import { SANDBOX_HOME } from "./shard.js";
+import { copyHomeTree, openHomeDir, readHomeFile, SANDBOX_HOME, writeFileOwned } from "./shard.js";
 
 /**
  * Claude Code plugins a user installs (`/plugin`, `claude plugin install`) get the same hooks as on a plain machine.
@@ -102,26 +102,33 @@ export function relativePlugins(path: string, marketplace: string): Set<string> 
   return new Set((manifest.plugins ?? []).filter((p) => typeof p.name === "string" && typeof p.source === "string" && p.source.startsWith("./")).map((p) => p.name as string));
 }
 
-function readJson(path: string): Record<string, unknown> | null {
+/** A JSON object from the user's home, read confined (no symlinked component, regular file owned by the user); null otherwise. */
+function readJson(home: string, path: string, uid: number | null): Record<string, unknown> | null {
   try {
-    if (lstatSync(path).isSymbolicLink()) return null;
-    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    const file = readHomeFile(home, path, uid);
+    if (!file) return null;
+    const value = JSON.parse(file.text) as unknown;
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   } catch { return null; }
 }
 
-/** Atomic rewrite that keeps the file's owner (the user's files stay the user's). */
-function writeJsonKeepOwner(path: string, data: unknown): void {
-  const owner = lstatSync(path);
-  const temporary = path + ".floq-" + process.pid;
-  writeFileSync(temporary, JSON.stringify(data, null, 2), { mode: owner.mode & 0o777 });
-  try { lchownSync(temporary, owner.uid, owner.gid); } catch { /* not root (tests) */ }
-  renameSync(temporary, path);
+/** Atomic rewrite that keeps the file's mode and hands it to the user, confined to the home (no symlink is followed, none is replaced through). */
+function writeJsonKeepOwner(home: string, path: string, data: unknown, uid: number | null): void {
+  const dir = openHomeDir(home, dirname(path));
+  if (!dir) throw new Error("directory is missing");
+  try {
+    const target = join(dir.path, basename(path));
+    const existing = lstatSync(target);
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new Error("refusing to rewrite a non-regular file");
+    writeFileOwned(target, JSON.stringify(data, null, 2), uid ?? existing.uid, existing.mode & 0o777);
+  } finally { dir.close(); }
 }
 
 export interface PromoteOptions {
   /** The user's home on the host. */
   home: string;
+  /** The user's uid: files read from the home must belong to it, and rewritten ones are handed back to it. */
+  uid?: number;
   /** Root-owned folder bound at /etc/claude-code in this user's sandbox. */
   managedDir: string;
   /** Floq's base managed settings (the image's /etc/claude-code/managed-settings.json). */
@@ -149,8 +156,9 @@ export function promoteUserPlugins(options: PromoteOptions): PromotedPlugin[] {
 
   const settingsPath = join(home, ".claude", "settings.json");
   const knownPath = join(home, ".claude", "plugins", "known_marketplaces.json");
-  const settings = readJson(settingsPath) ?? {};
-  const known = readJson(knownPath) ?? {};
+  const uid = options.uid ?? null;
+  const settings = readJson(home, settingsPath, uid) ?? {};
+  const known = readJson(home, knownPath, uid) ?? {};
   const enabled = Object.entries((settings.enabledPlugins as Record<string, unknown> | undefined) ?? {})
     .filter(([id, on]) => on === true && /^[^@]+@[^@]+$/.test(id))
     .map(([id]) => id);
@@ -174,13 +182,14 @@ export function promoteUserPlugins(options: PromoteOptions): PromotedPlugin[] {
     try {
       const entry = known[marketplace] as { source?: { source?: unknown; path?: unknown } } | undefined;
       const ours = entry?.source?.source === "directory" && entry.source.path === sandboxPath;
-      const remote = ours ? remoteOf(readJson(originFile)) : remoteOf(entry);
+      const remote = ours ? remoteOf(readJson(managedDir, originFile, null)) : remoteOf(entry);
       if (!entry || (!ours && !remote)) {
         // A local folder in the user's home: snapshot it as is (no remote to refresh from).
         const localPath = typeof entry?.source?.path === "string" && entry.source.source === "directory" ? hostPathInHome(home, entry.source.path) : null;
         if (!localPath) return null;
         rmSync(snapshot, { recursive: true, force: true });
-        cpSync(localPath, snapshot, { recursive: true, dereference: false, filter: (src) => !src.split(sep).includes(".git") });
+        // Confined copy: a symlinked component, or a symlink inside the tree, is never followed or copied (it would pull files from outside the home into the snapshot).
+        copyHomeTree(home, localPath, snapshot, { skipNames: [".git"] });
       } else if (remote) {
         const refreshedAt = statSync(originFile, { throwIfNoEntry: false })?.mtimeMs;
         const stale = !existsSync(join(snapshot, ".git")) || refreshedAt === undefined || now() - refreshedAt > REFRESH_MS;
@@ -213,8 +222,8 @@ export function promoteUserPlugins(options: PromoteOptions): PromotedPlugin[] {
     }
   }
 
-  if (knownChanged && existsSync(knownPath)) writeJsonKeepOwner(knownPath, known);
-  if (settingsChanged && existsSync(settingsPath)) writeJsonKeepOwner(settingsPath, settings);
+  if (knownChanged && existsSync(knownPath)) writeJsonKeepOwner(home, knownPath, known, options.uid ?? null);
+  if (settingsChanged && existsSync(settingsPath)) writeJsonKeepOwner(home, settingsPath, settings, options.uid ?? null);
 
   const managed = buildClaudeManagedSettings(base, promoted, { claudeAiConnectors: options.claudeAiConnectors });
   const target = join(managedDir, MANAGED_FILE);
@@ -230,5 +239,6 @@ function hostPathInHome(home: string, recorded: string): string | null {
   const rel = recorded.startsWith(sandboxHome + "/") ? recorded.slice(sandboxHome.length + 1) : null;
   if (!rel) return null;
   const host = join(home, rel);
-  return relative(home, host).startsWith("..") ? null : host;
+  const outside = relative(home, host);
+  return outside === ".." || outside.startsWith(".." + sep) || outside.startsWith("/") ? null : host;
 }
