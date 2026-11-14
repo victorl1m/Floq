@@ -4,12 +4,15 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useTerminalPrefs, type CursorStyle } from "@/lib/prefs";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import { useCanvasScroll } from "@/lib/canvas-scroll-pref";
+import type { WheelMode } from "@/lib/wheel-gesture";
 import { useAvatarPreference } from "@/lib/avatar-preference";
 import { useCursorPreference } from "@/lib/cursor-preference";
 import { useMaterialPreference, type MaterialPreference } from "@/lib/material-preference";
 import { useNativeMaterialSupport } from "@/lib/native-material";
 
 export default function AppearanceSection() {
+    const [canvasScroll, setCanvasScroll] = useCanvasScroll();
     const { theme = "system", setTheme } = useTheme();
     const [terminal, setTerminal] = useTerminalPrefs();
     const [material, setMaterial] = useMaterialPreference();
@@ -59,6 +62,19 @@ export default function AppearanceSection() {
                 </SettingRow>
                 <SettingRow settingId="appearance-robot-avatars" label="Robot avatars" htmlFor="appearance-robot-avatars" description="Give each agent its own generated Floq avatar, with the provider logo as a small corner badge. Turn off to show the provider logo alone.">
                     <Switch id="appearance-robot-avatars" checked={avatars === "on"} onCheckedChange={(v) => setAvatars(v ? "on" : "off")} />
+                </SettingRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Canvas">
+                <SettingRow settingId="appearance-canvas-scroll" label="Canvas scroll" htmlFor="appearance-canvas-scroll" description="Auto tells a touchpad from a mouse wheel: two-finger scroll pans, pinch and Ctrl+wheel zoom. Applies to the agent canvas and the memory graph.">
+                    <Select value={canvasScroll} onValueChange={(value) => setCanvasScroll(value as WheelMode)}>
+                        <SelectTrigger id="appearance-canvas-scroll" className="w-56"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="auto">Auto (recommended)</SelectItem>
+                            <SelectItem value="trackpad">Trackpad: scroll pans</SelectItem>
+                            <SelectItem value="mouse">Mouse: scroll zooms</SelectItem>
+                        </SelectContent>
+                    </Select>
                 </SettingRow>
             </SettingsGroup>
 

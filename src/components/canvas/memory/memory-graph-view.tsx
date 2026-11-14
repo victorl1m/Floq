@@ -6,6 +6,8 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { loadCanvasScroll } from "@/lib/canvas-scroll-pref";
+import { newWheelState, pinchFactor, wheelAction, wheelPixels } from "@/lib/wheel-gesture";
 import { fitTransform, ForceSim, pickNode, placeLabels, type ForceLink, type PlacedLabel, type Point } from "@/lib/memory-force";
 import { autoExpand, buildDisplay, displayIdOf, groupMemories, groupRadius, litNodes, type GEdge, type GroupMode } from "@/lib/memory-groups";
 import type { Memory, MemoryGraph, MemoryType } from "@/lib/runtime/types";
@@ -396,10 +398,19 @@ class GraphEngine {
     this.request();
   }
 
+  private wheelState = newWheelState();
+
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
     const p = this.local(e), v = this.view;
-    const k = Math.min(Math.max(v.k * Math.exp(-e.deltaY * 0.0015), MIN_ZOOM), MAX_ZOOM);
+    const action = wheelAction(e, loadCanvasScroll(), this.wheelState, e.timeStamp || performance.now());
+    if (action === "pan") {
+      const d = wheelPixels(e, this.h);
+      v.tx -= e.shiftKey && d.x === 0 ? d.y : d.x; v.ty -= e.shiftKey && d.x === 0 ? 0 : d.y;
+      this.userMoved(); this.request();
+      return;
+    }
+    const k = Math.min(Math.max(v.k * (action === "pinch" ? pinchFactor(e.deltaY, e.deltaMode) : Math.exp(-e.deltaY * 0.0015)), MIN_ZOOM), MAX_ZOOM);
     v.tx = p.x - ((p.x - v.tx) / v.k) * k; v.ty = p.y - ((p.y - v.ty) / v.k) * k; v.k = k;
     this.userMoved(); this.request();
   }
