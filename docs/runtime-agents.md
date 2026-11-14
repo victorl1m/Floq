@@ -71,7 +71,7 @@ The runtime runs as root; **agents never do** (`runtime/Dockerfile:126-127`). Pe
 | Per-user `/tmp` | host path `<home>/.floq/tmp`, mode 1777, bound at `/tmp`; entries unused for 7 days pruned on wake | `src/shard.ts:19-22`, `:403-417`, `:498-500` |
 | `sandboxPaths` | binds only this user's home at its host path (`/mnt/<root>/<uid>`) because Git linked-worktree metadata stores absolute paths | `src/sandboxPaths.ts:5-27`, `src/shard.ts:503-505` |
 | Claude managed dir | per-user `<meta>/<uid>.claude-code` bound read-only at `/etc/claude-code` when it holds a settings file, else the image's | `src/shard.ts:427-492` |
-| Network (optional) | `FLOQ_NETNS=1\|required`: one persistent netns per uid, launch wrapped in `nsenter`, nft egress policy, runtime reached at `10.255.255.1` mapped by pasta to the runtime's loopback | `src/netns.ts:9-24`, `src/shard.ts:456-458`, `:523` |
+| Network (default on) | `FLOQ_NETNS` unset/`required` (runtime refuses to start if unavailable), `1` (falls back with a log), `off` (shared network, trusted single-tenant hosts only): one persistent netns per uid, launch wrapped in `nsenter`, nft egress policy, runtime reached at `10.255.255.1` mapped by pasta to the runtime's loopback | `src/netns.ts:9-24`, `src/shard.ts:456-458`, `:523` |
 | Netns policy | drops RFC1918, CGNAT, link-local, reserved ranges; `FLOQ_NETNS_ALLOW` adds exceptions | `src/netns.ts:34-48`, `:157` |
 
 Ownership matters: gocryptfs acts as the calling uid, so anything root creates in a mounted home is root-owned. The runtime therefore uses `mkdirOwned`, `writeFileOwned` and `ownTree` for everything it writes (`src/shard.ts:142-210`).
@@ -344,7 +344,7 @@ sequenceDiagram
 | Claude falls back to the classic renderer | The fullscreen boot check misfires with one shared `~/.claude.json` and per-session PID namespaces; `CLAUDE_CODE_NO_FLICKER=1` is the fix | `providers.ts:146-152` |
 | Claude cannot write transcripts (EACCES) | Root-owned leftovers in `~/.claude`; the runtime repairs a shallow slice on every start (check `claude.ownership_repair_failed`) | `manager.ts:1495-1502` |
 | Random EPERM on file creation in homes | Old gocryptfs; image pins 2.6.1 with checksum. See `docs/ENCRYPTED-HOME-CONCURRENCY.md` | `runtime/Dockerfile:49-68` |
-| Sandbox start fails: "network is unavailable" | `FLOQ_NETNS` is on and pasta failed (respawned up to 5 times); wake the workspace again. With `FLOQ_NETNS=1` a failed startup probe logs `netns.disabled` and falls back to the shared network | `shard.ts:456-458`, `runtime/README.md:61`, `:190` |
+| Sandbox start fails: "network is unavailable" | `FLOQ_NETNS` is on (the default) and pasta failed (respawned up to 5 times); wake the workspace again. With `FLOQ_NETNS=1` a failed startup probe logs `netns.disabled` and falls back to the shared network | `shard.ts:456-458`, `runtime/README.md:61`, `:190` |
 | `setpriv` cannot drop uid on Ubuntu 24.04+ hosts | AppArmor profile attached to `/usr/bin/bwrap`; the image uses the copy `/usr/local/bin/floq-bwrap` instead | `shard.ts:519-523`, `runtime/Dockerfile:114-115` |
 | `floq` or hook scripts fail with a shebang error | CRLF line endings; the Dockerfile strips CR from installed scripts | `runtime/Dockerfile:106-108` |
 | Native subagent still available | Check for `subagent.native_block_degraded` in logs (old Claude version or hook script missing); the deny flag still applies | `nativeSubagentBlock.ts:56-63` |
@@ -408,7 +408,7 @@ The single pin is `runtime/image/browser/package.json` (`@playwright/mcp`). The 
 
 - **Not a boundary against a hostile agent.** The sandbox (bubblewrap, per-user uid, per-user home) is the boundary. When user namespaces are unavailable, which is common on stock Docker seccomp, Chromium runs with `--no-sandbox`. `floq browser status` shows which mode is active. To enable the Chromium sandbox, allow unprivileged user namespaces on the host (a seccomp profile that permits them, or `kernel.unprivileged_userns_clone=1`).
 - **Shared logins.** Every agent of the user, in any project, can use every site the user is logged in to. Imported sessions act as the user.
-- **Local network.** Without `FLOQ_NETNS=required`, a CDP interceptor blocks loopback and private addresses for pages and workers. It cannot see WebSocket or WebTransport handshakes, and a DNS name can resolve to a private address after the check. Use `FLOQ_NETNS=required` on multi-user hosts.
+- **Local network.** With `FLOQ_NETNS=off`, a CDP interceptor blocks loopback and private addresses for pages and workers. It cannot see WebSocket or WebTransport handshakes, and a DNS name can resolve to a private address after the check. Keep the default `FLOQ_NETNS=required` on multi-user hosts.
 - **Token exposure.** The daemon's bearer token reaches the MCP child's argv and env. Other processes of the same uid can read it. This is the same trust class as the user's own agents (residual L2).
 - **Prompt injection.** Web content can steer an agent toward logged-in sites. Outward actions still need `floq approval`, and the user sees agent activity live.
 - **Session cookies** do not survive a daemon stop or restart. Re-import them if needed.

@@ -15,7 +15,7 @@ terminal output for preview and debugger URLs and offers "Open preview" / "Open 
   unless the project requires it): let the tool pick a free one and read it from the output.
 - Bind to loopback: `127.0.0.1` / `localhost`. Floq only shows URLs on loopback whose port this session listens on.
 - By default other users' sandboxes on this server share the host network, so they can reach any port you listen on,
-  loopback included. Operators can give every user their own network namespace (`FLOQ_NETNS=1`); then only your own
+  loopback included. By default every user has their own network namespace (`FLOQ_NETNS`, unless the operator set it off); then only your own
   sessions share your ports (check: `ip -4 addr` shows 10.255.255.2 and nothing else listens for other users). Either
   way, do not serve secrets or real user data from a dev server, prefer auth-protected tools, and stop servers when
   you are done. With the namespace on, private networks (10/8, 172.16/12, 192.168/16, 169.254/16) are unreachable
