@@ -41,7 +41,7 @@ const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { buildMemoryPolicy, composeSystemBlocks } from "./subagents.js";
 import { NETNS_GATEWAY } from "./netns.js";
-import { mkdirOwned, mkdirOwnedSegment, ownTree, readHomeFile, safeRelative, UnsafeHomePathError, writeFileOwned, type ShardHandle } from "./shard.js";
+import { mkdirOwned, mkdirOwnedSegment, openChildDir, openHomeDir, ownHomeTree, readHomeFile, removeHomeTree, safeRelative, UnsafeHomePathError, writeFileOwned, type HomeDir, type ShardHandle } from "./shard.js";
 import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
@@ -73,39 +73,42 @@ const ROLLOUT = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 /** Every Codex session gets a private CODEX_HOME, so the only rollout file in it belongs to that session. */
 const codexHomeRel = (id: string) => ".floq/codex/" + id;
 
-function findRollout(dir: string): string | null {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      const found = findRollout(join(dir, entry.name));
-      if (found) return found;
-    } else {
-      const match = ROLLOUT.exec(entry.name);
-      if (match) return match[1];
+/**
+ * Walk a Codex sessions tree (agent-writable) with every directory pinned by descriptor and never entered through a symlink,
+ * and hand the first rollout file to `fn` while the descriptors are still open (`path` addresses it through them). A planted
+ * link at or above `sessions` makes root see nothing instead of another tenant's rollouts.
+ */
+function withRollout<T>(home: string, sessionsDir: string, fn: (path: string, sessionId: string) => T): T | null {
+  const walk = (dir: HomeDir, depth: number): T | null => {
+    let entries;
+    try { entries = readdirSync(dir.path, { withFileTypes: true }); } catch { return null; }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (depth >= 6) continue;
+        let child: HomeDir | null = null;
+        try { child = openChildDir(dir, entry.name); } catch { continue; }
+        if (!child) continue;
+        try {
+          const found = walk(child, depth + 1);
+          if (found !== null) return found;
+        } finally { child.close(); }
+      } else if (entry.isFile()) {
+        const match = ROLLOUT.exec(entry.name);
+        if (match) return fn(join(dir.path, entry.name), match[1]);
+      }
     }
-  }
-  return null;
+    return null;
+  };
+  let root: HomeDir | null;
+  try { root = openHomeDir(home, sessionsDir); } catch { return null; }
+  if (!root) return null;
+  try { return walk(root, 0); } finally { root.close(); }
 }
 
-function findRolloutFile(dir: string): string | null {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      const found = findRolloutFile(join(dir, entry.name));
-      if (found) return found;
-    } else if (ROLLOUT.test(entry.name)) return join(dir, entry.name);
-  }
-  return null;
+/** The uuid in the first rollout filename under a confined sessions dir. */
+function findRollout(home: string, sessionsDir: string): string | null {
+  return withRollout(home, sessionsDir, (_path, id) => id);
 }
 
 const MAX_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
@@ -588,11 +591,11 @@ export class SessionManager {
   readAgentTurn(id: string, userId: string): (TranscriptTurn & { mtimeMs: number; trailingAssistantText: boolean }) | null {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId) return null;
-    const path = state.provider === "claude"
-      ? claudeTranscriptPath(this.hostHome(state.handle), id)
-      : findRolloutFile(this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"));
-    if (!path) return null;
-    const tail = readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES);
+    const home = this.hostHome(state.handle);
+    const confine = { home, uid: state.handle.uid };
+    const tail = state.provider === "claude"
+      ? (() => { const path = claudeTranscriptPath(home, id); return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine) : null; })()
+      : withRollout(home, this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"), (path) => readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine));
     if (!tail) return null;
     return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
   }
@@ -602,7 +605,7 @@ export class SessionManager {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
     const path = claudeTranscriptPath(this.hostHome(state.handle), id);
-    return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES)?.text ?? null : null;
+    return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, { home: this.hostHome(state.handle), uid: state.handle.uid })?.text ?? null : null;
   }
 
   /** ms since a live session last wrote terminal output (Infinity when it is not live). */
@@ -1368,9 +1371,17 @@ export class SessionManager {
     }
     return this.withUserShardActivity(userId, async (handle) => {
       const { hostDirectory, relativeDirectory } = this.prepareAttachmentDirectory(handle);
-      const destination = join(hostDirectory, name);
-      writeFileSync(destination, contents, { flag: "wx", mode: 0o600 });
-      lchownSync(destination, handle.uid, handle.uid);
+      // The directory is user-owned from creation on: write through a descriptor-pinned handle so a swapped parent cannot redirect root.
+      const dir = openHomeDir(handle.mountPath, hostDirectory);
+      if (!dir) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+      try {
+        const destination = join(dir.path, name);
+        if (existsSync(destination) || (() => { try { lstatSync(destination); return true; } catch { return false; } })()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+        writeFileOwned(destination, contents, handle.uid, 0o600);
+      } catch (error) {
+        if (error instanceof UnsafeHomePathError) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+        throw error;
+      } finally { dir.close(); }
       return { path: join(this.shards.driver.homePath(handle), relativeDirectory, name), size: contents.length };
     });
   }
@@ -1406,18 +1417,21 @@ export class SessionManager {
     const release = () => { const left = (uploadsInFlight.get(userId) ?? 1) - 1; if (left <= 0) uploadsInFlight.delete(userId); else uploadsInFlight.set(userId, left); };
     return this.withUserShardActivity(userId, async (handle) => {
       const { hostDirectory, relativeDirectory, directoryPath } = this.prepareAttachmentDirectory(handle);
-      const destination = join(hostDirectory, name);
-      const partial = join(hostDirectory, `.upload-${randomUUID()}.part`);
+      const dir = openHomeDir(handle.mountPath, hostDirectory);
+      if (!dir) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+      const destination = join(dir.path, name);
+      const partial = join(dir.path, `.upload-${randomUUID()}.part`);
       try {
         const size = await streamToFile(source, partial, options.maxBytes, options.contentLength);
         lchownSync(partial, handle.uid, handle.uid);
         renameSync(partial, destination);
         return { path: join(this.shards.driver.homePath(handle), relativeDirectory, name), size };
       } catch (error) {
-        rmSync(partial, { force: true });
-        rmSync(directoryPath, { recursive: true, force: true });
+        try { rmSync(partial, { force: true }); } catch { /* best effort */ }
+        try { removeHomeTree(handle.mountPath, directoryPath); } catch { /* best effort */ }
+        if (error instanceof UnsafeHomePathError) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
         throw error;
-      }
+      } finally { dir.close(); }
     }).finally(release);
   }
 
@@ -1571,12 +1585,12 @@ export class SessionManager {
       this.shards.seed(codexHome, ".codex", handle.uid, await loadRemovedSkills(this.pool, row.user_id).catch(() => null));
       this.syncGlobalCodexMcp(handle, codexHome);
       try {
-        syncProtectedFloqSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid);
+        syncProtectedFloqSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid, handle.mountPath);
       } catch (error) {
         log.warn("codex.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
       try {
-        syncCodexManagedGuidance(codexHome, handle.uid, wiredBlock);
+        syncCodexManagedGuidance(codexHome, handle.uid, wiredBlock, handle.mountPath);
       } catch (error) {
         log.warn("codex.managed_guidance_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
@@ -1589,13 +1603,13 @@ export class SessionManager {
       // Anything root left behind in ~/.claude (or ~/.claude.json) makes Claude Code's transcript/todo/snapshot
       // writes fail with EACCES. Repair a shallow slice (config dir, projects/<slug>, ...) on every start.
       try {
-        ownTree(claudeHome, handle.uid, 2);
-        for (const name of [".claude.json", ".claude.json.backup"]) ownTree(this.shards.driver.hostPath(handle, name), handle.uid, 0);
+        ownHomeTree(handle.mountPath, claudeHome, handle.uid, 2);
+        for (const name of [".claude.json", ".claude.json.backup"]) ownHomeTree(handle.mountPath, this.shards.driver.hostPath(handle, name), handle.uid, 0);
       } catch (error) {
         log.warn("claude.ownership_repair_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
       try {
-        syncProtectedFloqSkill(claudeHome, join(this.config.skelDir, ".claude/skills/floq-orchestrate"), handle.uid);
+        syncProtectedFloqSkill(claudeHome, join(this.config.skelDir, ".claude/skills/floq-orchestrate"), handle.uid, handle.mountPath);
       } catch (error) {
         log.warn("claude.protected_skill_sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
       }
@@ -1607,7 +1621,7 @@ export class SessionManager {
       if (managedDir) {
         try {
           const base = JSON.parse(readFileSync(IMAGE_MANAGED_SETTINGS, "utf8")) as Record<string, unknown>;
-          const promoted = promoteUserPlugins({ home: this.shards.driver.hostPath(handle, "."), managedDir, base, claudeAiConnectors: (await this.settings?.claudeAiConnectors(row.user_id)) ?? true });
+          const promoted = promoteUserPlugins({ home: this.shards.driver.hostPath(handle, "."), uid: handle.uid, managedDir, base, claudeAiConnectors: (await this.settings?.claudeAiConnectors(row.user_id)) ?? true });
           if (promoted.length) log.info("claude.user_plugins_managed", { sessionId: row.id, plugins: promoted.map((p) => p.id) });
         } catch (error) {
           // Without the image's base file there is nothing to extend: the sandbox falls back to the image's settings.
@@ -1722,7 +1736,7 @@ export class SessionManager {
 
   /** Read the uuid Codex assigned (from its rollout filename) so resume targets exactly this conversation. */
   private async captureCodexId(id: string, handle: ShardHandle): Promise<boolean> {
-    const found = findRollout(this.shards.driver.hostPath(handle, codexHomeRel(id) + "/sessions"));
+    const found = findRollout(this.hostHome(handle), this.shards.driver.hostPath(handle, codexHomeRel(id) + "/sessions"));
     if (!found) return false;
     await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1", [id, found]);
     const titleState = this.nativeTitleSessions.get(id);
@@ -2097,7 +2111,7 @@ export class SessionManager {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
     const path = claudeTranscriptPath(this.hostHome(state.handle), id);
-    return path ? readTranscriptHead(path, maxBytes) : null;
+    return path ? readTranscriptHead(path, maxBytes, { home: this.hostHome(state.handle), uid: state.handle.uid }) : null;
   }
 
   /** Sandbox path of a live Claude agent's transcript (given to the Codex agent in the handoff). */

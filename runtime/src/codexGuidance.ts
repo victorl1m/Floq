@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, join } from "node:path";
+import { mkdirOwned, openHomeDir, writeFileOwned } from "./shard.js";
 
 export const FLOQ_GUIDANCE_BEGIN = "<!-- FLOQ MANAGED GUIDANCE: BEGIN -->";
 export const FLOQ_GUIDANCE_END = "<!-- FLOQ MANAGED GUIDANCE: END -->";
@@ -37,41 +37,48 @@ ${FLOQ_GUIDANCE_END}`) : FLOQ_CODEX_GUIDANCE;
   return `${cleaned}${cleaned ? "\n\n" : ""}${guidance}\n`;
 }
 
-/** Refresh a small marked instruction block while preserving the rest of the effective AGENTS file. */
-export function syncCodexManagedGuidance(codeHome: string, uid?: number, extra = ""): string {
-  const root = realpathSync(codeHome);
-  const override = join(root, "AGENTS.override.md");
-  const standard = join(root, "AGENTS.md");
-  const overrideExists = existsSync(override);
-  const selected = overrideExists && lstatSync(override).size > 0 ? override : standard;
-  if (existsSync(selected)) {
-    const stat = lstatSync(selected);
-    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("Refusing unsafe Codex instruction path");
-  }
-  const parent = realpathSync(dirname(selected));
-  const fromRoot = relative(root, parent);
-  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) throw new Error("Codex instruction path escaped CODEX_HOME");
-  const current = existsSync(selected) ? readFileSync(selected, "utf8") : "";
-  const next = mergeFloqGuidance(current, extra);
-  if (next === current) return selected;
-
-  const temporary = join(parent, `.${basename(selected)}.${randomUUID()}.tmp`);
+/** Read a regular file by descriptor (O_NOFOLLOW, never blocks on a FIFO). */
+function readRegular(path: string): string {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
   try {
-    writeFileSync(temporary, next, { mode: existsSync(selected) ? lstatSync(selected).mode & 0o777 : 0o644, flag: "wx" });
-    if (uid !== undefined) chownSync(temporary, uid, uid);
-    chmodSync(temporary, existsSync(selected) ? lstatSync(selected).mode & 0o777 : 0o644);
-    renameSync(temporary, selected);
-  } finally {
-    try { if (existsSync(temporary)) rmSync(temporary, { force: true }); } catch { /* Best-effort temp cleanup. */ }
-  }
-  return selected;
+    if (!fstatSync(fd).isFile()) throw new Error("Refusing unsafe Codex instruction path");
+    return readFileSync(fd, "utf8");
+  } finally { closeSync(fd); }
 }
 
-/** Update bundled Floq skill files in a private CODEX_HOME without following user-created links. */
-export function syncProtectedFloqSkill(agentHome: string, sourceSkillDir: string, uid?: number): void {
-  const root = realpathSync(agentHome);
+/**
+ * Refresh a small marked instruction block while preserving the rest of the effective AGENTS file. `home` is the user's
+ * home when `codeHome` lives inside an agent-writable one: the directory is then opened by descriptor through it (no symlinked
+ * component is followed) and all reads and writes go through that descriptor.
+ */
+export function syncCodexManagedGuidance(codeHome: string, uid?: number, extra = "", home?: string): string {
+  const root = home === undefined ? realpathSync(codeHome) : codeHome;
+  const dir = openHomeDir(home ?? root, root);
+  if (!dir) throw new Error("CODEX_HOME is missing");
+  try {
+    const override = join(dir.path, "AGENTS.override.md");
+    const standard = join(dir.path, "AGENTS.md");
+    const info = (path: string) => { try { return lstatSync(path); } catch { return null; } };
+    const overrideInfo = info(override);
+    const selected = overrideInfo && overrideInfo.size > 0 ? override : standard;
+    const selectedInfo = selected === override ? overrideInfo : info(standard);
+    if (selectedInfo && (selectedInfo.isSymbolicLink() || !selectedInfo.isFile())) throw new Error("Refusing unsafe Codex instruction path");
+    const current = selectedInfo ? readRegular(selected) : "";
+    const next = mergeFloqGuidance(current, extra);
+    const name = basename(selected);
+    if (next === current) return join(root, name);
+    writeFileOwned(selected, next, uid ?? null, selectedInfo ? selectedInfo.mode & 0o777 : 0o644);
+    return join(root, name);
+  } finally { dir.close(); }
+}
+
+/** Update bundled Floq skill files in a private agent home without following user-created links (descriptor-pinned when `home` is given). */
+export function syncProtectedFloqSkill(agentHome: string, sourceSkillDir: string, uid?: number, home?: string): void {
+  const root = home === undefined ? realpathSync(agentHome) : agentHome;
+  const base = home ?? root;
   const source = realpathSync(sourceSkillDir);
-  const skillRoot = ensureDirectory(root, ["skills", "floq-orchestrate"], uid);
+  const skillRoot = join(root, "skills", "floq-orchestrate");
+  mkdirOwned(base, skillRoot, uid ?? null);
   const files: string[] = [];
   const visit = (directory: string, prefix = "") => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -86,38 +93,16 @@ export function syncProtectedFloqSkill(agentHome: string, sourceSkillDir: string
 
   for (const relativePath of files) {
     const parts = relativePath.split(/[\\/]/);
-    const parent = parts.length > 1 ? ensureDirectory(skillRoot, parts.slice(0, -1), uid) : skillRoot;
-    const target = join(parent, parts[parts.length - 1]);
-    if (existsSync(target)) {
-      const targetStat = lstatSync(target);
-      if (targetStat.isSymbolicLink() || !targetStat.isFile()) throw new Error("Refusing unsafe protected Floq skill file");
-    }
-    const contents = readFileSync(join(source, relativePath));
-    const temporary = join(parent, `.${basename(target)}.${randomUUID()}.tmp`);
+    const parentPath = parts.length > 1 ? join(skillRoot, ...parts.slice(0, -1)) : skillRoot;
+    mkdirOwned(base, parentPath, uid ?? null);
+    const parent = openHomeDir(base, parentPath);
+    if (!parent) throw new Error("Refusing unsafe protected Floq skill path");
     try {
-      writeFileSync(temporary, contents, { mode: 0o644, flag: "wx" });
-      if (uid !== undefined) chownSync(temporary, uid, uid);
-      renameSync(temporary, target);
-    } finally {
-      try { if (existsSync(temporary)) rmSync(temporary, { force: true }); } catch { /* Best-effort temp cleanup. */ }
-    }
+      const target = join(parent.path, parts[parts.length - 1]);
+      let targetStat = null;
+      try { targetStat = lstatSync(target); } catch { /* new file */ }
+      if (targetStat && (targetStat.isSymbolicLink() || !targetStat.isFile())) throw new Error("Refusing unsafe protected Floq skill file");
+      writeFileOwned(target, readFileSync(join(source, relativePath)), uid ?? null, 0o644);
+    } finally { parent.close(); }
   }
-}
-
-function ensureDirectory(root: string, parts: string[], uid?: number): string {
-  let current = root;
-  for (const part of parts) {
-    current = join(current, part);
-    let created = false;
-    try { mkdirSync(current, { mode: 0o755 }); created = true; }
-    catch (error) {
-      if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "EEXIST") throw error;
-    }
-    const stat = lstatSync(current);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Refusing unsafe protected Floq skill path");
-    const fromRoot = relative(root, realpathSync(current));
-    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) throw new Error("Protected Floq skill path escaped CODEX_HOME");
-    if (created && uid !== undefined) chownSync(current, uid, uid);
-  }
-  return current;
 }

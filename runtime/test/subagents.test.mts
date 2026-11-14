@@ -74,7 +74,7 @@ test("the policy is independent of role and provider and role prompts cannot car
   const launch = readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
   assert.match(launch, /composeSystemBlocks\(this\.subagents/);
   assert.match(launch, /row\.provider === "claude"\) args\.push\("--append-system-prompt", wiredBlock\)/);
-  assert.match(launch, /syncCodexManagedGuidance\(codexHome, handle\.uid, wiredBlock\)/);
+  assert.match(launch, /syncCodexManagedGuidance\(codexHome, handle\.uid, wiredBlock, handle\.mountPath\)/);
 });
 
 test("blockFor reflects depth in the recruit tree and the user toggle", async () => {

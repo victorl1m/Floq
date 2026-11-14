@@ -1,7 +1,7 @@
-import { lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { conflict } from "./errors.js";
-import { safeRelative } from "./shard.js";
+import { removeHomeTree, safeRelative, UnsafeHomePathError } from "./shard.js";
 
 /**
  * Deleting a project removes only what Floq itself created for it on the user's volume:
@@ -107,12 +107,17 @@ export function removeManagedCheckout(home: string, relativePath: string, kind: 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
     throw error;
   }
-  if (stat.isSymbolicLink()) { unlinkSync(target); return "link-removed"; }
+  if (stat.isSymbolicLink()) { removeHomeTree(homeReal, target); return "link-removed"; }
   if (!stat.isDirectory()) throw conflict("The checkout path is not a directory; it was left in place.", "unsafe_project_path");
   const real = realpathSync.native(target);
   if (norm(real) !== norm(join(realpathSync.native(join(homeReal, dot, group)), leaf))) throw conflict("The checkout resolves outside its expected location; it was left in place.", "unsafe_project_path");
-  // rmSync never follows symbolic links it meets inside the tree; it unlinks them.
-  rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  // Descriptor-pinned removal: each directory is opened O_NOFOLLOW and its entries unlinked relative to it, so a same-user
+  // process racing a directory-for-symlink swap cannot steer root's deletion into another tree (a link is only ever unlinked).
+  try { removeHomeTree(homeReal, target); }
+  catch (error) {
+    if (error instanceof UnsafeHomePathError) throw conflict("A parent folder is a link; refusing to delete through it.", "unsafe_project_path");
+    throw error;
+  }
   return "removed";
 }
 
