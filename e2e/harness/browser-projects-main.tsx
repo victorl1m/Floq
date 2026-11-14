@@ -17,10 +17,11 @@ class MockSocket {
 }
 (window as unknown as { WebSocket: unknown }).WebSocket = MockSocket;
 
+const AUTO = new URLSearchParams(location.search).has("auto"); // ?auto: an agent is connected to the browser and the hook may open a node itself
 const OWN = "floq:test-owners";
 const owners = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(OWN) ?? "{}"); } catch { return {}; } };
 const client = {
-  browserStreamUrl: (nodeId: string) => `ws://mock/v1/browser/stream?node=${nodeId}`, browserStatus: async () => ({ state: "running", agents: 0 }), browserLinks: async () => [],
+  browserStreamUrl: (nodeId: string) => `ws://mock/v1/browser/stream?node=${nodeId}`, browserStatus: async () => ({ state: "running", agents: AUTO ? 1 : 0 }), browserLinks: async () => [],
   claimBrowserNode: async (nodeId: string, projectId: string) => {
     const o = owners();
     if (o[nodeId] && o[nodeId] !== projectId) throw Object.assign(new Error("other project"), { status: 409 });
@@ -32,7 +33,7 @@ const client = {
 const nodeTypes = { ...browserNodeTypes };
 function App() {
   const [project, setProject] = React.useState("pA");
-  const b = useCanvasBrowsers(client, project, { x: 40, y: 40 }, false);
+  const b = useCanvasBrowsers(client, project, { x: 40, y: 40 }, AUTO);
   const bctx = React.useMemo(() => ({ client, close: b.close, linkedAgents: () => [], newBrowser: () => { b.open(); } }), [b.close, b.open]);
   return (
     <BrowserProvider value={bctx}>
@@ -40,6 +41,7 @@ function App() {
         <button data-testid="to-a" onClick={() => setProject("pA")}>Project A</button>
         <button data-testid="to-b" onClick={() => setProject("pB")}>Project B</button>
         <button data-testid="new-browser" onClick={() => b.open()}>New browser</button>
+        <button data-testid="close-first" onClick={() => b.nodes[0] && b.close(b.nodes[0].id)}>Close</button>
         <span data-testid="project">{project}</span>
       </div>
       <div style={{ width: "100vw", height: "100vh" }}>

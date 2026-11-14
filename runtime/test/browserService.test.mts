@@ -111,6 +111,7 @@ test("ensure spawns the daemon in the sandbox with a stdin pipe, shares one star
   const status = await service.status("alice");
   assert.equal(status.state, "running");
   assert.equal(status.pid, 4242);
+  assert.deepEqual(status.agentSessions?.sort(), ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], "agent sessions that connected are listed (the helper is not), so the canvas can wire them to a Browser node");
   assert.match(status.sandbox, /^off \(no userns/);
   assert.ok(!JSON.stringify(status).includes(TOKEN), "status never carries the token");
   await service.shutdown();

@@ -384,7 +384,7 @@ const newId = () => Math.random().toString(36).slice(2, 8);
 
 /**
  * The Browser nodes of a canvas (one page each). Opened from the canvas menu or the node's "New browser" button, or one is opened
- * automatically the first time an agent of this project is connected (polled while there is no node; once per project, closing is remembered).
+ * automatically whenever an agent of this project is connected to the browser and no node is open (polled; closing a node keeps it closed until that agent connection ends).
  * Nodes belong to the project they were created on: the list is tagged with its project (a stale list from the previous project is never
  * shown or written under the new one) and the runtime registers each node id to one project.
  */
@@ -418,6 +418,7 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
   }, [client, projectId, state, update]);
 
 
+  const dismissed = useRef(false);
   const open = useCallback((at?: { x: number; y: number }): string => {
     const id = newId();
     update((prev) => {
@@ -428,18 +429,19 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
   }, [update]);
   const close = useCallback((nodeId: string) => {
     const id = nodeId.startsWith(BROWSER_PREFIX) ? nodeId.slice(BROWSER_PREFIX.length) : nodeId;
+    dismissed.current = true; // stays closed until the agent connection ends; a later connection opens a node again
     update((prev) => ({ seen: true, nodes: prev.nodes.filter((n) => n.id !== id) }));
   }, [update]);
 
   const count = stored.nodes.length;
   useEffect(() => {
-    if (!client || !projectId || count > 0 || stored.seen || !autoOpenPoll || !projectHasAgents) return;
+    if (!client || !projectId || count > 0 || !autoOpenPoll || !projectHasAgents) return;
     let stopped = false;
-    const poll = async () => { try { const s = await client.browserStatus(); if (!stopped && (s.agents ?? 0) > 0 && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
+    const poll = async () => { try { const s = await client.browserStatus(); if (stopped) return; if ((s.agents ?? 0) === 0) dismissed.current = false; else if (!dismissed.current && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
     void poll();
     const t = setInterval(() => { if (document.visibilityState !== "hidden") void poll(); }, POLL_MS);
     return () => { stopped = true; clearInterval(t); };
-  }, [client, projectId, count, stored.seen, autoOpenPoll, projectHasAgents, open]);
+  }, [client, projectId, count, autoOpenPoll, projectHasAgents, open]);
 
   const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
     id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),

@@ -37,6 +37,8 @@ export type BrowserClientMessage =
 export interface BrowserStatus {
   state: BrowserState;
   agents?: number;
+  /** Sessions that connected to the browser; the canvas links them to a Browser node so the user can watch. */
+  agentSessions?: string[];
   tabs?: number;
   version?: { chromium: string; revision: string | number; playwrightMcp: string; build?: string } | null;
   profile?: string;

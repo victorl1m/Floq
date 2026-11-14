@@ -882,6 +882,28 @@ function AgentCanvas() {
   const browser = useCanvasBrowsers(client, activeProjectId ?? null, browserAnchor, true, projectSessions.length > 0);
   const browserLinks = useBrowserLinks(client, activeProjectId, titleOf);
   browserUnlinkRef.current = browserLinks.unlink;
+  // An agent that connected to the shared browser without a wire drives its own tab, which no Browser node can show. Wire each such agent of this
+  // project to the project's first Browser node once (a wire the user deletes is not recreated), so its pages appear on the canvas for watching and logins.
+  const autoWired = useRef(new Set<string>());
+  const firstBrowserNode = browser.nodes[0]?.id;
+  useEffect(() => {
+    if (!client || !activeProjectId || !firstBrowserNode) return;
+    const ids = new Set(projectSessions.map((session) => session.id));
+    const tick = async () => {
+      try {
+        const status = await client.browserStatus();
+        const linked = new Set(browserLinks.links.map((l) => l.sessionId));
+        for (const sessionId of status.agentSessions ?? []) {
+          if (!ids.has(sessionId) || linked.has(sessionId) || autoWired.current.has(sessionId)) continue;
+          autoWired.current.add(sessionId);
+          browserLinks.link(firstBrowserNode, sessionId);
+        }
+      } catch { /* older runtime / browser off */ }
+    };
+    void tick();
+    const t = setInterval(() => { if (document.visibilityState !== "hidden") void tick(); }, 5_000);
+    return () => clearInterval(t);
+  }, [client, activeProjectId, firstBrowserNode, projectSessions, browserLinks.links, browserLinks.link]);
   const browserWiresRef = useRef<CanvasLink[]>([]);
   const browserNodeIds = useMemo(() => new Set(browser.nodes.map((node) => node.id)), [browser.nodes]);
   // Agent -> Browser node wires use the standard wire edge (same component, colours, dashes, handles and delete button as agent links).
