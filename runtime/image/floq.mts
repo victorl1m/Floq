@@ -85,6 +85,8 @@ Commands:
   floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
   (without --wait, Floq types "[FLOQ DECISION <id> ANSWERED] question -> answer" into your terminal when the user answers; full text via status)
+  floq notify --title TEXT [--body TEXT] [--level info|success|warning|error] [--category release|build|agent|cost|security|message|system|custom] [--action-url URL | --action-canvas ID | --action-agent ID | --action-settings SECTION] [--action-label TEXT]
+  (one-way notice in the user's Notification Center and a toast; prints the id and never waits. Use it instead of a decision when no answer is needed)
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. It never times out by default: the user answers yes or no whenever they like; --timeout SEC makes this command give up and withdraw after SEC seconds
   floq approval verify ID [--consume] [--action "TEXT"]   ask the runtime whether ID is a real user approval: prints GRANTED/DENIED/EXPIRED/CONSUMED/PENDING/UNKNOWN. Run it with --consume right before acting; exit code 0 only when GRANTED for THIS session
   floq approval status ID [--wait]   |   floq approval cancel ID
@@ -233,6 +235,7 @@ const usage = (): never => {
 const allowedOptions: Record<string, string[]> = {
   top: ["project", "here", "interval", "once"], list: ["project", "here", "all-projects"], agents: ["project", "here", "all-projects"], link: [], roles: [], role: [], models: ["provider"], ask: ["timeout", "wait", "no-wait", "chars", "full", "file"], inbox: [], progress: ["percent", "status", "file"], "ask-parent": ["file"], watch: ["since", "timeout", "reply"], wait: ["timeout", "chars", "full"], check: ["chars", "full"],
   decision: ["question", "options-json", "detail", "ttl", "wait"],
+  notify: ["title", "body", "level", "category", "action-url", "action-canvas", "action-agent", "action-settings", "action-label"],
   session: [], browser: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
   recruit: ["provider", "model", "cwd", "role", "isolated", "skill", "fallback"], subagent: ["task", "role", "provider", "model", "skill", "fallback", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
@@ -525,6 +528,20 @@ switch (command) {
     }
     await call("display/started");
     console.log("running: display " + slot.display + ". Now run: eval \"$(floq display env)\" in the shell that launches GUI apps (sets DISPLAY and XAUTHORITY); the user sees and uses them in Floq's App window panel. Stop with: floq display stop");
+    break;
+  }
+  case "notify": {
+    // One-way: posts a notification and prints its id. Never waits for the user.
+    if (positional.length) usage();
+    for (const k of ["title", "body", "level", "category", "action-url", "action-canvas", "action-agent", "action-settings", "action-label"]) if (named[k] !== undefined && typeof named[k] !== "string") usage();
+    if (typeof named.title !== "string" || !named.title.trim()) { console.error("floq: notify needs --title"); process.exit(2); }
+    const kinds = (["url", "canvas", "agent", "settings"] as const).filter((k) => named["action-" + k] !== undefined);
+    if (kinds.length > 1) { console.error("floq: use only one of --action-url, --action-canvas, --action-agent, --action-settings"); process.exit(2); }
+    if (kinds.length === 0 && named["action-label"] !== undefined) { console.error("floq: --action-label needs an --action-* target"); process.exit(2); }
+    const kind = kinds[0];
+    const action = kind ? { kind, target: String(named["action-" + kind]), label: typeof named["action-label"] === "string" ? named["action-label"] : kind === "url" ? "Open" : "Go" } : undefined;
+    const r = await call<{ id: string }>("notifications/create", { title: named.title, body: named.body, level: named.level ?? "info", category: named.category ?? "custom", action });
+    console.log(r.id);
     break;
   }
   case "decision": {

@@ -277,6 +277,15 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS agent_decisions_provider_request_idx ON agent_decisions (requester_session_id, provider_request_id) WHERE provider_request_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS agent_decisions_user_idx ON agent_decisions (user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_notifications (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      project_id UUID, session_id UUID, session_name TEXT,
+      level TEXT NOT NULL CHECK (level IN ('info','success','warning','error')),
+      category TEXT NOT NULL CHECK (category IN ('release','build','agent','cost','security','message','system','custom')),
+      title TEXT NOT NULL, body TEXT, action JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), read_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS agent_notifications_user_idx ON agent_notifications (user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS vault_secrets (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
