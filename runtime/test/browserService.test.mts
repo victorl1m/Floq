@@ -129,6 +129,18 @@ test("netns and allowPrivate drop the private-range blocker; memMb is passed thr
   await allow.service.shutdown();
 });
 
+test("with a per-user netns the daemon is spawned inside the sandbox and the endpoint stays on that sandbox's own loopback (no gateway, no host loopback)", async () => {
+  const seen = [];
+  const svc = new BrowserService({ awakeHandle: () => ({ userId: "alice", uid: 1, mountPath: "/m", netns: "/run/floq/netns/1" }), wake: async () => ({}), driver: { hostPath: () => "", spawnPipe: (h, spec) => { seen.push([h, spec]); return fakeDaemon(); } } }, { agentBrowser: async () => true }, null, { mode: "on", idleMs: 0, memMb: 0, allowPrivate: false, browsersDir: "/x", version: { chromium: "1", revision: "1", playwrightMcp: "1" } }, () => true);
+  const e = await svc.ensure("alice");
+  assert.equal(seen.length, 1, "launched through the shard driver (inside the tenant namespace), never by the runtime itself");
+  assert.equal(seen[0][0].netns, "/run/floq/netns/1");
+  // pasta no longer mirrors the runtime container's loopback (-T none -U none): the MCP wrapper reaches the daemon only because both
+  // live in the same tenant namespace, so the endpoint must be 127.0.0.1 and must not name the gateway.
+  assert.match(e.wsEndpoint, /^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\?agent=/);
+  await svc.shutdown();
+});
+
 test("admin off, user off and a missing browser each refuse with the right state", async () => {
   const off = harness({ mode: "off" });
   assert.equal(off.service.capability(), "disabled");

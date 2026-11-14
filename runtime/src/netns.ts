@@ -1,6 +1,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { chownSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isIPv4, isIPv6 } from "node:net";
 import { Duplex } from "node:stream";
 import { promisify } from "node:util";
 import { log } from "./logger.js";
@@ -111,7 +112,7 @@ export interface PastaOptions {
   runas?: number;
 }
 
-/** pasta attached to an existing namespace by path: no inbound forwards, static addressing, DNS forwarder, IPv4 only. */
+/** pasta attached to an existing namespace by path: no inbound or loopback-outbound forwards, static addressing, DNS forwarder, IPv4 only. */
 export function pastaArgv(o: PastaOptions): string[] {
   return [
     "--foreground", "--quiet", "-4",
@@ -120,7 +121,10 @@ export function pastaArgv(o: PastaOptions): string[] {
     "--address", NETNS_ADDRESS,
     "--netmask", String(NETNS_PREFIX),
     "--gateway", NETNS_GATEWAY,
-    "-t", "none", "-u", "none",
+    // -t/-u none: no inbound. -T/-U none: pasta's outbound default (auto) would mirror every port the runtime container listens on
+    // onto the tenant's 127.0.0.1, so a tenant could reach the runtime API/DB-adjacent listeners over its own loopback. The tenant's
+    // loopback stays its own; the runtime is reachable only on the gateway (--map-host-loopback), where the nft ruleset allows one port.
+    "-t", "none", "-u", "none", "-T", "none", "-U", "none",
     "--map-host-loopback", NETNS_GATEWAY,
     "--dns-forward", NETNS_DNS,
     "--no-dhcp",
@@ -136,6 +140,60 @@ export interface EgressOptions {
   allow?: readonly string[];
   /** The runtime container's own IPv4 addresses (pasta lets the namespace reach them as the host): dropped like the private ranges. */
   hostAddresses?: readonly string[];
+  /**
+   * The host's own PUBLIC egress addresses (FLOQ_HOST_PUBLIC_IPS + auto-detection). A tenant reaching them hairpins back into the
+   * host's published services (databases, panels), so IPv4 ones are dropped like hostAddresses. IPv6 entries are accepted and
+   * validated but need no rule: the namespace drops all IPv6 already.
+   */
+  publicAddresses?: readonly string[];
+}
+
+export const DEFAULT_PUBLIC_IP_URL = "https://api.ipify.org";
+export const DEFAULT_PUBLIC_IP_REFRESH_S = 300;
+/** Retry quickly while no address has ever been detected (and none is configured). */
+export const PUBLIC_IP_RETRY_S = 30;
+
+/** Strictly validated host public addresses (comma separated IPv4/IPv6 literals, no CIDRs): throws on anything else. */
+export function parsePublicIps(raw: string | undefined): string[] {
+  const out: string[] = [];
+  for (const item of (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (!isIPv4(item) && !isIPv6(item)) throw new Error("FLOQ_HOST_PUBLIC_IPS: not an IPv4/IPv6 address: " + item.slice(0, 40));
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+}
+
+/** The IP-echo URL (FLOQ_HOST_PUBLIC_IP_URL). null = auto-detection disabled ("off"/"0"/empty-with-off); invalid values throw. */
+export function publicIpUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.FLOQ_HOST_PUBLIC_IP_URL?.trim();
+  if (!raw) return DEFAULT_PUBLIC_IP_URL;
+  if (["off", "0", "false", "no", "disabled", "none"].includes(raw.toLowerCase())) return null;
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new Error("FLOQ_HOST_PUBLIC_IP_URL: not a URL: " + raw.slice(0, 60)); }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("FLOQ_HOST_PUBLIC_IP_URL must be http(s)");
+  return raw;
+}
+
+/** Body of an IP-echo service -> a single IP literal, or null (HTML error pages, empty bodies and multi-line junk are rejected). */
+export function parseIpEcho(body: string): string | null {
+  const v = body.trim();
+  return v.length <= 45 && (isIPv4(v) || isIPv6(v)) ? v : null;
+}
+
+/** Ask an IP-echo URL for the egress address. Never throws: null on timeout, HTTP error or a body that is not an IP. */
+export async function detectPublicIp(url: string, timeoutMs = 4_000, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  // A ref'd timer (AbortSignal.timeout is unref'd, so a stalled fetch could let the process exit or a test loop drain mid-await).
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(url, { signal: abort.signal, redirect: "error", headers: { accept: "text/plain" } });
+    if (!res.ok) return null;
+    return parseIpEcho((await res.text()).slice(0, 200));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** IPv4 addresses from `ip -o -4 addr show` output (loopback and unparsable lines skipped), as /32 entries. */
@@ -154,7 +212,13 @@ export function nftRuleset(o: EgressOptions): string {
   if (!Number.isInteger(o.runtimePort) || o.runtimePort < 1 || o.runtimePort > 65535) throw new Error("invalid runtime port");
   const allow = parseAllowList((o.allow ?? []).join(","));
   const hostAddresses = parseAllowList((o.hostAddresses ?? []).join(",")).filter((a) => a !== NETNS_ADDRESS + "/32");
+  const publicV4 = (o.publicAddresses ?? []).filter((a) => !a.includes(":"));
+  for (const a of o.publicAddresses ?? []) if (!isIPv4(a) && !isIPv6(a)) throw new Error("invalid public address");
+  const dropHosts = [...new Set([...hostAddresses, ...publicV4.map((a) => a + "/32")])].filter((a) => a !== NETNS_ADDRESS + "/32");
   const lines = [
+    // add + delete + define in one transaction: applies cleanly the first time and atomically replaces the table on a refresh.
+    "add table inet floq_egress",
+    "delete table inet floq_egress",
     "table inet floq_egress {",
     "  chain output {",
     "    type filter hook output priority 0; policy drop;",
@@ -167,7 +231,7 @@ export function nftRuleset(o: EgressOptions): string {
   ];
   if (allow.length) lines.push(`    ip daddr { ${allow.join(", ")} } accept`);
   // After the gateway/DNS/allow rules, before the public accept: the container's own (possibly public) addresses and every blocked range.
-  if (hostAddresses.length) lines.push(`    ip daddr { ${hostAddresses.join(", ")} } drop`);
+  if (dropHosts.length) lines.push(`    ip daddr { ${dropHosts.join(", ")} } drop`);
   lines.push(
     `    ip daddr { ${NETNS_BLOCKED_RANGES.join(", ")} } drop`,
     "    meta nfproto ipv4 accept",
@@ -290,6 +354,14 @@ export interface NetnsOptions {
   pastaBin?: string;
   /** uid pasta runs as (default 0; see PastaOptions.runas). */
   pastaUid?: number;
+  /** Host public addresses (default FLOQ_HOST_PUBLIC_IPS). */
+  publicIps?: readonly string[];
+  /** IP-echo URL for auto-detection (default FLOQ_HOST_PUBLIC_IP_URL / api.ipify.org; null disables). */
+  publicIpUrl?: string | null;
+  /** Detector override (tests). */
+  detectIp?: (url: string) => Promise<string | null>;
+  /** Seconds between re-detections (default FLOQ_HOST_PUBLIC_IP_REFRESH_SECS / 300). */
+  publicIpRefreshSecs?: number;
 }
 
 /** Default uid for pasta: FLOQ_NETNS_PASTA_UID (0 keeps root) or "nobody". */
@@ -317,11 +389,57 @@ export class NetnsManager {
   private enabled = true;
   /** uid pasta actually runs as: resolved at init (dedicated unprivileged uid when it works, 0 only as a logged fallback). */
   private pastaUid: number;
+  private readonly configuredIps: string[];
+  private readonly echoUrl: string | null;
+  private detectedIp: string | null = null;
+  private ipTimer: NodeJS.Timeout | null = null;
+  private stopped = false;
 
   constructor(private readonly options: NetnsOptions) {
     this.dir = options.dir ?? NETNS_DIR;
     this.pastaUid = options.pastaUid ?? envPastaUid();
     parseAllowList((options.allow ?? []).join(","));
+    this.configuredIps = options.publicIps ? parsePublicIps(options.publicIps.join(",")) : parsePublicIps(process.env.FLOQ_HOST_PUBLIC_IPS);
+    this.echoUrl = options.publicIpUrl !== undefined ? options.publicIpUrl : publicIpUrl();
+  }
+
+  /** Every host public address currently dropped: the configured ones plus the detected egress address. */
+  publicAddresses(): string[] {
+    return [...new Set([...this.configuredIps, ...(this.detectedIp ? [this.detectedIp] : [])])];
+  }
+
+  /** One detection round. On a changed address the rules of every live namespace are re-applied. Returns whether the set changed. */
+  async refreshPublicIp(): Promise<boolean> {
+    if (!this.echoUrl) return false;
+    const found = await (this.options.detectIp ?? ((u: string) => detectPublicIp(u)))(this.echoUrl);
+    if (!found) {
+      log.warn("netns.public_ip_detect_failed", { url: this.echoUrl.slice(0, 80), known: this.detectedIp, configured: this.configuredIps.length });
+      return false;
+    }
+    if (found === this.detectedIp) return false;
+    const before = this.publicAddresses().join(",");
+    this.detectedIp = found;
+    if (this.publicAddresses().join(",") === before) return false;
+    log.info("netns.public_ip_changed", { address: found });
+    for (const [uid, entry] of this.active) {
+      if (entry.removing) continue;
+      try { await this.applyRules(entry.path); } catch (error) { log.error("netns.public_ip_reapply_failed", { uid, error: String(error).slice(0, 160) }); }
+    }
+    return true;
+  }
+
+  private startPublicIpRefresh(): void {
+    if (!this.echoUrl || this.ipTimer || this.stopped) return;
+    const secs = this.options.publicIpRefreshSecs ?? (Number.parseInt(process.env.FLOQ_HOST_PUBLIC_IP_REFRESH_SECS ?? "", 10) || DEFAULT_PUBLIC_IP_REFRESH_S);
+    const tick = (): void => {
+      const wait = this.detectedIp || this.configuredIps.length ? secs : Math.min(secs, PUBLIC_IP_RETRY_S);
+      this.ipTimer = setTimeout(() => {
+        this.ipTimer = null;
+        void this.refreshPublicIp().catch(() => undefined).finally(() => { if (!this.stopped) tick(); });
+      }, wait * 1000);
+      this.ipTimer.unref();
+    };
+    tick();
   }
 
   get isEnabled(): boolean { return this.enabled; }
@@ -344,6 +462,10 @@ export class NetnsManager {
       mkdirSync(this.dir, { recursive: true, mode: 0o755 });
       await this.cleanStale();
       for (const [tool, args] of [["socat", ["-V"]], ["nsenter", ["--version"]], ["setpriv", ["--version"]]] as const) await run(tool, [...args], { timeout: 5_000 });
+      // Learn the host's public egress address first so the probe and the first user namespaces already drop it.
+      await this.refreshPublicIp();
+      if (!this.publicAddresses().length) log.warn("netns.public_ip_unknown", { message: "no host public address known (set FLOQ_HOST_PUBLIC_IPS): tenants may reach the host's published services through its public IP" });
+      this.startPublicIpRefresh();
       const probe = join(this.dir, "probe");
       const probePasta = async (): Promise<void> => {
         const entry = this.newEntry(probe);
@@ -364,7 +486,7 @@ export class NetnsManager {
         this.pastaUid = 0;
         await probePasta();
       }
-      log.info("netns.ready", { dir: this.dir });
+      log.info("netns.ready", { dir: this.dir, publicAddresses: this.publicAddresses().length });
     } catch (error) {
       const detail = error instanceof Error ? error.message.split("\n").slice(0, 2).join(" | ") : String(error);
       if (this.options.mode === "required") throw new Error(netnsRequiredMessage(detail));
@@ -427,7 +549,7 @@ export class NetnsManager {
   }
 
   private async applyRules(path: string): Promise<void> {
-    const ruleset = nftRuleset({ runtimePort: this.options.runtimePort, allow: this.options.allow, hostAddresses: await this.hostAddresses() });
+    const ruleset = nftRuleset({ runtimePort: this.options.runtimePort, allow: this.options.allow, hostAddresses: await this.hostAddresses(), publicAddresses: this.publicAddresses() });
     await new Promise<void>((resolve, reject) => {
       const child = spawn("nsenter", nsenterArgv(path, ["nft", "-f", "-"]), { stdio: ["pipe", "ignore", "pipe"] });
       let err = "";
@@ -527,6 +649,9 @@ export class NetnsManager {
   }
 
   async shutdown(): Promise<void> {
+    this.stopped = true;
+    if (this.ipTimer) clearTimeout(this.ipTimer);
+    this.ipTimer = null;
     for (const uid of [...this.active.keys()]) await this.remove(uid);
   }
 }

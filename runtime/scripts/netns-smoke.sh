@@ -2,7 +2,9 @@
 # Smoke test for FLOQ_NETNS (per-user network namespaces). NOT run in CI: needs root, CAP_SYS_ADMIN, and the image tools
 # (unshare, nsenter, floq-pasta, setpriv, nft, socat, ip, python3). Run inside the runtime container or on a Linux host:
 #   cd runtime && npm run build && sudo scripts/netns-smoke.sh
-# Env: SMOKE_PUBLIC_HOST (default example.com), SMOKE_DB_PORT (default 5432: expected to be BLOCKED on the gateway).
+# Env: SMOKE_PUBLIC_HOST (default example.com), SMOKE_DB_PORT (default 5432: expected to be BLOCKED on the gateway),
+#      SMOKE_HOST_PUBLIC_IP (the host's PUBLIC egress address, e.g. from `curl -4 https://api.ipify.org`; it is passed to the manager
+#      as FLOQ_HOST_PUBLIC_IPS and must be unreachable from a namespace on the db and runtime ports; unset = skipped with a warning).
 set -u
 cd "$(dirname "$0")/.."
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 2; }
@@ -14,6 +16,9 @@ DB_PORT=${SMOKE_DB_PORT:-5432}
 PUBLIC_HOST=${SMOKE_PUBLIC_HOST:-example.com}
 # The host's own non-loopback IPv4 address (reachable through pasta as "the host" unless the ruleset drops it).
 HOST_IP=$(ip -o -4 addr show | awk '!/ 127\./ {split($4,a,"/"); print a[1]; exit}')
+HOST_PUBLIC_IP=${SMOKE_HOST_PUBLIC_IP:-}
+[ -z "$HOST_PUBLIC_IP" ] || export FLOQ_HOST_PUBLIC_IPS="$HOST_PUBLIC_IP"
+export FLOQ_HOST_PUBLIC_IP_URL=off   # the smoke run is told the address explicitly; no echo service involved
 A=70001; B=70002
 DIR=$(mktemp -d /run/floq-netns-smoke.XXXXXX)
 PASS=0; FAIL=0
@@ -61,34 +66,41 @@ s=socket.socket(); s.bind(("127.0.0.1",9001)); s.listen(5)
 u=socket.socket(socket.AF_UNIX); u.bind("\0/tmp/.X11-unix/X101"); u.listen(5)
 time.sleep(60)' & PIDS+=($!)
 sleep 1
-check  "B reaches its own loopback listener"      inB socat -T2 /dev/null TCP:127.0.0.1:9001
-refuse "A cannot reach B's loopback port"          inA socat -T2 /dev/null TCP:127.0.0.1:9001
+check  "B reaches its own loopback listener"      inB socat -T2 /dev/null TCP:127.0.0.1:9001,connect-timeout=2
+refuse "A cannot reach B's loopback port"          inA socat -T2 /dev/null TCP:127.0.0.1:9001,connect-timeout=2
 check  "B reaches its own abstract socket"         inB socat -T2 /dev/null ABSTRACT-CONNECT:/tmp/.X11-unix/X101
 refuse "A cannot reach B's abstract X socket"      inA socat -T2 /dev/null ABSTRACT-CONNECT:/tmp/.X11-unix/X101
-refuse "A cannot reach the host loopback directly" inA socat -T2 /dev/null TCP:127.0.0.1:"$RUNTIME_PORT"
+refuse "A cannot reach the host loopback directly" inA socat -T2 /dev/null TCP:127.0.0.1:"$RUNTIME_PORT",connect-timeout=2
 inA python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",9001))' >/dev/null 2>&1 && ok "A can bind a port B holds (separate namespaces)" || bad "A cannot bind 9001"
 
 # 4. Gateway: only the runtime port; the db port and everything else on the gateway is dropped.
 GW=10.255.255.1
 check  "runtime port reachable via the gateway"    inA python3 -c "import urllib.request;urllib.request.urlopen('http://$GW:$RUNTIME_PORT/',timeout=3)"
-refuse "db port blocked on the gateway"            inA socat -T2 /dev/null TCP:$GW:"$DB_PORT"
+refuse "db port blocked on the gateway"            inA socat -T2 /dev/null TCP:$GW:"$DB_PORT",connect-timeout=2
 
 if [ -n "$HOST_IP" ]; then
-  refuse "host public address $HOST_IP:$DB_PORT blocked"      inA socat -T2 /dev/null TCP:"$HOST_IP":"$DB_PORT"
-  refuse "host public address $HOST_IP:$RUNTIME_PORT blocked" inA socat -T2 /dev/null TCP:"$HOST_IP":"$RUNTIME_PORT"
+  refuse "host public address $HOST_IP:$DB_PORT blocked"      inA socat -T2 /dev/null TCP:"$HOST_IP":"$DB_PORT",connect-timeout=2
+  refuse "host public address $HOST_IP:$RUNTIME_PORT blocked" inA socat -T2 /dev/null TCP:"$HOST_IP":"$RUNTIME_PORT",connect-timeout=2
 else echo "SKIP  host address checks (no non-loopback IPv4 address)"; fi
-refuse "documentation range 203.0.113.1 blocked"   inA socat -T2 /dev/null TCP:203.0.113.1:80
+if [ -n "$HOST_PUBLIC_IP" ]; then
+  # The hairpin: the host's own public egress address is reachable through pasta as "the host" unless the ruleset drops it.
+  refuse "host PUBLIC egress $HOST_PUBLIC_IP:$DB_PORT blocked"      inA socat -T2 /dev/null TCP:"$HOST_PUBLIC_IP":"$DB_PORT",connect-timeout=2
+  refuse "host PUBLIC egress $HOST_PUBLIC_IP:$RUNTIME_PORT blocked" inA socat -T2 /dev/null TCP:"$HOST_PUBLIC_IP":"$RUNTIME_PORT",connect-timeout=2
+  refuse "host PUBLIC egress $HOST_PUBLIC_IP:22 blocked"            inA socat -T2 /dev/null TCP:"$HOST_PUBLIC_IP":22,connect-timeout=2
+  inA nft list ruleset 2>/dev/null | grep -q "$HOST_PUBLIC_IP/32" && ok "ruleset in the namespace lists $HOST_PUBLIC_IP" || bad "ruleset lacks $HOST_PUBLIC_IP"
+else echo "WARN  SMOKE_HOST_PUBLIC_IP not set: the public-address hairpin check was SKIPPED"; fi
+refuse "documentation range 203.0.113.1 blocked"   inA socat -T2 /dev/null TCP:203.0.113.1:80,connect-timeout=2
 
 # 5. Egress policy.
-refuse "cloud metadata 169.254.169.254 blocked"    inA socat -T2 /dev/null TCP:169.254.169.254:80
-refuse "RFC1918 192.168.1.1 blocked"               inA socat -T2 /dev/null TCP:192.168.1.1:80
-refuse "RFC1918 10.0.0.1 blocked"                  inA socat -T2 /dev/null TCP:10.0.0.1:80
-refuse "CGNAT 100.64.0.1 blocked"                  inA socat -T2 /dev/null TCP:100.64.0.1:80
+refuse "cloud metadata 169.254.169.254 blocked"    inA socat -T2 /dev/null TCP:169.254.169.254:80,connect-timeout=2
+refuse "RFC1918 192.168.1.1 blocked"               inA socat -T2 /dev/null TCP:192.168.1.1:80,connect-timeout=2
+refuse "RFC1918 10.0.0.1 blocked"                  inA socat -T2 /dev/null TCP:10.0.0.1:80,connect-timeout=2
+refuse "CGNAT 100.64.0.1 blocked"                  inA socat -T2 /dev/null TCP:100.64.0.1:80,connect-timeout=2
 check  "DNS resolves through the forwarder"        inA python3 -c "import socket;socket.setdefaulttimeout(3);socket.getaddrinfo('$PUBLIC_HOST',80)"
 check  "outbound internet works"                   inA python3 -c "import urllib.request;urllib.request.urlopen('https://$PUBLIC_HOST/',timeout=8)"
 
 # 6. Tunnel helper (what server.ts uses): socat in the namespace reaches the user's own listener.
-echo ping | nsenter --net="$NB" -- socat -T2 STDIO TCP:127.0.0.1:9001 >/dev/null 2>&1 && ok "tunnel helper connects inside the namespace" || bad "tunnel helper"
+echo ping | nsenter --net="$NB" -- socat -T2 STDIO TCP:127.0.0.1:9001,connect-timeout=2 >/dev/null 2>&1 && ok "tunnel helper connects inside the namespace" || bad "tunnel helper"
 
 # 7. pasta is running (as floq-pasta, not dropped to nobody) and respawns after being killed.
 pasta_pid() { cat "$DIR/ns/$A.pasta.pid" 2>/dev/null; }
