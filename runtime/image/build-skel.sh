@@ -99,6 +99,23 @@ command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
 TOML
 
+# --- Empty per-user NSS database (~/.pki/nssdb), for mkcert / HTTPS dev servers ---
+# Chromium (the shared agent browser) and `certutil` read $HOME/.pki/nssdb; `mkcert -install` (TRUST_STORES=nss) adds the user's own CA to it,
+# but only when the database already exists. Every sandbox home is /home/agent, so one seed (copied, never overwritten, by the shard seeding)
+# serves all users. certutil records the db path in pkcs11.txt: build it where it will live, then move it into the skeleton.
+if command -v certutil >/dev/null 2>&1; then
+  NSSHOME="$WORK/nsshome"
+  mkdir -p "$NSSHOME/.pki/nssdb"
+  HOME="$NSSHOME" certutil -N -d "sql:$NSSHOME/.pki/nssdb" --empty-password
+  [ -s "$NSSHOME/.pki/nssdb/cert9.db" ] && [ -s "$NSSHOME/.pki/nssdb/key4.db" ] || { echo "nssdb: certutil did not create the database" >&2; exit 1; }
+  sed -i "s#$NSSHOME#/home/agent#g" "$NSSHOME/.pki/nssdb/pkcs11.txt"
+  mkdir -p "$SKEL/.pki"
+  cp -r "$NSSHOME/.pki/nssdb" "$SKEL/.pki/nssdb"
+else
+  echo "nssdb: certutil not installed, skipping the NSS seed" >&2
+fi
+
 rm -rf "$WORK"
 find "$SKEL" -type d -exec chmod 755 {} + && find "$SKEL" -type f -exec chmod 644 {} +
+[ ! -d "$SKEL/.pki/nssdb" ] || { chmod 700 "$SKEL/.pki" "$SKEL/.pki/nssdb" && chmod 600 "$SKEL"/.pki/nssdb/*; }
 echo "skeleton built: $(find "$SKEL" -name SKILL.md | wc -l) skills"

@@ -12,11 +12,11 @@ COPY src ./src
 COPY image ./image
 # `npm run build` ends with scripts/copy-plugin-assets.mjs (copies plugin skill folders next to the compiled plugins).
 COPY scripts/copy-plugin-assets.mjs ./scripts/copy-plugin-assets.mjs
-# Prisma generation reads the config's datasource URL but does not connect; use a build-only placeholder.
+# Prisma generation reads the config's datasource URL but does not connect, so the build URL carries no credentials.
 # --build-arg WITHOUT_LOCAL_EMBEDDINGS=1 leaves out the optional local embedding stack (@huggingface/transformers + onnxruntime, ~hundreds of MB);
 # memory then needs FLOQ_EMBEDDINGS=openai or off (full-text search). Default: keep it.
 ARG WITHOUT_LOCAL_EMBEDDINGS=0
-RUN DATABASE_URL=postgresql://floq:build-only@127.0.0.1:5432/floq npm run build && npm prune --omit=dev \
+RUN DATABASE_URL=postgresql://127.0.0.1:5432/floq npm run build && npm prune --omit=dev \
     && if [ "$WITHOUT_LOCAL_EMBEDDINGS" = "1" ]; then rm -rf node_modules/@huggingface node_modules/onnxruntime-node node_modules/onnxruntime-web node_modules/onnxruntime-common; fi
 
 # passt/pasta built from a pinned upstream release. Debian bookworm ships passt 0.0~git20230309, which predates
@@ -58,6 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates curl ripgrep tini bash procps \
         bubblewrap fuse3 util-linux strace \
         socat nftables iproute2 \
+        libnss3-tools \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 \
@@ -135,6 +136,17 @@ COPY image/claude-managed-settings.json /etc/claude-code/managed-settings.json
 # Strip CR from the installed scripts: a CRLF shebang makes the kernel look for an interpreter named "node" plus CR.
 RUN sed -i 's/\r$//' /usr/local/bin/floq /usr/local/bin/floq-args.mjs /usr/local/bin/floq-setup.mjs /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-egress.mjs /usr/local/bin/floq-egress-codec.mjs /usr/local/bin/floq-browser-mcp \
     && chmod 755 /usr/local/bin/floq /usr/local/bin/floq-vault /usr/local/bin/floq-browserd /usr/local/bin/floq-browser-mcp && chmod 644 /usr/local/bin/floq-browserd-core.mjs /usr/local/bin/floq-egress.mjs /usr/local/bin/floq-egress-codec.mjs && chmod 644 /usr/local/bin/floq-block-native-subagent.mjs /usr/local/bin/floq-artifact-redirect.mjs /usr/local/bin/floq-native-question.mjs /usr/local/bin/floq-permission-request.mjs /etc/claude-code/managed-settings.json
+# mkcert for HTTPS dev servers (`next dev --experimental-https` etc.): pinned release binary, sha256 verified (the build fails on a mismatch).
+# certutil comes from libnss3-tools above. Agents run it with CAROOT=~/.local/share/mkcert and TRUST_STORES=nss (set by the runtime), so
+# `mkcert -install` only touches the user's own ~/.pki/nssdb (never /etc, never another user). See SECURITY.md.
+ARG MKCERT_VERSION=1.4.4
+ARG MKCERT_SHA256_AMD64=6d31c65b03972c6dc4a14ab429f2928300518b26503f58723e532d1b0a3bbb52
+ARG MKCERT_SHA256_ARM64=b98f2cc69fd9147fe4d405d859c57504571adec0d3611c3eefd04107c7ac00d0
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) sum="$MKCERT_SHA256_AMD64" ;; arm64) sum="$MKCERT_SHA256_ARM64" ;; *) echo "mkcert: unsupported arch $arch" >&2; exit 1 ;; esac \
+    && curl -fsSL -o /usr/local/bin/mkcert "https://github.com/FiloSottile/mkcert/releases/download/v${MKCERT_VERSION}/mkcert-v${MKCERT_VERSION}-linux-${arch}" \
+    && echo "${sum}  /usr/local/bin/mkcert" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/mkcert && mkcert -version
 # Rootless apt/apt-get for agents (no root in the sandbox): per-user lists, packages unpacked under ~/.floq/apt, launchers in
 # ~/.local/bin. Root keeps the real tools (they sit later in PATH; the wrapper execs them for uid 0).
 COPY image/floq-apt /usr/local/bin/floq-apt

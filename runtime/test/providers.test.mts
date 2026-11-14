@@ -101,3 +101,22 @@ test("withUserBin puts ~/.local/bin first exactly once", async () => {
   assert.equal(withUserBin("/home/agent/", "/usr/bin:/home/agent/.local/bin"), "/home/agent/.local/bin:/usr/bin");
   assert.equal(withUserBin("/home/agent", undefined), "/home/agent/.local/bin");
 });
+
+test("mkcertEnv keeps the CA in the user's home and limits trust to the NSS store", async () => {
+  const { mkcertEnv } = await import("../dist/providers.js");
+  assert.deepEqual(mkcertEnv("/home/agent"), { CAROOT: "/home/agent/.local/share/mkcert", TRUST_STORES: "nss" });
+  assert.equal(mkcertEnv("/home/agent/").CAROOT, "/home/agent/.local/share/mkcert");
+});
+
+test("image ships a sha256-pinned mkcert, certutil and an empty NSS db seed", async () => {
+  const { readFileSync } = await import("node:fs");
+  const docker = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
+  assert.match(docker, /libnss3-tools/);
+  assert.match(docker, /MKCERT_VERSION=1\.4\.4/);
+  assert.match(docker, /MKCERT_SHA256_AMD64=[0-9a-f]{64}/);
+  assert.match(docker, /MKCERT_SHA256_ARM64=[0-9a-f]{64}/);
+  assert.match(docker, /sha256sum -c/);
+  const skel = readFileSync(new URL("../image/build-skel.sh", import.meta.url), "utf8");
+  assert.match(skel, /certutil -N -d "sql:[^"]*" --empty-password/);
+  assert.match(skel, /\.pki\/nssdb/);
+});
