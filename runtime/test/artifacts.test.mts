@@ -24,6 +24,15 @@ test("creates Artifacts/<project> and is idempotent", (t) => {
   assert.equal(ensureArtifactsDir(handle, "proj-1"), dir);
   assert.equal(artifactsRel("../x"), "Artifacts/default");
   assert.match(artifactsGuidance("/home/user/Artifacts/p"), /FLOQ_ARTIFACTS_DIR/);
+  const claude = artifactsGuidance("/home/user/Artifacts/p", "claude");
+  assert.match(claude, /\/home\/user\/Artifacts\/p/);
+  assert.match(claude, /replaces the claude\.ai Artifact tool[\s\S]*disabled in Floq/);
+  assert.match(claude, /scratchpad[\s\S]*throwaway[\s\S]*never the only copy/);
+  assert.match(claude, /Artifacts tab/);
+  const codex = artifactsGuidance("/home/user/Artifacts/p", "codex");
+  assert.match(codex, /\/home\/user\/Artifacts\/p/);
+  assert.match(codex, /\/tmp is only for throwaway[\s\S]*never the only copy/);
+  assert.doesNotMatch(codex, /claude\.ai/);
 });
 
 test("refuses a symlinked Artifacts parent", (t) => {

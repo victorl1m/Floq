@@ -13,6 +13,7 @@ import type { ProviderId } from "./types.js";
 export const QUESTION_HOOK_PATH = "/usr/local/bin/floq-native-question.mjs";
 export const PERMISSION_HOOK_PATH = "/usr/local/bin/floq-permission-request.mjs";
 export const BLOCK_HOOK_PATH = "/usr/local/bin/floq-block-native-subagent.mjs";
+export const ARTIFACT_HOOK_PATH = "/usr/local/bin/floq-artifact-redirect.mjs";
 export const CLAUDE_BLOCKED_TOOLS = ["Agent", "Task"] as const;
 export const CODEX_DISABLED_FEATURES = ["multi_agent", "multi_agent_v2"] as const;
 /** PreToolUse hooks arrived in Claude Code 1.0.38; older builds are only covered by the deny flag. */
@@ -30,11 +31,11 @@ function atLeast(v: [number, number, number], min: [number, number, number]): bo
   return true;
 }
 
-export function claudeBlockSettings(hookPath = BLOCK_HOOK_PATH, questionHookPath: string | null = null, permissionHookPath: string | null = null): Record<string, unknown> {
+export function claudeBlockSettings(hookPath = BLOCK_HOOK_PATH, questionHookPath: string | null = null, permissionHookPath: string | null = null, artifactHookPath: string | null = null): Record<string, unknown> {
   return {
     permissions: { deny: [...CLAUDE_BLOCKED_TOOLS] },
     // The hook waits < 45 s (Claude auto-blocks unattended prompts then); the timeout is a backstop only.
-    hooks: { ...(permissionHookPath ? { PermissionRequest: [{ matcher: "", hooks: [{ type: "command", command: `node ${permissionHookPath}`, timeout: 50 }] }] } : {}), PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }, ...(questionHookPath ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${questionHookPath}`, timeout: 86400 }] }] : [])] },
+    hooks: { ...(permissionHookPath ? { PermissionRequest: [{ matcher: "", hooks: [{ type: "command", command: `node ${permissionHookPath}`, timeout: 50 }] }] } : {}), PreToolUse: [{ matcher: CLAUDE_BLOCKED_TOOLS.join("|"), hooks: [{ type: "command", command: `node ${hookPath}` }] }, ...(artifactHookPath ? [{ matcher: "^Artifact$", hooks: [{ type: "command", command: `node ${artifactHookPath}` }] }] : []), ...(questionHookPath ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${questionHookPath}`, timeout: 86400 }] }] : [])] },
   };
 }
 
@@ -66,6 +67,8 @@ export function nativeSubagentBlockArgs(provider: ProviderId, options: NativeBlo
   const questionHook = version && atLeast(version, VERIFIED_QUESTION_VERSION) && (options.hookExists ?? existsSync)(QUESTION_HOOK_PATH) ? QUESTION_HOOK_PATH : null;
   // PermissionRequest exists since Claude Code 2.0.45; the hook only answers allow/deny after the user decides in Floq.
   const permissionHook = (options.hookExists ?? existsSync)(PERMISSION_HOOK_PATH) && (!version || atLeast(version, PERMISSION_HOOK_VERSION)) ? PERMISSION_HOOK_PATH : null;
-  args.push("--settings", JSON.stringify(claudeBlockSettings(hookPath, questionHook, permissionHook)));
+  // The claude.ai Artifact tool stays available for read/list; the hook refuses publishing and points at the Floq Artifacts folder.
+  const artifactHook = (options.hookExists ?? existsSync)(ARTIFACT_HOOK_PATH) ? ARTIFACT_HOOK_PATH : null;
+  args.push("--settings", JSON.stringify(claudeBlockSettings(hookPath, questionHook, permissionHook, artifactHook)));
   return args;
 }
