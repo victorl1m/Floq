@@ -174,31 +174,37 @@ function digestOf(block: string): string {
 }
 
 export interface WiredStore {
-  get(sessionId: string): Promise<WiredRecord | null>;
+  get(sessionId: string, userId?: string): Promise<WiredRecord | null>;
   put(sessionId: string, userId: string, record: WiredRecord): Promise<void>;
-  delete(sessionId: string): Promise<void>;
+  delete(sessionId: string, userId?: string): Promise<void>;
 }
 
 export class PgWiredStore implements WiredStore {
   constructor(private readonly pool: pg.Pool) {}
 
-  async get(sessionId: string): Promise<WiredRecord | null> {
-    const r = await this.pool.query("SELECT block, digest, items, updated_at FROM agent_wired_memory WHERE session_id = $1", [sessionId]);
+  async get(sessionId: string, userId?: string): Promise<WiredRecord | null> {
+    const r = userId === undefined
+      ? await this.pool.query("SELECT block, digest, items, updated_at FROM agent_wired_memory WHERE session_id = $1", [sessionId])
+      : await this.pool.query("SELECT block, digest, items, updated_at FROM agent_wired_memory WHERE session_id = $1 AND user_id = $2", [sessionId, userId]);
     const row = r.rows[0];
     if (!row) return null;
     return { block: row.block as string, digest: row.digest as string, items: (row.items as WireRef[]) ?? [], updatedAt: new Date(row.updated_at as string).toISOString() };
   }
 
   async put(sessionId: string, userId: string, record: WiredRecord): Promise<void> {
+    // Only the owner's own session: a foreign session id inserts nothing and never overwrites another user's row.
     await this.pool.query(
-      `INSERT INTO agent_wired_memory (session_id, user_id, block, digest, items, updated_at) VALUES ($1,$2,$3,$4,$5::jsonb, now())
-       ON CONFLICT (session_id) DO UPDATE SET block = $3, digest = $4, items = $5::jsonb, updated_at = now()`,
+      `INSERT INTO agent_wired_memory (session_id, user_id, block, digest, items, updated_at)
+       SELECT $1,$2,$3,$4,$5::jsonb, now() WHERE EXISTS (SELECT 1 FROM agent_sessions WHERE id = $1 AND user_id = $2)
+       ON CONFLICT (session_id) DO UPDATE SET block = $3, digest = $4, items = $5::jsonb, updated_at = now()
+       WHERE agent_wired_memory.user_id = $2`,
       [sessionId, userId, record.block, record.digest, JSON.stringify(record.items)],
     );
   }
 
-  async delete(sessionId: string): Promise<void> {
-    await this.pool.query("DELETE FROM agent_wired_memory WHERE session_id = $1", [sessionId]);
+  async delete(sessionId: string, userId?: string): Promise<void> {
+    if (userId === undefined) await this.pool.query("DELETE FROM agent_wired_memory WHERE session_id = $1", [sessionId]);
+    else await this.pool.query("DELETE FROM agent_wired_memory WHERE session_id = $1 AND user_id = $2", [sessionId, userId]);
   }
 }
 
@@ -208,7 +214,7 @@ export interface WiredSync { block: string; changed: boolean; added: WireRef[]; 
 export async function reconcileWired(store: WiredStore, userId: string, sessionId: string, items: WireItem[]): Promise<WiredSync> {
   const block = buildWiredBlock(items);
   const refs = refsOf(items);
-  const previous = await store.get(sessionId);
+  const previous = await store.get(sessionId, userId);
   const key = (r: WireRef) => r.kind + ":" + r.id;
   // Records persisted before keychains were removed may still hold keychain refs: ignore them so no bogus "removed" notice goes out.
   const previousItems = (previous?.items ?? []).filter((r) => (r.kind as string) !== "keychain");
@@ -219,7 +225,7 @@ export async function reconcileWired(store: WiredStore, userId: string, sessionI
   const updated = refs.filter((r) => r.rev !== undefined && before.has(key(r)) && before.get(key(r))!.rev !== r.rev);
   const digest = digestOf(block);
   const changed = (previous?.digest ?? digestOf("")) !== digest;
-  if (!block) { if (previous) await store.delete(sessionId); }
+  if (!block) { if (previous) await store.delete(sessionId, userId); }
   else if (changed || !previous) await store.put(sessionId, userId, { block, digest, items: refs, updatedAt: new Date().toISOString() });
   return { block, changed, added, removed, updated };
 }
@@ -288,7 +294,7 @@ export class WiredContext {
       // Enabled but unreachable: keep the last persisted pinned set so a store blip does not churn every agent's prompt.
       if (!this.memories.enabled?.()) return [];
       try {
-        return ((await this.store.get(sessionId))?.items ?? []).filter((r) => r.kind === "pinned" && typeof r.content === "string")
+        return ((await this.store.get(sessionId, userId))?.items ?? []).filter((r) => r.kind === "pinned" && typeof r.content === "string")
           .map((r) => ({ id: r.id, title: r.title, text: r.content as string, author: r.author ?? null }));
       } catch { return []; }
     }
@@ -310,7 +316,7 @@ export class WiredContext {
     try { block = (await this.sync(userId, sessionId)).block; }
     catch (error) {
       log.warn("wired.sync_failed", { sessionId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
-      try { block = (await this.store.get(sessionId))?.block ?? ""; } catch { block = ""; }
+      try { block = (await this.store.get(sessionId, userId))?.block ?? ""; } catch { block = ""; }
     }
     let hint = "";
     try { if (this.browserEnabled && await this.browserEnabled(userId)) hint = BROWSER_HINT; } catch { /* no hint */ }

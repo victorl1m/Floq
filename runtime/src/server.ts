@@ -107,7 +107,7 @@ interface Deps {
 export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
-  const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup });
+  const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup, reservedEmail: config.bootstrapAdminEmail });
   const setupHits = new Map<string, { count: number; resetAt: number }>();
   const scheduledAgentRestarts = new Set<string>();
   const projectFolders = new ProjectFolders(pool);
@@ -496,6 +496,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const { requester } = await orchestrator.approvalParties(userId, sessionId, undefined);
           if (requester.provider !== "claude" || typeof body.providerRequestId !== "string" || !body.providerRequestId || body.providerRequestId.length > 256) throw badRequest("Invalid native request");
           return send(res, 200, await decisions.request(userId, { sessionId, projectId: requester.projectId, sessionName: requester.name, questions: body.questions, ttlMs: body.ttlMs, wait: true, source: "native", provider: "claude", providerRequestId: body.providerRequestId, answerMode: "hook" }));
+        }
+        case "notifications/create": {
+          // One-way: never waits for the user. Persisted and pushed to the user's app; returns the id immediately.
+          const { requester } = await orchestrator.approvalParties(userId, sessionId, undefined);
+          const n = await notifications.create(userId, { title: body.title, body: body.body, level: body.level, category: body.category, action: body.action, projectId: requester.projectId, sessionId, sessionName: requester.name });
+          return send(res, 200, { id: n.id, notification: n });
         }
         case "decisions/status": return send(res, 200, await decisions.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));
         case "decisions/cancel": return send(res, 200, await decisions.cancel(userId, sessionId, body.id));

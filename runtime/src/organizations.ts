@@ -188,15 +188,19 @@ export interface OrganizationsOptions {
    * accept-by-id then require a verified email. With sign-up closed (the default) the inviter vouches for the address.
    */
   inboxRequiresVerifiedEmail?: boolean;
+  /** The bootstrap-admin email: cannot be invited, so an invitation can never create the first instance admin. */
+  reservedEmail?: string | null;
 }
 
 export class OrganizationsService {
   private readonly limits: OrganizationLimits;
   private readonly inboxRequiresVerifiedEmail: boolean;
+  private readonly reservedEmail: string | null;
 
   constructor(private readonly pool: pg.Pool, options: OrganizationsOptions = {}) {
     this.limits = { ...DEFAULT_ORGANIZATION_LIMITS, ...options.limits };
     this.inboxRequiresVerifiedEmail = options.inboxRequiresVerifiedEmail ?? false;
+    this.reservedEmail = options.reservedEmail?.trim().toLowerCase() || null;
   }
 
   // --- reads ---
@@ -478,6 +482,7 @@ export class OrganizationsService {
     const email = normalizeEmail(body.email);
     const role = body.role === undefined ? "member" : body.role;
     if (role !== "admin" && role !== "member") throw badRequest("Role must be admin or member", "invalid_role");
+    if (this.reservedEmail && email === this.reservedEmail) throw badRequest("This email address cannot be invited", "reserved_email");
     return this.tx(async (db) => {
       const actor = await this.lockedRole(db, actorId, organizationId);
       if (actor === "member") throw forbidden("Only owners and admins can invite people");
