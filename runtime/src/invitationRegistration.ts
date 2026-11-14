@@ -44,6 +44,8 @@ export async function registerWithInvitation(
   pool: Pool,
   input: InvitationRegistration,
   hashPassword: (password: string) => Promise<string>,
+  /** The configured bootstrap-admin email: only the setup-token flow may create that account, never an invitation. */
+  reservedEmail?: string | null,
 ): Promise<RegisteredInvitation> {
   const email = input.email.trim().toLowerCase();
   const name = input.name.trim();
@@ -52,6 +54,8 @@ export async function registerWithInvitation(
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw badRequest("Enter a valid email address");
   if (!name || name.length > 100) throw badRequest("Name must be 1-100 characters");
   if (input.password.length < 12 || input.password.length > 128) throw badRequest("Password must be 12-128 characters", "invalid_password");
+
+  if (reservedEmail && email === reservedEmail.trim().toLowerCase()) throw notFound("Invitation is invalid or has expired");
 
   const digest = hashToken(token);
   const initialInvite = await findInvitation(pool, digest);

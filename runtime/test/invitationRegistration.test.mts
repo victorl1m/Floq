@@ -165,3 +165,22 @@ test("concurrent invitations for the same address create only one account", asyn
   assert.equal(db.members.length, 1);
   assert.equal(db.invites.length, 1);
 });
+
+test("an invitation can never create the reserved bootstrap-admin account", async () => {
+  const reserved = "Admin@Example.invalid";
+  const { db, register } = setup("admin@example.invalid");
+  let hashed = false;
+  const pool = db as unknown as Pool;
+  await assert.rejects(
+    registerWithInvitation(pool, { token: "valid-token", email: "admin@example.invalid", name: "Eve", password: "a-long-password" }, async () => { hashed = true; return "hash"; }, reserved),
+    /invalid or has expired/,
+  );
+  assert.equal(hashed, false);
+  assert.equal(db.users.length, 0, "no account created, so setupAvailable stays true for the real operator");
+  assert.equal(db.invites.length, 1);
+  // Other addresses still register when a reserved email is configured.
+  const other = setup("new@example.invalid");
+  await registerWithInvitation(other.db as unknown as Pool, other.input, async (p) => `hashed:${p}`, reserved);
+  assert.equal(other.db.users.length, 1);
+  void register;
+});
