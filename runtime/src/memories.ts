@@ -33,6 +33,9 @@ const BACKFILL_BATCH = 8;
 export const MEMORY_MAX_TOTAL_FACTOR = 2; // valid + invalid per project
 export const INVALID_TTL_MS = 30 * 24 * 3600 * 1000;
 const CMD_TIMEOUT_MS = 5000;
+/** Idle keepalive: node-redis' socketTimeout is a socket IDLE timeout, so an idle connection must see traffic more often than that or it is torn down and rebuilt in a loop. */
+export const PING_INTERVAL_MS = 10_000;
+export const SOCKET_IDLE_TIMEOUT_MS = 30_000;
 const PINNED_TIMEOUT_MS = 1500;
 const INDEX_ALIAS = "idx:mem";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -292,7 +295,8 @@ export class MemoryService {
       const raw = createClient({
         url: this.url,
         disableOfflineQueue: true,
-        socket: { connectTimeout: CMD_TIMEOUT_MS, socketTimeout: CMD_TIMEOUT_MS, reconnectStrategy: (retries: number) => Math.min(500 * 2 ** Math.min(retries, 5), 15_000) },
+        pingInterval: PING_INTERVAL_MS,
+        socket: { connectTimeout: CMD_TIMEOUT_MS, socketTimeout: SOCKET_IDLE_TIMEOUT_MS, reconnectStrategy: (retries: number) => Math.min(500 * 2 ** Math.min(retries, 5), 15_000) },
       });
       raw.on("error", (error: unknown) => { if (!this.warned) { this.warned = true; log.warn("memory.redis_error", { error: this.scrub(msg(error)) }); } });
       raw.on("ready", () => { this.warned = false; void this.prepare(); });
