@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCanvasWheel } from "./use-canvas-wheel";
 import { createPortal } from "react-dom";
 import { useTitlebarSlot } from "@/lib/titlebar-slot";
 import {
@@ -160,6 +161,7 @@ function AgentCanvas() {
   const project = projects.find((item) => item.id === activeProjectId);
   const projectName = project ? project.displayName?.trim() || project.name : "Project";
   const wrapRef = useRef<HTMLDivElement>(null);
+  useCanvasWheel(wrapRef);
 
   // Each branch has its own canvas: ground-workspace sessions tagged with another branch are hidden (untagged ones belong to the current branch).
   const groundWorkspace = useMemo(() => project?.workspaces.find((workspace) => workspace.cwd === project.cwd), [project?.workspaces, project?.cwd]);
