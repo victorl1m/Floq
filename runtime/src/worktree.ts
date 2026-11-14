@@ -3,7 +3,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { badRequest, conflict } from "./errors.js";
-import { mkdirOwnedSegment } from "./shard.js";
+import { mkdirOwned, UnsafeHomePathError } from "./shard.js";
 
 const execFile = promisify(execFileCallback);
 const GIT_TIMEOUT_MS = 30_000;
@@ -77,18 +77,12 @@ export async function createWorktree(request: WorktreeRequest): Promise<{ cwd: s
 
   const requestedTarget = resolve(request.target);
   if (!inside(home, requestedTarget)) throw badRequest("Worktree destination is outside this user's workspace", "isolation_outside_workspace");
-  const parentRel = relative(home, resolve(requestedTarget, ".."));
-  let current = home;
-  for (const part of parentRel.split(sep).filter(Boolean)) {
-    current = resolve(current, part);
-    try {
-      const stat = lstatSync(current);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Worktree destination parent must be a real directory", "isolation_invalid_path");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      // Created and chowned through an O_NOFOLLOW descriptor proven to be inside the home (a swapped parent cannot redirect root).
-      mkdirOwnedSegment(home, current, request.uid ?? process.getuid?.() ?? 0);
-    }
+  // Created and chowned through descriptors pinned without following links (a swapped parent cannot redirect root).
+  try {
+    mkdirOwned(home, resolve(requestedTarget, ".."), request.uid ?? process.getuid?.() ?? 0);
+  } catch (error) {
+    if (error instanceof UnsafeHomePathError) throw badRequest("Worktree destination parent must be a real directory", "isolation_invalid_path");
+    throw error;
   }
   let targetParent: string;
   try {

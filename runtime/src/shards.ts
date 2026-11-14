@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, readdirSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import type pg from "pg";
 import type { Config } from "./config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { log } from "./logger.js";
 import { loadRemovedSkills, PROTECTED_SKILLS } from "./skills.js";
-import { ownTree, type ShardDriver, type ShardHandle } from "./shard.js";
+import { copySeedTree, ownHomeTree, type ShardDriver, type ShardHandle } from "./shard.js";
 
 /**
  * Tool caches in the user's home that must belong to the user. A single root-owned entry in ~/.npm (left by
@@ -17,7 +17,7 @@ import { ownTree, type ShardDriver, type ShardHandle } from "./shard.js";
 export const USER_TOOL_CACHES = [".npm"] as const;
 export function repairToolCaches(home: string, uid: number): void {
   for (const rel of USER_TOOL_CACHES) {
-    try { ownTree(join(home, rel), uid); }
+    try { ownHomeTree(home, join(home, rel), uid); }
     catch (error) { log.warn("shard.cache_ownership_repair_failed", { path: rel, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }); }
   }
 }
@@ -89,7 +89,7 @@ export class ShardService {
    * `removed` holds the user's deleted skills (`provider:directory`); null means unknown, so no optional skills are copied.
    * Without PREINSTALL_SKILLS only the protected Floq skills are copied; settings, hooks and MCP config always are.
    */
-  seed(targetDir: string, subdir: "." | ".codex", uid: number, removed: ReadonlySet<string> | null = new Set()): void {
+  seed(targetDir: string, subdir: "." | ".codex", uid: number, removed: ReadonlySet<string> | null = new Set(), home: string = targetDir): void {
     const source = subdir === "." ? this.config.skelDir : join(this.config.skelDir, subdir);
     if (!existsSync(source)) return;
     const filter = (src: string): boolean => {
@@ -102,10 +102,15 @@ export class ShardService {
       return this.config.preinstallSkills && removed !== null && !removed.has(`${provider}:${parts[at]}`);
     };
     try {
-      cpSync(source, targetDir, { recursive: true, force: false, errorOnExist: false, filter });
-      // Copied by root through gocryptfs: hand what was seeded to the user.
-      if (subdir === ".") for (const name of readdirSync(source)) ownTree(join(targetDir, name), uid);
-      else ownTree(targetDir, uid);
+      // Pinned copy (see copySeedTree): the target lives in an agent-writable home, so root must not follow links the agent planted there.
+      copySeedTree(home, source, targetDir, uid, filter);
+      // Repair what an older run left root-owned, by descriptor as well.
+      const own = (path: string): void => {
+        if (resolve(path) === resolve(home)) { for (const name of readdirSync(path)) ownHomeTree(home, join(path, name), uid); }
+        else ownHomeTree(home, path, uid);
+      };
+      if (subdir === ".") { for (const name of readdirSync(source)) own(join(targetDir, name)); }
+      else own(targetDir);
     } catch (error) {
       log.warn("shard.seed_failed", { error: error instanceof Error ? error.message : String(error) });
     }

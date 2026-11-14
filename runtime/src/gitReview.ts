@@ -1,10 +1,10 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SessionManager } from "./manager.js";
 import { HttpError, badRequest, notFound, unavailable } from "./errors.js";
 import type { ShardService } from "./shards.js";
-import type { ShardHandle } from "./shard.js";
+import { readHomeFile, UnsafeHomePathError, type ShardHandle } from "./shard.js";
 import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 
 const COMMAND_TIMEOUT_MS = 8_000;
@@ -142,7 +142,12 @@ export class GitReview {
     const alternatesPath = await realpath(alternatesFile).catch(() => null);
     if (alternatesPath) {
       if (!isWithin(home, alternatesPath)) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");
-      const alternates = await readFile(alternatesPath, "utf8");
+      // Read by descriptor (no link, never a FIFO that would hang the request) and only if it still lives inside the home.
+      let alternates = "";
+      try { alternates = readHomeFile(home, alternatesPath, null, 64 * 1024)?.text ?? ""; } catch (error) {
+        if (error instanceof UnsafeHomePathError) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");
+        throw error;
+      }
       for (const alternate of alternates.split(/\r?\n/).filter(Boolean)) {
         const alternatePath = await realpath(resolve(objects, alternate)).catch(() => null);
         if (!alternatePath || !isWithin(home, alternatePath)) throw badRequest("This Git workspace points outside your project", "invalid_git_workspace");

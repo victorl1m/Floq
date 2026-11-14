@@ -1,12 +1,11 @@
 import { constants as fsConstants } from "node:fs";
-import { lstatSync } from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { badRequest, notFound } from "./errors.js";
 import type { SessionManager } from "./manager.js";
-import { mkdirOwnedSegment, type ShardHandle } from "./shard.js";
+import { mkdirOwned, UnsafeHomePathError, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
 import { cleanRelativePath, contentDisposition, HAS_PROC_FD, HIDDEN_NAMES, openWithin, parseRange, resolveInside } from "./workspaceFiles.js";
 
@@ -28,18 +27,16 @@ export function artifactsRel(projectId: string | null | undefined): string {
 
 /** Create `<home>/Artifacts/<project>` owned by the shard uid, refusing symlinked or non-directory parents. Returns the host path. */
 export function ensureArtifactsDir(handle: Pick<ShardHandle, "mountPath" | "uid">, projectId: string | null | undefined): string {
-  let current = resolve(handle.mountPath);
-  for (const part of artifactsRel(projectId).split("/")) {
-    current = join(current, part);
-    try {
-      const stat = lstatSync(current);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Artifacts storage is unsafe", "unsafe_artifacts_path");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      mkdirOwnedSegment(handle.mountPath, current, handle.uid, 0o755);
-    }
+  const home = handle.mountPath;
+  const dir = join(resolve(home), artifactsRel(projectId));
+  // Every segment is opened (or created and chowned) through a descriptor that never follows a link and stays pinned while the
+  // next one is handled, so an agent swapping ~/Artifacts for a symlink cannot make root create or chown anything elsewhere.
+  try { mkdirOwned(home, dir, handle.uid, 0o755); } catch (error) {
+    if (error instanceof UnsafeHomePathError) throw badRequest("Artifacts storage is unsafe", "unsafe_artifacts_path");
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" || (error as NodeJS.ErrnoException).code === "ENOTDIR") throw badRequest("Artifacts storage is unsafe", "unsafe_artifacts_path");
+    throw error;
   }
-  return current;
+  return dir;
 }
 
 /** System-prompt text telling agents where to save deliverables; overrides the provider's own artifact/scratch conventions. */

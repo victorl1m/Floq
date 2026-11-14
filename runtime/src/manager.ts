@@ -17,7 +17,7 @@ import { validCredential, type CredentialBroker, type CredentialData, type OAuth
 import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
 import { DisplayAllocator, displayEnv } from "./display.js";
 import { artifactsGuidance, artifactsRel, ensureArtifactsDir } from "./artifacts.js";
-import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, getProviderDefinition, resolveModel } from "./providers.js";
+import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, mkcertEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
@@ -41,7 +41,7 @@ const IMAGE_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 import { syncCodexManagedGuidance, syncProtectedFloqSkill } from "./codexGuidance.js";
 import { buildMemoryPolicy, composeSystemBlocks } from "./subagents.js";
 import { NETNS_GATEWAY } from "./netns.js";
-import { mkdirOwned, mkdirOwnedSegment, openChildDir, openHomeDir, ownHomeTree, readHomeFile, removeHomeTree, safeRelative, UnsafeHomePathError, writeFileOwned, type HomeDir, type ShardHandle } from "./shard.js";
+import { chmodHomeDir, lstatHome, mkdirOwned, mkdirOwnedSegment, openChildDir, openHomeDir, ownHomeTree, pruneHomeFiles, readHomeFile, removeHomeTree, safeRelative, UnsafeHomePathError, writeFileOwned, type HomeDir, type ShardHandle } from "./shard.js";
 import { GIT_HARDENING_ARGS, GIT_HARDENING_ENV } from "./worktree.js";
 import { HOME_CWD, wantsHomeShell } from "./homeShell.js";
 import type { ShardService } from "./shards.js";
@@ -225,9 +225,9 @@ function validateProjectName(value: string | undefined): string | undefined {
   return name;
 }
 
-function branchFromCheckout(dir: string): string | null {
+function branchFromCheckout(home: string, dir: string): string | null {
   try {
-    const head = readFileSync(join(dir, ".git", "HEAD"), "utf8").trim();
+    const head = readHomeFile(home, join(dir, ".git", "HEAD"), null, 4096)?.text.trim() ?? "";
     const match = /^ref: refs\/heads\/(.+)$/.exec(head);
     return match?.[1] ?? null;
   } catch { return null; }
@@ -238,25 +238,29 @@ function insidePath(root: string, target: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
 }
 
+/**
+ * Branch of a checkout inside a user home, read without trusting anything the agent controls: every path is opened by descriptor
+ * with no symlinked component (readHomeFile), a FIFO or device where a file should be is refused instead of blocking, and a
+ * `gitdir:` pointer must stay inside the home.
+ */
 function safeWorkspaceBranch(home: string, cwd: string): { ok: boolean; branch: string | null } {
   try {
-    const root = realpathSync(home);
-    const checkout = realpathSync(join(home, safeRelative(cwd)));
-    if (!insidePath(root, checkout)) return { ok: false, branch: null };
+    const root = resolve(home);
+    const checkout = join(root, safeRelative(cwd));
     const gitMeta = join(checkout, ".git");
+    const meta = lstatHome(root, gitMeta);
+    if (!meta || meta.isSymbolicLink()) return { ok: false, branch: null };
     let headPath: string;
-    if (statSync(gitMeta).isDirectory()) headPath = join(gitMeta, "HEAD");
+    if (meta.isDirectory()) headPath = join(gitMeta, "HEAD");
     else {
-      const marker = readFileSync(gitMeta, "utf8").trim();
+      const marker = readHomeFile(root, gitMeta, null, 4096)?.text.trim() ?? "";
       const match = /^gitdir:\s*(.+)$/.exec(marker);
       if (!match) return { ok: false, branch: null };
-      const gitDir = realpathSync(resolve(checkout, match[1]));
+      const gitDir = resolve(checkout, match[1]);
       if (!insidePath(root, gitDir)) return { ok: false, branch: null };
       headPath = join(gitDir, "HEAD");
     }
-    const realHead = realpathSync(headPath);
-    if (!insidePath(root, realHead)) return { ok: false, branch: null };
-    const head = readFileSync(realHead, "utf8").trim();
+    const head = readHomeFile(root, headPath, null, 4096)?.text.trim() ?? "";
     const ref = /^ref: refs\/heads\/(.+)$/.exec(head);
     if (ref) return { ok: true, branch: ref[1] };
     if (/^[0-9a-f]{40,64}$/i.test(head)) return { ok: true, branch: null };
@@ -268,21 +272,15 @@ function safePlainProjectRoot(home: string, cwd: string, projectId: string): str
   const expected = `.floq/projects/${projectId}`;
   try {
     if (safeRelative(cwd) !== expected) return null;
-    const root = realpathSync(home);
-    let current = root;
-    for (const part of expected.split("/")) {
-      current = join(current, part);
-      const stat = lstatSync(current);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
-      current = realpathSync(current);
-      if (!insidePath(root, current)) return null;
-    }
+    const root = resolve(home);
+    const current = join(root, expected);
+    const held = openHomeDir(root, current);
+    if (!held) return null;
     try {
-      lstatSync(join(current, ".git"));
-      return null;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? current : null;
-    }
+      // Checked through the pinned descriptor: a plain (non-git) project folder has no .git entry at all.
+      try { lstatSync(join(held.path, ".git")); return null; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+      return current;
+    } finally { held.close(); }
   } catch { return null; }
 }
 
@@ -455,9 +453,9 @@ export class SessionManager {
     const home = this.shards.driver.hostPath(handle, rel);
     try {
       mkdirOwned(handle.mountPath, home, handle.uid);
-      this.shards.seed(home, ".codex", handle.uid);
+      this.shards.seed(home, ".codex", handle.uid, new Set(), handle.mountPath);
       const authFile = join(home, "auth.json");
-      writeFileOwned(authFile, JSON.stringify(credential), handle.uid, 0o600);
+      writeFileOwned(handle.mountPath, authFile, JSON.stringify(credential), handle.uid, 0o600);
 
       const profile: RuntimeProfile = {
         claudeAutoApprove: false,
@@ -476,7 +474,7 @@ export class SessionManager {
       const fromRoot = relative(root, target);
       if (fromRoot && fromRoot !== ".." && !fromRoot.startsWith(".." + sep)) {
         try {
-          rmSync(target, { recursive: true, force: true });
+          removeHomeTree(handle.mountPath, target);
         } catch {
           log.warn("codex.models_temp_cleanup_failed", { userId });
         }
@@ -706,7 +704,7 @@ export class SessionManager {
         await this.clone(gitUrl, target, profile, handle);
         this.assertLifecycleOpen();
         const projectName = name ?? projectNameFromUrl(gitUrl);
-        const branch = branchFromCheckout(target);
+        const branch = branchFromCheckout(handle.mountPath, target);
         const client = await this.pool.connect();
         let projectId: string = id;
         try {
@@ -739,13 +737,13 @@ export class SessionManager {
           const home = resolve(handle.mountPath);
           if (!insidePath(home, resolved)) throw new Error("Project path escaped user home");
           loserClone = true;
-          rmSync(resolved, { recursive: true, force: true });
+          removeHomeTree(handle.mountPath, resolved);
         }
         return (await this.project(userId, projectId))!;
       } catch (error) {
         const resolved = resolve(target);
         const home = resolve(handle.mountPath);
-        if ((!commitAttempted || loserClone) && insidePath(home, resolved)) rmSync(resolved, { recursive: true, force: true });
+        if ((!commitAttempted || loserClone) && insidePath(home, resolved)) { try { removeHomeTree(handle.mountPath, resolved); } catch { /* unsafe path: never follow it, leave it */ } }
         throw error;
       }
     }).finally(() => this.projectCreates.delete(key));
@@ -775,9 +773,8 @@ export class SessionManager {
       let rollbackConfirmed = false;
       let discardClient: Error | undefined;
       try {
-        mkdirSync(target);
+        mkdirOwnedSegment(handle.mountPath, target, handle.uid);
         targetCreated = true;
-        lchownSync(target, handle.uid, handle.uid);
         const client = await this.pool.connect();
         try {
           await client.query("BEGIN");
@@ -807,14 +804,14 @@ export class SessionManager {
         const resolved = resolve(target);
         const home = resolve(handle.mountPath);
         if (targetCreated && insidePath(home, resolved)) {
-          if (!commitAttempted) rmSync(resolved, { recursive: true, force: true });
+          if (!commitAttempted) { try { removeHomeTree(handle.mountPath, resolved); } catch { /* unsafe path: never follow it, leave it */ } }
           else {
             // COMMIT can fail after the database accepted it. A missing row is safe to act on only after
             // ROLLBACK was confirmed; otherwise a fresh lookup may race a still-unresolved commit.
             try {
               const registered = await this.pool.query("SELECT id FROM floq_projects WHERE id=$1 AND user_id=$2", [id, userId]);
               if (!registered.rows[0]) {
-                if (rollbackConfirmed) rmSync(resolved, { recursive: true, force: true });
+                if (rollbackConfirmed) { try { removeHomeTree(handle.mountPath, resolved); } catch { /* unsafe path: never follow it, leave it */ } }
               }
               else {
                 const project = await this.project(userId, id);
@@ -988,7 +985,7 @@ export class SessionManager {
       const report: CheckoutReport = { workspaceId: item.workspaceId, path: item.cwd, kind: item.kind, branch: null, managed: item.managed, state: item.managed ? "ok" : "unmanaged", uncommittedFiles: null };
       if (item.managed) {
         let present = true;
-        try { lstatSync(join(handle.mountPath, item.cwd)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") present = false; }
+        try { present = lstatHome(handle.mountPath, join(handle.mountPath, item.cwd)) !== null; } catch { /* unsafe path: not missing, the branch check below refuses it */ }
         if (!present) report.state = "missing";
         else {
           const head = safeWorkspaceBranch(handle.mountPath, item.cwd);
@@ -1045,7 +1042,7 @@ export class SessionManager {
 
       // 1. Stop live agents/terminals first so nothing writes into the checkouts or the rows while they are removed.
       for (const id of sessionIds) {
-        try { rmSync(this.secretDir(handle, id), { recursive: true, force: true }); } catch { /* best effort */ }
+        try { removeHomeTree(handle.mountPath, this.secretDir(handle, id)); } catch { /* best effort */ }
         const session = this.live.get(id);
         if (session) {
           this.intentionalSleep.add(id);
@@ -1377,7 +1374,7 @@ export class SessionManager {
       try {
         const destination = join(dir.path, name);
         if (existsSync(destination) || (() => { try { lstatSync(destination); return true; } catch { return false; } })()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
-        writeFileOwned(destination, contents, handle.uid, 0o600);
+        writeFileOwned(null, destination, contents, handle.uid, 0o600);
       } catch (error) {
         if (error instanceof UnsafeHomePathError) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
         throw error;
@@ -1391,18 +1388,12 @@ export class SessionManager {
     const directoryId = randomUUID();
     const relativeDirectory = `.floq/attachments/${directoryId}`;
     const hostDirectory = this.shards.driver.hostPath(handle, relativeDirectory);
-    const home = resolve(handle.mountPath);
-    let current = home;
-    for (const part of [".floq", "attachments", directoryId]) {
-      current = join(current, part);
-      try {
-        const stat = lstatSync(current);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirOwnedSegment(handle.mountPath, current, handle.uid, 0o700);
-      }
+    // Every segment is created through a descriptor pinned without following links, so a swapped parent cannot redirect root.
+    try { mkdirOwned(handle.mountPath, hostDirectory, handle.uid, 0o700); } catch (error) {
+      if (error instanceof UnsafeHomePathError) throw badRequest("Attachment storage is unsafe", "unsafe_attachment_path");
+      throw error;
     }
+    const current = hostDirectory;
     return { hostDirectory, relativeDirectory, directoryPath: current };
   }
 
@@ -1470,21 +1461,9 @@ export class SessionManager {
   }
 
   private ensureProjectParent(handle: ShardHandle): void {
-    const root = realpathSync(handle.mountPath);
-    let current = root;
-    for (const part of [".floq", "projects"]) {
-      current = join(current, part);
-      try {
-        const stat = lstatSync(current);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) throw badRequest("Project storage path is unsafe", "unsafe_project_path");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirSync(current);
-        lchownSync(current, handle.uid, handle.uid);
-      }
-      const actual = realpathSync(current);
-      if (!insidePath(root, actual)) throw badRequest("Project storage path escaped the user's home", "unsafe_project_path");
-      current = actual;
+    try { mkdirOwned(handle.mountPath, this.shards.driver.hostPath(handle, ".floq/projects"), handle.uid, 0o755); } catch (error) {
+      if (error instanceof UnsafeHomePathError) throw badRequest("Project storage path is unsafe", "unsafe_project_path");
+      throw error;
     }
   }
 
@@ -1566,7 +1545,10 @@ export class SessionManager {
     if (!resuming && prompt) args.push("--", prompt);
     const env = buildSessionEnv(this.config, row.provider, profile, row.id);
     // ~/.local/bin first: user-installed tools, including the launchers `apt install` (image/floq-apt) writes there.
-    if (this.shards.driver.name === "linux") env.PATH = withUserBin(this.shards.driver.homePath(handle), env.PATH);
+    if (this.shards.driver.name === "linux") {
+      env.PATH = withUserBin(this.shards.driver.homePath(handle), env.PATH);
+      Object.assign(env, mkcertEnv(this.shards.driver.homePath(handle))); // per-user mkcert CA + NSS-only trust store (see mkcertEnv)
+    }
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
     Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
@@ -1582,7 +1564,7 @@ export class SessionManager {
       env.CODEX_HOME = this.shards.driver.homePath(handle) + "/" + codexHomeRel(row.id);
       const codexHome = this.shards.driver.hostPath(handle, codexHomeRel(row.id));
       mkdirOwned(handle.mountPath, codexHome, handle.uid);
-      this.shards.seed(codexHome, ".codex", handle.uid, await loadRemovedSkills(this.pool, row.user_id).catch(() => null));
+      this.shards.seed(codexHome, ".codex", handle.uid, await loadRemovedSkills(this.pool, row.user_id).catch(() => null), handle.mountPath);
       this.syncGlobalCodexMcp(handle, codexHome);
       try {
         syncProtectedFloqSkill(codexHome, join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid, handle.mountPath);
@@ -1637,14 +1619,7 @@ export class SessionManager {
           this.shards.driver.name === "linux" ? handle.mountPath : null,
           [row.cwd, row.project_cwd],
         );
-        const temporary = path + "." + randomUUID() + ".tmp";
-        try {
-          writeFileSync(temporary, JSON.stringify(claudeProjectTrust(config, directories), null, 2), { mode: 0o600, flag: "wx" });
-          lchownSync(temporary, handle.uid, handle.uid);
-          renameSync(temporary, path);
-        } finally {
-          rmSync(temporary, { force: true });
-        }
+        writeFileOwned(handle.mountPath, path, JSON.stringify(claudeProjectTrust(config, directories), null, 2), handle.uid, 0o600);
       }
     }
     this.assertLifecycleOpen();
@@ -2134,13 +2109,8 @@ export class SessionManager {
     const handle = await this.shards.wake(userId);
     const dir = this.shards.driver.hostPath(handle, ".floq/handoff");
     mkdirOwned(handle.mountPath, dir, handle.uid);
-    try {
-      for (const entry of readdirSync(dir)) {
-        const file = join(dir, entry);
-        try { const st = lstatSync(file); if (st.isFile() && Date.now() - st.mtimeMs > 7 * 86_400_000) rmSync(file, { force: true }); } catch { /* best effort */ }
-      }
-    } catch { /* first write */ }
-    writeFileOwned(join(dir, name), content, handle.uid, 0o600);
+    try { pruneHomeFiles(handle.mountPath, dir, 7 * 86_400_000); } catch { /* first write, or an unsafe dir: the write below refuses it */ }
+    writeFileOwned(handle.mountPath, join(dir, name), content, handle.uid, 0o600);
     return this.shards.driver.homePath(handle) + "/.floq/handoff/" + name;
   }
 
@@ -2189,8 +2159,8 @@ export class SessionManager {
 
   private writeCredFile(handle: ShardHandle, path: string, content: string): void {
     mkdirOwned(handle.mountPath, dirname(path), handle.uid);
-    writeFileOwned(path, content, handle.uid, 0o600);
-    this.credMtime.set(path, statSync(path).mtimeMs);
+    writeFileOwned(handle.mountPath, path, content, handle.uid, 0o600);
+    this.credMtime.set(path, lstatHome(handle.mountPath, path)?.mtimeMs ?? 0);
   }
 
   /**
@@ -2234,17 +2204,12 @@ export class SessionManager {
       const globalRaw = SkillsService.readSafeConfig(this.shards.driver.hostPath(handle, ".codex/config.toml"), root);
       if (globalRaw === null) return;
       const target = join(codexHome, "config.toml");
-      const exists = existsSync(target) || (() => { try { lstatSync(target); return true; } catch { return false; } })();
+      const exists = lstatHome(handle.mountPath, target) !== null;
       const sessionRaw = exists ? SkillsService.readSafeConfig(target, root) : null;
       if (exists && sessionRaw === null) return; // unreadable or unsafe: do not replace it
       const merged = mergeGlobalCodexMcp(globalRaw, sessionRaw);
       if (merged === null) return;
-      const temporary = target + "." + randomUUID() + ".tmp";
-      try {
-        writeFileSync(temporary, merged, { mode: 0o600, flag: "wx" });
-        lchownSync(temporary, handle.uid, handle.uid);
-        renameSync(temporary, target);
-      } finally { rmSync(temporary, { force: true }); }
+      writeFileOwned(handle.mountPath, target, merged, handle.uid, 0o600);
     } catch (error) {
       log.warn("codex.mcp_sync_failed", { error: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
     }
@@ -2268,7 +2233,7 @@ export class SessionManager {
     settings.includeCoAuthoredBy = false;
     settings = claudeStartupSettings(settings, profile.claudeAutoApprove, { ttl: this.config.cacheTtl, helperTtl: this.config.cacheHelperTtl });
     mkdirOwned(handle.mountPath, dirname(path), handle.uid);
-    writeFileOwned(path, JSON.stringify(settings, null, 2), handle.uid, 0o644);
+    writeFileOwned(handle.mountPath, path, JSON.stringify(settings, null, 2), handle.uid, 0o644);
   }
 
   /**
@@ -2390,7 +2355,7 @@ export class SessionManager {
     try {
       pty = this.shards.driver.spawn(handle, { file: definition.bin, args, env, cwd: "", cols: LOGIN_COLS, rows: 40 });
     } catch (error) {
-      rmSync(dir, { recursive: true, force: true });
+      try { removeHomeTree(handle.mountPath, dir); } catch { /* best effort */ }
       this.scheduleLock(userId);
       throw badRequest("Failed to start login: " + (error instanceof Error ? error.message : String(error)), "spawn_failed");
     }
@@ -2456,7 +2421,8 @@ export class SessionManager {
       if (!state.finishing) {
         let present: string[] = [];
         try {
-          present = readdirSync(dir);
+          const listed = openHomeDir(handle.mountPath, dir);
+          if (listed) { try { present = readdirSync(listed.path); } finally { listed.close(); } }
         } catch {
           /* dir gone */
         }
@@ -2475,7 +2441,8 @@ export class SessionManager {
     this.logins.delete(id);
     for (const timer of state.timers) clearTimeout(timer);
     if (state.poll) clearInterval(state.poll);
-    rmSync(state.dir, { recursive: true, force: true });
+    const awakeHome = this.shards.awakeHandle(state.userId);
+    if (awakeHome) { try { removeHomeTree(awakeHome.mountPath, state.dir); } catch { /* best effort */ } }
     const session = this.live.get(id);
     this.live.delete(id);
     session?.dispose();
@@ -2490,11 +2457,11 @@ export class SessionManager {
     if (provider === "codex") this.invalidateCodexModels(userId);
     const handle = await this.shards.wake(userId);
     if (provider === "claude") {
-      rmSync(this.claudeCredPath(handle), { force: true });
+      this.removeHome(handle, this.claudeCredPath(handle));
     } else {
-      rmSync(this.shards.driver.hostPath(handle, ".codex/auth.json"), { force: true });
+      this.removeHome(handle, this.shards.driver.hostPath(handle, ".codex/auth.json"));
       for (const session of this.live.values()) {
-        if (session.userId === userId && session.provider === "codex") rmSync(this.codexAuthPath(handle, session.id), { force: true });
+        if (session.userId === userId && session.provider === "codex") this.removeHome(handle, this.codexAuthPath(handle, session.id));
       }
     }
     this.scheduleLock(userId);
@@ -2560,23 +2527,30 @@ export class SessionManager {
   /** Replace <home>/.floq/secrets/<sessionId>/ with exactly these secrets (dir 0700, files 0400, owned by the shard uid). */
   private syncSecretFiles(handle: ShardHandle, sessionId: string, secrets: Record<string, string>): void {
     const dir = this.secretDir(handle, sessionId);
-    rmSync(dir, { recursive: true, force: true });
+    removeHomeTree(handle.mountPath, dir);
     if (!Object.keys(secrets).length) return;
     mkdirOwned(handle.mountPath, dir, handle.uid);
-    chmodSync(dir, 0o700);
+    chmodHomeDir(handle.mountPath, dir, 0o700);
     for (const [name, value] of Object.entries(secrets)) this.writeSecretFile(handle, sessionId, name, value);
   }
 
   private writeSecretFile(handle: ShardHandle, sessionId: string, name: string, value: string | null): void {
     const dir = this.secretDir(handle, sessionId);
     const path = join(dir, name);
-    rmSync(path, { force: true });
+    removeHomeTree(handle.mountPath, path);
     if (value === null) return;
     mkdirOwned(handle.mountPath, dir, handle.uid);
-    chmodSync(dir, 0o700);
-    writeFileSync(path, value, { mode: 0o400, flag: "wx" });
-    chmodSync(path, 0o400);
-    lchownSync(path, handle.uid, handle.uid);
+    chmodHomeDir(handle.mountPath, dir, 0o700);
+    // Fresh O_EXCL temp file inside the pinned directory, renamed into place: the agent cannot make root chmod/chown a link target.
+    writeFileOwned(handle.mountPath, path, value, handle.uid, 0o400);
+  }
+
+  /** Remove one file or tree inside the agent's home (links are unlinked, never followed); an unsafe path is left alone. */
+  private removeHome(handle: ShardHandle, path: string): void {
+    try { removeHomeTree(handle.mountPath, path); } catch (error) {
+      if (!(error instanceof UnsafeHomePathError)) throw error;
+      log.warn("home.remove_refused", { userId: handle.userId, file: relative(handle.mountPath, path) });
+    }
   }
 
   /** Tell a running agent its wires changed (typed like `floq ask`). Returns false when it is not live. Never throws. */
@@ -2609,7 +2583,7 @@ export class SessionManager {
     if (this.logins.get(id)?.userId === userId) return this.endLogin(id);
     const row = await this.row(id, userId);
     const awake = this.shards.awakeHandle(userId);
-    if (awake) { try { rmSync(this.secretDir(awake, id), { recursive: true, force: true }); } catch { /* best effort */ } }
+    if (awake) { try { removeHomeTree(awake.mountPath, this.secretDir(awake, id)); } catch { /* best effort */ } }
     const session = this.live.get(id);
     if (session) {
       this.intentionalSleep.add(id);

@@ -56,7 +56,7 @@ test("mkdirOwned rejects symlinked segments and writeFileOwned never follows a p
   assert.ok(lstatSync(join(home, "a", "b")).isDirectory());
 
   symlinkSync(join(victim, "target"), join(home, "cred.json"));
-  writeFileOwned(join(home, "cred.json"), "secret", uid, 0o600);
+  writeFileOwned(home, join(home, "cred.json"), "secret", uid, 0o600);
   assert.equal(readFileSync(join(victim, "target"), "utf8"), "keep", "symlink target untouched");
   assert.equal(lstatSync(join(home, "cred.json")).isSymbolicLink(), false);
   assert.equal(readFileSync(join(home, "cred.json"), "utf8"), "secret");

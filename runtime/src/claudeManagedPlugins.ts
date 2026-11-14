@@ -120,7 +120,7 @@ function writeJsonKeepOwner(home: string, path: string, data: unknown, uid: numb
     const target = join(dir.path, basename(path));
     const existing = lstatSync(target);
     if (existing.isSymbolicLink() || !existing.isFile()) throw new Error("refusing to rewrite a non-regular file");
-    writeFileOwned(target, JSON.stringify(data, null, 2), uid ?? existing.uid, existing.mode & 0o777);
+    writeFileOwned(null, target, JSON.stringify(data, null, 2), uid ?? existing.uid, existing.mode & 0o777);
   } finally { dir.close(); }
 }
 
