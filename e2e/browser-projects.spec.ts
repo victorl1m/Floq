@@ -33,3 +33,13 @@ test('legacy shared "main" page: only the owning project keeps it, the other get
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('floq:browser-nodes:pB')!).nodes[0].id)).not.toBe('main');
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('floq:browser-nodes:pA')!).nodes[0].id)).toBe('main');
 });
+
+test('an agent connected to the browser gets a node even when this project closed one before', async ({ page }) => {
+  await page.goto('/e2e/harness/browser-projects.html?auto');
+  await page.evaluate(() => localStorage.setItem('floq:browser-nodes:pA', JSON.stringify({ nodes: [], seen: true })));
+  await page.reload();
+  await expect(page.getByTestId('browser-node')).toHaveCount(1, { timeout: 8000 });
+  await page.getByTestId('close-first').click();
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('browser-node')).toHaveCount(0); // closing it while the agent stays connected keeps it closed
+});

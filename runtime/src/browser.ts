@@ -85,6 +85,8 @@ export interface BrowserStatus {
   egress?: EgressStatus;
   state: BrowserState;
   agents: number;
+  /** Floq sessions that opened an agent connection (ensure) since the browser's connections last dropped to zero: the canvas links them to a Browser node so the user can watch. */
+  agentSessions?: string[];
   tabs: number;
   version: BrowserVersion | null;
   profile: string;
@@ -120,6 +122,8 @@ interface Entry {
   /** nodeId -> targetId of its page, as reported by the daemon. */
   pages: Map<string, string>;
   agents: number;
+  /** Agent session ids that asked for the endpoint; cleared when the daemon reports no agent connection. */
+  agentIds: Set<string>;
   lastActivity: number;
   viewers: Set<Viewer>;
   /** How THIS daemon run routes its traffic (fixed at spawn; a change restarts the daemon). */
@@ -200,6 +204,7 @@ export class BrowserService {
     const out: BrowserStatus = {
       state,
       agents: live?.agents ?? 0,
+      ...(live && live.agentIds.size ? { agentSessions: [...live.agentIds] } : {}),
       tabs: live?.tabs.length ?? 0,
       version: this.installed,
       profile: PROFILE_LABEL,
@@ -237,6 +242,7 @@ export class BrowserService {
     // `?agent=` names the agent session so the daemon can scope it to the Browser node the user linked it to (see setAgentScope).
     // The daemon-wide token never leaves the runtime: each caller gets a token derived for its own agent id, which the daemon checks against `?agent=`.
     const agentId = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? opts.agentId : "floq-runtime-helper";
+    if (agentId !== "floq-runtime-helper") entry.agentIds.add(agentId);
     return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser?agent=${agentId}`, token: agentToken(entry.token, agentId), chromium: this.installed?.chromium, ...(entry.egressMode === "desktop" && !this.egress?.isUp(userId) ? { egress: "paused" as const } : {}) };
   }
 
@@ -245,7 +251,7 @@ export class BrowserService {
     let entry = this.entries.get(userId);
     if (!entry) {
       const dead = exitedPromise();
-      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, lastActivity: Date.now(), viewers: new Set(), egressMode: "server", egressPipe: null, idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
+      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, agentIds: new Set(), lastActivity: Date.now(), viewers: new Set(), egressMode: "server", egressPipe: null, idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
       this.entries.set(userId, entry);
     }
     return entry;
@@ -548,7 +554,7 @@ export class BrowserService {
       case "nav": entry.nav.set(msg.targetId, msg); return this.broadcast(entry, msg, forTarget(msg.targetId));
       case "cursor": { const tid = typeof r?.targetId === "string" ? r.targetId : ""; return this.broadcast(entry, msg, forTarget(tid)); }
       case "dialog": case "dialogClosed": case "clipboard": case "download": return this.broadcast(entry, msg, forTarget(msg.targetId));
-      case "clients": entry.agents = msg.agents; entry.lastActivity = Date.now(); this.armIdle(entry); break;
+      case "clients": entry.agents = msg.agents; if (msg.agents === 0) entry.agentIds.clear(); entry.lastActivity = Date.now(); this.armIdle(entry); break;
       case "agentActivity": entry.lastActivity = Date.now(); this.armIdle(entry); return this.broadcast(entry, msg, forTarget(msg.targetId));
       default: break;
     }
