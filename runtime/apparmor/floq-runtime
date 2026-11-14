@@ -1,0 +1,17 @@
+# AppArmor profile for the Floq runtime container (and everything it spawns: bubblewrap, agents, Chromium).
+#
+# Why: the compose file used to run the container as `apparmor:unconfined`. On Ubuntu >= 23.10/24.04 the host sets
+# kernel.apparmor_restrict_unprivileged_userns=1, and an UNCONFINED process may create a user namespace but gets
+# no capabilities in it (so writing /proc/self/uid_map fails with EPERM) and Chromium's namespace sandbox cannot start.
+# A profile with `userns,` lifts that restriction for this container only. flags=(unconfined) keeps today's behaviour for
+# everything else (the runtime already needs SYS_ADMIN/FUSE/bwrap), so nothing else gets looser or stricter.
+#
+# Install (on the Docker host, once; re-run after edits):
+#   sudo cp runtime/apparmor/floq-runtime /etc/apparmor.d/floq-runtime && sudo apparmor_parser -r /etc/apparmor.d/floq-runtime
+# Use:  FLOQ_APPARMOR_PROFILE=floq-runtime docker compose up -d
+abi <abi/4.0>,
+include <tunables/global>
+
+profile floq-runtime flags=(unconfined,attach_disconnected,mediate_deleted) {
+  userns,
+}

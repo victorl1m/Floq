@@ -137,6 +137,8 @@ export interface Config {
     memMb: number;
     /** FLOQ_BROWSER_ALLOW_PRIVATE=1: let web content reach loopback and private ranges when there is no per-user netns. */
     allowPrivate: boolean;
+    /** FLOQ_BROWSER_SANDBOX: required = Chromium must start with its own sandbox or the browser fails; auto = fall back to --no-sandbox with a loud warning (default). */
+    sandbox: "required" | "auto";
     /** Where the image keeps the pinned Chromium and VERSION.json (PLAYWRIGHT_BROWSERS_PATH, default /opt/floq/browsers). */
     browsersDir: string;
   };
@@ -274,6 +276,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       idleMs: readInt(env.FLOQ_BROWSER_IDLE_MS, 10 * 60_000, 0),
       memMb: readInt(env.FLOQ_BROWSER_MEM_MB, 0, 0, 1024 * 1024),
       allowPrivate: readBool(env.FLOQ_BROWSER_ALLOW_PRIVATE, false),
+      sandbox: (env.FLOQ_BROWSER_SANDBOX ?? "").trim().toLowerCase() === "required" ? "required" : "auto",
       browsersDir: resolve(env.PLAYWRIGHT_BROWSERS_PATH?.trim() || "/opt/floq/browsers"),
     },
   };

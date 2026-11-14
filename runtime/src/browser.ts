@@ -35,6 +35,8 @@ export interface BrowserConfig {
   memMb: number;
   /** FLOQ_BROWSER_ALLOW_PRIVATE=1: do not block loopback / private ranges without a netns. */
   allowPrivate: boolean;
+  /** FLOQ_BROWSER_SANDBOX: required = no --no-sandbox fallback; auto (default) falls back with a warning. */
+  sandbox?: "required" | "auto";
   /** Where the image keeps the pinned Chromium (PLAYWRIGHT_BROWSERS_PATH). */
   browsersDir: string;
 }
@@ -294,6 +296,7 @@ export class BrowserService {
     // T6: without a per-user network namespace the daemon blocks loopback / private ranges for web content itself.
     if (!this.hasNetns(userId) && !this.options.allowPrivate) env.FLOQ_BROWSER_BLOCK_PRIVATE = "1";
     if (this.options.memMb > 0) env.FLOQ_BROWSER_MEM_MB = String(this.options.memMb);
+    if (this.options.sandbox) env.FLOQ_BROWSER_SANDBOX = this.options.sandbox;
     env.FLOQ_BROWSER_EGRESS = egress;
     return env;
   }
