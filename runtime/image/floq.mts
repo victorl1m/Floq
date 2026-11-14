@@ -241,6 +241,7 @@ const allowedOptions: Record<string, string[]> = {
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   project: ["name", "git-url"], setup: ["dry-run", "agents"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
+  wired: [], sticky: ["color", "kind", "x", "y"], help: [],
   secrets: [],
   secret: [],
   memory: ["title", "type", "user", "pin", "unpin", "pinned", "k", "text", "reason"],
