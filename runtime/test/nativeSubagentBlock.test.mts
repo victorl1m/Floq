@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { BLOCK_HOOK_PATH, QUESTION_HOOK_PATH, claudeBlockSettings, nativeSubagentBlockArgs, parseVersion } from "../src/nativeSubagentBlock.ts";
+import { ARTIFACT_HOOK_PATH, BLOCK_HOOK_PATH, QUESTION_HOOK_PATH, claudeBlockSettings, nativeSubagentBlockArgs, parseVersion } from "../src/nativeSubagentBlock.ts";
 import { buildSubagentInstruction } from "../src/subagents.ts";
 
 const hook = (payload: string) => spawnSync(process.execPath, ["--import", "tsx", new URL("../image/floq-block-native-subagent.mts", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")], { input: payload, encoding: "utf8" });
@@ -11,8 +11,10 @@ test("claude args deny Agent and Task and carry the hook settings", () => {
   const args = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.100 (Claude Code)" });
   assert.deepEqual(args.slice(0, 2), ["--disallowedTools", "Agent,Task"]);
   const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-  assert.deepEqual(settings, claudeBlockSettings(undefined, null, "/usr/local/bin/floq-permission-request.mjs"));
+  assert.deepEqual(settings, claudeBlockSettings(undefined, null, "/usr/local/bin/floq-permission-request.mjs", ARTIFACT_HOOK_PATH));
   assert.deepEqual(settings.permissions.deny, ["Agent", "Task"]);
+  const artifactEntry = settings.hooks.PreToolUse.find((e: any) => e.matcher === "^Artifact$");
+  assert.ok(artifactEntry.hooks[0].command.includes(ARTIFACT_HOOK_PATH));
   assert.equal(settings.hooks.PreToolUse[0].matcher, "Agent|Task");
   assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes(BLOCK_HOOK_PATH));
 });
@@ -55,7 +57,7 @@ test("question hook composes with subagent blocking but is enabled only for veri
   assert.deepEqual(settings.hooks.PreToolUse.map((entry:any) => entry.matcher), ["Agent|Task", "AskUserQuestion"]);
   assert.equal(settings.hooks.PreToolUse[1].hooks[0].timeout, 86400);
   const args = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.318" });
-  assert.equal(JSON.parse(args[args.indexOf("--settings") + 1]).hooks.PreToolUse.length, 2);
+  assert.equal(JSON.parse(args[args.indexOf("--settings") + 1]).hooks.PreToolUse.length, 3);
   const old = nativeSubagentBlockArgs("claude", { hookExists: () => true, version: "2.1.100" });
-  assert.equal(JSON.parse(old[old.indexOf("--settings") + 1]).hooks.PreToolUse.length, 1);
+  assert.equal(JSON.parse(old[old.indexOf("--settings") + 1]).hooks.PreToolUse.length, 2);
 });

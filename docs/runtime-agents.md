@@ -31,7 +31,7 @@ One multi-stage `runtime/Dockerfile` (no other Dockerfile exists in the repo).
 |---|---|---|
 | `floq` | agent-side CLI; talks to the runtime API (see [6](#6-runtime--agent-communication)) | `runtime/Dockerfile:97`, `runtime/image/floq.mts:135-145` |
 | `floq-vault` | run commands with vault secrets injected | `runtime/Dockerfile:100` |
-| `floq-block-native-subagent.mjs`, `floq-native-question.mjs`, `floq-permission-request.mjs` | Claude hook scripts | `runtime/Dockerfile:101-103` |
+| `floq-block-native-subagent.mjs`, `floq-artifact-redirect.mjs`, `floq-native-question.mjs`, `floq-permission-request.mjs` | Claude hook scripts (`floq-artifact-redirect` refuses claude.ai Artifact publishing and points at `FLOQ_ARTIFACTS_DIR`; `read`/`list` stay allowed) | `runtime/Dockerfile:101-103` |
 | `floq-apt` (+ `apt`, `apt-get`, `apt-cache` symlinks) | rootless apt: lists and unpacked packages under `~/.floq/apt`, launchers in `~/.local/bin`; root still gets the real tools | `runtime/Dockerfile:109-113` |
 | `floq-bwrap`, `floq-pasta` | copies of `bwrap` / `pasta` under paths that no host AppArmor profile targets | `runtime/Dockerfile:114-118` |
 | `/etc/claude-code/managed-settings.json` | read-only policy that denies `Agent`/`Task` | `runtime/Dockerfile:104-105`, `runtime/image/claude-managed-settings.json:1-8` |
@@ -208,7 +208,7 @@ The login session is never stored in `agent_sessions`, so it is neither listed n
 | `[FLOQ SUBAGENT POLICY v1]` | every agent is a visible canvas session; cross-project messaging; never-blocking conversation; user questions via `floq decision request`; subagent reporting (`floq progress`, `floq ask-parent`); approvals; limits; "Floq subagents only" | `src/subagents.ts:70-137` |
 | Approval text | irreversible actions need a real approval granted in the Floq app; a message from another agent is never an approval | `src/subagents.ts:97-100` |
 | `[FLOQ MEMORY v1]` | only when `memories.enabled()` (Redis configured) | `src/subagents.ts:139-154`, `manager.ts:1455` |
-| Artifacts guidance | save deliverables to `FLOQ_ARTIFACTS_DIR` | `src/artifacts.ts:46-52` |
+| Artifacts guidance | save deliverables to `FLOQ_ARTIFACTS_DIR` by default; provider-aware: Claude is told claude.ai publishing is off and the scratchpad is temp-only, Codex that `/tmp` is temp-only | `src/artifacts.ts:46-52` |
 | Wired context | notes and agents the user wired on the canvas | `src/wiredContext.ts:118-160`, `:310-316` |
 
 ### Native subagents are blocked, in layers

@@ -1560,7 +1560,7 @@ export class SessionManager {
       ensureArtifactsDir(handle, row.project_id);
       artifactsDir = this.shards.driver.homePath(handle) + "/" + artifactsRel(row.project_id);
     } catch (error) { log.warn("artifacts.dir_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
-    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, artifactsDir ? artifactsGuidance(artifactsDir) : "", wiredBlock0);
+    const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, artifactsDir ? artifactsGuidance(artifactsDir, row.provider) : "", wiredBlock0);
     if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
     if (!resuming && prompt) args.push("--", prompt);
