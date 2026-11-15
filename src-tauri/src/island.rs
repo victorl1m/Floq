@@ -749,7 +749,7 @@ fn animate_bounds(
         animation.running.store(0, Ordering::SeqCst);
         return;
     };
-    let scale = island_monitor(window)
+    let scale = island_monitor(&window)
         .map(|m| m.scale_factor())
         .unwrap_or(1.0);
     let start_radius = corner_radius(start.3.max(1) as u32, scale, from_expanded);
