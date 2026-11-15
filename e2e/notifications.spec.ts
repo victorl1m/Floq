@@ -60,10 +60,18 @@ test('level filter narrows the list; category and project filters too; groups by
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Release build failed');
   await page.getByRole('radio', { name: 'All' }).click();
-  await page.getByLabel('Category').selectOption('cost');
+  // Styled (Radix) selects, not native <select>: open the menu, pick the option.
+  await page.getByRole('combobox', { name: 'Category' }).click();
+  await expect(page.getByRole('option', { name: 'All categories' })).toBeVisible();
+  await page.waitForTimeout(400); // let the 100 ms fade/zoom-in finish before capturing
+  await page.screenshot({ path: '.tmp/shots/notification-filter-menu.png' });
+  await page.getByRole('option', { name: 'Cost' }).click();
+  await expect(page.getByRole('combobox', { name: 'Category' })).toContainText('Cost');
   await expect(rows).toHaveCount(1);
-  await page.getByLabel('Category').selectOption('all');
-  await page.getByLabel('Project').selectOption('p2');
+  await page.getByRole('combobox', { name: 'Category' }).click();
+  await page.getByRole('option', { name: 'All categories' }).click();
+  await page.getByRole('combobox', { name: 'Project' }).click();
+  await page.getByRole('option').nth(2).click();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Usage at 80%');
 });

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { IconBell, IconChecks, IconTrash } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useRuntime } from "@/lib/runtime/store";
 import {
@@ -58,6 +58,8 @@ export function NotificationCenterPanel({ onNavigate }: { onNavigate?: () => voi
   const projectIds = useMemo(() => [...new Set(items.map((n) => n.projectId).filter((id): id is string => !!id))], [items]);
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const groups = useMemo(() => groupByDay(visible), [visible]);
+  const categoryItems = useMemo(() => [{ value: "all", label: "All categories" }, ...CATEGORIES.map((c) => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) }))], []);
+  const projectItems = useMemo(() => [{ value: "all", label: "All projects" }, ...projectIds.map((id) => ({ value: id, label: projectName(id) ?? "Project" }))], [projectIds, projects]);
   const filtered = filters.level !== "all" || filters.category !== "all" || filters.project !== "all";
   const open = (n: AppNotification) => { run(n); markRead([n.id]); onNavigate?.(); };
 
@@ -80,15 +82,15 @@ export function NotificationCenterPanel({ onNavigate }: { onNavigate?: () => voi
             );
           })}
         </div>
-        <NativeSelect size="sm" className="ml-auto" aria-label="Category" value={filters.category} onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value as NotificationCategory | "all" }))}>
-            <option value="all">All categories</option>
-            {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </NativeSelect>
+        <Select value={filters.category} onValueChange={(value) => setFilters((f) => ({ ...f, category: (value ?? "all") as NotificationCategory | "all" }))}>
+          <SelectTrigger size="sm" className="ml-auto max-w-36" aria-label="Category"><SelectValue /></SelectTrigger>
+          <SelectContent>{categoryItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
         {projectIds.length > 0 && (
-          <NativeSelect size="sm" className="max-w-36" aria-label="Project" value={filters.project} onChange={(e) => setFilters((f) => ({ ...f, project: e.target.value }))}>
-              <option value="all">All projects</option>
-              {projectIds.map((id) => <option key={id} value={id}>{projectName(id) ?? "Project"}</option>)}
-            </NativeSelect>
+          <Select value={filters.project} onValueChange={(value) => setFilters((f) => ({ ...f, project: value ?? "all" }))}>
+            <SelectTrigger size="sm" className="max-w-36" aria-label="Project"><SelectValue /></SelectTrigger>
+            <SelectContent>{projectItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+          </Select>
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
