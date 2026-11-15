@@ -12,8 +12,7 @@
 #
 # Outputs
 #   - Workflow artifact "floq-windows-<version>-<sha>" (14 days retention)
-#   - On a push to main: a published PRE-release "build-<version>-<run number>"
-#     with the installers attached (never marked "latest").
+#   - On a push to main: only the workflow artifact above (a compile and packaging check); no GitHub release.
 #   - On a v* tag: the installers are also attached to a published PRE-release
 #     for that tag.
 #
@@ -230,7 +229,7 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -244,22 +243,6 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact }}
           path: dist-installers
-
-      # Every push to main becomes a pre-release tagged build-<version>-<run>. GITHUB_TOKEN-created tags
-      # do not retrigger workflows, and `build-*` does not match the `v*` tag trigger anyway.
-      - name: Publish pre-release for this push to main
-        if: github.ref == 'refs/heads/main'
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(echo "$BUILD_ARTIFACT" | sed -E 's/^floq-windows-([^-]+)-.*/\1/')
-          tag="build-${version}-${GITHUB_RUN_NUMBER}"
-          mapfile -t files < <(find dist-installers -type f \( -name '*.exe' -o -name '*.msi' \))
-          [ "${#files[@]}" -gt 0 ] || { echo "No installers found" >&2; exit 1; }
-          (cd dist-installers && find . -type f -name '*.exe' -exec sha256sum {} + | sed 's#  \./#  #; s#  .*/#  #' > SHA256SUMS)
-          files+=(dist-installers/SHA256SUMS)
-          gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --prerelease --latest=false --title "Floq ${version} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" --generate-notes
 
       - name: Create pre-release if missing (race tolerant) and upload
         if: startsWith(github.ref, 'refs/tags/v')
