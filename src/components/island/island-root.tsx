@@ -5,6 +5,8 @@ import { acceptSnapshot, validAnswers, type AttentionItem, type DecisionAnswer, 
 import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRight, IconCheck, IconLoader2, IconX } from '@tabler/icons-react';
 import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
+import { levelMeta } from '@/components/notifications/level';
+import type { AppNotification } from '@/lib/notifications';
 import { useIslandLayout } from './use-island-layout';
 import { islandLog } from './island-log';
 
@@ -17,6 +19,23 @@ const OUTCOME_HOLD_MS = 2600;
 const OUTCOME_FADE_MS = 400;
 function OutcomeMark({ kind }: { kind: Outcome['kind'] }) {
   return <svg className="island-result-svg" viewBox="0 0 48 48" aria-hidden="true"><circle className="island-result-ring" cx="24" cy="24" r="20"/>{kind === 'refused' ? <path className="island-result-glyph" d="M17 17 L31 31 M31 17 L17 31"/> : <path className="island-result-glyph" d="M15 25 L21.5 31.5 L33 18"/>}</svg>;
+}
+function NotificationCard({ notification, send: dispatch }: { notification: AppNotification; send: (action: 'dismiss' | 'open') => void }) {
+  const { Icon, label } = levelMeta[notification.level];
+  return <div className="island-notification" data-level={notification.level}>
+    <div className="island-card-header">
+      <span className="island-badge island-level-badge" aria-hidden="true"><Icon size={20}/></span>
+      <button type="button" className="island-notification-main" onClick={() => dispatch('open')} aria-label={`${label}: ${notification.title}. Open in Floq`}>
+        <span className="island-notification-kind">{label}{notification.sessionName ? ` · ${notification.sessionName}` : ''}</span>
+        <strong className="island-notification-title">{notification.title}</strong>
+        {notification.body && <span className="island-notification-body">{notification.body}</span>}
+      </button>
+      <div className="island-header-actions">
+        {notification.action && <button type="button" className="primary island-notification-action" onClick={() => dispatch('open')}>{notification.action.label}</button>}
+        <button type="button" className="island-circle" aria-label="Dismiss notification" onClick={() => dispatch('dismiss')}><IconX size={18}/></button>
+      </div>
+    </div>
+  </div>;
 }
 export default function IslandRoot({ initialSnapshot = null, initialExpanded = false, initialOutcome = null }: { initialSnapshot?: IslandSnapshot | null; initialExpanded?: boolean; initialOutcome?: Outcome | null } = {}) {
   const [snapshot, setSnapshot] = useState<IslandSnapshot | null>(initialSnapshot);
@@ -35,6 +54,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const [selected, setSelected] = useState<string>();
   const [drafts, setDrafts] = useState<Record<string, DecisionAnswer[]>>({});
   const [localError, setLocalError] = useState<string>();
+  const [, rerender] = useState(0);
   const body = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const submitting = useRef<string | null>(null);
@@ -187,6 +207,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         : null;
     void send(intent).catch(e => { submitting.current = null; pendingOutcome.current = null; setSubmission(null); setLocalError(String(e)); });
   };
+  const actNotification = (id: string, action: 'dismiss' | 'open') => {
+    answeredIds.current.add(id); rerender(n => n + 1);
+    void send({ type: 'notification', id, action }).catch(e => { answeredIds.current.delete(id); rerender(n => n + 1); setLocalError(String(e)); });
+  };
   const cycle = (delta: number) => { if (submitting.current || cycleDisabled || !items.length) return; const index = items.findIndex(i => i.id === current?.id); setSelected(items[(index + delta + items.length) % items.length]?.id); };
   const answer = (questionId: string, optionIds: string[], text: string) => {
     if (!current || disabled) return;
@@ -195,14 +219,20 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   };
   if ((!displaySnapshot || !items.length) && !outcome) { hovered.current = false; return null; }
   // While the result is shown, queue motion (an exit from the emptied queue, or an enter from a new request) must not replay over it.
+  const topNote = items.every(i => i.kind === 'notification') && current?.kind === 'notification' ? current.notification : undefined;
+  const notePill = topNote ? { n: topNote, Icon: levelMeta[topNote.level].Icon } : undefined;
   const shownMotion = outcome ? 'idle' : motion;
   return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { islandLog('dom enter'); hovered.current = true; clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { islandLog('dom leave'); hovered.current = false; clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
-    <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
+    <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : notePill ? <><notePill.Icon className="island-pill-level" data-level={notePill.n.level} size={16}/><strong className="island-pill-title">{notePill.n.title}</strong>{items.length > 1 && <span className="island-pill-more">+{items.length - 1}</span>}</> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span></>}</div>
     {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
       <strong className="island-result-label">{OUTCOME_LABEL[outcome.kind]}</strong>
       {outcome.title && <span className="island-result-sub">{outcome.title}</span>}
-    </div> : current && <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
+    </div> : current && (current.kind === 'notification' ? <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
+      <NotificationCard notification={current.notification} send={action => actNotification(current.id, action)}/>
+      {items.length > 1 && <div className="island-cycle"><button disabled={cycleDisabled} onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Item ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button disabled={cycleDisabled} onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
+      {localError && <p role="alert" className="island-error">{localError}</p>}
+    </div> : <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
         <div className="island-heading"><span>{current.kind === 'approval' ? `Needs your OK · ${actorLabel(current.approval.requester)}` : `Direction requested · ${current.decision.sessionName}`}</span><strong className={current.kind === 'approval' ? 'island-title-command' : ''}>{current.kind === 'approval' ? current.approval.action : current.decision.questions[0]?.header || current.decision.questions[0]?.question || 'Agent question'}</strong></div>
@@ -211,7 +241,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
       {current.kind === 'approval' ? <><div className="island-detail"><div><span className="island-risk">{RISK_LABEL[riskLevel(current.approval.action, current.approval.detail, current.approval.irreversible)]}</span>{current.approval.detail && <p>{current.approval.detail}</p>}<p className="island-meta">From {actorLabel(current.approval.requester)} · Target {actorLabel(current.approval.target)}</p></div></div></> : <DecisionCard decision={current.decision} answers={answers} answer={answer} disabled={disabled} act={act} submission={submission}/>}
       {items.length > 1 && <div className="island-cycle"><button disabled={cycleDisabled} onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Request ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button disabled={cycleDisabled} onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
       {!snapshot?.connected && <p role="status">Disconnected. Reconnecting…</p>}{(snapshot?.error || localError) && <p role="alert" className="island-error">{snapshot?.error || localError}</p>}
-    </div>}
+    </div>)}
   </div>;
 }
 function DecisionCard({decision, answers, answer, disabled, act, submission}: {decision: DecisionView; answers: DecisionAnswer[]; answer:(id:string, options:string[], text:string)=>void; disabled:boolean; act:(intent:IslandIntent)=>void; submission:'busy' | 'success' | null}) {

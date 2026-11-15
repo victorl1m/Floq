@@ -24,8 +24,117 @@ fn rect_covers(window: (i32, i32, i32, i32), monitor: (i32, i32, i32, i32)) -> b
     window.0 <= monitor.0 && window.1 <= monitor.1 && window.2 >= monitor.2 && window.3 >= monitor.3
 }
 
+/// Where a full-screen app (if any) is: on a known monitor (its origin), or somewhere unknown (the shell says
+/// "busy" but no foreground window to locate it by: be conservative and suppress everywhere).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullscreenOn {
+    Nowhere,
+    Anywhere,
+    Monitor((i32, i32)),
+}
+
+/// Pure: does a full-screen app suppress the island on `target` (the monitor it is shown on, by origin)?
+fn suppresses(fullscreen: FullscreenOn, target: Option<(i32, i32)>) -> bool {
+    match fullscreen {
+        FullscreenOn::Nowhere => false,
+        FullscreenOn::Anywhere => true,
+        FullscreenOn::Monitor(origin) => target.map_or(true, |t| t == origin),
+    }
+}
+
+/// Pure: index of the monitor the island should appear on. `monitors` are physical (x, y, width, height).
+/// Order: the monitor that contains the cursor, then the one containing the foreground window's center,
+/// then the primary monitor (`primary`), then the first one.
+fn choose_monitor(
+    monitors: &[(i32, i32, u32, u32)],
+    cursor: Option<(f64, f64)>,
+    foreground: Option<(f64, f64)>,
+    primary: Option<usize>,
+) -> Option<usize> {
+    let find = |point: Option<(f64, f64)>| {
+        let (x, y) = point?;
+        monitors.iter().position(|m| contains((m.0, m.1, m.2 as i32, m.3 as i32), x, y))
+    };
+    find(cursor)
+        .or_else(|| find(foreground))
+        .or(primary.filter(|&i| i < monitors.len()))
+        .or(if monitors.is_empty() { None } else { Some(0) })
+}
+
+/// Origin of the monitor the island is (or will be) shown on; `None` = primary monitor.
+static TARGET_MONITOR: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+
+fn target_origin() -> Option<(i32, i32)> {
+    TARGET_MONITOR.lock().ok().and_then(|t| *t)
+}
+
+/// The monitor the island lives on right now: the chosen target if it still exists, else the primary one.
+fn island_monitor(window: &WebviewWindow) -> Option<tauri::Monitor> {
+    if let Some(origin) = target_origin() {
+        if let Ok(monitors) = window.available_monitors() {
+            if let Some(found) = monitors
+                .into_iter()
+                .find(|m| (m.position().x, m.position().y) == origin)
+            {
+                return Some(found);
+            }
+        }
+    }
+    window.primary_monitor().ok().flatten()
+}
+
 #[cfg(windows)]
-fn fullscreen_app_active_now() -> bool {
+fn foreground_center() -> Option<(f64, f64)> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        GetWindowRect(hwnd, &mut rect).ok()?;
+        Some((
+            (rect.left + rect.right) as f64 / 2.0,
+            (rect.top + rect.bottom) as f64 / 2.0,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn foreground_center() -> Option<(f64, f64)> {
+    None
+}
+
+/// Pick the monitor for the next show (the one with the cursor, else the foreground window's, else primary)
+/// and remember it. Called when the island becomes visible, never while it is open.
+fn pick_target_monitor(app: &tauri::AppHandle, window: &WebviewWindow) {
+    let Ok(monitors) = window.available_monitors() else {
+        return;
+    };
+    let rects: Vec<(i32, i32, u32, u32)> = monitors
+        .iter()
+        .map(|m| (m.position().x, m.position().y, m.size().width, m.size().height))
+        .collect();
+    let primary = window.primary_monitor().ok().flatten().and_then(|p| {
+        monitors
+            .iter()
+            .position(|m| m.position() == p.position() && m.size() == p.size())
+    });
+    let cursor = app.cursor_position().ok().map(|c| (c.x, c.y));
+    let chosen = choose_monitor(&rects, cursor, foreground_center(), primary)
+        .map(|i| (rects[i].0, rects[i].1));
+    if let Ok(mut target) = TARGET_MONITOR.lock() {
+        *target = chosen;
+    }
+    // The full-screen verdict depends on the target monitor.
+    if let Ok(mut cache) = SUPPRESS_CACHE.lock() {
+        *cache = None;
+    }
+    diagnostic(app, &format!("monitor target={chosen:?}"));
+}
+
+#[cfg(windows)]
+fn fullscreen_app_active_now() -> FullscreenOn {
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     };
@@ -41,43 +150,48 @@ fn fullscreen_app_active_now() -> bool {
         if !hwnd.0.is_null() {
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
             if pid == std::process::id() {
-                return false;
+                return FullscreenOn::Nowhere;
             }
         }
-        if let Ok(state) = SHQueryUserNotificationState() {
-            if quns_is_busy(state.0) {
-                return true;
-            }
-        }
+        let shell_busy = SHQueryUserNotificationState()
+            .map(|state| quns_is_busy(state.0))
+            .unwrap_or(false);
+        let busy_here = |monitor_origin: Option<(i32, i32)>| match monitor_origin {
+            Some(origin) => FullscreenOn::Monitor(origin),
+            None => FullscreenOn::Anywhere,
+        };
         // Fallback for borderless full-screen windows the shell does not flag.
         if hwnd.0.is_null() {
-            return false;
-        }
-        let mut class = [0u16; 64];
-        let len = GetClassNameW(hwnd, &mut class);
-        if len > 0 {
-            let name = String::from_utf16_lossy(&class[..len as usize]);
-            if matches!(name.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
-                return false;
-            }
-        }
-        // A merely maximized app covers the monitor when the taskbar auto-hides; that is not full screen.
-        if IsZoomed(hwnd).as_bool() {
-            return false;
-        }
-        let mut rect = windows::Win32::Foundation::RECT::default();
-        if GetWindowRect(hwnd, &mut rect).is_err() {
-            return false;
+            return if shell_busy { FullscreenOn::Anywhere } else { FullscreenOn::Nowhere };
         }
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return false;
+        let origin = GetMonitorInfoW(monitor, &mut info)
+            .as_bool()
+            .then_some((info.rcMonitor.left, info.rcMonitor.top));
+        if shell_busy {
+            return busy_here(origin);
         }
-        rect_covers(
+        let mut class = [0u16; 64];
+        let len = GetClassNameW(hwnd, &mut class);
+        if len > 0 {
+            let name = String::from_utf16_lossy(&class[..len as usize]);
+            if matches!(name.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
+                return FullscreenOn::Nowhere;
+            }
+        }
+        // A merely maximized app covers the monitor when the taskbar auto-hides; that is not full screen.
+        if IsZoomed(hwnd).as_bool() {
+            return FullscreenOn::Nowhere;
+        }
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() || origin.is_none() {
+            return FullscreenOn::Nowhere;
+        }
+        let covers = rect_covers(
             (rect.left, rect.top, rect.right, rect.bottom),
             (
                 info.rcMonitor.left,
@@ -85,33 +199,35 @@ fn fullscreen_app_active_now() -> bool {
                 info.rcMonitor.right,
                 info.rcMonitor.bottom,
             ),
-        )
+        );
+        if covers { busy_here(origin) } else { FullscreenOn::Nowhere }
     }
 }
 
 #[cfg(not(windows))]
-fn fullscreen_app_active_now() -> bool {
-    false
+fn fullscreen_app_active_now() -> FullscreenOn {
+    FullscreenOn::Nowhere
 }
 
-/// Whether a full-screen app (a game, a video, a presentation) is in front, so the island must stay out of the way.
+/// Whether a full-screen app (a game, a video, a presentation) is in front ON THE ISLAND'S MONITOR, so the island must stay out of the way.
 /// Cached for a moment: the hover monitor asks every tick.
 fn fullscreen_suppressed() -> bool {
     let now = std::time::Instant::now();
+    let target = target_origin();
     if let Ok(mut cache) = SUPPRESS_CACHE.lock() {
         if let Some((at, value)) = *cache {
             if now.duration_since(at) < std::time::Duration::from_millis(400) {
-                return value;
+                return suppresses(value, target);
             }
         }
         let value = fullscreen_app_active_now();
         *cache = Some((now, value));
-        return value;
+        return suppresses(value, target);
     }
     false
 }
 
-static SUPPRESS_CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+static SUPPRESS_CACHE: Mutex<Option<(std::time::Instant, FullscreenOn)>> = Mutex::new(None);
 
 /// The main Floq window gained focus or was shown/restored: reshow a pending island right away,
 /// bypassing the suppression cache. Safe to call from any window event.
@@ -420,7 +536,7 @@ fn contains(rect: (i32, i32, i32, i32), x: f64, y: f64) -> bool {
 }
 
 fn bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Option<(i32, i32, u32, u32)> {
-    let monitor = window.primary_monitor().ok().flatten()?;
+    let monitor = island_monitor(window)?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let desired_width = (if expanded {
@@ -525,10 +641,7 @@ fn apply_frame(
 fn apply_bounds(window: &WebviewWindow, expanded: bool, height: f64) -> Result<(), String> {
     let frame =
         bounds(window, expanded, height).ok_or("No display is available for the island window")?;
-    let scale = window
-        .primary_monitor()
-        .ok()
-        .flatten()
+    let scale = island_monitor(window)
         .map(|m| m.scale_factor())
         .unwrap_or(1.0);
     apply_frame(window, frame, corner_radius(frame.3, scale, expanded))
@@ -636,10 +749,7 @@ fn animate_bounds(
         animation.running.store(0, Ordering::SeqCst);
         return;
     };
-    let scale = window
-        .primary_monitor()
-        .ok()
-        .flatten()
+    let scale = island_monitor(window)
         .map(|m| m.scale_factor())
         .unwrap_or(1.0);
     let start_radius = corner_radius(start.3.max(1) as u32, scale, from_expanded);
@@ -737,6 +847,7 @@ pub fn island_publish(
         .map_err(|error| error.to_string())?;
     if active {
         if !was_active {
+            pick_target_monitor(&app, &island);
             apply_bounds(&island, expanded, height)?;
         }
         if !was_active || !island.is_visible().unwrap_or(false) {
@@ -797,6 +908,7 @@ pub fn set_enabled(
     window
         .emit("island:snapshot", snapshot)
         .map_err(|error| error.to_string())?;
+    pick_target_monitor(app, &window);
     apply_bounds(&window, expanded, height)?;
     set_visible_without_activation(&window, true)
 }
@@ -808,9 +920,18 @@ pub fn island_intent(
     intent: Value,
 ) -> Result<(), String> {
     allowed_caller(&window, "island")?;
-    app.get_webview_window("main")
-        .ok_or("Main window is unavailable")?
-        .emit("island:intent", intent)
+    let main = app
+        .get_webview_window("main")
+        .ok_or("Main window is unavailable")?;
+    // Clicking a notification (or its action) brings Floq to the front before the deep link runs.
+    if intent.get("type").and_then(Value::as_str) == Some("notification")
+        && intent.get("action").and_then(Value::as_str) == Some("open")
+    {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+    main.emit("island:intent", intent)
         .map_err(|error| error.to_string())
 }
 
@@ -1265,6 +1386,36 @@ mod tests {
         assert_eq!(clamped_height(20.0), 40.0);
         assert_eq!(clamped_height(900.0), 560.0);
         assert_eq!(clamped_height(f64::NAN), 40.0);
+    }
+
+    #[test]
+    fn monitor_choice_prefers_cursor_then_foreground_then_primary() {
+        use super::choose_monitor;
+        // Left monitor has a negative origin; primary (index 1) sits at 0,0; a third one is above.
+        let monitors = [(-1920, 0, 1920, 1080), (0, 0, 2560, 1440), (0, -1080, 1920, 1080)];
+        assert_eq!(choose_monitor(&monitors, Some((-100.0, 500.0)), Some((100.0, 100.0)), Some(1)), Some(0));
+        assert_eq!(choose_monitor(&monitors, Some((5.0, -5.0)), None, Some(1)), Some(2));
+        // Cursor unavailable or off every monitor: the foreground window's monitor.
+        assert_eq!(choose_monitor(&monitors, None, Some((-900.0, 300.0)), Some(1)), Some(0));
+        assert_eq!(choose_monitor(&monitors, Some((9999.0, 9999.0)), Some((100.0, 100.0)), Some(0)), Some(1));
+        // Nothing known: primary, then the first monitor.
+        assert_eq!(choose_monitor(&monitors, None, None, Some(1)), Some(1));
+        assert_eq!(choose_monitor(&monitors, None, None, None), Some(0));
+        assert_eq!(choose_monitor(&monitors, None, None, Some(7)), Some(0));
+        assert_eq!(choose_monitor(&[], Some((1.0, 1.0)), None, None), None);
+        // Monitor edges: right/bottom edges belong to the neighbour.
+        assert_eq!(choose_monitor(&monitors, Some((0.0, 0.0)), None, None), Some(1));
+        assert_eq!(choose_monitor(&monitors, Some((-1.0, 0.0)), None, None), Some(0));
+    }
+
+    #[test]
+    fn fullscreen_suppression_is_per_monitor() {
+        use super::{suppresses, FullscreenOn};
+        assert!(!suppresses(FullscreenOn::Nowhere, Some((0, 0))));
+        assert!(suppresses(FullscreenOn::Anywhere, Some((0, 0))));
+        assert!(suppresses(FullscreenOn::Monitor((0, 0)), Some((0, 0))));
+        assert!(!suppresses(FullscreenOn::Monitor((0, 0)), Some((-1920, 0))), "a game on another monitor must not hide the island");
+        assert!(suppresses(FullscreenOn::Monitor((0, 0)), None), "unknown target is conservative");
     }
 
     #[test]
