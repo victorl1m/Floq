@@ -99,7 +99,7 @@ function App() {
       {user && ready && <ApprovalHost suppressed={islandReady} />}
       {user && ready && <SubagentToaster />}
       {user && ready && <FallbackToaster />}
-      {user && ready && <NotificationToaster />}
+      {user && ready && <NotificationToaster suppressed={islandReady} />}
       {user && ready && <BrowserEgressRelay />}
       {user && ready && <CrossProjectToaster />}
       {user && ready && <AskDialogHost />}
