@@ -2996,7 +2996,11 @@ export class SessionManager {
       this.lockTimers.delete(userId);
       if ((this.shardActivityCounts.get(userId) ?? 0) > 0) return;
       const busy = this.hasActiveProcess(userId);
-      if (!busy) void (this.browser?.stop(userId, "sleep").catch(() => undefined) ?? Promise.resolve()).then(() => this.shards.sleep(userId)).catch((error) => log.error("shard.lock_failed", { userId, error: String(error) }));
+      if (!busy) void (this.browser?.stop(userId, "sleep").catch(() => undefined) ?? Promise.resolve()).then(() => this.shards.sleep(userId)).catch((error) => {
+        log.error("shard.lock_failed", { userId, error: String(error) });
+        // The home is still unlocked: try again after the next delay instead of leaving it open until the next activity.
+        if (this.shards.isAwake(userId) && !this.hasActiveProcess(userId)) this.scheduleLock(userId);
+      });
     }, this.config.shardLockDelayMs);
     timer.unref();
     this.lockTimers.set(userId, timer);

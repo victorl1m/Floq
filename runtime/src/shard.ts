@@ -14,6 +14,8 @@ import { ownHomeAliasArgs } from "./sandboxPaths.js";
 const run = promisify(execFile);
 /** A broken FUSE mount must fail fast with a JSON error instead of hanging the request. */
 const MOUNT_TIMEOUT_MS = 20_000;
+const UNMOUNT_ATTEMPTS = 5;
+const UNMOUNT_RETRY_MS = 500;
 
 /** Entries of a user's persistent /tmp older than this are deleted at wake. */
 export const TMP_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
@@ -925,22 +927,31 @@ export class LinuxShardDriver implements ShardDriver {
   }
 
   async sleep(handle: ShardHandle): Promise<void> {
-    try {
-      if (!isMounted(handle.mountPath)) return;
+    if (isMounted(handle.mountPath)) {
       if (!isAlive(handle.mountPath)) await lazyUnmount(handle.mountPath);
       else {
-        try {
-          await run("fusermount3", ["-u", handle.mountPath]);
-        } catch {
-          await run("fusermount", ["-u", handle.mountPath]);
+        // A process that just exited can hold the mount for a moment ("Device or resource busy"): retry briefly.
+        // If it stays busy this throws with the home still mounted AND its namespace intact: the caller keeps the
+        // handle (the shard stays awake), so removing the namespace here would leave every later launch without one.
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            try {
+              await run("fusermount3", ["-u", handle.mountPath]);
+            } catch {
+              await run("fusermount", ["-u", handle.mountPath]);
+            }
+            break;
+          } catch (error) {
+            if (!isMounted(handle.mountPath)) break;
+            if (attempt >= UNMOUNT_ATTEMPTS) throw error;
+            await new Promise((resolve) => setTimeout(resolve, UNMOUNT_RETRY_MS));
+          }
         }
       }
       log.info("shard.sleep", { userId: handle.userId, uid: handle.uid });
-    } finally {
-      // The namespace lives exactly as long as the awake shard (callers guarantee no sandboxed process is left):
-      // removed on every path, including the early return and a failing unmount.
-      if (handle.netns && this.netns) await this.netns.remove(handle.uid).catch((error) => log.warn("shard.netns_remove_failed", { uid: handle.uid, error: String(error).slice(0, 160) }));
     }
+    // The namespace lives exactly as long as the awake shard (callers guarantee no sandboxed process is left).
+    if (handle.netns && this.netns) await this.netns.remove(handle.uid).catch((error) => log.warn("shard.netns_remove_failed", { uid: handle.uid, error: String(error).slice(0, 160) }));
   }
 }
 
