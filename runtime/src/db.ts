@@ -137,6 +137,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
           SELECT 1 FROM agent_sessions repo WHERE repo.user_id=s.user_id AND repo.git_url IS NOT NULL
             AND p.normalized_git_url=floq_normalize_git_url(repo.git_url) AND repo.cwd=s.project_cwd
         ));
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS opencode_auto_approve BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS antigravity_auto_approve BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS git_coauthor BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS always_recruit_subagents BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS allow_cross_project_agents BOOLEAN NOT NULL DEFAULT TRUE;

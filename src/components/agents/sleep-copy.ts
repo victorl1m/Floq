@@ -28,6 +28,6 @@ export function sleepReasonText(reason: string | null | undefined): string {
  */
 export function resumeHint(provider: ProviderId): string {
     if (provider === "shell") return "Resume opens a new shell in the same folder. Programs that were running won't carry over.";
-    if (provider === "codex") return "Resume continues the same conversation when it can, and starts a new one if not.";
+    if (provider !== "claude") return "Resume continues the same conversation when it can, and starts a new one if not.";
     return "Resume continues the same conversation. If it can't be reopened, a new one starts.";
 }

@@ -34,6 +34,8 @@ function limitValue(value: unknown, field: string, range: { min: number; max: nu
 export interface PublicSettings {
   claudeAutoApprove: boolean;
   codexAutoApprove: boolean;
+  opencodeAutoApprove: boolean;
+  antigravityAutoApprove: boolean;
   gitName: string | null;
   gitEmail: string | null;
   /** Add the Floq "Co-authored-by" trailer to commits made in sessions. */
@@ -70,6 +72,8 @@ export const readEgressMode = (v: unknown): BrowserEgressMode => (v === "desktop
 export interface SettingsPatch {
   claudeAutoApprove?: boolean;
   codexAutoApprove?: boolean;
+  opencodeAutoApprove?: boolean;
+  antigravityAutoApprove?: boolean;
   gitName?: string | null;
   gitEmail?: string | null;
   gitCoauthor?: boolean;
@@ -92,6 +96,8 @@ export interface SettingsPatch {
 export interface RuntimeProfile {
   claudeAutoApprove: boolean;
   codexAutoApprove: boolean;
+  opencodeAutoApprove: boolean;
+  antigravityAutoApprove: boolean;
   /** Commit identity: the user's settings, else their GitHub identity, else their Floq account. */
   gitName: string | null;
   gitEmail: string | null;
@@ -133,6 +139,8 @@ export class SettingsStore {
     return {
       claudeAutoApprove: row?.claude_auto_approve ?? true,
       codexAutoApprove: row?.codex_auto_approve ?? true,
+      opencodeAutoApprove: row?.opencode_auto_approve ?? true,
+      antigravityAutoApprove: row?.antigravity_auto_approve ?? true,
       gitName: row?.git_name ?? null,
       gitEmail: row?.git_email ?? null,
       gitCoauthor: row?.git_coauthor ?? true,
@@ -166,6 +174,14 @@ export class SettingsStore {
     if (patch.codexAutoApprove !== undefined) {
       if (typeof patch.codexAutoApprove !== "boolean") throw badRequest("codexAutoApprove must be boolean");
       push("codex_auto_approve", patch.codexAutoApprove);
+    }
+    if (patch.opencodeAutoApprove !== undefined) {
+      if (typeof patch.opencodeAutoApprove !== "boolean") throw badRequest("opencodeAutoApprove must be boolean");
+      push("opencode_auto_approve", patch.opencodeAutoApprove);
+    }
+    if (patch.antigravityAutoApprove !== undefined) {
+      if (typeof patch.antigravityAutoApprove !== "boolean") throw badRequest("antigravityAutoApprove must be boolean");
+      push("antigravity_auto_approve", patch.antigravityAutoApprove);
     }
     if (patch.gitCoauthor !== undefined) {
       if (typeof patch.gitCoauthor !== "boolean") throw badRequest("gitCoauthor must be boolean");
@@ -266,6 +282,8 @@ export class SettingsStore {
     return {
       claudeAutoApprove: row?.claude_auto_approve ?? true,
       codexAutoApprove: row?.codex_auto_approve ?? true,
+      opencodeAutoApprove: row?.opencode_auto_approve ?? true,
+      antigravityAutoApprove: row?.antigravity_auto_approve ?? true,
       gitName: row?.git_name ?? ghIdentity?.name ?? me?.name ?? null,
       gitEmail: row?.git_email ?? ghIdentity?.email ?? me?.email ?? null,
       gitCoauthor: (row?.git_coauthor ?? true) ? this.config.gitCoauthor : "",

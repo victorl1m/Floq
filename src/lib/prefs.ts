@@ -224,7 +224,7 @@ export function loadComposerPrefs(): ComposerPrefs {
         if (!raw) return fallback;
         const value = JSON.parse(raw) as Partial<ComposerPrefs>;
         return {
-            provider: value.provider === "codex" ? "codex" : "claude",
+            provider: value.provider === "codex" || value.provider === "opencode" || value.provider === "antigravity" ? value.provider : "claude",
             folder:
                 value.folder?.kind === "project" && value.folder.cwd
                     ? { kind: "project", cwd: value.folder.cwd, ...(typeof value.folder.label === "string" ? { label: value.folder.label } : {}) }

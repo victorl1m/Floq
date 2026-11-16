@@ -1,6 +1,9 @@
 // Mirrors runtime/src/types.ts and the REST payloads in runtime/src/server.ts.
 
-export type ProviderId = "claude" | "codex" | "shell";
+export type ProviderId = "claude" | "codex" | "opencode" | "antigravity" | "shell";
+
+/** Providers authenticated by an API key or env var from the vault (no subscription login flow). */
+export type KeyProviderId = "opencode" | "antigravity";
 
 export type SessionState = "starting" | "running" | "sleeping" | "exited" | "failed";
 
@@ -247,6 +250,11 @@ export interface ProviderInfo {
   available: boolean;
   version: string | null;
   args: string[];
+  /** Env var (vault secret exposed as env) the provider needs because it has no login flow. */
+  needsApiKey?: string;
+  apiKeyConfigured?: boolean;
+  /** Antigravity: signed in with a Google account (no API key needed). */
+  oauthConnected?: boolean;
   /** Selectable models; absent on older runtimes. */
   models?: ModelOption[];
 }
@@ -300,6 +308,9 @@ export interface CreateSessionInput {
 export interface UserSettings {
   claudeAutoApprove: boolean;
   codexAutoApprove: boolean;
+  /** Absent on runtimes that predate the OpenCode / Antigravity providers (treated as on). */
+  opencodeAutoApprove?: boolean;
+  antigravityAutoApprove?: boolean;
   gitName: string | null;
   gitEmail: string | null;
   github: { login: string; connectedAt: string } | null;
@@ -348,6 +359,8 @@ export interface ClaudeConnectors {
 export interface SettingsPatch {
   claudeAutoApprove?: boolean;
   codexAutoApprove?: boolean;
+  opencodeAutoApprove?: boolean;
+  antigravityAutoApprove?: boolean;
   gitName?: string | null;
   gitEmail?: string | null;
   gitCoauthor?: boolean;
@@ -495,7 +508,10 @@ export type ClientFrame =
   | { type: "interrupt" }
   | { type: "ping" };
 
-export type LoginProviderId = "claude" | "codex";
+/** Providers with a subscription / account login. Antigravity signs in with a Google account (agy keeps the token itself). */
+export type LoginProviderId = "claude" | "codex" | "antigravity";
+/** Providers with a usage meter and a Floq-side credential refresh. */
+export type UsageProviderId = "claude" | "codex";
 
 export interface ProviderLoginStatus {
   connected: boolean;
@@ -504,7 +520,7 @@ export interface ProviderLoginStatus {
   plan?: string | null;
 }
 
-export type ProvidersStatus = Record<LoginProviderId, ProviderLoginStatus>;
+export type ProvidersStatus = Record<UsageProviderId, ProviderLoginStatus> & { antigravity?: ProviderLoginStatus };
 
 export interface GithubRepo {
   fullName: string;
@@ -557,7 +573,7 @@ export interface ProviderUsage {
   accountLabel?: string;
 }
 
-export type ProvidersUsage = Record<LoginProviderId, ProviderUsage | null>;
+export type ProvidersUsage = Record<UsageProviderId, ProviderUsage | null>;
 
 /** A TCP port a session's processes are listening on (runtime host side). */
 export interface SessionPort {
@@ -753,3 +769,24 @@ export interface MemoryEvent {
   createdAt: string;
 }
 export interface MemoryStatus { /** FLOQ_REDIS_URL is set (stable); redis = reachable now */ enabled?: boolean; redis: boolean; backend?: "redis" | "dragonfly" | null; embeddings: "local" | "openai" | "off"; model: string; ready: boolean; migration?: { done: boolean; notes: number; added: number; pinned: number; at: string | null } | null; vectors?: boolean }
+
+// --- agy swarm mirror ("virtual agents"): workers/subagents that live inside an Antigravity session, see the runtime contract ---
+export type VirtualAgentStatus = "working" | "waiting" | "done" | "killed" | "error" | "stopped";
+export interface VirtualAgent {
+  id: string;              // "agy:" + conversation_id
+  hostSessionId: string;   // Floq session id of the agy PTY session that owns it
+  projectId: string;
+  parentId: string;        // hostSessionId for direct children of the root conversation, else "agy:" + parentConv
+  name: string;
+  role: string;            // worker|coordinator|narrator|monitor|subagent
+  kind: "swarm" | "subagent";
+  model: string | null;
+  status: VirtualAgentStatus;
+  activity: string | null;
+  steps: number;
+  lastAt: string | null;
+  swarmTitle: string | null;
+  unread: number;
+}
+export interface VirtualAgentStep { index: number; type: string; status: string | null; createdAt: string | null; text: string | null; tools: { name: string; summary: string | null }[]; error: string | null }
+export interface VirtualAgentsFrame { type: "virtual-agents"; projectId: string; hostSessionId: string; agents: VirtualAgent[] }

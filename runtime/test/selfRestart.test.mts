@@ -98,6 +98,7 @@ test("a PTY that misses bounded termination stays tracked and blocks manual resu
     stoppingSessions: new Map(),
     nativeTitleSessions: new Map(),
     codexPollers: new Map(),
+    cliProbes: new Map(),
     intentionalSleep: new Set(),
     lifecycle: { assertOpen() {} },
     resumeTasks: new Map(),

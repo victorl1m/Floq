@@ -2,6 +2,8 @@ import type { CSSProperties } from "react";
 import { IconTerminal2 } from "@tabler/icons-react";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
+import IconBrandOpencode from "@/components/ui/brand/IconBrandOpencode";
+import IconBrandAntigravity from "@/components/ui/brand/IconBrandAntigravity";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
 import { providerClass, providerThemeProps } from "@/lib/provider-theme";
@@ -10,11 +12,18 @@ import type { ProviderId, SessionState } from "@/lib/runtime/types";
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
     claude: "Claude Code",
     codex: "Codex",
+    opencode: "OpenCode",
+    antigravity: "Antigravity",
     shell: "Terminal",
 };
 
 export function ProviderIcon({ provider, className, style }: { provider: ProviderId; className?: string; style?: CSSProperties }) {
-    const Icon = provider === "claude" ? IconBrandClaude : provider === "shell" ? IconTerminal2 : IconBrandCodex;
+    const Icon =
+        provider === "claude" ? IconBrandClaude
+        : provider === "shell" ? IconTerminal2
+        : provider === "opencode" ? IconBrandOpencode
+        : provider === "antigravity" ? IconBrandAntigravity
+        : IconBrandCodex;
     return <Icon {...providerThemeProps(provider)} style={style} className={cn("size-4 shrink-0", providerClass.text, className)} aria-label={PROVIDER_LABEL[provider]} />;
 }
 

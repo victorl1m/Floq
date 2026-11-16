@@ -41,6 +41,7 @@ function shutdownManager(sessions: any[], working: Set<string>, queries: Array<{
     intentionalSleep: new Set(),
     nativeTitleSessions: new Map(),
     codexPollers: new Map(),
+    cliProbes: new Map(),
     logins: new Map(),
     vault: { revokeSession() {} },
     scheduleLock() {},

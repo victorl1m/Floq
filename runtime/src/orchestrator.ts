@@ -61,16 +61,19 @@ export interface AgentView {
 export type PendingCounts = Map<string, { approvals: number; decisions: number }>;
 
 export async function selectableAgentModels(
-  config: { models: { claude: ModelEntry[]; codex: ModelEntry[] }; codexModelsOverridden: boolean },
+  config: { models: { claude: ModelEntry[]; codex: ModelEntry[]; opencode: ModelEntry[]; antigravity: ModelEntry[] }; codexModelsOverridden: boolean },
   discoverCodexModels: (userId: string) => Promise<ModelEntry[]>,
   userId: string,
-  provider?: "claude" | "codex",
+  provider?: "claude" | "codex" | "opencode" | "antigravity",
 ): Promise<Record<string, Array<ModelEntry & { default?: boolean }>>> {
   const result: Record<string, Array<ModelEntry & { default?: boolean }>> = {};
   if (!provider || provider === "claude") result.claude = [{ id: "default", label: "Default", default: true }, ...config.models.claude];
   if (!provider || provider === "codex") {
     const codex = config.codexModelsOverridden ? config.models.codex : await discoverCodexModels(userId);
     result.codex = [{ id: "default", label: "Default", default: true }, ...codex];
+  }
+  for (const id of ["opencode", "antigravity"] as const) {
+    if (!provider || provider === id) result[id] = [{ id: "default", label: "Default", default: true }, ...config.models[id]];
   }
   return result;
 }
@@ -195,7 +198,7 @@ export class Orchestrator {
       const seen = bracketedPasteState(live.replaySince(0).chunks.map((c) => c.data).join(""));
       if (seen !== undefined) return seen;
     } catch { /* fall through */ }
-    return live.provider === "claude" || live.provider === "codex";
+    return live.provider !== "shell";
   }
 
   async inboxList(userId: string, sessionId: string) {
@@ -635,7 +638,7 @@ export class Orchestrator {
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name || name.length > 60) throw badRequest("name required (max 60 chars)");
     if ((await this.rows(userId)).some((r) => r.title.toLowerCase() === name.toLowerCase())) throw conflict('An agent named "' + name + '" already exists');
-    const provider = input.provider === "codex" ? "codex" : "claude";
+    const provider: ProviderId = input.provider === "codex" || input.provider === "opencode" || input.provider === "antigravity" ? input.provider : "claude";
     if (input.model !== undefined && typeof input.model !== "string") throw badRequest("model must be a configured model id");
     // `--role` is a preset id (see `floq roles`); any other value is the older free-text brief typed into the terminal.
     const roleText = typeof input.role === "string" ? input.role.trim() : "";

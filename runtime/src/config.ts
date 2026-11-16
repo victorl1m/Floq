@@ -60,9 +60,28 @@ const CODEX_MODELS: ModelEntry[] = [
   { id: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
 ];
 
+// OpenCode ids are provider/model (models.dev); the provider key (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, ...) decides which work.
+const OPENCODE_MODELS: ModelEntry[] = [
+  { id: "anthropic/claude-opus-5-5", label: "Claude Opus 5.5" },
+  { id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
+  { id: "openai/gpt-6.1-sol", label: "GPT-6.1 Sol" },
+  { id: "google/gemini-4-argon", label: "Gemini 4 Argon" },
+  { id: "openrouter/anthropic/claude-sonnet-5.5", label: "Claude Sonnet 5.5 (OpenRouter)" },
+  { id: "opencode/big-pickle", label: "Big Pickle (free)" },
+];
+// Antigravity --model takes the CLI's own label/id (gemini API-key auth).
+const ANTIGRAVITY_MODELS: ModelEntry[] = [
+  { id: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen" },
+  { id: "gemini-4-argon", label: "Gemini 4 Argon" },
+  { id: "gemini-4-carbon", label: "Gemini 4 Carbon" },
+  { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash" },
+];
+
 export interface ProviderBinConfig {
   claude: string;
   codex: string;
+  opencode: string;
+  antigravity: string;
   shell: string;
 }
 
@@ -110,7 +129,7 @@ export interface Config {
   /** Co-author identity added to commits made in sessions ("" disables it for everyone). */
   gitCoauthor: string;
   /** Selectable models per provider (the "default" entry is added by /v1/info). */
-  models: { claude: ModelEntry[]; codex: ModelEntry[] };
+  models: { claude: ModelEntry[]; codex: ModelEntry[]; opencode: ModelEntry[]; antigravity: ModelEntry[] };
   /** A non-empty operator-supplied catalog intentionally replaces runtime discovery. */
   codexModelsOverridden: boolean;
   /** OAuth endpoints and public client ids used to refresh subscription logins (extracted from the installed CLIs). */
@@ -247,11 +266,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     providers: {
       claude: env.FLOQ_CLAUDE_BIN?.trim() || "claude",
       codex: env.FLOQ_CODEX_BIN?.trim() || "codex",
+      opencode: env.FLOQ_OPENCODE_BIN?.trim() || "opencode",
+      antigravity: env.FLOQ_ANTIGRAVITY_BIN?.trim() || "agy",
       shell: env.FLOQ_SHELL_BIN?.trim() || "bash",
     },
     models: {
       claude: parseModels(env.FLOQ_CLAUDE_MODELS, CLAUDE_MODELS),
       codex: parseModels(env.FLOQ_CODEX_MODELS, CODEX_MODELS),
+      opencode: parseModels(env.FLOQ_OPENCODE_MODELS, OPENCODE_MODELS),
+      antigravity: parseModels(env.FLOQ_ANTIGRAVITY_MODELS, ANTIGRAVITY_MODELS),
     },
     codexModelsOverridden: Boolean(env.FLOQ_CODEX_MODELS?.trim()),
     gitCoauthor: env.FLOQ_GIT_COAUTHOR === undefined ? "floqless <floq@flowless.app>" : env.FLOQ_GIT_COAUTHOR.trim(),

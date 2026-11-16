@@ -24,7 +24,7 @@ let listener: ((pending: Pending) => void) | null = null;
  * Never blocks on failure: an older runtime or an unreachable settings call lets the session start as before.
  */
 export async function confirmAutoApprove(client: RuntimeClient, provider: string): Promise<boolean> {
-    if (provider !== "claude" && provider !== "codex") return true;
+    if (provider !== "claude" && provider !== "codex" && provider !== "opencode" && provider !== "antigravity") return true;
     let settings;
     try {
         settings = await client.settings();
@@ -32,7 +32,11 @@ export async function confirmAutoApprove(client: RuntimeClient, provider: string
         return true;
     }
     if (settings.autoApproveAcknowledged !== false) return true; // acknowledged, or an older runtime without the field
-    const autoApprove = provider === "claude" ? settings.claudeAutoApprove : settings.codexAutoApprove;
+    const autoApprove =
+        provider === "claude" ? settings.claudeAutoApprove
+        : provider === "codex" ? settings.codexAutoApprove
+        : provider === "opencode" ? settings.opencodeAutoApprove ?? true
+        : settings.antigravityAutoApprove ?? true;
     if (!autoApprove) {
         // Already off for this provider: nothing to warn about, remember that so the question never appears.
         void client.updateSettings({ autoApproveAcknowledged: true }).catch(() => undefined);
@@ -44,7 +48,7 @@ export async function confirmAutoApprove(client: RuntimeClient, provider: string
     try {
         await client.updateSettings(
             choice === "off"
-                ? { claudeAutoApprove: false, codexAutoApprove: false, autoApproveAcknowledged: true }
+                ? { claudeAutoApprove: false, codexAutoApprove: false, opencodeAutoApprove: false, antigravityAutoApprove: false, autoApproveAcknowledged: true }
                 : { autoApproveAcknowledged: true },
         );
     } catch {
@@ -84,7 +88,7 @@ export function AutoApproveConfirmHost() {
                 <AlertDialogHeader>
                     <AlertDialogTitle>Agents run commands without asking</AlertDialogTitle>
                     <AlertDialogDescription>
-                        Auto-approve is on by default. Claude Code and Codex will run shell commands and edit files in your runtime container
+                        Auto-approve is on by default. Claude Code, Codex, OpenCode and Antigravity will run shell commands and edit files in your runtime container
                         without a confirmation prompt. The container is not a hardened boundary, so run the runtime on a dedicated host.
                         You can change this any time in Settings &gt; Agents.
                     </AlertDialogDescription>

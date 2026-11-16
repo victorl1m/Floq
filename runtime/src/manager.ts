@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { SkillsService, loadRemovedSkills } from "./skills.js";
 import { mergeGlobalCodexMcp } from "./mcpConfig.js";
+import { FLOQ_RULES_GUIDANCE, agyTokenValid, antigravityPrompt, antigravitySettings, opencodeConfigContent, opencodeHomeRel, parseAntigravityConversationId, parseOpencodeSessionId } from "./cliProviders.js";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lchownSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -49,6 +50,7 @@ import type { Vault } from "./vault.js";
 import type { RuntimeProfile } from "./settings.js";
 import { PROVIDER_IDS, type CreateSessionInput, type ProviderId, type RuntimeProject, type ProjectWorkspace, type SessionState, type SessionSummary } from "./types.js";
 import { serialPerTarget, typeMessage } from "./messageDelivery.js";
+import { AgySwarmMirror } from "./agySwarmMirror.js";
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[\w.@:/~+-]+$/;
 /** GIT_URL plus: no option-like host or user (`ssh://-oProxyCommand=...`, `git@-host:x`) that ssh could parse as a flag. */
@@ -72,6 +74,24 @@ const ROLLOUT = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 /** Every Codex session gets a private CODEX_HOME, so the only rollout file in it belongs to that session. */
 const codexHomeRel = (id: string) => ".floq/codex/" + id;
+/** Every agent TUI (not the plain shell) takes bracketed paste. */
+interface CliProbe {
+  provider: "opencode" | "antigravity";
+  userId: string;
+  cwd: string;
+  cwds: string[];
+  baseline: string | null;
+  env: Record<string, string>;
+  inFlight: boolean;
+  misses: number;
+  nextAt: number;
+}
+const AGY_GATE_MS = 45_000;
+/** agy output that means its Google login is missing, expired or revoked. */
+const AGY_LOGIN_LOST = /Select login method|Authentication expired|log back in/i;
+const bracketedProvider = (provider: ProviderId) => provider !== "shell";
+/** OpenCode only creates its session on the first message, so its id probe (a CLI spawn) polls slower than codex's file scan. */
+const CLI_ID_POLL_MS: Record<string, number> = { opencode: 10_000, antigravity: 3_000 };
 
 /**
  * Walk a Codex sessions tree (agent-writable) with every directory pinned by descriptor and never entered through a symlink,
@@ -284,9 +304,14 @@ function safePlainProjectRoot(home: string, cwd: string, projectId: string): str
   } catch { return null; }
 }
 
+/** Providers with a login terminal. Antigravity's token lives in agy's own file (it refreshes it itself), never in the credential broker. */
+export type LoginProvider = OAuthProvider | "antigravity";
+export const AGY_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token";
+const AGY_SCOPE_REL = ".config/antigravity/credential-user-scope";
+
 interface LoginState {
   userId: string;
-  provider: OAuthProvider;
+  provider: LoginProvider;
   timers: NodeJS.Timeout[];
   poll?: NodeJS.Timeout;
   dir: string;
@@ -330,13 +355,24 @@ export class SessionManager {
   private readonly logins = new Map<string, LoginState>();
   /** mtime of credential files we wrote or last read, to detect a CLI refreshing on its own. */
   private readonly credMtime = new Map<string, number>();
+  /** Last known "agy has a Google-login token file" per user, for status while the shard sleeps. */
+  private readonly agyConnected = new Map<string, boolean>();
+  /** Users whose agy hit the login picker / expiry notice: the token file is not trusted until they sign in again. */
+  private readonly agyExpired = new Set<string>();
   private readonly live = new Map<string, Session>();
   /** Runtime-wide X display / Xpra port slots, one per live session (display.ts). */
   readonly displays = new DisplayAllocator();
+  /** Mirrors Antigravity swarm workers / subagents as virtual agents (agySwarmMirror.ts); one watcher per live agy session. */
+  readonly agyMirror = new AgySwarmMirror();
   private readonly stoppingSessions = new Map<string, Session>();
   private readonly intentionalSleep = new Set<string>();
   private readonly lockTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexPollers = new Map<string, NodeJS.Timeout>();
+  /** How to read back the conversation id OpenCode / Antigravity chose for a live session (see captureCliId). */
+  private readonly cliProbes = new Map<string, CliProbe>();
+  /** Fresh agy starts are serialised per (user, cwd) until each one's conversation id is captured: the id cache is one map per cwd. */
+  private readonly agyGates = new Map<string, Promise<void>>();
+  private readonly agyRelease = new Map<string, () => void>();
   private readonly nativeTitleSessions = new Map<string, {
     userId: string;
     provider: "claude" | "codex";
@@ -460,6 +496,8 @@ export class SessionManager {
       const profile: RuntimeProfile = {
         claudeAutoApprove: false,
         codexAutoApprove: false,
+        opencodeAutoApprove: false,
+        antigravityAutoApprove: false,
         gitName: null,
         gitEmail: null,
         gitCoauthor: "",
@@ -630,7 +668,7 @@ export class SessionManager {
   async typeNotice(userId: string, id: string, text: string): Promise<boolean> {
     const session = this.live.get(id);
     if (!session || session.userId !== userId || !session.isAlive || session.provider === "shell" || this.logins.has(id)) return false;
-    await serialPerTarget(id, () => typeMessage((d) => session.write(d), text, { bracketed: session.provider === "claude" || session.provider === "codex", trusted: true }));
+    await serialPerTarget(id, () => typeMessage((d) => session.write(d), text, { bracketed: bracketedProvider(session.provider), trusted: true }));
     return true;
   }
 
@@ -1528,6 +1566,7 @@ export class SessionManager {
     }
     // Provider-native subagents are always disabled (start and resume, any role, regardless of the recruit setting); Floq recruiting is the only path.
     if (row.provider === "codex") args.unshift(...nativeSubagentBlockArgs("codex"));
+    // OpenCode: its `task` tool is denied through the inline config below. Antigravity has no switch for native subagents: policy text only.
     if (row.provider === "claude") args.push(...nativeSubagentBlockArgs("claude", { version: detectVersion(definition.bin).version, warn: (message) => log.warn("subagent.native_block_degraded", { sessionId: row.id, message }) }));
     // Wired context rides in the provider's system-level instructions on EVERY start and resume, so it survives compaction and restarts.
     const wiredBlock0 = this.wired && row.provider !== "shell" ? await this.wired.blockFor(row.user_id, row.id) : "";
@@ -1542,7 +1581,11 @@ export class SessionManager {
     const wiredBlock = row.provider === "shell" ? "" : composeSystemBlocks(this.subagents ? await this.subagents.blockFor(row.user_id, row.id) : "", this.memories?.enabled() ? buildMemoryPolicy() : "", skillsBlock, artifactsDir ? artifactsGuidance(artifactsDir, row.provider) : "", wiredBlock0);
     if (wiredBlock && row.provider === "claude") args.push("--append-system-prompt", wiredBlock);
     // Initial prompt: fresh starts only, as its own argv element after all flags (no shell involved).
-    if (!resuming && prompt) args.push("--", prompt);
+    // Antigravity has no system-prompt flag: the Floq block rides in its first message on every start and resume instead.
+    if (row.provider === "antigravity") {
+      const text = antigravityPrompt(wiredBlock, resuming ? undefined : prompt, resuming);
+      if (text) args.push(...(definition.promptArgs?.(text) ?? ["--", text]));
+    } else if (!resuming && prompt) args.push(...(definition.promptArgs?.(prompt) ?? ["--", prompt]));
     const env = buildSessionEnv(this.config, row.provider, profile, row.id);
     // ~/.local/bin first: user-installed tools, including the launchers `apt install` (image/floq-apt) writes there.
     if (this.shards.driver.name === "linux") {
@@ -1578,6 +1621,57 @@ export class SessionManager {
       }
       const cred = await this.freshCredential(row.user_id, "codex");
       if (cred) this.writeCredFile(handle, this.codexAuthPath(handle, row.id), JSON.stringify(cred));
+    }
+    if (row.provider === "opencode") {
+      // Private per-session dir (the CODEX_HOME pattern): own session database, config dir with the protected Floq skill, instructions file.
+      const rel = opencodeHomeRel(row.id);
+      const home = this.shards.driver.homePath(handle) + "/" + rel;
+      const dir = this.shards.driver.hostPath(handle, rel);
+      mkdirOwned(handle.mountPath, dir, handle.uid);
+      env.OPENCODE_DB = home + "/opencode.db";
+      env.OPENCODE_CONFIG_DIR = home + "/config";
+      let instructions: string | null = null;
+      try {
+        mkdirOwned(handle.mountPath, join(dir, "config"), handle.uid);
+        if (wiredBlock) {
+          writeFileOwned(handle.mountPath, join(dir, "instructions.md"), wiredBlock + "\n", handle.uid, 0o600);
+          instructions = home + "/instructions.md";
+        }
+        syncProtectedFloqSkill(join(dir, "config"), join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid, handle.mountPath);
+      } catch (error) {
+        log.warn("opencode.session_setup_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
+      env.OPENCODE_CONFIG_CONTENT = opencodeConfigContent(instructions);
+    }
+    let agyUsedOauth = false;
+    if (row.provider === "antigravity") {
+      // agy keeps everything under ~/.gemini (HOME cannot be repointed per session), so only session-agnostic files go there.
+      try {
+        const rules = this.shards.driver.hostPath(handle, ".gemini/config/rules");
+        mkdirOwned(handle.mountPath, rules, handle.uid);
+        writeFileOwned(handle.mountPath, join(rules, "floq.md"), FLOQ_RULES_GUIDANCE, handle.uid, 0o644);
+        // First run shows a colour-scheme picker that swallows the -i message; this marker (only when missing) skips it.
+        const cache = this.shards.driver.hostPath(handle, ".gemini/antigravity-cli/cache");
+        mkdirOwned(handle.mountPath, cache, handle.uid);
+        if (lstatHome(handle.mountPath, join(cache, "onboarding.json")) === null) {
+          writeFileOwned(handle.mountPath, join(cache, "onboarding.json"), JSON.stringify({ onboardingComplete: true }), handle.uid, 0o600);
+        }
+        this.ensureAgySwarm(handle);
+        syncProtectedFloqSkill(this.shards.driver.hostPath(handle, ".gemini/config"), join(this.config.skelDir, ".codex/skills/floq-orchestrate"), handle.uid, handle.mountPath);
+      } catch (error) {
+        log.warn("antigravity.session_setup_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      }
+      // A Google login (token file) wins over GEMINI_API_KEY; the key only drives agy when there is no login.
+      const oauth = this.antigravityTokenPresent(handle) && !this.agyExpired.has(row.user_id);
+      agyUsedOauth = oauth;
+      if (oauth) delete env.GEMINI_API_KEY;
+      for (const name of Object.keys(env)) if (name.startsWith("DBUS_")) delete env[name];
+      const settings = antigravitySettings({
+        oauth,
+        hasApiKey: Boolean(env.GEMINI_API_KEY),
+        trustedWorkspaces: managedTrustDirectories(this.shards.driver.homePath(handle), this.shards.driver.name === "linux" ? handle.mountPath : null, [row.cwd, row.project_cwd]),
+      });
+      if (settings) args.unshift("--settings", settings);
     }
     if (row.provider === "claude") {
       const claudeHome = this.shards.driver.hostPath(handle, ".claude");
@@ -1622,7 +1716,20 @@ export class SessionManager {
         writeFileOwned(handle.mountPath, path, JSON.stringify(claudeProjectTrust(config, directories), null, 2), handle.uid, 0o600);
       }
     }
-    this.assertLifecycleOpen();
+    // Antigravity: one fresh start at a time per (user, cwd) until its conversation id is captured (or 45 s pass), and the id
+    // cache is read BEFORE the process exists so the baseline can never be this session's own conversation.
+    let cliProbe: CliProbe | null = null;
+    if ((row.provider === "opencode" || row.provider === "antigravity") && !providerId) {
+      const cwds = managedTrustDirectories(this.shards.driver.homePath(handle), this.shards.driver.name === "linux" ? handle.mountPath : null, [row.cwd]);
+      if (row.provider === "antigravity") await this.enterAgyGate(row.id, row.user_id, row.cwd);
+      cliProbe = { provider: row.provider, userId: row.user_id, cwd: row.cwd, cwds, baseline: row.provider === "antigravity" ? this.readAntigravityId(handle, cwds) : null, env, inFlight: false, misses: 0, nextAt: 0 };
+    }
+    try {
+      this.assertLifecycleOpen();
+    } catch (error) {
+      this.releaseAgyGate(row.id);
+      throw error;
+    }
     // Virtual display for GUI apps (`floq display start`): set last so a vault secret cannot repoint it.
     const displayLease = this.displays.acquire(row.id);
     // No inherited X display either (host env, vault secret): GUI apps get one only via `floq display env`.
@@ -1643,6 +1750,7 @@ export class SessionManager {
       });
     } catch (error) {
       if (displayLease) this.displays.release(row.id, displayLease.token);
+      this.releaseAgyGate(row.id);
       throw error;
     }
 
@@ -1669,7 +1777,13 @@ export class SessionManager {
       parentSessionId: row.parent_session_id ?? null,
     });
     this.live.set(row.id, session);
-    session.organizationId = await this.sessionOrg(row.user_id, row.project_id);
+    try {
+      session.organizationId = await this.sessionOrg(row.user_id, row.project_id);
+    } catch (error) {
+      log.warn("agy.gate_released_after_spawn_failure", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      this.releaseAgyGate(row.id);
+      throw error;
+    }
     // Free the display slot only once the sandbox has really exited (its pid namespace, and with it xpra/Xvfb, is gone),
     // on every path: exit, sleep, remove, project delete, shutdown. whenExited() resolves even after dispose() dropped
     // the frame listeners. The token guard ignores this when a relaunch of the same session already holds a new lease.
@@ -1689,8 +1803,14 @@ export class SessionManager {
     this.cancelLock(row.user_id);
 
     const launchedAt = Date.now();
+    let agyTail = "";
     session.subscribe((frame) => {
       if (frame.type === "output") {
+        if (row.provider === "antigravity" && agyUsedOauth) {
+          // The login picker / an expiry notice means the Google login is dead: stop trusting it, so the next start keeps GEMINI_API_KEY.
+          agyTail = stripAnsi(agyTail + frame.data).slice(-400);
+          if (AGY_LOGIN_LOST.test(agyTail)) { agyTail = ""; this.markAgyLoginLost(row.user_id); }
+        }
         void this.updateNativeTitle(row.id);
         if (row.provider === "claude") this.fallback?.onOutput(row.id, row.user_id);
         return;
@@ -1698,6 +1818,7 @@ export class SessionManager {
       if (frame.type === "exit") void this.onExit(session, frame.session.state, !strictResume && resuming && Date.now() - launchedAt < RESUME_FALLBACK_MS, profile, handle);
     });
 
+    if (cliProbe) this.cliProbes.set(row.id, cliProbe);
     await this.pool.query(
       "UPDATE agent_sessions SET state = 'running', resume_count = $2, sleep_reason = NULL, slept_at = NULL, last_active_at = now(), resume_on_boot = FALSE, interrupted_turn = FALSE, archived_at = NULL WHERE id = $1",
       [row.id, resumeCount],
@@ -1706,11 +1827,167 @@ export class SessionManager {
     void this.updateNativeTitle(row.id);
     if (row.provider === "claude" || row.provider === "codex") this.pollNativeTitleSoon(row.id);
     if (row.provider === "codex" && !providerId) this.pollCodexId(row.id, handle);
+    if (cliProbe) this.pollCodexId(row.id, handle);
+    if (row.provider === "antigravity") this.trackAgySwarm(row, handle, providerId);
     return session;
   }
 
+  /** Antigravity's native swarm stays on (its workers are mirrored on the canvas): set plugins.swarm.enabled=true only when the key is missing; an explicit user value is respected. */
+  private ensureAgySwarm(handle: ShardHandle): void {
+    try {
+      const path = this.shards.driver.hostPath(handle, ".gemini/config/config.json");
+      const exists = lstatHome(handle.mountPath, path) !== null;
+      const raw = exists ? SkillsService.readSafeConfig(path, realpathSync(handle.mountPath)) : null;
+      if (exists && raw === null) return; // unreadable or unsafe: leave it
+      let config: Record<string, any> = {};
+      if (raw !== null) {
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+        config = parsed as Record<string, any>;
+      }
+      const plugins = typeof config.plugins === "object" && config.plugins !== null && !Array.isArray(config.plugins) ? config.plugins : {};
+      const swarm = typeof plugins.swarm === "object" && plugins.swarm !== null && !Array.isArray(plugins.swarm) ? plugins.swarm : {};
+      if (swarm.enabled !== undefined) return;
+      config.plugins = { ...plugins, swarm: { ...swarm, enabled: true } };
+      writeFileOwned(handle.mountPath, path, JSON.stringify(config, null, 2) + "\n", handle.uid, 0o600);
+    } catch (error) {
+      log.warn("antigravity.swarm_enable_failed", { error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+    }
+  }
+
+  private agyReconcileTimer: NodeJS.Timeout | null = null;
+
+  /** Forget mirror snapshots of sessions that no longer exist or were archived (deleted via any path, e.g. a project delete). */
+  private async reconcileAgyMirror(): Promise<void> {
+    const ids = this.agyMirror?.hostIds() ?? [];
+    if (!ids.length) return;
+    const result = await this.pool.query("SELECT id::text AS id FROM agent_sessions WHERE id = ANY($1::uuid[]) AND archived_at IS NULL", [ids]);
+    const alive = new Set((result.rows as { id: string }[]).map((r) => r.id));
+    for (const id of ids) if (!alive.has(id) && !this.live.has(id)) this.agyMirror.forget(id);
+  }
+
+  /** Start mirroring this agy session's swarm (root conversation may still be unknown; captureCliId sets it). */
+  private trackAgySwarm(row: Row, handle: ShardHandle, rootConv: string | null): void {
+    if (!this.agyReconcileTimer) {
+      this.agyReconcileTimer = setInterval(() => { void this.reconcileAgyMirror().catch(() => undefined); }, 60_000);
+      this.agyReconcileTimer.unref();
+    }
+    try {
+      this.agyMirror.track({
+        sessionId: row.id,
+        userId: row.user_id,
+        projectId: row.project_id ?? "",
+        home: this.hostHome(handle),
+        appData: this.shards.driver.hostPath(handle, ".gemini/antigravity-cli"),
+        rootConv,
+        // The hostile-prone SQLite read runs as the user's own uid inside their sandbox, never as the runtime.
+        spawnDb: (command) => this.shards.driver.spawnPipe(handle, { file: command.file, args: command.args, cwd: ".", env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" } }),
+        sandboxDbPath: this.shards.driver.homePath(handle) + "/.gemini/antigravity-cli/conversation_summaries.db",
+      });
+    } catch (error) {
+      log.warn("antigravity.mirror_track_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+    }
+  }
+
+  /** Ask the host agy session to relay a message to a mirrored worker (typed untrusted, through the normal message path). False when the host is not live. */
+  async relayToAgyAgent(userId: string, vid: string, text: string): Promise<boolean> {
+    const found = this.agyMirror.find(userId, vid);
+    if (!found) return false;
+    const session = this.live.get(found.state.host.sessionId);
+    if (!session || session.userId !== userId || !session.isAlive) return false;
+    const name = found.agent.name.replace(/[^\w.-]/g, "_").slice(0, 80);
+    const body = "Please relay to @" + name + " via the swarm board: " + text.replace(/\s+/g, " ").trim().slice(0, 2000);
+    await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), body, { bracketed: bracketedProvider(session.provider), trusted: false }));
+    return true;
+  }
+
+  private async enterAgyGate(sessionId: string, userId: string, cwd: string): Promise<void> {
+    const key = userId + "\0" + cwd;
+    // Chain synchronously (no await between reading and writing the map): N queued starters run strictly one after another.
+    const previous = this.agyGates.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const own = new Promise<void>((resolve) => { release = resolve; });
+    const gate = previous.then(() => own);
+    this.agyGates.set(key, gate);
+    // The slot is held from our turn until released (capture, exit, sleep, spawn failure) or AGY_GATE_MS after we got it.
+    let timer: NodeJS.Timeout | null = null;
+    this.agyRelease.set(sessionId, () => {
+      if (timer) clearTimeout(timer);
+      release();
+      void gate.then(() => { if (this.agyGates.get(key) === gate) this.agyGates.delete(key); });
+    });
+    await previous;
+    timer = setTimeout(release, AGY_GATE_MS);
+    timer.unref();
+  }
+
+  private releaseAgyGate(sessionId: string): void {
+    const release = this.agyRelease?.get(sessionId);
+    this.agyRelease?.delete(sessionId);
+    release?.();
+  }
+
+  private readAntigravityId(handle: ShardHandle, cwds: string[]): string | null {
+    try {
+      const raw = SkillsService.readSafeConfig(this.shards.driver.hostPath(handle, ".gemini/antigravity-cli/cache/last_conversations.json"), realpathSync(handle.mountPath));
+      return raw === null ? null : parseAntigravityConversationId(raw, cwds);
+    } catch { return null; }
+  }
+
+  /** `opencode session list` inside the sandbox, against the session's private database. */
+  private probeOpencodeId(handle: ShardHandle, probe: { cwd: string; env: Record<string, string> }, timeoutMs = 15_000): Promise<string | null> {
+    return new Promise((done) => {
+      try {
+        const child = this.shards.driver.spawnPipe(handle, { file: this.config.providers.opencode, args: ["session", "list", "--format", "json", "-n", "10"], cwd: probe.cwd, env: probe.env });
+        let out = "";
+        child.stdout!.on("data", (chunk) => { if (out.length < 1 << 20) out += chunk.toString(); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+        child.on("error", () => { clearTimeout(timer); done(null); });
+        child.on("close", (code) => { clearTimeout(timer); done(code === 0 ? parseOpencodeSessionId(out) : null); });
+      } catch { done(null); }
+    });
+  }
+
+  /**
+   * Read back the conversation id OpenCode / Antigravity chose, so resume targets exactly this conversation.
+   * `final` (sleep/exit/restart check) skips the backoff. Never persists an id another agy row of this user already holds:
+   * when it cannot tell, it stores nothing and the next start is a fresh conversation.
+   */
+  private async captureCliId(id: string, handle: ShardHandle, final = false): Promise<boolean> {
+    const probe = this.cliProbes.get(id);
+    if (!probe || probe.inFlight) return false;
+    if (!final && Date.now() < probe.nextAt) return false;
+    probe.inFlight = true;
+    try {
+      const found = probe.provider === "opencode"
+        ? await this.probeOpencodeId(handle, probe, final ? 5_000 : 15_000)
+        : ((value) => (value && value !== probe.baseline ? value : null))(this.readAntigravityId(handle, probe.cwds));
+      if (!found) {
+        probe.misses += 1;
+        // An idle OpenCode (no message yet) has no session: back off 10 s -> 60 s instead of spawning the binary forever.
+        if (probe.provider === "opencode") probe.nextAt = Date.now() + Math.min(60_000, 10_000 * 2 ** Math.min(probe.misses, 3));
+        return false;
+      }
+      if (probe.provider === "antigravity") {
+        const held = await this.pool.query("SELECT 1 FROM agent_sessions WHERE user_id = $1 AND provider = 'antigravity' AND provider_session_id = $2 AND id <> $3 LIMIT 1", [probe.userId, found, id]);
+        if (held.rows.length > 0) return false; // another agent's conversation (the cache holds one id per cwd): keep waiting for our own
+      }
+      await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1 AND provider_session_id IS NULL", [id, found]);
+      if (probe.provider === "antigravity") this.agyMirror?.setRoot(id, found);
+      // A slow probe of an older launch must not tear down the probe or gate of a newer one.
+      if (this.cliProbes.get(id) === probe) {
+        this.cliProbes.delete(id);
+        this.releaseAgyGate(id);
+      }
+      return true;
+    } finally {
+      probe.inFlight = false;
+    }
+  }
+
   /** Read the uuid Codex assigned (from its rollout filename) so resume targets exactly this conversation. */
-  private async captureCodexId(id: string, handle: ShardHandle): Promise<boolean> {
+  private async captureCodexId(id: string, handle: ShardHandle, final = false): Promise<boolean> {
+    if (this.cliProbes.has(id)) return this.captureCliId(id, handle, final);
     const found = findRollout(this.hostHome(handle), this.shards.driver.hostPath(handle, codexHomeRel(id) + "/sessions"));
     if (!found) return false;
     await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1", [id, found]);
@@ -1778,7 +2055,7 @@ export class SessionManager {
       void this.captureCodexId(id, handle)
         .then((done) => done && this.stopCodexPoll(id))
         .catch(() => undefined);
-    }, CODEX_ID_POLL_MS);
+    }, CLI_ID_POLL_MS[this.cliProbes.get(id)?.provider ?? ""] ?? CODEX_ID_POLL_MS);
     timer.unref();
     this.codexPollers.set(id, timer);
   }
@@ -1802,12 +2079,15 @@ export class SessionManager {
     if (!current && !this.intentionalSleep.has(session.id)) return;
     this.stopCodexPoll(session.id);
     this.vault.revokeSession(session.id);
+    this.agyMirror?.stop(session.id);
     if (this.intentionalSleep.delete(session.id)) {
       this.nativeTitleSessions.delete(session.id);
       if (this.stoppingSessions.get(session.id) === session) this.stoppingSessions.delete(session.id);
       return;
     }
-    if (session.provider === "codex") await this.captureCodexId(session.id, handle).catch(() => false);
+    if (session.provider === "codex" || this.cliProbes.has(session.id)) await this.captureCodexId(session.id, handle, true).catch(() => false);
+    this.cliProbes.delete(session.id);
+    this.releaseAgyGate(session.id);
     await this.updateNativeTitle(session.id, true);
     this.nativeTitleSessions.delete(session.id);
 
@@ -1817,7 +2097,9 @@ export class SessionManager {
       this.live.delete(session.id);
       try {
         const row = await this.row(session.id, session.userId);
-        const fresh = await this.launch({ ...row, resume_count: session.resumeCount - 1 }, profile, handle, false);
+        // The dead conversation id must not stay on the row: the fresh conversation gets captured and stored instead.
+        if (row.provider !== "claude") await this.pool.query("UPDATE agent_sessions SET provider_session_id = NULL WHERE id = $1", [session.id]);
+        const fresh = await this.launch({ ...row, provider_session_id: null, resume_count: session.resumeCount - 1 }, profile, handle, false);
         fresh.broadcast({ type: "state", session: fresh.toSummary() });
       } catch (error) {
         log.error("session.fallback_failed", { sessionId: session.id, error: error instanceof Error ? error.message : String(error) });
@@ -1839,6 +2121,9 @@ export class SessionManager {
     }
     if (input.provider === "shell" && (input.prompt !== undefined || input.specKit)) {
       throw badRequest("prompt and specKit are not supported for shell sessions");
+    }
+    if (input.specKit && (input.provider === "opencode" || input.provider === "antigravity")) {
+      throw badRequest("Spec Kit is only available for Claude and Codex agents", "spec_kit_unsupported");
     }
     let homeShell = false;
     try { homeShell = wantsHomeShell(input); } catch (error) { throw badRequest(error instanceof Error ? error.message : "invalid home", "invalid_home"); }
@@ -2126,6 +2411,12 @@ export class SessionManager {
       const captured = titleState ? await this.captureCodexId(id, titleState.handle).catch(() => false) : false;
       if (!captured) throw conflict("Codex has not saved a resumable conversation yet. Wait a moment and try again.", "restart_not_ready");
     }
+    if ((session.provider === "opencode" || session.provider === "antigravity") && !row.provider_session_id) {
+      const probe = this.cliProbes.get(id);
+      const handle = probe ? await this.shards.wake(userId) : null;
+      const captured = handle ? await this.captureCliId(id, handle, true).catch(() => false) : false;
+      if (!captured) throw conflict("This agent has not saved a resumable conversation yet. Wait a moment and try again.", "restart_not_ready");
+    }
   }
 
   /** Restart only the caller's own session, preserving its row and provider conversation. */
@@ -2310,14 +2601,14 @@ export class SessionManager {
    */
   async startLogin(userId: string, provider: ProviderId, profile: RuntimeProfile): Promise<SessionSummary> {
     this.assertLifecycleOpen();
-    if (provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex", "invalid_provider");
+    if (provider !== "claude" && provider !== "codex" && provider !== "antigravity") throw badRequest("provider must be claude, codex or antigravity", "invalid_provider");
     const key = userId + ":" + provider;
     return coalesce(this.loginTasks, key, () => this.startLoginOnce(userId, provider, profile));
   }
 
   private async startLoginOnce(userId: string, provider: ProviderId, profile: RuntimeProfile): Promise<SessionSummary> {
     this.assertLifecycleOpen();
-    if (provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex", "invalid_provider");
+    if (provider !== "claude" && provider !== "codex" && provider !== "antigravity") throw badRequest("provider must be claude, codex or antigravity", "invalid_provider");
     // A second concurrent start (e.g. the client firing twice) must not kill the first: the OAuth state/PKCE
     // verifier belongs to the running CLI, so return the live login instead of starting another.
     for (const state of this.logins.values()) {
@@ -2333,10 +2624,18 @@ export class SessionManager {
     const env = buildSessionEnv(this.config, provider, profile, id);
     const rel = ".floq/login-" + provider + "-" + id;
     const dir = this.shards.driver.hostPath(handle, rel);
-    mkdirOwned(handle.mountPath, dir, handle.uid);
+    if (provider !== "antigravity") mkdirOwned(handle.mountPath, dir, handle.uid);
     const home = this.shards.driver.homePath(handle);
     let args: string[];
-    if (provider === "claude") {
+    if (provider === "antigravity") {
+      // agy keeps its token under the real ~/.gemini and refreshes it itself: log in with the real HOME, no throwaway dir.
+      // The sandbox has no D-Bus session, so agy stores the token in a file. Make sure nothing can send it to a keyring.
+      // Limitation: the non-bwrap local driver shares the host /run/user/<uid>/bus, which agy probes even without DBUS_* env, so there
+      // the token may go to the host keyring and the login is never detected. The bwrap (linux) driver mounts a tmpfs /run.
+      for (const name of Object.keys(env)) if (name.startsWith("DBUS_") || name === "GEMINI_API_KEY") delete env[name];
+      try { mkdirOwned(handle.mountPath, this.shards.driver.hostPath(handle, ".gemini/antigravity-cli"), handle.uid); } catch { /* agy creates it */ }
+      args = ["acp", "--login"];
+    } else if (provider === "claude") {
       env.CLAUDE_CONFIG_DIR = home + "/" + rel;
       args = ["auth", "login"];
     } else {
@@ -2346,7 +2645,7 @@ export class SessionManager {
     // Where the CLI may leave its credential: the throwaway config dir (CLAUDE_CONFIG_DIR / CODEX_HOME), or,
     // if it ignores that, the user's real config dir. The latter only counts if written after this login began.
     const name = provider === "claude" ? ".credentials.json" : "auth.json";
-    const candidates = [
+    const candidates = provider === "antigravity" ? [{ path: this.shards.driver.hostPath(handle, AGY_TOKEN_REL), fresh: true }] : [
       { path: join(dir, name), fresh: false },
       ...(provider === "claude" ? [{ path: join(dir, ".claude", name), fresh: false }] : []),
       { path: this.shards.driver.hostPath(handle, (provider === "claude" ? ".claude/" : ".codex/") + name), fresh: true },
@@ -2376,7 +2675,19 @@ export class SessionManager {
     this.logins.set(id, state);
     state.timers.push(setTimeout(() => this.endLogin(id), LOGIN_TIMEOUT_MS));
 
+    const readAgy = (): boolean => {
+      const file = this.readHome(handle, candidates[0]!.path);
+      return Boolean(file && file.mtimeMs >= state.startedAt - 1000 && agyTokenValid(file.text));
+    };
+    // The token format is not verified: a clean exit (code 0) with a fresh, non-empty token file also counts as signed in.
+    const readAgyOnExit = (code: number | null): boolean => {
+      if (readAgy()) return true;
+      if (code !== 0) return false;
+      const file = this.readHome(handle, candidates[0]!.path);
+      return Boolean(file && file.mtimeMs >= state.startedAt - 1000 && file.text.trim().length > 0);
+    };
     const readCred = (): CredentialData | null => {
+      if (provider === "antigravity") return null;
       for (const candidate of candidates) {
         const file = this.readHomeJson(handle, candidate.path);
         if (!file || (candidate.fresh && file.mtimeMs < state.startedAt)) continue; // not there yet, or unsafe
@@ -2392,7 +2703,17 @@ export class SessionManager {
         .map((line) => line.trim())
         .filter(Boolean)
         .slice(-3);
+    const finishAgy = () => {
+      if (state.finishing) return;
+      state.finishing = true;
+      this.agyExpired.delete(userId);
+      this.agyConnected.set(userId, true);
+      log.info("login.connected", { userId, provider });
+      // Let agy finish writing (projectID / tier) before the terminal goes away.
+      state.timers.push(setTimeout(() => this.endLogin(id), 1500));
+    };
     const finish = (data: CredentialData) => {
+      if (provider === "antigravity") return;
       if (state.finishing) return;
       state.finishing = true;
       void this.credentials
@@ -2404,6 +2725,7 @@ export class SessionManager {
         .finally(() => this.endLogin(id));
     };
     state.poll = setInterval(() => {
+      if (provider === "antigravity") { if (!state.finishing && readAgy()) finishAgy(); return; }
       const data = state.finishing ? null : readCred();
       if (data) finish(data);
     }, 2000);
@@ -2413,6 +2735,7 @@ export class SessionManager {
         return;
       }
       if (frame.type !== "exit") return;
+      if (provider === "antigravity" && !state.finishing && readAgyOnExit(frame.session.exitCode)) { finishAgy(); return; }
       const data = state.finishing ? null : readCred();
       if (data) {
         finish(data);
@@ -2449,9 +2772,50 @@ export class SessionManager {
     this.scheduleLock(state.userId);
   }
 
+  /**
+   * True when agy has a usable Google-login token file in the user's home (agy refreshes it itself). Never wakes a shard:
+   * while it sleeps this is the last known answer (refreshed on every wake, login, disconnect and agy start), false if unknown.
+   * A token removed by agy's own /logout inside a session shows as connected until the next wake.
+   */
+  async antigravityConnected(userId: string): Promise<boolean> {
+    if (this.agyExpired.has(userId)) return false;
+    const handle = this.shards.awakeHandle(userId);
+    if (handle) return this.antigravityTokenPresent(handle);
+    return this.agyConnected.get(userId) ?? false;
+  }
+
+  /** Shard wake hook: learn the login state without a second wake. */
+  noteShardAwake(userId: string): void {
+    const handle = this.shards.awakeHandle(userId);
+    if (handle) { try { this.antigravityTokenPresent(handle); } catch { /* best effort */ } }
+  }
+
+  private markAgyLoginLost(userId: string): void {
+    this.agyExpired.add(userId);
+    this.agyConnected.set(userId, false);
+    log.warn("antigravity.login_lost", { userId });
+  }
+
+  private antigravityTokenPresent(handle: ShardHandle): boolean {
+    const file = this.readHome(handle, this.shards.driver.hostPath(handle, AGY_TOKEN_REL));
+    const ok = Boolean(file && agyTokenValid(file.text));
+    this.agyConnected.set(handle.userId, ok);
+    return ok;
+  }
+
   async disconnectProvider(userId: string, provider: ProviderId): Promise<void> {
-    if (provider !== "claude" && provider !== "codex") throw badRequest("provider must be claude or codex", "invalid_provider");
+    if (provider !== "claude" && provider !== "codex" && provider !== "antigravity") throw badRequest("provider must be claude, codex or antigravity", "invalid_provider");
     for (const [id, state] of this.logins) if (state.userId === userId && state.provider === provider) this.endLogin(id);
+    if (provider === "antigravity") {
+      // Running agy sessions keep their in-memory token until they restart.
+      const handle = await this.shards.wake(userId);
+      this.removeHome(handle, this.shards.driver.hostPath(handle, AGY_TOKEN_REL));
+      this.removeHome(handle, this.shards.driver.hostPath(handle, AGY_SCOPE_REL));
+      this.agyConnected.set(userId, false);
+      this.agyExpired.delete(userId);
+      this.scheduleLock(userId);
+      return;
+    }
     await this.credentials.remove(userId, provider);
     if (provider === "claude") await this.accounts?.reset(userId);
     if (provider === "codex") this.invalidateCodexModels(userId);
@@ -2475,10 +2839,13 @@ export class SessionManager {
     const summary = session.toSummary();
     this.stopCodexPoll(id);
     this.vault.revokeSession(id);
-    if (session.provider === "codex") {
+    if (session.provider === "codex" || this.cliProbes.has(id)) {
       const handle = await this.shards.wake(session.userId);
-      await this.captureCodexId(id, handle).catch(() => false);
+      await this.captureCodexId(id, handle, true).catch(() => false);
     }
+    this.cliProbes.delete(id);
+    this.releaseAgyGate(id);
+    this.agyMirror?.stop(id);
     this.intentionalSleep.add(id);
     if (options.waitForExit) this.stoppingSessions.set(id, session);
     this.live.delete(id);
@@ -2560,7 +2927,7 @@ export class SessionManager {
     const text = buildWiredNotice(added, removed, block, updated);
     if (!text) return false;
     try {
-      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: live.provider === "claude" || live.provider === "codex" }));
+      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: bracketedProvider(live.provider) }));
       return true;
     } catch { return false; }
   }
@@ -2584,6 +2951,7 @@ export class SessionManager {
     const row = await this.row(id, userId);
     const awake = this.shards.awakeHandle(userId);
     if (awake) { try { removeHomeTree(awake.mountPath, this.secretDir(awake, id)); } catch { /* best effort */ } }
+    this.agyMirror?.forget(id);
     const session = this.live.get(id);
     if (session) {
       this.intentionalSleep.add(id);
@@ -2697,7 +3065,7 @@ export class SessionManager {
       if (notice !== undefined) {
         this.bootNotices?.delete(session.id);
         if (session.isAlive && session.provider !== "shell") {
-          await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), notice, { bracketed: session.provider === "claude" || session.provider === "codex", trusted: true }));
+          await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), notice, { bracketed: bracketedProvider(session.provider), trusted: true }));
         }
       }
     } catch (error) {
@@ -2757,6 +3125,7 @@ export class SessionManager {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     this.lifecycle.close();
+    this.agyMirror?.dispose();
     clearInterval(this.reaper);
     for (const timer of this.lockTimers.values()) clearTimeout(timer);
     await Promise.allSettled([...this.shardActivities]);

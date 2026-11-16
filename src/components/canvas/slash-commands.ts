@@ -43,6 +43,7 @@ const CODEX: SlashCommand[] = [
 ];
 
 export function slashCommandsFor(provider: string): SlashCommand[] {
+  // opencode / antigravity: no built-in list is mirrored here, so no autocomplete is offered.
   return provider === "codex" ? CODEX : provider === "claude" ? CLAUDE : [];
 }
 

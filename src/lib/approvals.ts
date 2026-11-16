@@ -7,6 +7,7 @@ import type { DecisionFrame } from "@/lib/runtime/types";
 import type { ApprovalFrame, ApprovalRequest } from "@/lib/runtime/types";
 import { newestFirst } from "@/lib/approval-format";
 import { dispatchPluginFrame } from "@/plugins/events";
+import { publishConnect, publishFrame } from "@/lib/runtime/event-frames";
 
 /**
  * Pending approvals the user has to answer. The runtime is authoritative (it enforces the expiry and the single
@@ -140,10 +141,11 @@ export function useApprovalSync(client: RuntimeClient | null) {
     const connect = () => {
       if (stopped) return;
       try { ws = new WebSocket(client.eventsUrl()); } catch { return; }
-      ws.onopen = () => { attempt = 0; setAttentionConnected(true); sync(); };
+      ws.onopen = () => { attempt = 0; setAttentionConnected(true); sync(); publishConnect(); };
       ws.onmessage = (message) => {
         try {
           const frame = JSON.parse(String(message.data)) as ApprovalFrame;
+          publishFrame(frame);
           if (frame && (frame.type === "approval-request" || frame.type === "approval-resolved")) applyFrame(frame);
           else if (frame && (frame as { type?: string }).type === "plugin") dispatchPluginFrame(frame);
           else if (frame && ["decision-request", "decision-updated", "decision-resolved"].includes((frame as {type:string}).type)) applyDecisionFrame(frame as unknown as DecisionFrame);

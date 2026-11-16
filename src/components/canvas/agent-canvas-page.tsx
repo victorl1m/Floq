@@ -58,6 +58,8 @@ import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } f
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
 import { BROWSER_PREFIX, BrowserProvider, browserNodeTypes, isBrowserId, useCanvasBrowsers } from "./browser-node";
+import VirtualAgentCard, { VirtualAgentProvider } from "./virtual-agent-node";
+import { isVirtualId, useShowKilled, useVirtualAgentNodes, useVirtualAgents } from "./use-virtual-agents";
 import { isBrowserWireId, parseBrowserWire, useBrowserLinks } from "./browser-links";
 import { AppWindowProvider, appWindowNodeTypes, isAppWindowId, useCanvasAppWindows } from "./app-window-node";
 import { branchChangeToFollow, hiddenByBranch, followBranchChange, isOutdatedRuntimeBranchError, OUTDATED_RUNTIME_MESSAGE, supportsBranchSwitchV2 } from "@/lib/branch-tags";
@@ -105,7 +107,7 @@ function EmptyCanvasViewport({ empty, projectId }: { empty: boolean; projectId: 
   return null;
 }
 
-const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...appWindowNodeTypes, ...browserNodeTypes };
+const nodeTypes = { empty: EmptyCanvasCard, agent: AgentNodeCard, ...noteNodeTypes, ...appWindowNodeTypes, ...browserNodeTypes, "virtual-agent": VirtualAgentCard };
 const edgeTypes = { wire: WireEdgeView, ...noteEdgeTypes };
 const MAX_LIVE = 8;
 const SIZE_PRESETS: Record<Exclude<SizePreset, "fit">, { width: number; height: number }> = {
@@ -176,7 +178,8 @@ function AgentCanvas() {
     return hidden.size ? all.filter((session) => !hidden.has(session.id)) : all;
   }, [sessions, activeProjectId, groundWorkspace, currentBranch, branchTags]);
   const sessionById = useCallback((id: string) => projectSessions.find((session) => session.id === id), [projectSessions]);
-  const titleOf = useCallback((id: string) => (id.startsWith("browser:") ? "Browser" : sessionById(id)?.title ?? "agent"), [sessionById]);
+  const virtualTitles = useRef(new Map<string, string>());
+  const titleOf = useCallback((id: string) => (id.startsWith("browser:") ? "Browser" : id.startsWith("agy:") ? virtualTitles.current.get(id) ?? "agent" : sessionById(id)?.title ?? "agent"), [sessionById]);
 
   // The terminal opens in a dialog on the canvas; `focus` (full view) is the old navigation, kept for the dialog's "Open in full view".
   const [terminalId, setTerminalId] = useState<string | null>(null);
@@ -913,40 +916,60 @@ function AgentCanvas() {
     id: link.id, type: "wire", source: link.fromSessionId, target: link.toSessionId, data: { link }, selected: link.id === selectedEdgeId,
     markerEnd: { type: MarkerType.ArrowClosed, color: link.id === selectedEdgeId ? "var(--primary-text)" : KIND_COLOR[link.kind], width: 18, height: 18 },
   })), [browserWires, selectedEdgeId]);
-  const allEdges = useMemo(() => [...edges, ...noteEdges, ...browserEdges] as Edge[], [edges, noteEdges, browserEdges]);
+  // agy swarm mirror: workers/subagents as virtual nodes under their Antigravity host, wired with synthetic parent links. Nothing is added when the runtime has none (or is too old).
+  const virtualAgents = useVirtualAgents(client, activeProjectId ?? null);
+  const [showKilled, setShowKilled] = useShowKilled();
+  const hostRect = useCallback((sessionId: string) => {
+    const node = nodesRef.current.find((item) => item.id === sessionId);
+    return node ? { x: node.position.x, y: node.position.y, width: node.width ?? node.measured?.width ?? DEFAULT_NODE_SIZE.width, height: node.height ?? node.measured?.height ?? DEFAULT_NODE_SIZE.height } : undefined;
+  }, []);
+  const hostKey = useMemo(() => [...new Set(virtualAgents.map((agent) => agent.hostSessionId))].map((id) => { const r = nodes.find((n) => n.id === id); return r ? `${id}:${Math.round(r.position.x)},${Math.round(r.position.y)},${r.height ?? ""}` : id; }).join("|"), [virtualAgents, nodes]);
+  virtualTitles.current = new Map(virtualAgents.map((agent) => [agent.id, agent.name]));
+  const obstacles = useCallback(() => nodesRef.current.map((node) => ({ x: node.position.x, y: node.position.y, width: node.width ?? node.measured?.width ?? DEFAULT_NODE_SIZE.width, height: node.height ?? node.measured?.height ?? DEFAULT_NODE_SIZE.height })), []);
+  const virtual = useVirtualAgentNodes(virtualAgents, showKilled, hostRect, hostKey, obstacles);
+  const virtualCtx = useMemo(() => ({ client, resize: virtual.resize }), [client, virtual.resize]);
+  const virtualEdges = useMemo(() => virtual.nodes.map<WireEdge>((node) => {
+    const agent = node.data.agent;
+    const link: CanvasLink = { id: `vparent:${agent.parentId}>${agent.id}`, projectId: agent.projectId, fromSessionId: agent.parentId, toSessionId: agent.id, kind: "recruit", createdAt: agent.lastAt ?? "", lastMessageAt: null, messageCount: 0, synthetic: true };
+    return { id: link.id, type: "wire", source: agent.parentId, target: agent.id, deletable: false, data: { link }, markerEnd: { type: MarkerType.ArrowClosed, color: KIND_COLOR.recruit, width: 18, height: 18 } };
+  }), [virtual.nodes]);
+  const allEdges = useMemo(() => [...edges, ...noteEdges, ...browserEdges, ...virtualEdges] as Edge[], [edges, noteEdges, browserEdges, virtualEdges]);
   const hotIds = useMemo(() => {
     const edge = allEdges.find((item) => item.id === (hoverEdgeId ?? selectedEdgeId));
     return edge ? new Set([edge.source, edge.target]) : new Set<string>();
   }, [allEdges, hoverEdgeId, selectedEdgeId]);
   otherNodesRef.current = {
-    nodes: [...notes.nodes, ...appWindows.nodes, ...browser.nodes] as Node[],
-    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id))), (c) => browser.onNodesChange(c.filter((x) => "id" in x && isBrowserId(x.id)))],
+    nodes: [...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...virtual.nodes] as Node[],
+    apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id))), (c) => browser.onNodesChange(c.filter((x) => "id" in x && isBrowserId(x.id))), (c) => virtual.onNodesChange(c.filter((x) => "id" in x && isVirtualId(x.id)))],
   };
   const closeBrowser = useCallback((nodeId: string) => { browser.close(nodeId); browserLinks.dropNode(nodeId); }, [browser.close, browserLinks.dropNode]);
   const newBrowser = useCallback(() => { browser.open(); }, [browser.open]);
   const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("browser"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser]);
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
-    ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...nodes,
+    ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...virtual.nodes, ...nodes,
     ...(emptyCanvas ? [{ id: EMPTY_CANVAS_ID, type: "empty", position: { x: 0, y: 0 },
       width: 360, height: 208, style: { width: 360, height: 208 },
       draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
       data: { projectName, disabled: !activeProjectId, onCreate: openNewAgent },
     }] : []),
-  ] as Node[], [notes.nodes, appWindows.nodes, browser.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
+  ] as Node[], [notes.nodes, appWindows.nodes, browser.nodes, virtual.nodes, nodes, emptyCanvas, projectName, activeProjectId, openNewAgent]);
   const onNodesChangeAll = useCallback((changes: NodeChange<Node>[]) => {
     const forNote = (change: NodeChange<Node>) => "id" in change && isNoteId(change.id);
     const forApp = (change: NodeChange<Node>) => "id" in change && isAppWindowId(change.id);
     const forBrowser = (change: NodeChange<Node>) => "id" in change && isBrowserId(change.id);
+    const forVirtual = (change: NodeChange<Node>) => "id" in change && isVirtualId(change.id);
+    const virtualChanges = changes.filter(forVirtual);
+    if (virtualChanges.length) virtual.onNodesChange(virtualChanges);
     const browserChanges = changes.filter(forBrowser);
     if (browserChanges.length) browser.onNodesChange(browserChanges);
     const appChanges = changes.filter(forApp);
     if (appChanges.length) appWindows.onNodesChange(appChanges);
-    const agentChanges = changes.filter((change) => !forNote(change) && !forApp(change) && !forBrowser(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
+    const agentChanges = changes.filter((change) => !forNote(change) && !forApp(change) && !forBrowser(change) && !forVirtual(change) && !("id" in change && change.id === EMPTY_CANVAS_ID));
     const noteChanges = changes.filter(forNote);
     if (agentChanges.length) onNodesChange(agentChanges as NodeChange<AgentNode>[]);
     if (noteChanges.length) notes.onNodesChange(noteChanges);
-  }, [onNodesChange, notes.onNodesChange, appWindows.onNodesChange, browser.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onNodesChange, notes.onNodesChange, appWindows.onNodesChange, browser.onNodesChange, virtual.onNodesChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addNoteAt = notes.add;
   const addNoteCenter = useCallback(() => {
@@ -1155,6 +1178,7 @@ function AgentCanvas() {
       <NoteProvider value={noteCtxValue}>
       <AppWindowProvider value={appWindowCtx}>
       <BrowserProvider value={browserCtx}>
+      <VirtualAgentProvider value={virtualCtx}>
       <NoteWireCtx.Provider value={{ unlink: notes.unlink }}>
       <TooltipProvider>
       <ContextMenu>
@@ -1221,6 +1245,13 @@ function AgentCanvas() {
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} />
               <FloorBands floors={floors} />
               <CanvasControls />
+              {virtual.killedCount > 0 && (
+                <Panel position="top-right" className="m-2!">
+                  <Button type="button" variant="outline" size="xs" data-testid="virtual-toggle-killed" aria-pressed={showKilled} onClick={() => setShowKilled(!showKilled)}>
+                    {showKilled ? "Hide" : "Show"} killed ({virtual.killedCount})
+                  </Button>
+                </Panel>
+              )}
               {branchSwitcher && <Panel position="bottom-right" className="m-0!">{branchSwitcher}</Panel>}
 
               {linkMode && (
@@ -1331,6 +1362,7 @@ function AgentCanvas() {
         </DialogContent>
       </Dialog>
       </NoteWireCtx.Provider>
+      </VirtualAgentProvider>
       </BrowserProvider>
       </AppWindowProvider>
       </NoteProvider>

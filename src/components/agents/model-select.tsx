@@ -10,7 +10,9 @@ import {
 import type { ModelOption } from "@/lib/runtime/types";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
-import type { LoginProviderId } from "@/lib/runtime/types";
+import type { ProviderId } from "@/lib/runtime/types";
+import IconBrandOpencode from "@/components/ui/brand/IconBrandOpencode";
+import IconBrandAntigravity from "@/components/ui/brand/IconBrandAntigravity";
 import { IconAdjustments, IconBolt, IconBrain, IconEye, IconRoute, IconScale, IconSettings, IconSparkles } from "@tabler/icons-react";
 
 export interface ModelChoice {
@@ -84,14 +86,14 @@ interface Props {
     onChange: (value: string) => void;
     /** "field" fills the width (dialogs); "compact" is a ghost button (composer toolbar). */
     variant?: "field" | "compact";
-    provider: LoginProviderId;
+    provider: ProviderId;
     disabled?: boolean;
 }
 
 export default function ModelSelect({ options, value, onChange, variant = "field", provider, disabled = false }: Props) {
     const selected = options.find((o) => o.value === value) ?? options[0];
     const compact = variant === "compact";
-    const BrandIcon = provider === "claude" ? IconBrandClaude : IconBrandCodex;
+    const BrandIcon = provider === "claude" ? IconBrandClaude : provider === "opencode" ? IconBrandOpencode : provider === "antigravity" ? IconBrandAntigravity : IconBrandCodex;
 
     return (
         <DropdownMenu>

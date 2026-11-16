@@ -48,6 +48,8 @@ export interface ProviderDefinition {
   /** Args that continue exactly one known conversation, or null if its id is not known. */
   resumeArgs(profile: RuntimeProfile, providerSessionId: string | null, model?: string | null): string[] | null;
   apiKeyEnv: string;
+  /** Args that hand an initial prompt to a fresh start (default: `-- <prompt>` as the last argv). */
+  promptArgs?(prompt: string): string[];
 }
 
 const definitions: Record<ProviderId, ProviderDefinition> = {
@@ -75,6 +77,29 @@ const definitions: Record<ProviderId, ProviderDefinition> = {
     // Codex picks its own uuid; the runtime reads it back from the session-private CODEX_HOME.
     resumeArgs: (profile, id, model) =>
       id ? ["--no-daemon", ...(profile.codexAutoApprove ? ["--dangerously-bypass-approvals-and-sandbox"] : []), ...(model ? ["-m", model] : []), "resume", id] : null,
+  },
+  // OpenCode (opencode-ai V1): own session ids (ses_*), found via `opencode session list` and stored for `-s`.
+  // Auth is by provider API keys from the vault (OPENROUTER_API_KEY, OPENCODE_API_KEY, ...); no subscription login.
+  opencode: {
+    id: "opencode",
+    label: "OpenCode",
+    bin: "opencode",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    buildArgs: (profile, _sessionId, model) => [...(profile.opencodeAutoApprove ? ["--auto"] : []), ...(model ? ["-m", model] : [])],
+    resumeArgs: (profile, id, model) => (id ? [...(profile.opencodeAutoApprove ? ["--auto"] : []), ...(model ? ["-m", model] : []), "-s", id] : null),
+    promptArgs: (prompt) => ["--prompt", prompt],
+  },
+  // Antigravity CLI (`agy`): conversation ids are uuids the CLI chooses; read back from its last_conversations cache.
+  // Auth is a Google-account login (agy token file in the home) or GEMINI_API_KEY from the vault (the manager adds modelProvider "gemini" via --settings only for the key).
+  antigravity: {
+    id: "antigravity",
+    label: "Antigravity",
+    bin: "agy",
+    apiKeyEnv: "GEMINI_API_KEY",
+    buildArgs: (profile, _sessionId, model) => [...(profile.antigravityAutoApprove ? ["--dangerously-skip-permissions"] : []), ...(model ? ["--model", model] : [])],
+    resumeArgs: (profile, id, model) =>
+      id ? [...(profile.antigravityAutoApprove ? ["--dangerously-skip-permissions"] : []), ...(model ? ["--model", model] : []), "--conversation", id] : null,
+    promptArgs: (prompt) => ["-i", prompt],
   },
   // Plain login shell (bash from the image). A "resume" is simply a fresh shell in the same directory.
   shell: {
@@ -157,6 +182,9 @@ export function forcedSessionEnv(provider: ProviderId, opts: { cacheDisable?: bo
   // "modules" (e.g. fast-jev-compaction) are read but never loaded without it. Users cannot set it themselves (CLAUDE.*
   // is a reserved secret name and the env allowlist drops it), so the runtime always provides it.
   // FLOQ_CACHE_DISABLE=1 is a debugging kill switch for Claude's prompt cache; forced here so a vault entry cannot flip it.
+  // opencode / agy self-update in the background; the image pins their versions, so both are switched off here.
+  if (provider === "opencode") return { OPENCODE_DISABLE_AUTOUPDATE: "1" };
+  if (provider === "antigravity") return { AGY_CLI_DISABLE_AUTO_UPDATE: "true" };
   return provider === "claude"
     ? { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", ...(opts.cacheDisable ? { DISABLE_PROMPT_CACHING: "1" } : {}) }
     : {};

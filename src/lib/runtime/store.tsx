@@ -698,6 +698,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     };
     refreshInfo();
     const infoTimer = setInterval(refreshInfo, 5 * 60_000);
+    // A saved vault secret can make a keyed provider (Antigravity: GEMINI_API_KEY) usable: re-read /v1/info right away.
+    window.addEventListener("floq:vault-changed", refreshInfo);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
       if (cancelled) return;
@@ -733,6 +735,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearTimeout(timer);
       clearInterval(infoTimer);
+      window.removeEventListener("floq:vault-changed", refreshInfo);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [client, signedIn, refresh, performancePrefs.reduceBackgroundRefresh]);

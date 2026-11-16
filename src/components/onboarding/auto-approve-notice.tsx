@@ -20,7 +20,7 @@ export function AutoApproveNotice() {
         let cancelled = false;
         void client.settings().then((s) => {
             if (cancelled || s.autoApproveAcknowledged !== false) return;
-            if (!s.claudeAutoApprove && !s.codexAutoApprove) {
+            if (!s.claudeAutoApprove && !s.codexAutoApprove && s.opencodeAutoApprove === false && s.antigravityAutoApprove === false) {
                 // Already off everywhere: nothing to tell them, and the question never needs to appear.
                 void client.updateSettings({ autoApproveAcknowledged: true }).catch(() => undefined);
                 return;

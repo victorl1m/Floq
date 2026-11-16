@@ -21,6 +21,8 @@ export interface ProviderTheme {
 export const PROVIDER_THEMES: Record<string, ProviderTheme> = {
     claude: { id: "claude", label: "Claude Code", light: { accent: "#B4502C", accentForeground: "#FFFFFF" }, dark: { accent: "#E08A6A", accentForeground: "#1A0E08" } },
     codex: { id: "codex", label: "Codex", light: { accent: "#0A7C61", accentForeground: "#FFFFFF" }, dark: { accent: "#2FBF9A", accentForeground: "#04130F" } },
+    opencode: { id: "opencode", label: "OpenCode", light: { accent: "#1F5FBF", accentForeground: "#FFFFFF" }, dark: { accent: "#6FA8F5", accentForeground: "#07111F" } },
+    antigravity: { id: "antigravity", label: "Antigravity", light: { accent: "#7A3FC4", accentForeground: "#FFFFFF" }, dark: { accent: "#B58AF0", accentForeground: "#150A24" } },
     shell: { id: "shell", label: "Terminal", light: { accent: "#5F6673", accentForeground: "#FFFFFF" }, dark: { accent: "#A1A1A6", accentForeground: "#000000" } },
 };
 

@@ -1077,6 +1077,14 @@ export class RuntimeClient {
   markNotificationsRead = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/read", { ids });
   clearNotifications = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/clear", { ids });
 
+  // --- agy swarm mirror (virtual agents); older runtimes answer 404 ---
+  virtualAgents = async (projectId: string) =>
+    (await this.call<{ agents: import("./types").VirtualAgent[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/virtual-agents`)).agents;
+  virtualAgentTranscript = (vid: string, since = 0, limit = 40) =>
+    this.call<{ steps: import("./types").VirtualAgentStep[]; next: number | null }>("GET", `/v1/virtual-agents/${encodeURIComponent(vid)}/transcript?since=${since}&limit=${limit}`);
+  messageVirtualAgent = (vid: string, text: string) =>
+    this.call<unknown>("POST", `/v1/virtual-agents/${encodeURIComponent(vid)}/message`, { text });
+
   /** WebSocket of live AgentMessageEvent JSON frames for all of the user's sessions. */
   eventsUrl(): string {
     const url = new URL(this.baseUrl + "/v1/events");

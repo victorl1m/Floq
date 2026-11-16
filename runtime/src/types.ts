@@ -1,6 +1,12 @@
-export type ProviderId = "claude" | "codex" | "shell";
+export type ProviderId = "claude" | "codex" | "opencode" | "antigravity" | "shell";
 
-export const PROVIDER_IDS: readonly ProviderId[] = ["claude", "codex", "shell"];
+export const PROVIDER_IDS: readonly ProviderId[] = ["claude", "codex", "opencode", "antigravity", "shell"];
+
+/** Providers authenticated by an API key / env var from the vault (no subscription login broker). */
+export type KeyProviderId = "opencode" | "antigravity";
+/** Providers `floq recruit` / `floq subagent recruit` may start (never the plain shell). */
+export const RECRUIT_PROVIDERS: readonly ProviderId[] = ["claude", "codex", "opencode", "antigravity"];
+export const KEY_PROVIDER_IDS: readonly KeyProviderId[] = ["opencode", "antigravity"];
 
 export type SessionState = "starting" | "running" | "sleeping" | "exited" | "failed";
 
@@ -89,6 +95,11 @@ export interface ProviderInfo {
   available: boolean;
   version: string | null;
   args: string[];
+  /** Env var (vault secret exposed as env) the provider cannot work without, when it has no login flow. */
+  needsApiKey?: string;
+  apiKeyConfigured?: boolean;
+  /** Antigravity: a Google-account login (token file) exists, so no API key is needed. */
+  oauthConnected?: boolean;
 }
 
 export interface CreateSessionInput {
@@ -145,3 +156,23 @@ export interface ServerInfo {
   /** Agent browser in this runtime's image: available, disabled (FLOQ_AGENT_BROWSER=off) or missing (older image). Absent on older runtimes. */
   browser?: "available" | "disabled" | "missing";
 }
+
+/** A mirrored Antigravity swarm worker / core subagent (derived from agy's files, never persisted). Identical to src/lib/runtime/types.ts. */
+export type VirtualAgentStatus = "working" | "waiting" | "done" | "killed" | "error" | "stopped";
+export interface VirtualAgent {
+  id: string;
+  hostSessionId: string;
+  projectId: string;
+  parentId: string;
+  name: string;
+  role: string;
+  kind: "swarm" | "subagent";
+  model: string | null;
+  status: VirtualAgentStatus;
+  activity: string | null;
+  steps: number;
+  lastAt: string | null;
+  swarmTitle: string | null;
+  unread: number;
+}
+export interface VirtualAgentStep { index: number; type: string; status: string | null; createdAt: string | null; text: string | null; tools: { name: string; summary: string | null }[]; error: string | null }

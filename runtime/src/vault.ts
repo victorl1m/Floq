@@ -10,7 +10,7 @@ const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const MAX_SECRETS = 100;
 const MAX_VALUE_BYTES = 16 * 1024;
 /** Names that would change how the runtime or the agents behave if injected as env vars. */
-const RESERVED = /^(PATH|HOME|SHELL|USER|LOGNAME|LANG|LC_.*|TERM|COLORTERM|TZ|TMPDIR|PWD|OLDPWD|LD_.*|NODE_.*|GIT_.*|GH_TOKEN|GITHUB_TOKEN|CODEX_HOME|ANTHROPIC_.*|ENABLE_CLAUDEAI_MCP_SERVERS|CLAUDE_CODE_I_ACCEPT_CROSS_ORG_DATA_RISK|OPENAI_.*|FLOQ_.*|BETTER_AUTH_.*|DATABASE_URL|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)$/i;
+const RESERVED = /^(PATH|HOME|SHELL|USER|LOGNAME|LANG|LC_.*|TERM|COLORTERM|TZ|TMPDIR|PWD|OLDPWD|LD_.*|NODE_.*|GIT_.*|GH_TOKEN|GITHUB_TOKEN|CODEX_HOME|OPENCODE_(DB|CONFIG.*|PERMISSION|DISABLE_.*|AUTH_CONTENT)|AGY_.*|ANTIGRAVITY_.*|ANTHROPIC_.*|ENABLE_CLAUDEAI_MCP_SERVERS|CLAUDE_CODE_I_ACCEPT_CROSS_ORG_DATA_RISK|OPENAI_.*|FLOQ_.*|BETTER_AUTH_.*|DATABASE_URL|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)$/i;
 
 export type Exposure = "tool" | "env";
 
@@ -206,6 +206,8 @@ export class Vault {
     const result = await this.pool.query("SELECT name, value_enc FROM vault_secrets WHERE " + where, params);
     const out: Record<string, string> = {};
     for (const row of result.rows) {
+      // Secrets saved before a name became reserved must not reach the agent as env (they could override CLI behaviour).
+      if (only === "env" && RESERVED.test(row.name)) continue;
       out[row.name] = decryptSecret(this.config.encryptionKey, row.value_enc, this.aad(userId, row.name));
     }
     const used = Object.keys(out);

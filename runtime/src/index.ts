@@ -81,7 +81,7 @@ const browser = new BrowserService(shards, settings, { sync: (userId, desired) =
 browser.egress = new EgressHub({ onChange: (userId, rttOnly) => browser.onEgressChange(userId, rttOnly) });
 manager.settings = settings;
 manager.attachBrowser(browser);
-shards.onWake = (userId) => void browser.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
+shards.onWake = (userId) => { manager.noteShardAwake(userId); void browser.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" })); };
 const credentials = new CredentialBroker(pool, config);
 manager.credentials = credentials;
 credentials.onChange = (userId, provider, data) => void manager.distribute(userId, provider, data).catch(() => undefined);

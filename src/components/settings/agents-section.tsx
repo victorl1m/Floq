@@ -169,6 +169,8 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         <SelectContent>
                             <SelectItem value="claude"><ProviderIcon provider="claude" />{PROVIDER_LABEL.claude}</SelectItem>
                             <SelectItem value="codex"><ProviderIcon provider="codex" />{PROVIDER_LABEL.codex}</SelectItem>
+                            <SelectItem value="opencode"><ProviderIcon provider="opencode" />{PROVIDER_LABEL.opencode}</SelectItem>
+                            <SelectItem value="antigravity"><ProviderIcon provider="antigravity" />{PROVIDER_LABEL.antigravity}</SelectItem>
                         </SelectContent>
                     </Select>
                 </SettingRow>
@@ -266,6 +268,38 @@ export default function AgentsSection({ settings, onChange }: Props) {
                         id="codex-auto"
                         checked={settings.codexAutoApprove}
                         onCheckedChange={(v) => void patch({ codexAutoApprove: v })}
+                    />
+                </SettingRow>
+                <SettingRow settingId="agents-opencode-auto-approve"
+                    label="OpenCode auto-approve"
+                    htmlFor="opencode-auto"
+                    description={
+                        <>
+                            Launches OpenCode with <code>--auto</code>, so it approves permissions that are not explicitly denied.
+                            Applies to new and resumed sessions.
+                        </>
+                    }
+                >
+                    <Switch
+                        id="opencode-auto"
+                        checked={settings.opencodeAutoApprove ?? true}
+                        onCheckedChange={(v) => void patch({ opencodeAutoApprove: v })}
+                    />
+                </SettingRow>
+                <SettingRow settingId="agents-antigravity-auto-approve"
+                    label="Antigravity auto-approve"
+                    htmlFor="antigravity-auto"
+                    description={
+                        <>
+                            Launches Antigravity with <code>--dangerously-skip-permissions</code>, so it runs tools without asking.
+                            Applies to new and resumed sessions.
+                        </>
+                    }
+                >
+                    <Switch
+                        id="antigravity-auto"
+                        checked={settings.antigravityAutoApprove ?? true}
+                        onCheckedChange={(v) => void patch({ antigravityAutoApprove: v })}
                     />
                 </SettingRow>
             </SettingsGroup>

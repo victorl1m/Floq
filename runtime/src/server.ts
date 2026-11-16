@@ -105,6 +105,12 @@ interface Deps {
   browserLinks?: BrowserLinks;
 }
 
+/** Skills and MCP config exist only for Claude and Codex: an OpenCode/Antigravity agent must name one with --provider. */
+function toolkitProvider(provider: string): "claude" | "codex" {
+  if (provider === "claude" || provider === "codex") return provider;
+  throw badRequest("Skills and MCP servers are only managed for Claude and Codex; pass --provider claude or --provider codex");
+}
+
 export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
@@ -325,6 +331,18 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   }
 
   const sendPlain = send;
+
+  /** Optional dependency: a manager without it (or one that throws) just reports "not connected". */
+  async function agyConnected(userId: string): Promise<boolean> {
+    try { return Boolean(await manager.antigravityConnected(userId)); } catch { return false; }
+  }
+
+  /** claude/codex come from the credential broker; Antigravity's Google login is agy's own token file (never stored by Floq). */
+  async function providersStatus(userId: string) {
+    const base = await credentials.status(userId);
+    const connected = await agyConnected(userId);
+    return { ...base, antigravity: { connected, detail: null, expiresAt: null, plan: null } };
+  }
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://runtime");
@@ -548,9 +566,9 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         }
         case "agents/models": {
           const requested = body.provider;
-          if (requested !== undefined && requested !== "claude" && requested !== "codex") throw badRequest("provider must be claude or codex");
+          if (requested !== undefined && requested !== "claude" && requested !== "codex" && requested !== "opencode" && requested !== "antigravity") throw badRequest("provider must be claude, codex, opencode or antigravity");
           return send(res, 200, {
-            models: await selectableAgentModels(config, (id) => manager.codexModels(id), userId, requested as "claude" | "codex" | undefined),
+            models: await selectableAgentModels(config, (id) => manager.codexModels(id), userId, requested),
           });
         }
         case "agents/roles":
@@ -620,14 +638,14 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         case "skills/add": {
           const me = await orchestrator.toolkitCaller(userId, sessionId, true);
           const target = await toolkitScope(userId, body, me);
-          const result = await importCatalogSkill(userId, target, { provider: body.provider ?? me.provider, source: body.source, skillId: body.skillId, url: body.url });
+          const result = await importCatalogSkill(userId, target, { provider: body.provider ?? toolkitProvider(me.provider), source: body.source, skillId: body.skillId, url: body.url });
           return send(res, 200, { ...result, ...target });
         }
         case "skills/create": {
           // A dry run only validates and describes, so any agent session may do it; creating needs a lead.
           const me = await orchestrator.toolkitCaller(userId, sessionId, body.dryRun !== true);
           const target = await toolkitScope(userId, body, me);
-          const result = await skills.createSkill(userId, { ...target, provider: body.provider ?? me.provider, name: body.name, description: body.description, instructions: body.instructions, files: body.files, dryRun: body.dryRun });
+          const result = await skills.createSkill(userId, { ...target, provider: body.provider ?? toolkitProvider(me.provider), name: body.name, description: body.description, instructions: body.instructions, files: body.files, dryRun: body.dryRun });
           return send(res, 200, { ...result, ...target });
         }
         case "skills/remove":
@@ -644,12 +662,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           // A dry run only validates and describes what would run, so it needs no lead.
           const me = await orchestrator.toolkitCaller(userId, sessionId, body.dryRun !== true);
           const target = await toolkitScope(userId, body, me);
-          return send(res, 200, { ...target, ...(await installMcp(userId, sessionId, { ...target, providers: body.providers ?? me.provider, config: body.config, name: body.name, dryRun: body.dryRun, allowPlaintext: body.allowPlaintext }, false)) });
+          return send(res, 200, { ...target, ...(await installMcp(userId, sessionId, { ...target, providers: body.providers ?? toolkitProvider(me.provider), config: body.config, name: body.name, dryRun: body.dryRun, allowPlaintext: body.allowPlaintext }, false)) });
         }
         case "mcp/remove": {
           const me = await orchestrator.toolkitCaller(userId, sessionId, true);
           const target = await toolkitScope(userId, body, me);
-          return send(res, 200, { ...target, ...(await skills.removeMcp(userId, { ...target, provider: body.provider ?? me.provider, name: body.name })) });
+          return send(res, 200, { ...target, ...(await skills.removeMcp(userId, { ...target, provider: body.provider ?? toolkitProvider(me.provider), name: body.name })) });
         }
         case "wired/get": {
           if (!wired) return send(res, 200, { block: "" });
@@ -854,6 +872,14 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
             ...(await manager.codexModels(userId)),
           ];
         }
+      }
+      // Antigravity authenticates with a Google login (token file agy keeps in the home) or GEMINI_API_KEY from the vault: tell the UI.
+      const antigravity = providers.find((provider) => provider.id === "antigravity");
+      if (antigravity) {
+        const names = new Set((await vault.list(userId).catch(() => [])).filter((secret) => secret.expose === "env").map((secret) => secret.name));
+        antigravity.needsApiKey = "GEMINI_API_KEY";
+        antigravity.apiKeyConfigured = names.has("GEMINI_API_KEY");
+        antigravity.oauthConnected = await agyConnected(userId);
       }
       return send(res, 200, {
         server: info(),
@@ -1086,7 +1112,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     }
 
     if (method === "GET" && url.pathname === "/v1/providers/status") {
-      return send(res, 200, await credentials.status(userId));
+      return send(res, 200, await providersStatus(userId));
     }
     if (method === "GET" && url.pathname === "/v1/providers/usage") {
       const all = await usage.get(userId);
@@ -1130,7 +1156,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         return send(res, 200, { accounts: await claudeAccounts.list(userId) });
       }
     }
-    const login = /^\/v1\/providers\/(claude|codex)\/login$/.exec(url.pathname);
+    const login = /^\/v1\/providers\/(claude|codex|antigravity)\/login$/.exec(url.pathname);
     if (login) {
       if (method === "POST") {
         const session = await manager.startLogin(userId, login[1] as ProviderId, await settings.profile(userId));
@@ -1138,7 +1164,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       }
       if (method === "DELETE") {
         await manager.disconnectProvider(userId, login[1] as ProviderId);
-        return send(res, 200, await credentials.status(userId));
+        return send(res, 200, await providersStatus(userId));
       }
     }
 
@@ -1454,6 +1480,27 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, { token: mount.token, path: `/dav/${mount.token}/`, ...locations, expiresAt: mount.expiresAt, folders: mount.folders.map((folder) => folder.name) });
     }
 
+    const virtualSeed = /^\/v1\/projects\/([\w-]+)\/virtual-agents$/.exec(url.pathname);
+    if (virtualSeed && method === "GET") return send(res, 200, { agents: manager.agyMirror.snapshot(userId, virtualSeed[1] === "none" ? "" : virtualSeed[1]!) });
+    const virtualRoute = /^\/v1\/virtual-agents\/([^/]+)\/(transcript|message)$/.exec(url.pathname);
+    if (virtualRoute) {
+      let vid = "";
+      try { vid = decodeURIComponent(virtualRoute[1]!); } catch { throw notFound(); }
+      if (virtualRoute[2] === "transcript" && method === "GET") {
+        const result = manager.agyMirror.transcript(userId, vid, Number(url.searchParams.get("since") ?? 0), Number(url.searchParams.get("limit") ?? 50));
+        if (!result) throw notFound();
+        if (result === "rate") throw new HttpError(429, "rate_limited", "Too many transcript reads; retry shortly");
+        return send(res, 200, result);
+      }
+      if (virtualRoute[2] === "message" && method === "POST") {
+        if (!manager.agyMirror.find(userId, vid)) throw notFound();
+        const body = await readJson<{ text?: unknown }>(req);
+        if (typeof body.text !== "string" || !body.text.trim()) throw badRequest("text is required");
+        if (!(await manager.relayToAgyAgent(userId, vid, body.text))) throw conflict("The host agent is not running", "host_not_running");
+        return send(res, 202, { ok: true });
+      }
+    }
+
     const fileLinkMatch = /^\/v1\/sessions\/([\w-]+)\/files\/link$/.exec(url.pathname);
     if (fileLinkMatch && method === "POST") {
       if (!workspaceFiles) throw notFound();
@@ -1701,8 +1748,10 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const offDecisions = decisions.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offNotifications = notifications.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offVirtual = manager.agyMirror?.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) ?? (() => undefined);
+          for (const frame of manager.agyMirror?.frames(userId) ?? []) ws.send(JSON.stringify(frame));
           const offPlugins = plugins ? plugins.events.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) : () => undefined;
-          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offNotifications(); offDisplays(); offPlugins(); };
+          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offNotifications(); offDisplays(); offPlugins(); offVirtual(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });

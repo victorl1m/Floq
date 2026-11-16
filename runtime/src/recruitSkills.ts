@@ -41,11 +41,11 @@ export function storedRecruitSkills(value: unknown): string[] {
 }
 
 /** System-level instruction for the recruited agent; empty when no skills were given. */
-export function buildRecruitSkillsBlock(skills: readonly string[], provider: "claude" | "codex"): string {
+export function buildRecruitSkillsBlock(skills: readonly string[], provider: "claude" | "codex" | string): string {
   if (!skills.length) return "";
   const list = skills.map((name) => "`" + name + "`").join(", ");
-  const how = provider === "codex"
-    ? "Read each skill's SKILL.md (in ~/.codex/skills/<name>/ or the project's skills folder) before you start, and follow it."
+  const how = provider !== "claude"
+    ? "Read each skill's SKILL.md (in " + (provider === "codex" ? "~/.codex/skills/<name>/" : "the CLI's skills folder") + " or the project's skills folder) before you start, and follow it."
     : "Before you start the task, load each one with the Skill tool (exact name as listed), and follow it.";
   return [
     "[FLOQ RECRUIT SKILLS]",

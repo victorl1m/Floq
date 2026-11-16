@@ -41,7 +41,7 @@ export function ensureArtifactsDir(handle: Pick<ShardHandle, "mountPath" | "uid"
 
 /** System-prompt text telling agents where to save deliverables; overrides the provider's own artifact/scratch conventions. */
 export function artifactsGuidance(dir: string, provider: "claude" | "codex" | string = "claude"): string {
-  const override = provider === "codex"
+  const override = provider !== "claude"
     ? `This is where every deliverable goes by default; the user never has to ask for it. /tmp is only for throwaway intermediates (scripts, logs, partial outputs), never the only copy of something the user should see.`
     : `This replaces the claude.ai Artifact tool for deliverables: publishing to claude.ai is disabled in Floq, so write the HTML/Markdown/PDF/etc. file here instead. Your scratchpad directory is only for throwaway intermediates (scripts, logs, partial outputs), never the only copy of something the user should see.`;
   return [

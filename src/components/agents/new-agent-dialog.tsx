@@ -11,7 +11,7 @@ import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE } from "@/lib/runtime/orchestrator
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "cn";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { AgentRole, CreateSessionInput, LoginProviderId, ProviderId } from "@/lib/runtime/types";
+import type { AgentRole, CreateSessionInput, ProviderId } from "@/lib/runtime/types";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RoleGlyph, roleLabel } from "@/lib/role-icons";
 import ModelSelect, { normalizeModels } from "./model-select";
@@ -42,7 +42,7 @@ export default function NewAgentDialog() {
     const [setupOpen, setSetupOpen] = useState(false);
     const { loading, usable, hasMissing, reload: reloadStatus } = useUsableProviders();
     // A remembered provider that is no longer connected falls back to the first connected one.
-    const provider: ProviderId = usable.includes(chosen as LoginProviderId) ? chosen : (usable[0] ?? chosen);
+    const provider: ProviderId = usable.includes(chosen) ? chosen : (usable[0] ?? chosen);
     const modelOptions = normalizeModels(info?.providers.find((p) => p.id === provider)?.models);
     const model = modelOptions.some((m) => m.value === modelByProvider[provider]) ? modelByProvider[provider] : "";
 
@@ -190,7 +190,7 @@ export default function NewAgentDialog() {
                     <div className="flex flex-col gap-2">
                         <Label>Model</Label>
                         <ModelSelect
-                            provider={provider === "claude" ? "claude" : "codex"}
+                            provider={provider}
                             options={modelOptions}
                             value={model}
                             disabled={busy}

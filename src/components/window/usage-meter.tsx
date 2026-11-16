@@ -11,9 +11,9 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProvidersUsage } from "@/hooks/use-providers-usage";
 import { useRuntime } from "@/lib/runtime/store";
-import type { LoginProviderId, ProviderUsage, ProvidersUsage, UsageWindow } from "@/lib/runtime/types";
+import type { UsageProviderId, ProviderUsage, ProvidersUsage, UsageWindow } from "@/lib/runtime/types";
 
-const NAME: Record<LoginProviderId, string> = { claude: "Claude", codex: "Codex" };
+const NAME: Record<UsageProviderId, string> = { claude: "Claude", codex: "Codex" };
 
 /** neutral < 70%, amber 70-90%, red >= 90%. */
 function tone(percent: number) {
@@ -82,12 +82,12 @@ function resetText(window: UsageWindow): string | null {
     return `Resets in ${left} (${when})`;
 }
 
-function tooltip(id: LoginProviderId, window: UsageWindow): string {
+function tooltip(id: UsageProviderId, window: UsageWindow): string {
     const left = remaining(window.resetsAt);
     return `${NAME[id]} · ${window.label} ${Math.round(window.usedPercent)}%${left ? ` · resets in ${left}` : ""}`;
 }
 
-function BrandIcon({ id, size = 12 }: { id: LoginProviderId; size?: number }) {
+function BrandIcon({ id, size = 12 }: { id: UsageProviderId; size?: number }) {
     return id === "claude" ? <IconBrandClaude size={size} className="shrink-0" /> : <IconBrandCodex size={size} className="shrink-0" />;
 }
 
@@ -116,7 +116,7 @@ function UsagePopoverContent({
     isRefreshing,
     refresh,
 }: {
-    id: LoginProviderId;
+    id: UsageProviderId;
     data: ProviderUsage;
     isRefreshing: boolean;
     refresh: () => Promise<void>;
@@ -171,7 +171,7 @@ function UsageItem({
     isRefreshing,
     refresh,
 }: {
-    id: LoginProviderId;
+    id: UsageProviderId;
     data: ProviderUsage;
     isRefreshing: boolean;
     refresh: () => Promise<void>;

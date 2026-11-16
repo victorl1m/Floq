@@ -27,7 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE, isOrchestrator } from "@/lib/runtime/orchestrator";
-import type { CreateSessionInput, LoginProviderId, ProviderId, SessionState, SessionSummary } from "@/lib/runtime/types";
+import type { CreateSessionInput, ProviderId, SessionState, SessionSummary } from "@/lib/runtime/types";
 import ProjectPicker from "@/components/projects/project-picker";
 import { ProjectMark } from "@/components/projects/project-identity";
 import { AttachmentChips, useAttachments, useTauriDrop } from "@/components/canvas/canvas-attachments";
@@ -124,7 +124,7 @@ export default function HomeView() {
     const { loading, usable, hasMissing, reload: reloadStatus } = useUsableProviders();
     const [connecting, setConnecting] = useState(false);
     // A remembered provider that is no longer connected falls back to the first connected one.
-    const provider: ProviderId = usable.includes(prefs.provider as LoginProviderId) ? prefs.provider : (usable[0] ?? prefs.provider);
+    const provider: ProviderId = usable.includes(prefs.provider) ? prefs.provider : (usable[0] ?? prefs.provider);
     const loginProvider = provider === "codex" ? "codex" : "claude";
     const needsConnect = !loading && usable.length === 0;
     const modelOptions = normalizeModels(info?.providers.find((p) => p.id === provider)?.models);
@@ -343,7 +343,7 @@ export default function HomeView() {
 
                                 {modelOptions.length > 0 && usable.length > 0 && (
                                     <ModelSelect
-                                        provider={provider === "claude" ? "claude" : "codex"}
+                                        provider={provider}
                                         variant="compact"
                                         options={modelOptions}
                                         value={model}

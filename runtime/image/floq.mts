@@ -15,7 +15,7 @@
 //   floq note list | read N | write N TEXT | append N TEXT | delete N
 //   floq memory add "TEXT"|- [--title T] [--type fact|decision|procedure|episode] [--user] [--pin] | search "QUERY" [--type T] [--k N] | list [--type T] [--pinned] | read ID | update ID [--text T|-] [--title T] [--type T] [--pin|--unpin] | forget ID [--reason R]   long-term project memory
 //   floq sticky list | read ID | write ID TEXT|- | append ID TEXT|- | delete ID | new [TEXT|-] [--color C] [--kind note|memory|system]   canvas notes: wired to this agent, plus the project's memory/system notes
-//   floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only)
+//   floq recruit "Name" [--provider claude|codex|opencode|antigravity] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]]   (orchestrator only)
 //   floq subagent recruit|list|ask|result|dismiss   always-available Floq subagents (limits enforced by the runtime)
 //   floq connect <UUID|Name> <UUID|Name>       (lead agents only)
 //   floq dismiss <UUID|Name>                   (lead agents only)
@@ -46,7 +46,7 @@ Commands:
   floq project create --name NAME [--git-url URL]   create an empty named project or import a Git repository
   floq setup [--dry-run] [--agents]                              add Floq's workflow to this project's CLAUDE.md (no-op when already present)
   floq session restart                   restart this agent to reload its current configuration
-  floq models [--provider claude|codex]
+  floq models [--provider claude|codex|opencode|antigravity]
   floq roles                             one line per agent role preset (compare, then pick)
   floq role ID                           full description of a role: when to use, handoffs, model advice
   floq ask <UUID|Name> "prompt" [--timeout SECONDS] [--no-wait] [--chars N | --full]
@@ -57,8 +57,8 @@ Commands:
   floq progress "message" [--file PATH] [--percent N] [--status working|blocked|done]   (for subagents) report structured progress to the agent that recruited you; use --status done for your final report. blocked/done are pushed into its terminal (long text as a preview plus "floq inbox read ID"). Max 20000 chars, never cut: longer is rejected. Max 30 updates/min
   floq ask-parent "question" [--file PATH]   (for subagents) ask the agent that recruited you; it gets a notification (long text as a preview plus "floq inbox read ID") and answers with "floq ask <your UUID> ..."
   floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time; messages are printed in full
-  floq recruit "Name" [--provider claude|codex] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]] [--fallback default|model|pause]   (orchestrator only; other agents ask the orchestrator with "floq ask")
-  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex] [--model ID] [--skill NAME[,NAME]] [--fallback default|model|pause] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
+  floq recruit "Name" [--provider claude|codex|opencode|antigravity] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]] [--fallback default|model|pause]   (orchestrator only; other agents ask the orchestrator with "floq ask")
+  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex|opencode|antigravity] [--model ID] [--skill NAME[,NAME]] [--fallback default|model|pause] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
   floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
@@ -323,8 +323,8 @@ switch (command) {
   case "models": {
     if (named.provider !== undefined && typeof named.provider !== "string") usage();
     const requestedProvider = typeof named.provider === "string" ? named.provider : undefined;
-    const providers = requestedProvider ? [requestedProvider] : ["claude", "codex"];
-    if (providers.some((provider) => provider !== "claude" && provider !== "codex")) usage();
+    const providers = requestedProvider ? [requestedProvider] : ["claude", "codex", "opencode", "antigravity"];
+    if (providers.some((provider) => !["claude", "codex", "opencode", "antigravity"].includes(provider))) usage();
     const { models } = await call<{ models: Record<string, ModelEntry[]> }>("agents/models", { provider: requestedProvider });
     for (const provider of providers) for (const model of models[provider] ?? []) console.log(formatModel(provider, model));
     break;

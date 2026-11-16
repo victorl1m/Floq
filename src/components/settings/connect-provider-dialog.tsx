@@ -7,6 +7,7 @@ import ClaudeOAuthDialog from "./claude-oauth-dialog";
 import { AppDialog, CodeBox, ErrorBanner, FlowStep } from "@/components/ui/app-dialog";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
+import IconBrandAntigravity from "@/components/ui/brand/IconBrandAntigravity";
 import { cn } from "cn";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +19,7 @@ import { RuntimeError } from "@/lib/runtime/client";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { LoginProviderId, SessionSummary } from "@/lib/runtime/types";
 
-const NAME: Record<LoginProviderId, string> = { claude: "Claude", codex: "Codex" };
+const NAME: Record<LoginProviderId, string> = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" };
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -136,7 +137,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
         const timer = setInterval(async () => {
             try {
                 const status = await client.providersStatus();
-                if (status[provider].connected && !doneRef.current) {
+                if (status[provider]?.connected && !doneRef.current) {
                     doneRef.current = true;
                     setConnected(true);
                     toast.success(NAME[provider] + " connected", { description: "Sessions can now use your account." });
@@ -153,13 +154,13 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
     const onOutput = useCallback((data: string) => {
         setGotOutput(true);
         tail.current = (tail.current + data.replace(ANSI, "")).slice(-4000);
-        if (/paste code/i.test(tail.current)) setPromptSeen(true);
+        if (/paste code|paste the authorization code/i.test(tail.current)) setPromptSeen(true);
         if (/invalid code/i.test(tail.current)) {
             setCodeError("That code wasn't accepted. Copy the whole code from the sign-in page and try again.");
             setSending(false);
         }
         if (/login successful|successfully logged in|logged in as/i.test(tail.current)) setFinishing(true);
-        const failedLine = /login failed:?.*/i.exec(tail.current);
+        const failedLine = /login failed:?.*|couldn.t log in:.*/i.exec(tail.current);
         if (failedLine) setLoginFailed(failedLine[0].trim());
         if (provider === "codex") {
             // Device flow: the one-time code appears after "Enter this one-time code".
@@ -171,7 +172,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
             if (expiry) setExpiresMin(Number(expiry[1]));
         }
         const matches = tail.current.match(URL_PATTERN);
-        if (matches) setUrl(matches[matches.length - 1]);
+        if (matches) setUrl(provider === "antigravity" ? matches.find((m) => m.includes("accounts.google.com")) ?? matches[matches.length - 1] : matches[matches.length - 1]);
     }, [provider]);
 
     /** Deletes the login session this instance started (even if the request is still in flight). */
@@ -212,7 +213,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
         }
     }
 
-    const BrandIcon = provider === "claude" ? IconBrandClaude : IconBrandCodex;
+    const BrandIcon = provider === "claude" ? IconBrandClaude : provider === "antigravity" ? IconBrandAntigravity : IconBrandCodex;
     const failed = error !== null || stopped || loginFailed !== null || finishFailed;
     const lastLines = tail.current
         .split(/\r?\n/)
@@ -360,7 +361,7 @@ function TerminalConnectDialog({ provider, open: isOpen, onOpenChange, onConnect
                                     <Skeleton className="h-8 w-44" />
                                 )}
                             </FlowStep>
-                            <FlowStep index={2} state={promptSeen || url ? "active" : "idle"} title="Paste the code if asked" hint="Copy the authorization code shown after you approve, then paste it here.">
+                            <FlowStep index={2} state={promptSeen || url ? "active" : "idle"} title="Paste the code if asked" hint={provider === "antigravity" ? "Sign in with your Google account. After approving, copy the code shown on antigravity.google and paste it here." : "Copy the authorization code shown after you approve, then paste it here."}>
                                 <Label htmlFor="auth-code" className="sr-only">Authorization code</Label>
                                 <Input
                                     id="auth-code"

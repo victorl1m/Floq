@@ -61,7 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3-tools \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 \
+    && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 opencode-ai@1.19.5 \
     && npm cache clean --force
 # Agent browser, layer 1: only the shared libraries the full chrome binary links against (ldd; adds libcups2, libcairo2, libpango to the shell's set) + fontconfig + fonts. No X server, no GTK.
 # fonts-noto-cjk is ~91 MB: swap for fonts-wqy-zenhei (~17 MB) if size matters more than CJK quality.
@@ -90,10 +90,35 @@ RUN set -eu; \
     rm -f "/tmp/$f"; \
     chmod 755 /usr/local/bin/gocryptfs; \
     gocryptfs -version | grep -q "gocryptfs v${GOCRYPTFS_VERSION}"
+# Antigravity CLI (agy) 1.5.9 from the pinned upstream tarball (no npm package). The build fails if the sha512 differs.
+# The CLI self-updates in the background; AGY_CLI_DISABLE_AUTO_UPDATE is forced for sessions (providers.ts forcedSessionEnv).
+ARG AGY_VERSION=1.5.9
+ARG AGY_URL_AMD64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.9-4515810895593472/linux-x64/cli_linux_x64.tar.gz
+ARG AGY_SHA512_AMD64=d01eb13ba7750eed18907f1ae8860864371e0ad9064415e8d033d22b4bd7b9b4e4c7f962058520b452d67db1c33163d9a889d55a7dffa159596ec6cd91a87b79
+ARG AGY_URL_ARM64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.9-4515810895593472/linux-arm/cli_linux_arm64.tar.gz
+ARG AGY_SHA512_ARM64=16c632a09b81f598f7652bc11180861f9d2ee4408ffa161dadc83b2010de7a9cd055e97b4b46cd01903e35c0e8bf21d8262462ba7c5f168cc6dada9ac3d522c0
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) url="$AGY_URL_AMD64"; sha="$AGY_SHA512_AMD64" ;; \
+      arm64) url="$AGY_URL_ARM64"; sha="$AGY_SHA512_ARM64" ;; \
+      *) echo "unsupported architecture for agy" >&2; exit 1 ;; \
+    esac; \
+    mkdir /tmp/agy; \
+    curl -fsSL -o /tmp/agy/cli.tar.gz "$url"; \
+    echo "$sha  /tmp/agy/cli.tar.gz" | sha512sum -c -; \
+    tar -xzf /tmp/agy/cli.tar.gz -C /tmp/agy antigravity; \
+    install -m 755 /tmp/agy/antigravity /usr/local/bin/agy; \
+    rm -rf /tmp/agy; \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true agy --version | grep -q "${AGY_VERSION}"
 # Fail the image build if the utilities and Codex launch modes required at runtime are missing.
 RUN command -v ps \
     && codex --no-daemon --help >/dev/null \
-    && codex --no-daemon resume --help >/dev/null
+    && codex --no-daemon resume --help >/dev/null \
+    && opencode --version | grep -q "1.19.5" \
+    && opencode --help | grep -q -- "--session" \
+    && opencode session list --help >/dev/null \
+    && agy --version | grep -q "1.5.9" \
+    && agy --help 2>&1 | grep -q -- "--conversation"
 # GitHub CLI from the official signed apt repository (lives under /usr, so it is visible in the sandbox).
 RUN mkdir -p /etc/apt/keyrings  \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg  \

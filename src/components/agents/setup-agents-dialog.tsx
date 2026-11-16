@@ -4,6 +4,8 @@ import { AppDialog, StatusPill } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import IconBrandClaude from "@/components/ui/brand/IconBrandClaude";
 import IconBrandCodex from "@/components/ui/brand/IconBrandCodex";
+import IconBrandAntigravity from "@/components/ui/brand/IconBrandAntigravity";
+import { useRuntime } from "@/lib/runtime/store";
 import { Skeleton } from "@/components/ui/skeleton";
 import ConnectProviderDialog from "@/components/settings/connect-provider-dialog";
 import { useProviderStatus } from "@/components/settings/use-provider-status";
@@ -13,6 +15,7 @@ import { cn } from "cn";
 const CARDS: { id: LoginProviderId; name: string; subtitle: string; Icon: typeof IconBrandClaude }[] = [
     { id: "claude", name: "Claude", subtitle: "Claude Pro / Max subscription", Icon: IconBrandClaude },
     { id: "codex", name: "Codex", subtitle: "ChatGPT subscription", Icon: IconBrandCodex },
+    { id: "antigravity", name: "Antigravity", subtitle: "Google account (Gemini subscription)", Icon: IconBrandAntigravity },
 ];
 
 interface Props {
@@ -28,8 +31,10 @@ interface Props {
 /** Lists both subscriptions; lets the user connect either before sending. */
 export default function SetupAgentsDialog({ open, onOpenChange, preferred, onContinue, onStatusChange }: Props) {
     const { status, unsupported, reload } = useProviderStatus();
+    const { info } = useRuntime();
+    const agyAvailable = info?.providers.find((p) => p.id === "antigravity")?.available === true;
     const [connecting, setConnecting] = useState<LoginProviderId | null>(null);
-    const ready = status?.[preferred].connected === true;
+    const ready = status?.[preferred]?.connected === true;
 
     return (
         <>
@@ -58,8 +63,8 @@ export default function SetupAgentsDialog({ open, onOpenChange, preferred, onCon
             >
                 {unsupported && <p className="text-sm text-muted-foreground">Your runtime doesn't support this yet.</p>}
                 <div className="flex flex-col gap-3">
-                    {CARDS.map(({ id, name, subtitle, Icon }) => {
-                        const connected = status?.[id].connected ?? false;
+                    {CARDS.filter((c) => c.id !== "antigravity" || agyAvailable).map(({ id, name, subtitle, Icon }) => {
+                        const connected = status?.[id]?.connected ?? false;
                         return (
                             <div
                                 key={id}
@@ -76,7 +81,7 @@ export default function SetupAgentsDialog({ open, onOpenChange, preferred, onCon
                                     <span className="text-xs text-muted-foreground">{subtitle}</span>
                                 </div>
                                 {status ? (
-                                    <StatusPill ok={connected}>{connected ? "Connected" + (status[id].plan ? " · " + status[id].plan : "") : "Not connected"}</StatusPill>
+                                    <StatusPill ok={connected}>{connected ? "Connected" + (status[id]?.plan ? " · " + status[id]?.plan : "") : "Not connected"}</StatusPill>
                                 ) : (
                                     <Skeleton className="h-5 w-24 rounded-full" />
                                 )}
@@ -84,7 +89,7 @@ export default function SetupAgentsDialog({ open, onOpenChange, preferred, onCon
                                     <IconCheck className="size-4 text-emerald-500" />
                                 ) : (
                                     <Button size="sm" disabled={!status || unsupported} onClick={() => setConnecting(id)}>
-                                        Connect
+                                        {id === "antigravity" ? "Sign in with Google" : "Connect"}
                                     </Button>
                                 )}
                             </div>
@@ -99,6 +104,7 @@ export default function SetupAgentsDialog({ open, onOpenChange, preferred, onCon
                     onOpenChange={(next) => !next && setConnecting(null)}
                     onConnected={() => {
                         void reload();
+                        window.dispatchEvent(new Event("floq:vault-changed"));
                         onStatusChange?.();
                     }}
                 />

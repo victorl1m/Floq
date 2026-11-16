@@ -52,7 +52,7 @@ async function harness(t, { version = { chromium: "157.0.8103.15", revision: "12
     async update(u, body) { if (body.agentBrowser !== undefined) state.prefs[u] = body.agentBrowser; return { agentBrowser: state.prefs[u] !== false }; },
   };
   const port = await freePort();
-  const config = { port, host: "127.0.0.1", allowedOrigins: [ORIGIN], maxBodyBytes: 1_000_000, version: "test", logLevel: "error", databaseUrl: "postgres://x/y", providers: { claude: "claude", codex: "codex", shell: "bash" }, codexModelsOverridden: true, models: { claude: [], codex: [] }, authSecret: "x".repeat(40) };
+  const config = { port, host: "127.0.0.1", allowedOrigins: [ORIGIN], maxBodyBytes: 1_000_000, version: "test", logLevel: "error", databaseUrl: "postgres://x/y", providers: { claude: "claude", codex: "codex", opencode: "opencode", antigravity: "agy", shell: "bash" }, codexModelsOverridden: true, models: { claude: [], codex: [], opencode: [], antigravity: [] }, authSecret: "x".repeat(40) };
   const manager = { activeCount: 0, getLive() { throw new Error("gone"); }, findLive: () => undefined };
   const server = createRuntimeServer({ config, manager, auth, settings, github: {}, vault, orchestrator: {}, pool, credentials: {}, claudeOauth: {}, usage: {}, claudeConnectors: {}, skills: {}, gitReview: {}, browser });
   await server.listen();
