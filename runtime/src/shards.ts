@@ -22,10 +22,13 @@ export function repairToolCaches(home: string, uid: number): void {
   }
 }
 
+const ALIVE_CHECK_MS = 2_000;
+
 /** Tracks each user's shard (encrypted home) in Postgres and drives wake/sleep through the OS driver. */
 export class ShardService {
   private readonly handles = new Map<string, ShardHandle>();
   private readonly locks = new Map<string, Promise<unknown>>();
+  private readonly aliveCheckedAt = new Map<string, number>();
   /** Fired (not awaited, never throws into wake) each time a user's home was just unlocked. The agent browser uses it to sync its MCP entry. */
   onWake?: (userId: string) => void;
 
@@ -43,6 +46,18 @@ export class ShardService {
     return next;
   }
 
+  /** Liveness of an awake home, probed at most once per ALIVE_CHECK_MS per user (wake() runs on every request). */
+  private alive(userId: string, handle: ShardHandle): boolean {
+    if (!this.driver.isAlive) return true;
+    const now = Date.now();
+    if (now - (this.aliveCheckedAt.get(userId) ?? 0) < ALIVE_CHECK_MS) return true;
+    const ok = this.driver.isAlive(handle);
+    // A dead mount is not remembered: the next wake() probes again if the remount failed.
+    if (ok) this.aliveCheckedAt.set(userId, now);
+    else this.aliveCheckedAt.delete(userId);
+    return ok;
+  }
+
   isAwake(userId: string): boolean {
     return this.handles.has(userId);
   }
@@ -55,7 +70,13 @@ export class ShardService {
   wake(userId: string): Promise<ShardHandle> {
     return this.serial(userId, async () => {
       const cached = this.handles.get(userId);
-      if (cached) return cached;
+      if (cached && this.alive(userId, cached)) return cached;
+      if (cached) {
+        // The gocryptfs daemon died under an awake shard (OOM kill, crash): every access fails with ENOTCONN until the
+        // home is mounted again. Drop the handle so driver.wake() below unmounts the dead mount and remounts it.
+        log.error("shard.mount_died", { userId, uid: cached.uid });
+        this.handles.delete(userId);
+      }
 
       let row = (await this.pool.query("SELECT uid, data_key_enc FROM shards WHERE user_id = $1", [userId])).rows[0];
       if (!row) {

@@ -143,6 +143,8 @@ export interface ShardDriver {
   init?(): Promise<void>;
   /** Provision (first use) and unlock the user's encrypted home. */
   wake(identity: ShardIdentity, dataKey: Buffer): Promise<ShardHandle>;
+  /** False when an unlocked home stopped responding (its FUSE daemon died): the caller drops the handle and wakes again. */
+  isAlive?(handle: ShardHandle): boolean;
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess;
   /** Same sandbox and network namespace as spawn(), but plain pipes (exact bytes, no PTY): for runtime-driven git on agent-controlled repos. */
   spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess;
@@ -805,6 +807,10 @@ export class LinuxShardDriver implements ShardDriver {
       log.warn("shard.tmp_prepare_failed", { uid: handle.uid, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
       return Promise.resolve();
     }
+  }
+
+  isAlive(handle: ShardHandle): boolean {
+    return isAlive(handle.mountPath);
   }
 
   hostPath(handle: ShardHandle, relative: string): string {
