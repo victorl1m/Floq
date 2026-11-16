@@ -115,8 +115,8 @@ RUN command -v ps \
     && codex --no-daemon --help >/dev/null \
     && codex --no-daemon resume --help >/dev/null \
     && opencode --version | grep -q "1.19.5" \
-    && opencode --help | grep -q -- "--session" \
-    && opencode session list --help >/dev/null \
+    && opencode --help 2>&1 | grep -q -- "--session" \
+    && opencode session list --help >/dev/null 2>&1 \
     && agy --version | grep -q "1.5.9" \
     && agy --help 2>&1 | grep -q -- "--conversation"
 # GitHub CLI from the official signed apt repository (lives under /usr, so it is visible in the sandbox).
