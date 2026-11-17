@@ -140,6 +140,10 @@ services:
       FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
       FLOQ_SESSION_MAX_LIFETIME_MS: ${FLOQ_SESSION_MAX_LIFETIME_MS:-3600000}
       FLOQ_LOG_LEVEL: ${FLOQ_LOG_LEVEL:-info}
+      # Agents run below the runtime's CPU priority and above its OOM score, so a busy or memory-hungry agent cannot
+      # freeze the terminals or get the runtime killed at mem_limit. 0 turns either off.
+      FLOQ_SANDBOX_NICE: ${FLOQ_SANDBOX_NICE:-10}
+      FLOQ_SANDBOX_OOM_SCORE_ADJ: ${FLOQ_SANDBOX_OOM_SCORE_ADJ:-500}
       # Claude Code prompt cache (see runtime/README.md "Prompt cache"). auto = let the CLI choose; 5m | 1h force it.
       FLOQ_CACHE_TTL: ${FLOQ_CACHE_TTL:-auto}
       FLOQ_CACHE_HELPER_TTL: ${FLOQ_CACHE_HELPER_TTL:-auto}

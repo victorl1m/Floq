@@ -676,6 +676,30 @@ async function runGocryptfs(args: string[], logFile: string): Promise<void> {
 }
 
 /** Production driver: gocryptfs-encrypted home per user, bubblewrap sandbox, privileges dropped to a per-user uid. */
+/**
+ * Sandboxes share the runtime's container (one cgroup, one memory limit). Without this, agents that saturate the CPU
+ * starve the runtime's event loop (terminals stop streaming), and at the memory limit the kernel may kill the runtime
+ * instead of an agent. Every sandboxed process therefore starts with a lower CPU priority and a higher OOM score than
+ * the runtime; both are inherited by its children and cannot be undone without CAP_SYS_NICE / CAP_SYS_RESOURCE, which
+ * the sandbox never has. Runs inside bwrap, still as root, right before setpriv drops to the user's uid.
+ * FLOQ_SANDBOX_NICE (0-19, default 10) and FLOQ_SANDBOX_OOM_SCORE_ADJ (0-1000, default 500); 0 turns either off.
+ */
+export function sandboxPriorityArgv(env: NodeJS.ProcessEnv = process.env): string[] {
+  const read = (value: string | undefined, fallback: number, max: number) => {
+    const n = Number.parseInt(value ?? "", 10);
+    return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : fallback;
+  };
+  const nice = read(env.FLOQ_SANDBOX_NICE, 10, 19);
+  const oom = read(env.FLOQ_SANDBOX_OOM_SCORE_ADJ, 500, 1000);
+  if (!nice && !oom) return [];
+  // Best effort on both: a host that refuses either still launches the agent.
+  const script =
+    (oom ? `{ echo ${oom} > /proc/self/oom_score_adj; } 2>/dev/null; ` : "") +
+    (nice ? `command -v nice >/dev/null 2>&1 && exec nice -n ${nice} "$@"; ` : "") +
+    'exec "$@"';
+  return ["/bin/sh", "-c", script, "floq-prio"];
+}
+
 export class LinuxShardDriver implements ShardDriver {
   readonly name = "linux" as const;
   private readonly cipherRoot: string;
@@ -848,6 +872,7 @@ export class LinuxShardDriver implements ShardDriver {
     });
   }
 
+  /** Every sandboxed process (agents, their children, runtime-driven git, the agent browser) is launched through here. */
   private sandboxLaunch(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): { file: string; args: string[] } {
     const { uid } = handle;
     const home = handle.mountPath;
@@ -908,6 +933,7 @@ export class LinuxShardDriver implements ShardDriver {
       ...ownHomeAliasArgs(home, this.mountRoot),
       "--chdir", SANDBOX_HOME + "/" + safeRelative(spec.cwd),
       "--",
+      ...sandboxPriorityArgv(),
       "setpriv",
       "--reuid=" + uid,
       "--regid=" + uid,

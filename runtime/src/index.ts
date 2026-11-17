@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { createAuth, migrateAuth } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { warmProviderVersions } from "./providers.js";
 import { ClaudeOAuth } from "./claudeOauth.js";
 import { UsageService } from "./usage.js";
 import { ClaudeConnectors, apiKeyReachesSessions } from "./claudeConnectors.js";
@@ -188,6 +189,8 @@ plugins.setSecretMigrationPort({
 await plugins.load();
 const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
 
+// The one synchronous CLI version check happens here, before clients connect; afterwards it only refreshes in the background.
+warmProviderVersions(config);
 await server.listen();
 log.info("runtime.listening", {
   host: config.host,

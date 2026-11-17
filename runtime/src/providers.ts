@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import type { Config, ModelEntry } from "./config.js";
 import type { RuntimeProfile } from "./settings.js";
 import type { ProviderId, ProviderInfo } from "./types.js";
@@ -120,25 +120,47 @@ export function getProviderDefinition(id: ProviderId, config: Config): ProviderD
 const versionCache = new Map<string, { version: string | null; checkedAt: number }>();
 const VERSION_TTL_MS = 60_000;
 
+const versionRefreshing = new Set<string>();
+const versionEnv = () => ({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp" });
+const parseVersion = (output: string) => output.split("\n")[0]?.trim() || "unknown";
+
+/** Re-check a CLI's version in the background (one check per binary at a time). */
+function refreshVersion(bin: string): void {
+  if (versionRefreshing.has(bin)) return;
+  versionRefreshing.add(bin);
+  execFile(bin, ["--version"], { encoding: "utf8", timeout: 20_000, env: versionEnv(), windowsHide: true }, (error, stdout, stderr) => {
+    versionRefreshing.delete(bin);
+    const failure = error as (Error & { killed?: boolean; signal?: string | null }) | null;
+    // Timed out on a busy host: that says nothing about the CLI, keep what was known.
+    const version = !failure ? parseVersion(stdout || stderr || "") : failure.killed || failure.signal ? versionCache.get(bin)?.version ?? null : null;
+    versionCache.set(bin, { version, checkedAt: Date.now() });
+  });
+}
+
+/**
+ * Cached CLI version. This runs on hot paths (every terminal attach sends the server info), so it must never block:
+ * a stale entry is returned as is and refreshed in the background. Only the very first check of a binary is
+ * synchronous (at startup, see warmProviderVersions); a synchronous `--version` per provider on a starved host
+ * froze the event loop, and with it every terminal, for many seconds at a time.
+ */
 export function detectVersion(bin: string): { available: boolean; version: string | null } {
   const cached = versionCache.get(bin);
-  if (cached && Date.now() - cached.checkedAt < VERSION_TTL_MS) {
+  if (cached) {
+    if (Date.now() - cached.checkedAt >= VERSION_TTL_MS) refreshVersion(bin);
     return { available: cached.version !== null, version: cached.version };
   }
 
-  const result = spawnSync(bin, ["--version"], {
-    encoding: "utf8",
-    timeout: 5_000,
-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp" },
-  });
-
-  const version =
-    result.status === 0
-      ? (result.stdout || result.stderr || "").split("\n")[0]?.trim() || "unknown"
-      : null;
-
-  versionCache.set(bin, { version, checkedAt: Date.now() });
+  const result = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 5_000, env: versionEnv() });
+  const version = result.status === 0 ? parseVersion(result.stdout || result.stderr || "") : null;
+  // A first check that timed out is retried in the background on the next call instead of being trusted for a minute.
+  const timedOut = result.status === null && (result.signal !== null || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT");
+  versionCache.set(bin, { version, checkedAt: timedOut ? 0 : Date.now() });
   return { available: version !== null, version };
+}
+
+/** Fill the version cache at startup, before any client is connected, so no request ever pays the synchronous first check. */
+export function warmProviderVersions(config: Config): void {
+  for (const id of Object.keys(definitions) as ProviderId[]) detectVersion(config.providers[id]);
 }
 
 export function listProviders(config: Config): ProviderInfo[] {

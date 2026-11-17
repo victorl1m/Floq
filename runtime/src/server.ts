@@ -65,6 +65,11 @@ import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
 const MAX_WS_PAYLOAD = 256 * 1024;
+/** Terminal stream coalescing: output is held at most this long, or until a frame reaches this size. */
+const STREAM_FLUSH_MS = 4;
+const STREAM_FRAME_CHARS = 64 * 1024;
+/** A terminal socket with more than this queued (after the replay) is a slow consumer and is dropped; it reconnects from its last seq. */
+const STREAM_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SELF_RESTART_DELAY_MS = 750;
 
 interface Deps {
@@ -1914,16 +1919,64 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
   }
 
   function attach(ws: WebSocket, session: Session, since: number): void {
+    // Output is coalesced per socket: a PTY emits many tiny chunks, and one JSON frame per chunk costs the event loop
+    // (and the client) the most exactly when the host is busy. A merged frame carries the seq of its last chunk, which
+    // is all clients use it for (resume point, "seq > last seen").
+    let gone = false;
+    let replaying = true;
+    let unsubscribe: () => void = () => undefined;
+    let heartbeat: NodeJS.Timeout | undefined;
+    let pending:{ seq: number; ts: number; parts: string[]; bytes: number } | null = null;
+    let flushTimer: NodeJS.Timeout | null = null;
+    const sendNow = (frame: ServerFrame) => {
+      if (gone || ws.readyState !== ws.OPEN) return;
+      // A client that cannot keep up must not grow the runtime's memory without bound: drop it, it reconnects from its last seq.
+      // The replay itself is bounded by the session's output buffer, so it is exempt.
+      if (!replaying && ws.bufferedAmount > STREAM_MAX_BUFFERED_BYTES) {
+        log.warn("stream.slow_consumer", { sessionId: session.id, buffered: ws.bufferedAmount });
+        cleanup();
+        return void ws.terminate();
+      }
+      ws.send(JSON.stringify(frame));
+    };
+    const flush = () => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (!pending) return;
+      const out = pending;
+      pending = null;
+      sendNow({ type: "output", seq: out.seq, data: out.parts.join(""), ts: out.ts });
+    };
+    const pushOutput = (seq: number, data: string, ts: number) => {
+      if (!pending) pending = { seq, ts, parts: [], bytes: 0 };
+      pending.seq = seq;
+      pending.ts = ts;
+      pending.parts.push(data);
+      pending.bytes += data.length;
+      if (pending.bytes >= STREAM_FRAME_CHARS) flush();
+      else if (!flushTimer) flushTimer = setTimeout(flush, STREAM_FLUSH_MS);
+    };
     const push = (frame: ServerFrame) => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
+      if (frame.type === "output") return pushOutput(frame.seq, frame.data, frame.ts);
+      flush(); // keep ordering: buffered output goes out before any other frame
+      sendNow(frame);
+    };
+    const cleanup = () => {
+      if (gone) return;
+      gone = true;
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      pending = null;
+      clearInterval(heartbeat);
+      unsubscribe();
     };
 
     const replay = session.replaySince(since);
     push({ type: "hello", server: info(), session: session.toSummary(), truncated: replay.truncatedBytes });
-    for (const chunk of replay.chunks) push({ type: "output", seq: chunk.seq, data: chunk.data, ts: chunk.ts });
+    for (const chunk of replay.chunks) pushOutput(chunk.seq, chunk.data, chunk.ts);
+    flush(); // replay ends on its own frame, so no frame mixes replay and live output
+    replaying = false;
 
-    const unsubscribe = session.subscribe(push);
-    const heartbeat = setInterval(() => ws.ping(), 25_000);
+    unsubscribe = session.subscribe(push);
+    heartbeat = setInterval(() => { try { ws.ping(); } catch { /* closing */ } }, 25_000);
 
     ws.on("message", (raw) => {
       let frame: ClientFrame;
@@ -1955,10 +2008,6 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
       }
     });
 
-    const cleanup = () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    };
     ws.on("close", cleanup);
     ws.on("error", cleanup);
   }
