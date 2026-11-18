@@ -71,7 +71,7 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
     const task = data.tasks.find((t) => t.id === dragId);
     setDragId(null); setDropStatus(null);
     if (!task) return;
-    const column = groups[status].filter((t) => t.id !== task.id);
+    const column = groups[status as keyof typeof groups].filter((t) => t.id !== task.id);
     const cards = Array.from((event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>("[data-task-id]")).filter((el) => el.dataset.taskId !== task.id);
     let index = column.length;
     cards.forEach((el, i) => { const r = el.getBoundingClientRect(); if (index === column.length && event.clientY < r.top + r.height / 2) index = i; });
