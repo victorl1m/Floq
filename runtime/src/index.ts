@@ -128,7 +128,7 @@ const fallback = new FallbackService(pool, {
   resume: async (userId, id) => { await manager.resume(userId, await settings.profile(userId), id, { strict: true }); },
 }, (userId) => settings.usageFallback(userId));
 fallback.codex = {
-  usable: async (userId) => { const u = (await usage.get(userId)).codex; return Boolean(u?.connected) && (u?.windows.length ?? 0) > 0 && (u?.windows ?? []).every((w) => w.usedPercent < 100); },
+  usable: async (userId) => { if (!(await manager.providerConnected(userId, "codex"))) return false; const u = (await usage.get(userId)).codex; return Boolean(u?.connected) && (u?.windows.length ?? 0) > 0 && (u?.windows ?? []).every((w) => w.usedPercent < 100); },
   defaultModel: async (userId) => (await manager.codexModels(userId))[0]?.id ?? null,
 };
 fallback.accounts = claudeAccounts;

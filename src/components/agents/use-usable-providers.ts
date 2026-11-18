@@ -20,7 +20,7 @@ export function useUsableProviders() {
     // The live status wins over /v1/info (which is only refreshed every few minutes).
     const agyLogin = status?.antigravity ? status.antigravity.connected : agy?.oauthConnected === true;
     // Antigravity works with a Google login OR a GEMINI_API_KEY in the vault; it is optional, so it never counts as "missing".
-    const agyUsable = Boolean(info) && available("antigravity") && (agy?.apiKeyConfigured !== false || agyLogin);
+    const agyUsable = Boolean(info) && available("antigravity") && (agy?.apiKeyConfigured === true || agyLogin);
 
     const loading = status === null && !unsupported;
     const usable: ProviderId[] = loading

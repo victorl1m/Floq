@@ -14,6 +14,8 @@ import { streamToFile, validAttachmentName } from "./attachments.js";
 import type { Readable } from "node:stream";
 import { buildWiredNotice, type WireRef, type WiredContext } from "./wiredContext.js";
 import { parseRoleId as parseRoleIdForPatch } from "./roles.js";
+import { specKitIntegrationArgs } from "./specKit.js";
+import { assertProviderConnected, providerConnected, type ProviderGuardDeps } from "./providerGuard.js";
 import { validCredential, type CredentialBroker, type CredentialData, type OAuthProvider } from "./credentials.js";
 import { nativeSubagentBlockArgs } from "./nativeSubagentBlock.js";
 import { DisplayAllocator, displayEnv } from "./display.js";
@@ -1518,9 +1520,10 @@ export class SessionManager {
 
   private runSpecifyInit(dir: string, provider: ProviderId, profile: RuntimeProfile, handle: ShardHandle): Promise<void> {
     mkdirOwned(handle.mountPath, dir, handle.uid);
-    const agent = provider === "claude" ? ["--ai", "claude"] : ["--ai", "codex", "--ai-skills"];
+    const agent = specKitIntegrationArgs(provider);
+    if (!agent) return Promise.resolve();
     return new Promise((done) => {
-      const [file, args] = this.asUser(handle, "specify", ["init", "--here", "--force", ...agent]);
+      const [file, args] = this.asUser(handle, "specify", ["init", "--here", "--force", "--non-interactive", "--ignore-agent-tools", ...agent]);
       const child = spawn(file, args, {
         cwd: dir,
         stdio: "ignore",
@@ -2122,9 +2125,7 @@ export class SessionManager {
     if (input.provider === "shell" && (input.prompt !== undefined || input.specKit)) {
       throw badRequest("prompt and specKit are not supported for shell sessions");
     }
-    if (input.specKit && (input.provider === "opencode" || input.provider === "antigravity")) {
-      throw badRequest("Spec Kit is only available for Claude and Codex agents", "spec_kit_unsupported");
-    }
+    await this.assertProviderConnected(userId, input.provider);
     let homeShell = false;
     try { homeShell = wantsHomeShell(input); } catch (error) { throw badRequest(error instanceof Error ? error.message : "invalid home", "invalid_home"); }
     const codexModels = input.provider === "codex" && typeof input.model === "string" && input.model
@@ -2318,6 +2319,8 @@ export class SessionManager {
     if (existing && existing.userId === userId && existing.isAlive) return existing.toSummary();
 
     const row = await this.row(id, userId);
+    // A session whose provider was logged out since it slept must fail clearly instead of running unauthenticated.
+    await this.assertProviderConnected(userId, row.provider as ProviderId);
     if (row.workspace_id) {
       const gone = await this.pool.query("SELECT 1 FROM floq_project_workspaces WHERE id=$1 AND user_id=$2 AND is_worktree=TRUE AND available=FALSE", [row.workspace_id, userId]);
       if (gone.rows[0]) throw conflict("This agent's worktree was deleted or removed, so it cannot be resumed. You can still delete the conversation.", "worktree_deleted");
@@ -2342,6 +2345,8 @@ export class SessionManager {
    */
   async switchProvider(userId: string, profile: RuntimeProfile, id: string, to: { provider: "claude" | "codex"; model: string | null; prompt?: string; notice?: string }): Promise<SessionSummary> {
     this.assertLifecycleOpen();
+    // Refuse before the old process is stopped: never leave an agent parked on a provider the user is not logged in to.
+    await this.assertProviderConnected(userId, to.provider);
     return coalesce(this.restartTasks, userId + ":" + id, async () => {
       const row = await this.row(id, userId);
       if (row.provider !== "claude" && row.provider !== "codex") throw badRequest("Only Claude and Codex agents can switch provider", "invalid_provider");
@@ -2441,6 +2446,25 @@ export class SessionManager {
 
   isLogin(id: string): boolean {
     return this.logins.has(id);
+  }
+
+  /** Refuse to start (or switch to) a provider the user is not logged in to. See providerGuard.ts for the per-provider rules. */
+  async assertProviderConnected(userId: string, provider: ProviderId): Promise<void> {
+    await assertProviderConnected(this.providerGuardDeps(), userId, provider);
+  }
+
+  /** Non-throwing form of assertProviderConnected (fallback planning, pickers). */
+  providerConnected(userId: string, provider: ProviderId): Promise<boolean> {
+    return providerConnected(this.providerGuardDeps(), userId, provider);
+  }
+
+  private providerGuardDeps(): ProviderGuardDeps {
+    return {
+      config: this.config,
+      credential: (userId, provider) => this.credentials.get(userId, provider),
+      antigravityLogin: (userId) => this.antigravityConnected(userId),
+      vaultEnvNames: async (userId) => new Set((await this.vault.list(userId)).filter((secret) => secret.expose === "env").map((secret) => secret.name)),
+    };
   }
 
   private async freshCredential(userId: string, provider: OAuthProvider): Promise<CredentialData | null> {
