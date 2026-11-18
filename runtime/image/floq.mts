@@ -58,8 +58,8 @@ Commands:
   floq ask-parent "question" [--file PATH]   (for subagents) ask the agent that recruited you; it gets a notification (long text as a preview plus "floq inbox read ID") and answers with "floq ask <your UUID> ..."
   floq watch <UUID|Name> [--since CURSOR] [--timeout SECONDS] [--reply]   (for orchestrators) only NEW progress/questions of an agent since CURSOR plus its status; waits up to 30s for news (no long timeouts needed); prints "cursor: N" to pass as --since next time; messages are printed in full
   floq recruit "Name" [--provider claude|codex|opencode|antigravity] [--model ID] [--cwd DIR] [--role ID|TEXT] [--isolated] [--skill NAME[,NAME]] [--fallback default|model|pause]   (orchestrator only; other agents ask the orchestrator with "floq ask")
-  floq subagent recruit "Name" --task TEXT [--role ID] [--provider claude|codex|opencode|antigravity] [--model ID] [--skill NAME[,NAME]] [--fallback default|model|pause] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
-  floq subagent list | result ID [--full] | ask ID "message" [--no-wait] | dismiss ID
+  floq subagent recruit "Name" --task TEXT|--task-file PATH [--role ID] [--provider claude|codex|opencode|antigravity] [--model ID] [--skill NAME[,NAME]] [--fallback default|model|pause] [--no-wire]   start a subagent on the canvas (any agent; depth/count limits apply)
+  floq subagent list | result ID [--full] | ask ID "message"|--file PATH [--no-wait] | dismiss ID   (--task-file/--file send the file's TEXT: a subagent cannot read your scratchpad, never pass it a path there)
   floq connect <UUID|Name> <UUID|Name>
   floq dismiss <UUID|Name>
   floq note list | read NAME | write NAME TEXT | append NAME TEXT
@@ -184,6 +184,15 @@ async function readMessageText(): Promise<string> {
   return cleanSecretInput(Buffer.concat(chunks).toString("utf8"));
 }
 
+/** Read a brief/message file in the caller's sandbox (its scratchpad is private to it). 20000 characters max, never cut. */
+function readBriefFile(path: string): string {
+  const size = statSync(path).size;
+  if (size > 4 * 20_000) throw new Error(path + " is " + size + " bytes; a task or message is at most 20000 characters, never cut. Shorten it.");
+  const text = readFileSync(path, "utf8");
+  if (text.length > 20_000) throw new Error(path + " has " + text.length + " characters; a task or message is at most 20000 characters, never cut. Shorten it.");
+  return text;
+}
+
 async function readStdinText(): Promise<string> {
   const chunks = [];
   let size = 0;
@@ -237,7 +246,7 @@ const allowedOptions: Record<string, string[]> = {
   decision: ["question", "options-json", "detail", "ttl", "wait"],
   notify: ["title", "body", "level", "category", "action-url", "action-canvas", "action-agent", "action-settings", "action-label"],
   session: [], browser: [], port: ["protocol", "reason"], plugin: ["json"], display: [], approval: ["action", "detail", "target", "wait", "timeout", "consume"],
-  recruit: ["provider", "model", "cwd", "role", "isolated", "skill", "fallback"], subagent: ["task", "role", "provider", "model", "skill", "fallback", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
+  recruit: ["provider", "model", "cwd", "role", "isolated", "skill", "fallback"], subagent: ["task", "task-file", "file", "role", "provider", "model", "skill", "fallback", "no-wire", "no-wait", "timeout", "chars", "full"], connect: [], dismiss: [], note: [],
   skills: ["provider", "project", "global", "description", "from", "instructions", "dry-run"],
   project: ["name", "git-url"], setup: ["dry-run", "agents"],
   mcp: ["provider", "project", "global", "json", "name", "dry-run", "url", "allow-plaintext"],
@@ -743,7 +752,12 @@ switch (command) {
     const needId = () => { if (!first || (sub !== "ask" && rest.length)) usage(); return first; };
     if (sub === "recruit") {
       if (!first) usage();
-      const task = typeof named.task === "string" ? (named.task === "-" ? await readStdinText() : named.task) : rest.join(" ");
+      // --task-file: read here, in the caller's sandbox, and send the TEXT. A path inside the task is useless: the subagent cannot see the caller's scratchpad.
+      if (named["task-file"] !== undefined && (typeof named["task-file"] !== "string" || named.task !== undefined || rest.length)) { console.error("floq: use either --task TEXT or --task-file PATH, not both"); process.exit(2); }
+      let task: string;
+      try {
+        task = typeof named["task-file"] === "string" ? readBriefFile(named["task-file"]) : typeof named.task === "string" ? (named.task === "-" ? await readStdinText() : named.task) : rest.join(" ");
+      } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
       if (!task.trim()) { console.error("floq: --task TEXT is required"); process.exit(2); }
       const r = await call<{ id: string; name: string; role: string; provider: string; model: string; depth: number; wired?: boolean; skills?: string[] }>("agents/subagent/recruit", { name: first, task, role: named.role, provider: named.provider, model: named.model, skills: named.skill, fallback: named.fallback, wire: named["no-wire"] !== true });
       console.log(formatSubagentRecruit(r));
@@ -755,9 +769,13 @@ switch (command) {
       console.log("you are at depth " + r.depth + " (max " + r.limits.maxDepth + "); " + (r.canRecruit ? "you can recruit" : "you cannot recruit now"));
     } else if (sub === "ask") {
       const id = needId();
-      if (!rest.length) usage();
+      if (!rest.length && named.file === undefined) usage();
+      if (named.file !== undefined && (typeof named.file !== "string" || rest.length)) { console.error("floq: use either the message text or --file PATH, not both"); process.exit(2); }
+      let prompt: string;
+      try { prompt = typeof named.file === "string" ? readBriefFile(named.file) : rest.join(" "); } catch (error) { console.error("floq: " + errorMessage(error)); process.exit(2); }
+      if (!prompt.trim()) { console.error("floq: the message is empty"); process.exit(2); }
       const timeoutSec = typeof named.timeout === "string" ? Number(named.timeout) : undefined;
-      const r = await call<AgentReply>("agents/subagent/ask", { id, prompt: rest.join(" "), timeoutSec: Math.min(timeoutSec ?? 300, WAIT_CHUNK_SEC), wait: named["no-wait"] !== true });
+      const r = await call<AgentReply>("agents/subagent/ask", { id, prompt, timeoutSec: Math.min(timeoutSec ?? 300, WAIT_CHUNK_SEC), wait: named["no-wait"] !== true });
       const out = formatAgentReply("ask", id, r, timeoutSec ?? 300);
       console.log(out.text);
       process.exitCode = out.code;

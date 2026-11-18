@@ -54,9 +54,9 @@ export interface ToolSpec {
 }
 
 export const TOOL_SPECS: readonly ToolSpec[] = [
-  { name: "floq_recruit_subagent", command: 'floq subagent recruit "Name" --task "..." [--role ID] [--provider claude|codex|opencode|antigravity] [--model ID] [--skill NAME[,NAME]] [--no-wire]', summary: "Start a subagent session on the canvas, wired to you by default." },
+  { name: "floq_recruit_subagent", command: 'floq subagent recruit "Name" --task "..."|--task-file PATH [--role ID] [--provider claude|codex|opencode|antigravity] [--model ID] [--skill NAME[,NAME]] [--no-wire]', summary: "Start a subagent session on the canvas, wired to you by default. A long brief goes in a file passed with --task-file (its text is sent): the subagent cannot read your scratchpad, so never put a scratchpad path in the task." },
   { name: "floq_list_subagents", command: "floq subagent list", summary: "List your subagents with id, role, depth and status." },
-  { name: "floq_message_subagent", command: 'floq subagent ask ID "message" [--no-wait]', summary: "Send a message to a subagent. Prefer --no-wait: keep working, its reply arrives as a message. Without it the call blocks until the reply." },
+  { name: "floq_message_subagent", command: 'floq subagent ask ID "message"|--file PATH [--no-wait]', summary: "Send a message to a subagent. Prefer --no-wait: keep working, its reply arrives as a message. Without it the call blocks until the reply." },
   { name: "floq_subagent_result", command: "floq subagent result ID [--full]", summary: "Read a subagent's status and last reply without blocking." },
   { name: "floq_dismiss_subagent", command: "floq subagent dismiss ID", summary: "Stop and remove a finished subagent (and its own subagents)." },
 ];
