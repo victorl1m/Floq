@@ -58,6 +58,22 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS recruit_skills TEXT[];
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS resume_on_boot BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS interrupted_turn BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Pointer history: every provider conversation an agent has had; only deleted together with the agent.
+    CREATE TABLE IF NOT EXISTS agent_conversations (
+      id BIGSERIAL PRIMARY KEY,
+      session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      provider_session_id TEXT NOT NULL,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ended_reason TEXT,
+      UNIQUE (session_id, provider, provider_session_id)
+    );
+    INSERT INTO agent_conversations (session_id, provider, provider_session_id, started_at)
+      SELECT id, provider, id::text, created_at FROM agent_sessions WHERE provider = 'claude'
+      ON CONFLICT DO NOTHING;
+    INSERT INTO agent_conversations (session_id, provider, provider_session_id, started_at)
+      SELECT id, provider, provider_session_id, created_at FROM agent_sessions WHERE provider <> 'claude' AND provider_session_id IS NOT NULL
+      ON CONFLICT DO NOTHING;
     -- Removing an agent archives its conversation (kept, restorable from the Conversations tab) instead of deleting it.
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     UPDATE agent_sessions AS child SET project_cwd = child.cwd

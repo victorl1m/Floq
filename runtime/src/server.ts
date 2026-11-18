@@ -1590,6 +1590,15 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 201, await manager.uploadSessionAttachment(attachmentMatch[1], userId, body.name, body.data));
     }
 
+    const convMatch = /^\/v1\/sessions\/([0-9a-f-]{36})\/(conversations|start-fresh)(?:\/(\d{1,18})\/switch)?$/i.exec(url.pathname);
+    if (convMatch) {
+      const [, sid, kind, cid] = convMatch;
+      if (kind === "conversations" && !cid && method === "GET") return send(res, 200, { conversations: await manager.conversations(sid!, userId) });
+      if (kind === "start-fresh" && method === "POST") return send(res, 200, { session: await manager.startFresh(userId, await settings.profile(userId), sid!) });
+      if (kind === "conversations" && cid && method === "POST") return send(res, 200, { session: await manager.switchConversation(userId, await settings.profile(userId), sid!, cid) });
+      throw new HttpError(405, "method_not_allowed", "Unsupported method");
+    }
+
     const match = SESSION_PATH.exec(url.pathname);
     if (match) {
       const action = match[2];

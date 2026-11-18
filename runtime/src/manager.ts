@@ -32,6 +32,7 @@ import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, typ
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { moveProjectsInFolders, pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
+import { CLAUDE_CONVERSATION_SQL, canSwitchTo, endConversation, listConversations, planFreshStart, recordConversation, resolveClaudeConversationId, type ConversationRow } from "./agentConversations.js";
 import { classifyResumeExit, resumeRetryDelay, bootRetryDelay, isTransientBootError, claudeProjectSlug, RESUME_FAILED_REASON, RESUME_FAILED_TITLE, BOOT_PAUSED_TITLE, type ResumeExitKind } from "./resumeRecovery.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptHead, readTranscriptTail } from "./nativeTitle.js";
 import { fallbackBadge, type FallbackState } from "./fallback.js";
@@ -157,6 +158,8 @@ interface Row {
   last_active_at: Date;
   slept_at: Date | null;
   provider_session_id: string | null;
+  /** Claude only: current conversation from agent_conversations (absent = the agent id, for agents that predate it). */
+  claude_conversation_id?: string | null;
   title_locked: boolean;
   lead: boolean;
   model: string | null;
@@ -636,7 +639,7 @@ export class SessionManager {
     const home = this.hostHome(state.handle);
     const confine = { home, uid: state.handle.uid };
     const tail = state.provider === "claude"
-      ? (() => { const path = claudeTranscriptPath(home, id); return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine) : null; })()
+      ? (() => { const path = claudeTranscriptPath(home, state.providerSessionId ?? id); return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine) : null; })()
       : withRollout(home, this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"), (path) => readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine));
     if (!tail) return null;
     return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
@@ -646,7 +649,7 @@ export class SessionManager {
   readTranscriptText(id: string, userId: string): string | null {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
-    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    const path = claudeTranscriptPath(this.hostHome(state.handle), state.providerSessionId ?? id);
     return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, { home: this.hostHome(state.handle), uid: state.handle.uid })?.text ?? null : null;
   }
 
@@ -660,7 +663,7 @@ export class SessionManager {
   transcriptStamp(id: string, userId: string): string | null {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
-    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    const path = claudeTranscriptPath(this.hostHome(state.handle), state.providerSessionId ?? id);
     if (!path) return null;
     try { const st = statSync(path); return st.mtimeMs + ":" + st.size; } catch { return null; }
   }
@@ -709,7 +712,7 @@ export class SessionManager {
   }
 
   private async row(id: string, userId: string): Promise<Row> {
-    const result = await this.pool.query("SELECT * FROM agent_sessions WHERE id = $1 AND user_id = $2", [id, userId]);
+    const result = await this.pool.query("SELECT s.*, " + CLAUDE_CONVERSATION_SQL + " AS claude_conversation_id FROM agent_sessions s WHERE s.id = $1 AND s.user_id = $2", [id, userId]);
     if (!result.rows[0]) throw notFound("Session " + id + " not found");
     return result.rows[0] as Row;
   }
@@ -1559,10 +1562,10 @@ export class SessionManager {
     }
     const definition = getProviderDefinition(row.provider, this.config);
     // Claude's conversation id is the Floq session id; Codex's is discovered and stored.
-    const providerId = row.provider === "claude" ? row.id : row.provider_session_id;
+    const providerId = row.provider === "claude" ? resolveClaudeConversationId(row) : row.provider_session_id;
     const resumeArgs = resume ? definition.resumeArgs(profile, providerId, row.model) : null;
     const resuming = resumeArgs !== null;
-    const args = resumeArgs ?? definition.buildArgs(profile, row.id, row.model);
+    const args = resumeArgs ?? definition.buildArgs(profile, row.provider === "claude" ? resolveClaudeConversationId(row) : row.id, row.model);
     if (row.provider === "codex") {
       const trustArgs = codexTrustArgs(
         this.shards.driver.homePath(handle),
@@ -1800,7 +1803,7 @@ export class SessionManager {
         userId: row.user_id,
         provider: row.provider,
         fallback: row.title,
-        providerSessionId: row.provider === "claude" ? row.id : providerId,
+        providerSessionId: row.provider === "claude" ? resolveClaudeConversationId(row) : providerId,
         handle,
         checkedAt: 0,
         lastNativeTitle: null,
@@ -1981,7 +1984,8 @@ export class SessionManager {
         const held = await this.pool.query("SELECT 1 FROM agent_sessions WHERE user_id = $1 AND provider = 'antigravity' AND provider_session_id = $2 AND id <> $3 LIMIT 1", [probe.userId, found, id]);
         if (held.rows.length > 0) return false; // another agent's conversation (the cache holds one id per cwd): keep waiting for our own
       }
-      await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1 AND provider_session_id IS NULL", [id, found]);
+      const claimed = await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1 AND provider_session_id IS NULL RETURNING 1", [id, found]);
+      if (claimed.rows.length) await recordConversation(this.pool, id, probe.provider, found).catch(() => undefined);
       if (probe.provider === "antigravity") this.agyMirror?.setRoot(id, found);
       // A slow probe of an older launch must not tear down the probe or gate of a newer one.
       if (this.cliProbes.get(id) === probe) {
@@ -2000,6 +2004,7 @@ export class SessionManager {
     const found = findRollout(this.hostHome(handle), this.shards.driver.hostPath(handle, codexHomeRel(id) + "/sessions"));
     if (!found) return false;
     await this.pool.query("UPDATE agent_sessions SET provider_session_id = $2 WHERE id = $1", [id, found]);
+    await recordConversation(this.pool, id, "codex", found).catch(() => undefined);
     const titleState = this.nativeTitleSessions.get(id);
     if (titleState) titleState.providerSessionId = found;
     void this.updateNativeTitle(id, true);
@@ -2029,7 +2034,7 @@ export class SessionManager {
     state.checking = true;
     try {
       const title = state.provider === "claude"
-        ? readClaudeNativeTitle(this.hostHome(state.handle), id)
+        ? readClaudeNativeTitle(this.hostHome(state.handle), state.providerSessionId ?? id)
         : state.providerSessionId
           ? readCodexNativeTitle(this.hostHome(state.handle), this.shards.driver.hostPath(state.handle, codexHomeRel(id)), state.providerSessionId)
           : null;
@@ -2094,9 +2099,10 @@ export class SessionManager {
   /** Claude only: copy a transcript found under another project folder into the folder Claude will look in for this cwd. */
   private relocateClaudeTranscript(handle: ShardHandle, row: Row): boolean {
     const home = this.hostHome(handle);
-    const found = claudeTranscriptPath(home, row.id);
+    const convId = resolveClaudeConversationId(row);
+    const found = claudeTranscriptPath(home, convId);
     if (!found) return false;
-    const dest = join(home, ".claude", "projects", claudeProjectSlug(row.cwd), row.id + ".jsonl");
+    const dest = join(home, ".claude", "projects", claudeProjectSlug(row.cwd), convId + ".jsonl");
     if (resolve(dest) === resolve(found)) return false; // already where Claude looks: it really cannot read it
     try {
       mkdirOwned(handle.mountPath, dirname(dest), handle.uid);
@@ -2134,7 +2140,7 @@ export class SessionManager {
     if (kind === "not_found") {
       let restored = false;
       if (attempt < 1) {
-        const providerId = row.provider === "claude" ? row.id : row.provider_session_id;
+        const providerId = row.provider === "claude" ? resolveClaudeConversationId(row) : row.provider_session_id;
         if (providerId) {
           try {
             const handle = await this.shards.wake(session.userId);
@@ -2370,6 +2376,7 @@ export class SessionManager {
        VALUES ($1,$2,$3,$4,$5,$6,'sleeping',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [id, userId, input.provider, title, cwd, projectGitUrl, cols, rows, input.lead === true, model, projectCwd ?? (projectId ? null : input.gitUrl ? cwd : null), projectId, workspaceId, branch, role?.id ?? null, options.parentSessionId ?? null, options.skills?.length ? options.skills : null],
     );
+    if (input.provider === "claude") await recordConversation(this.pool, id, "claude", id).catch(() => undefined);
     try {
       const session = await this.launch(inserted.rows[0] as Row, profile, handle, false, prompt);
       log.info("session.create", { sessionId: id, userId, provider: input.provider, promptLength: prompt?.length ?? 0 });
@@ -2446,6 +2453,10 @@ export class SessionManager {
         await this.sleepSession(id, "usage-fallback", { waitForExit: true });
         stopped = true;
         await this.pool.query("UPDATE agent_sessions SET provider = $3, model = $4 WHERE id = $1 AND user_id = $2", [id, userId, to.provider, to.model]);
+        if (row.provider !== to.provider) {
+          const old = row.provider === "claude" ? resolveClaudeConversationId(row) : row.provider_session_id;
+          if (old) await endConversation(this.pool, id, row.provider, old, "provider_switch").catch(() => undefined);
+        }
         if (to.notice) this.queueBootNotice(id, to.notice);
         // A Codex conversation that already exists resumes; without one (or when starting Codex the first time) it is a fresh start with the prompt.
         const resumeCodex = to.provider === "codex" && Boolean((await this.row(id, userId)).provider_session_id);
@@ -2462,11 +2473,68 @@ export class SessionManager {
     });
   }
 
+  /** The agent's conversation history (every provider pointer it has had), newest first. */
+  async conversations(id: string, userId: string): Promise<ConversationRow[]> {
+    await this.row(id, userId);
+    return listConversations(this.pool, id);
+  }
+
+  private async stopForConversationChange(id: string, userId: string): Promise<void> {
+    const live = this.live.get(id);
+    if (live && live.userId === userId && live.isAlive) await this.sleepSession(id, "conversation-change", { waitForExit: true });
+    this.resumeRetries.delete(id);
+  }
+
+  /**
+   * Explicit, reversible "Start fresh": the current conversation stays in the history (ended_reason fresh_start) and can be
+   * switched back to. Claude starts under a NEW id (never the old one, which would collide with "already in use").
+   */
+  async startFresh(userId: string, profile: RuntimeProfile, id: string): Promise<SessionSummary> {
+    this.assertLifecycleOpen();
+    return coalesce(this.restartTasks, userId + ":" + id, async () => {
+      if ((await this.row(id, userId)).provider === "shell") throw badRequest("Shell sessions have no conversation", "invalid_provider");
+      await this.stopForConversationChange(id, userId);
+      const row = await this.row(id, userId); // after the stop: a Codex/OpenCode id may only have been captured while stopping
+      try {
+        const current = row.provider === "claude" ? resolveClaudeConversationId(row) : row.provider_session_id;
+        const plan = planFreshStart(row.provider, current);
+        if (plan.endCurrent) await endConversation(this.pool, id, plan.endCurrent.provider, plan.endCurrent.providerSessionId, plan.endCurrent.reason);
+        if (plan.newClaudeId) await recordConversation(this.pool, id, "claude", plan.newClaudeId);
+        else await this.pool.query("UPDATE agent_sessions SET provider_session_id = NULL WHERE id = $1 AND user_id = $2", [id, userId]);
+        log.info("session.fresh_start", { sessionId: id, provider: row.provider });
+        return await this.resumeOnce(userId, profile, id, true, { fresh: true });
+      } finally {
+        this.intentionalSleep.delete(id);
+      }
+    });
+  }
+
+  /** Make an earlier conversation of this agent current again and resume it. */
+  async switchConversation(userId: string, profile: RuntimeProfile, id: string, conversationId: string): Promise<SessionSummary> {
+    this.assertLifecycleOpen();
+    return coalesce(this.restartTasks, userId + ":" + id, async () => {
+      const row = await this.row(id, userId);
+      const target = (await listConversations(this.pool, id)).find((c) => c.id === conversationId);
+      if (!target) throw notFound("Conversation not found");
+      if (!canSwitchTo(row.provider, target)) throw badRequest("That conversation belongs to another provider", "invalid_conversation");
+      await this.stopForConversationChange(id, userId);
+      try {
+        await this.pool.query("UPDATE agent_conversations SET ended_reason = 'switched' WHERE session_id = $1 AND provider = $2 AND ended_reason IS NULL AND id <> $3", [id, target.provider, conversationId]);
+        await this.pool.query("UPDATE agent_conversations SET ended_reason = NULL WHERE id = $1 AND session_id = $2", [conversationId, id]);
+        if (row.provider !== "claude") await this.pool.query("UPDATE agent_sessions SET provider_session_id = $3 WHERE id = $1 AND user_id = $2", [id, userId, target.providerSessionId]);
+        log.info("session.conversation_switched", { sessionId: id, provider: row.provider });
+        return await this.resumeOnce(userId, profile, id, true);
+      } finally {
+        this.intentionalSleep.delete(id);
+      }
+    });
+  }
+
   /** First bytes of a live Claude agent's transcript (the original task is there); null when unavailable. */
   readTranscriptHeadText(id: string, userId: string, maxBytes: number): string | null {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
-    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    const path = claudeTranscriptPath(this.hostHome(state.handle), state.providerSessionId ?? id);
     return path ? readTranscriptHead(path, maxBytes, { home: this.hostHome(state.handle), uid: state.handle.uid }) : null;
   }
 
@@ -2474,7 +2542,7 @@ export class SessionManager {
   transcriptSandboxPath(id: string, userId: string): string | null {
     const state = this.nativeTitleSessions.get(id);
     if (!state || state.userId !== userId || state.provider !== "claude") return null;
-    const path = claudeTranscriptPath(this.hostHome(state.handle), id);
+    const path = claudeTranscriptPath(this.hostHome(state.handle), state.providerSessionId ?? id);
     if (!path) return null;
     const home = realpathSync(this.hostHome(state.handle));
     const rel = relative(home, realpathSync(path));
