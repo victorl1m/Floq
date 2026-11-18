@@ -1,13 +1,15 @@
 import { constants as fsConstants } from "node:fs";
+import { downloadContentType } from "./mediaTypes.js";
 import { lstat, opendir, realpath } from "node:fs/promises";
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { serveTranscode } from "./transcode.js";
 import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { badRequest, notFound } from "./errors.js";
 import type { SessionManager } from "./manager.js";
 import { mkdirOwned, UnsafeHomePathError, type ShardHandle } from "./shard.js";
 import type { ShardService } from "./shards.js";
-import { cleanRelativePath, contentDisposition, HAS_PROC_FD, HIDDEN_NAMES, openWithin, parseRange, resolveInside } from "./workspaceFiles.js";
+import { cleanRelativePath, contentDisposition, HAS_PROC_FD, HIDDEN_NAMES, openWithin, parseRange, resolveInside, transcodeLimiter } from "./workspaceFiles.js";
 
 const LIST_LIMIT = 500;
 const SCAN_LIMIT = 5_000;
@@ -132,10 +134,25 @@ export class Artifacts {
     return this.manager.withUserShardActivity(userId, () => this.serve(userId, sessionId, claimPath.slice(ARTIFACT_LINK_PREFIX.length), res, rangeHeader));
   }
 
+  transcode(userId: string, sessionId: string, claimPath: string, startSeconds: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!claimPath.startsWith(ARTIFACT_LINK_PREFIX)) throw notFound();
+    return this.manager.withUserShardActivity(userId, async () => {
+      const { root } = await this.root(userId, sessionId);
+      const { real } = await resolveInside(root, claimPath.slice(ARTIFACT_LINK_PREFIX.length));
+      const handle = await this.shards.wake(userId);
+      const open = async () => {
+        const opened = await openWithin(root, real);
+        if (!(await opened.stat()).isFile()) { await opened.close().catch(() => {}); throw notFound("That file is no longer available"); }
+        return opened;
+      };
+      await serveTranscode({ userId, open, runAsUid: this.shards.driver.name === "linux" ? (handle as { uid?: number }).uid : undefined, startSeconds, req, res, limiter: transcodeLimiter });
+    });
+  }
+
   private async serve(userId: string, sessionId: string, requested: string, res: ServerResponse, rangeHeader?: string): Promise<void> {
     const { root } = await this.root(userId, sessionId);
     const { rel, real } = await resolveInside(root, requested);
-    const common = { "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+    const common = { "Content-Type": downloadContentType(basename(rel)), "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
     const handle = await openWithin(root, real);
     let closed = false;
     try {

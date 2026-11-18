@@ -485,17 +485,10 @@ fn valid_download_url(url: &reqwest::Url) -> bool {
     path_ok && query.next().is_none() && matches!(first, Some((ref key, _)) if key == "t")
 }
 
-/// Stream a signed runtime download link into the user's Downloads folder (works the same on Windows, macOS and Linux webviews).
-/// Only links on the runtime's own origin are fetched, redirects are refused, and the file name comes from the response.
-/// Returns the saved path. Never overwrites: a taken name becomes "name (1).ext".
-#[tauri::command]
-async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, runtime_origin: tauri::State<'_, RuntimeOrigin>, url: String, fallback_name: String) -> Result<String, String> {
-    require_main(&window)?;
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let origin = current_origin(&runtime_origin)?;
-    let parsed = same_origin_url(&url, &origin)?;
+/// Fetch a signed runtime download link: only the runtime's own origin, no redirects. Returns the response and the file name
+/// (from Content-Disposition, else `fallback_name`).
+async fn open_download(origin: &str, url: &str, fallback_name: &str) -> Result<(reqwest::Response, String), String> {
+    let parsed = same_origin_url(url, origin)?;
     if !valid_download_url(&parsed) {
         return Err("Invalid download URL".into());
     }
@@ -520,7 +513,76 @@ async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, run
         .get(reqwest::header::CONTENT_DISPOSITION)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let name = download_file_name(disposition.as_deref(), &fallback_name);
+    let name = download_file_name(disposition.as_deref(), fallback_name);
+    Ok((response, name))
+}
+
+/// Stream the body into `file` (opened on `part`), then move `part` to `target`. Removes `part` on any failure.
+async fn finish_download(response: reqwest::Response, mut file: tokio::fs::File, part: &std::path::Path, target: &std::path::Path, origin: &str) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut stream = response.bytes_stream();
+    let mut failed = false;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                if file.write_all(&bytes).await.is_err() {
+                    failed = true;
+                    break;
+                }
+            }
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    if !failed && file.flush().await.is_err() {
+        failed = true;
+    }
+    drop(file);
+    if failed {
+        let _ = tokio::fs::remove_file(part).await;
+        return Err("The download was interrupted".into());
+    }
+    tokio::fs::rename(part, target)
+        .await
+        .map_err(|_| "Could not finish saving the file".to_string())?;
+    mark_downloaded(target, origin);
+    Ok(())
+}
+
+/// Mark-of-the-Web on Windows and Gatekeeper quarantine on macOS, as a browser download would carry.
+fn mark_downloaded(target: &std::path::Path, origin: &str) {
+    #[cfg(windows)]
+    {
+        let mut stream_name = target.to_path_buf().into_os_string();
+        stream_name.push(":Zone.Identifier");
+        let _ = std::fs::write(stream_name, format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={origin}\r\n"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .arg("-w")
+            .arg("com.apple.quarantine")
+            .arg(format!("0083;{stamp:x};Floq;"))
+            .arg(target)
+            .output();
+        let _ = origin;
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = (target, origin);
+}
+
+/// Stream a signed runtime download link into the user's Downloads folder (works the same on Windows, macOS and Linux webviews).
+/// Only links on the runtime's own origin are fetched, redirects are refused, and the file name comes from the response.
+/// Returns the saved path. Never overwrites: a taken name becomes "name (1).ext".
+#[tauri::command]
+async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, runtime_origin: tauri::State<'_, RuntimeOrigin>, url: String, fallback_name: String) -> Result<String, String> {
+    require_main(&window)?;
+    let origin = current_origin(&runtime_origin)?;
+    let (response, name) = open_download(&origin, &url, &fallback_name).await?;
     let dir = app
         .path()
         .download_dir()
@@ -554,53 +616,47 @@ async fn download_to_downloads(window: WebviewWindow, app: tauri::AppHandle, run
             Err(_) => return Err("Could not write to your Downloads folder".into()),
         }
     }
-    let mut file = file.ok_or_else(|| "Could not pick a file name in your Downloads folder".to_string())?;
-    let mut stream = response.bytes_stream();
-    let mut failed = false;
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(bytes) => {
-                if file.write_all(&bytes).await.is_err() {
-                    failed = true;
-                    break;
-                }
-            }
-            Err(_) => {
-                failed = true;
-                break;
-            }
-        }
-    }
-    if !failed && file.flush().await.is_err() {
-        failed = true;
-    }
-    drop(file);
-    if failed {
-        let _ = tokio::fs::remove_file(&part).await;
-        return Err("The download was interrupted".into());
-    }
-    tokio::fs::rename(&part, &target)
-        .await
-        .map_err(|_| "Could not finish saving the file".to_string())?;
-    // Mark-of-the-Web: tell Windows (SmartScreen, Office) the file came from the internet, as a browser download would.
-    #[cfg(windows)]
-    {
-        let mut stream_name = target.clone().into_os_string();
-        stream_name.push(":Zone.Identifier");
-        let _ = std::fs::write(stream_name, format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={origin}\r\n"));
-    }
-    // Gatekeeper quarantine, as a browser download would carry (the system xattr tool: no extra dependency).
-    #[cfg(target_os = "macos")]
-    {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = std::process::Command::new("/usr/bin/xattr")
-            .arg("-w")
-            .arg("com.apple.quarantine")
-            .arg(format!("0083;{stamp:x};Floq;"))
-            .arg(&target)
-            .output();
-    }
+    let file = file.ok_or_else(|| "Could not pick a file name in your Downloads folder".to_string())?;
+    finish_download(response, file, &part, &target, &origin).await?;
     Ok(target.to_string_lossy().into_owned())
+}
+
+/// Ask where to save (the OS save dialog, starting in Downloads with the server's file name), stream the download there and
+/// show it in the file manager. Returns the saved path, or None when the user cancelled the dialog.
+/// The user picked the exact path in the OS dialog (which asks before replacing), so an existing file is overwritten.
+#[tauri::command]
+async fn download_with_picker(window: WebviewWindow, app: tauri::AppHandle, runtime_origin: tauri::State<'_, RuntimeOrigin>, url: String, fallback_name: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_opener::OpenerExt;
+    require_main(&window)?;
+    let origin = current_origin(&runtime_origin)?;
+    // Fetch first: a dead link or an expired signature fails before the user picks a folder for nothing.
+    let (response, name) = open_download(&origin, &url, &fallback_name).await?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_parent(&window).set_title("Save file").set_file_name(&name);
+    if let Ok(dir) = app.path().download_dir() {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx.await.map_err(|_| "The save dialog closed unexpectedly".to_string())? else {
+        return Ok(None); // cancelled: dropping the response closes the stream
+    };
+    let target = picked.into_path().map_err(|_| "That location cannot be saved to".to_string())?;
+    let file_name = target.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| "Pick a file name to save as".to_string())?;
+    let part = target.with_file_name(format!("{file_name}.part"));
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&part)
+        .await
+        .map_err(|_| "Could not write to that folder".to_string())?;
+    finish_download(response, file, &part, &target, &origin).await?;
+    // Show the saved file in Explorer/Finder/the file manager; best effort, the file is saved either way.
+    let _ = app.opener().reveal_item_in_dir(&target);
+    Ok(Some(target.to_string_lossy().into_owned()))
 }
 
 /// `/dav/<32 lowercase hex>/` on the runtime origin: the read-only WebDAV share created by "Open in Explorer".
@@ -1067,6 +1123,7 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -1082,6 +1139,7 @@ pub fn run() {
             upload_dropped_file,
             cancel_dropped_upload,
             download_to_downloads,
+            download_with_picker,
             open_dav_mount,
             eject_dav_mount,
             native_material_support,

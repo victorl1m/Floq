@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { parseStart } from "./transcode.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { DEFAULT_MAX_UPLOAD_BYTES } from "./attachments.js";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
@@ -803,6 +804,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (!workspaceFiles) throw notFound();
       const claims = downloadLinks.redeem(url.searchParams.get("t"), "ws");
       if (!claims || claims.s !== downloadMatch[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
+      if (url.searchParams.get("transcode") === "1") return workspaceFiles.transcode(claims.u, claims.s, claims.p, parseStart(url.searchParams.get("start")), req, res);
       return workspaceFiles.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
     }
 
@@ -811,6 +813,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (!artifacts) throw notFound();
       const claims = downloadLinks.redeem(url.searchParams.get("t"), "art");
       if (!claims || claims.s !== artifactDownload[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
+      if (url.searchParams.get("transcode") === "1") return artifacts.transcode(claims.u, claims.s, claims.p, parseStart(url.searchParams.get("start")), req, res);
       return artifacts.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
     }
 

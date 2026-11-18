@@ -57,7 +57,7 @@ ENV NODE_ENV=production \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates curl ripgrep tini bash procps \
         bubblewrap fuse3 util-linux strace \
-        socat nftables iproute2 \
+        socat nftables iproute2 ffmpeg \
         libnss3-tools \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \

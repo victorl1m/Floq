@@ -11,13 +11,14 @@ import { errorMessage } from "@/lib/runtime/store";
 import { useHighlighter } from "@/hooks/use-highlighter";
 import { languageForPath } from "@/lib/runtime/language";
 import { DocumentPreview, docKindForPath } from "./files-tab-preview";
+import { IMAGE_EXT, isTextDocument } from "@/lib/file-kinds";
+import { toast } from "sonner";
 import { isTauri } from "@tauri-apps/api/core";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 
 const MAX_PREVIEW_LINES = 5000;
 const MAX_HIGHLIGHT_BYTES = 300 * 1024;
 const MAX_HIGHLIGHT_LINE = 2000;
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)$/i;
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -91,8 +92,22 @@ export default function FileDialog({ client, sessionId, path, label, source = "w
     try { return highlighter.highlight(shown.join("\n")).lines; } catch { return null; }
   }, [highlighter, shown]);
 
-  async function copyPath() {
-    try { await navigator.clipboard.writeText(path); setCopied(true); } catch { /* clipboard may be unavailable */ }
+  // Text files copy their contents; binaries (images, pdf, office, media) copy the path.
+  const plainText = !!file && !file.binary && !file.tooLarge;
+  const copiesContent = plainText || isTextDocument(path);
+  const [copyLabel, setCopyLabel] = useState<"contents" | "path">("contents");
+  async function copyItem() {
+    let text = path;
+    let what: "contents" | "path" = "path";
+    if (plainText && file) { text = file.content; what = "contents"; }
+    else if (isTextDocument(path)) {
+      try {
+        const read = await (source === "artifacts" ? client.readArtifact(sessionId, path) : client.readFile(sessionId, path));
+        if (!read.binary && !read.tooLarge) { text = read.content; what = "contents"; }
+        else toast.info("Too large to copy as text: copied the path instead");
+      } catch (cause) { toast.error(errorMessage(cause)); return; }
+    }
+    try { await navigator.clipboard.writeText(text); setCopyLabel(what); setCopied(true); } catch { toast.error("Could not copy to the clipboard"); }
   }
 
   return (
@@ -106,7 +121,7 @@ export default function FileDialog({ client, sessionId, path, label, source = "w
           <DialogDescription className="sr-only">Read-only contents of {path}</DialogDescription>
           {file && !error && <span className="shrink-0 pr-1 text-[11px] text-muted-foreground tabular-nums">{formatSize(file.size)}</span>}
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Download file" title="Download file" onClick={() => void downloadWorkspacePath(client, sessionId, path, "file", path.split("/").pop() ?? path, source)}><IconDownload size={16} /></Button>
-          <Button type="button" variant="ghost" size="icon-sm" aria-label={copied ? "Path copied" : "Copy path"} title="Copy path" onClick={() => void copyPath()}>{copied ? <IconCheck size={16} className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy size={16} />}</Button>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={copied ? (copyLabel === "contents" ? "Contents copied" : "Path copied") : copiesContent ? "Copy contents" : "Copy path"} title={copiesContent ? "Copy contents" : "Copy path"} onClick={() => void copyItem()}>{copied ? <IconCheck size={16} className="text-emerald-600 dark:text-emerald-400" /> : <IconCopy size={16} />}</Button>
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" title="Close (Esc)" onClick={onClose}><IconX size={16} /></Button>
         </FloqSurface>
         <div className="min-h-0 flex-1 overflow-auto bg-muted/10">

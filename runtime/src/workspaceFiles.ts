@@ -1,10 +1,12 @@
 import { constants as fsConstants, existsSync } from "node:fs";
+import { downloadContentType } from "./mediaTypes.js";
 import { lstat, open, opendir, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
+import { serveTranscode, TranscodeLimiter } from "./transcode.js";
 import type { SessionManager } from "./manager.js";
 import { badRequest, notFound } from "./errors.js";
 import { safeRelative } from "./shard.js";
@@ -130,6 +132,8 @@ export function parseRange(header: string | undefined, size: number): { start: n
 }
 
 /** Read-only file browsing scoped to the workspace root of one authenticated Floq session. */
+export const transcodeLimiter = new TranscodeLimiter();
+
 export class WorkspaceFiles {
   constructor(private readonly manager: SessionManager, private readonly shards: ShardService) {}
 
@@ -220,11 +224,27 @@ export class WorkspaceFiles {
     return this.manager.withUserShardActivity(userId, () => this.serveDownload(userId, sessionId, requested, res, rangeHeader));
   }
 
+  /** Same auth and path resolution as download(), but the file is converted to fragmented MP4 with ffmpeg while streaming. */
+  transcode(userId: string, sessionId: string, requested: unknown, startSeconds: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    return this.manager.withUserShardActivity(userId, async () => {
+      const root = await this.root(userId, sessionId);
+      const realRoot = await realpath(root);
+      const { real } = await resolveInside(root, requested);
+      const handle = await this.shards.wake(userId);
+      const open = async () => {
+        const opened = await openWithin(realRoot, real, fsConstants.O_RDONLY);
+        if (!(await opened.stat()).isFile()) { await opened.close().catch(() => {}); throw notFound("That file is no longer available"); }
+        return opened;
+      };
+      await serveTranscode({ userId, open, runAsUid: this.shards.driver.name === "linux" ? (handle as { uid?: number }).uid : undefined, startSeconds, req, res, limiter: transcodeLimiter });
+    });
+  }
+
   private async serveDownload(userId: string, sessionId: string, requested: unknown, res: ServerResponse, rangeHeader?: string): Promise<void> {
     const root = await this.root(userId, sessionId);
     const realRoot = await realpath(root);
     const { rel, real } = await resolveInside(root, requested);
-    const common = { "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+    const common = { "Content-Type": downloadContentType(basename(rel)), "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
     const handle = await openWithin(realRoot, real, fsConstants.O_RDONLY);
     let closed = false;
     const closeHandle = async () => { if (!closed) { closed = true; await handle.close().catch(() => {}); } };

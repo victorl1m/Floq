@@ -1,21 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { IconDownload, IconExternalLink, IconFileOff } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { PanelEmpty, PanelError, RowSkeletons } from "./panel-states";
 
-export type DocKind = "docx" | "sheet" | "pdf" | "nopreview";
+import { docKindForPath, needsTranscode, transcodeUrl, type DocKind } from "@/lib/file-kinds";
+import { markdownToHtml } from "@/lib/markdown-lite";
 
-const KINDS: Record<string, DocKind> = {
-  docx: "docx", xlsx: "sheet", xls: "sheet", csv: "sheet", pdf: "pdf",
-  pptx: "nopreview", ppt: "nopreview", doc: "nopreview", odt: "nopreview", ods: "nopreview", odp: "nopreview", rtf: "nopreview", pages: "nopreview", numbers: "nopreview", key: "nopreview",
-};
-
-/** How a path is previewed when it is a document; null for text/image/other files, which the dialog handles itself. */
-export function docKindForPath(path: string): DocKind | null {
-  const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
-  return ext ? KINDS[ext] ?? null : null;
-}
+export { docKindForPath, type DocKind };
 
 const MAX_DOC_BYTES = 50 * 1024 * 1024;
 const MAX_SHEET_ROWS = 2000;
@@ -110,7 +102,7 @@ function DocxPreview({ getUrl }: { getUrl: () => Promise<string> }) {
 }
 
 function SheetPreview({ getUrl, path }: { getUrl: () => Promise<string>; path: string }) {
-  const { value, error, retry } = useAsync(async () => readSheets(await fetchBlob(await getUrl()), /\.csv$/i.test(path)), [getUrl, path]);
+  const { value, error, retry } = useAsync(async () => readSheets(await fetchBlob(await getUrl()), /\.(csv|tsv)$/i.test(path)), [getUrl, path]);
   const [active, setActive] = useState(0);
   if (error) return <Failed error={`Preview failed: ${error}`} retry={retry} />;
   if (value === null) return <RowSkeletons count={10} rowClass="h-3.5" />;
@@ -194,11 +186,76 @@ function PdfPreview({ getUrl }: { getUrl: () => Promise<string> }) {
   );
 }
 
+function MediaPreview({ kind, path, getUrl }: { kind: "audio" | "video"; path: string; getUrl: () => Promise<string> }) {
+  // Formats the webview cannot decode go straight to the runtime's ffmpeg conversion; others play directly and fall back to it once on error.
+  const [converted, setConverted] = useState(() => needsTranscode(path));
+  const [ready, setReady] = useState(false);
+  const [mediaError, setMediaError] = useState(false);
+  useEffect(() => { setConverted(needsTranscode(path)); setReady(false); setMediaError(false); }, [path, getUrl]);
+  const { value, error, retry } = useAsync(async () => { const url = await getUrl(); return converted ? transcodeUrl(url) : url; }, [getUrl, converted]);
+  if (error) return <Failed error={`Preview failed: ${error}`} retry={retry} />;
+  if (value === null) return <RowSkeletons count={4} rowClass="h-3.5" />;
+  const failed = () => {
+    if (!converted) { setReady(false); setConverted(true); return; } // retry ONCE through the converter
+    setMediaError(true);
+  };
+  const loaded = () => setReady(true);
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-2 p-4" data-testid={`${kind}-preview`}>
+      {kind === "audio"
+        ? <audio key={value} controls preload="metadata" src={value} className="w-full max-w-xl" onError={failed} onLoadedMetadata={loaded} onPlaying={loaded} />
+        : <video key={value} controls preload="metadata" src={value} className="max-h-full max-w-full bg-black" onError={failed} onLoadedMetadata={loaded} onPlaying={loaded} />}
+      {converted && !ready && !mediaError && <div className="text-xs text-muted-foreground" role="status">Converting for playback…</div>}
+      {mediaError && <div className="text-xs text-muted-foreground">This file could not be played here (unsupported codec or format, or conversion is unavailable on this server). Download it instead.</div>}
+    </div>
+  );
+}
+
+async function fetchText(getUrl: () => Promise<string>): Promise<string> { return (await fetchBlob(await getUrl())).text(); }
+
+function MarkdownPreview({ getUrl }: { getUrl: () => Promise<string> }) {
+  const { value, error, retry } = useAsync(() => fetchText(getUrl), [getUrl]);
+  const [raw, setRaw] = useState(false);
+  const html = useMemo(() => (value === null ? "" : markdownToHtml(value)), [value]);
+  if (error) return <Failed error={`Preview failed: ${error}`} retry={retry} />;
+  if (value === null) return <RowSkeletons count={10} rowClass="h-3.5" />;
+  return (
+    <div data-testid="markdown-preview">
+      <div className="sticky top-0 z-10 flex justify-end border-b border-border bg-background/90 px-2 py-1"><Button type="button" size="xs" variant="ghost" onClick={() => setRaw((v) => !v)}>{raw ? "Rendered" : "Raw"}</Button></div>
+      {raw
+        ? <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-[18px]">{value}</pre>
+        : <article aria-label="Markdown preview" className="mx-auto max-w-3xl space-y-3 bg-background p-8 text-sm leading-6 [&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_pre]:overflow-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-3 [&_ul]:list-disc" onClick={openDocLink} dangerouslySetInnerHTML={{ __html: html }} />}
+    </div>
+  );
+}
+
+function JsonPreview({ getUrl }: { getUrl: () => Promise<string> }) {
+  const { value, error, retry } = useAsync(async () => {
+    const text = await fetchText(getUrl);
+    try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; } // invalid JSON is shown as written
+  }, [getUrl]);
+  if (error) return <Failed error={`Preview failed: ${error}`} retry={retry} />;
+  if (value === null) return <RowSkeletons count={10} rowClass="h-3.5" />;
+  return <pre data-testid="json-preview" className="p-4 font-mono text-[11px] leading-[18px] whitespace-pre">{value}</pre>;
+}
+
+/** HTML is shown in a fully sandboxed frame: no scripts, no same-origin, no forms, no navigation. */
+function HtmlPreview({ getUrl }: { getUrl: () => Promise<string> }) {
+  const { value, error, retry } = useAsync(() => fetchText(getUrl), [getUrl]);
+  if (error) return <Failed error={`Preview failed: ${error}`} retry={retry} />;
+  if (value === null) return <RowSkeletons count={10} rowClass="h-3.5" />;
+  return <iframe title="HTML preview" data-testid="html-preview" sandbox="" referrerPolicy="no-referrer" srcDoc={value} className="size-full border-0 bg-white" />;
+}
+
 /** Preview for office-style documents; the dialog hands in how to get the signed download URL and what to do for "no preview". */
 export function DocumentPreview({ kind, path, getUrl, onDownload, onOpenExternally }: { kind: DocKind; path: string; getUrl: () => Promise<string>; onDownload: () => void; onOpenExternally: () => void }): ReactNode {
   if (kind === "docx") return <DocxPreview getUrl={getUrl} />;
   if (kind === "sheet") return <SheetPreview getUrl={getUrl} path={path} />;
   if (kind === "pdf") return <PdfPreview getUrl={getUrl} />;
+  if (kind === "audio" || kind === "video") return <MediaPreview kind={kind} path={path} getUrl={getUrl} />;
+  if (kind === "markdown") return <MarkdownPreview getUrl={getUrl} />;
+  if (kind === "json") return <JsonPreview getUrl={getUrl} />;
+  if (kind === "html") return <HtmlPreview getUrl={getUrl} />;
   return (
     <div className="flex flex-col items-center" data-testid="no-preview">
       <PanelEmpty icon={<IconFileOff />} title="No preview for this file type" hint="Download it or open it in another app." className="pb-3" />

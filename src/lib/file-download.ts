@@ -6,8 +6,8 @@ import { mountSegments, type MountItem } from "@/lib/mount-path";
 
 /**
  * Download a workspace file, or a folder as a zip. The runtime streams it (no size cap, Range, shard kept awake); the desktop app
- * saves it into the Downloads folder through the Rust downloader (same behaviour on every OS webview), a plain browser navigates
- * to the signed link and lets the browser's download manager take over.
+ * asks where to save with the OS save dialog, streams it there through the Rust downloader and reveals the file in its folder.
+ * A plain browser navigates to the signed link and lets the browser's download manager take over.
  */
 export async function downloadWorkspacePath(client: RuntimeClient, sessionId: string, path: string, kind: "file" | "dir", name: string, source: "workspace" | "artifacts" = "workspace"): Promise<void> {
   const fallback = kind === "dir" ? `${name || "workspace"}.zip` : name || "download";
@@ -15,8 +15,10 @@ export async function downloadWorkspacePath(client: RuntimeClient, sessionId: st
   try {
     const url = source === "artifacts" ? await client.artifactDownloadUrl(sessionId, path) : await client.fileDownloadUrl(sessionId, path);
     if (isTauri()) {
-      const saved = await invoke<string>("download_to_downloads", { url, fallbackName: fallback });
-      toast.success(`Saved ${saved.split(/[\\/]/).pop() ?? fallback} to Downloads`, { id, description: saved });
+      // The OS save dialog picks the folder and name; the saved file is then shown in Explorer/Finder/the file manager.
+      const saved = await invoke<string | null>("download_with_picker", { url, fallbackName: fallback });
+      if (!saved) { toast.dismiss(id); return; } // the user cancelled the dialog
+      toast.success(`Saved ${saved.split(/[\\/]/).pop() ?? fallback}`, { id, description: saved });
       return;
     }
     const link = document.createElement("a");
