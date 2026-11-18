@@ -2,6 +2,11 @@ import { log } from "./logger.js";
 
 /** How often an awake shard's mount is probed for a dead gocryptfs daemon. */
 export const MOUNT_PROBE_MS = 5_000;
+/** A probe that has not answered after this long means the mount is hung (the driver's own child-process timer is shorter). */
+export const MOUNT_PROBE_TIMEOUT_MS = 4_000;
+/** Kill timer of the driver's probe child process. */
+export const MOUNT_CHILD_PROBE_MS = 3_000;
+export type MountProbeResult = boolean | "alive" | "dead" | "hung";
 /** At most this many automatic session restarts caused by a dead mount, per user, per MOUNT_STORM_WINDOW_MS. */
 export const MOUNT_STORM_MAX = 3;
 export const MOUNT_STORM_WINDOW_MS = 60 * 60_000;
@@ -17,9 +22,10 @@ export class MountWatchdog {
   private stopped = true;
 
   constructor(
-    private readonly probe: () => boolean | Promise<boolean>,
-    private readonly onDead: () => void | Promise<void>,
+    private readonly probe: () => MountProbeResult | Promise<MountProbeResult>,
+    private readonly onDead: (reason: "dead" | "hung") => void | Promise<void>,
     private readonly intervalMs: number = MOUNT_PROBE_MS,
+    private readonly timeoutMs: number = MOUNT_PROBE_TIMEOUT_MS,
   ) {}
 
   get running(): boolean { return !this.stopped; }
@@ -37,16 +43,31 @@ export class MountWatchdog {
     this.timer = undefined;
   }
 
+  /** Backstop timeout around any probe: a probe that never settles counts as hung and is abandoned, never awaited again. */
+  private withTimeout(): Promise<MountProbeResult> {
+    return new Promise<MountProbeResult>((resolve, reject) => {
+      const timer = setTimeout(() => resolve("hung"), this.timeoutMs);
+      let started: MountProbeResult | Promise<MountProbeResult>;
+      try { started = this.probe(); } catch (error) { clearTimeout(timer); reject(error); return; }
+      Promise.resolve(started).then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error) => { clearTimeout(timer); reject(error); },
+      );
+    });
+  }
+
   /** One probe cycle (exposed for tests). Returns false when skipped because a cycle is still running. */
   async tick(): Promise<boolean> {
     if (this.inFlight || this.stopped) return false;
     this.inFlight = true;
     try {
-      let alive = true;
-      try { alive = await this.probe(); }
+      let result: MountProbeResult = "alive";
+      try { result = await this.withTimeout(); }
       catch (error) { log.warn("shard.probe_failed", { error: error instanceof Error ? error.message.slice(0, 160) : String(error) }); }
-      if (!alive && !this.stopped) {
-        try { await this.onDead(); }
+      const reason = result === "hung" ? "hung" : result === false || result === "dead" ? "dead" : null;
+      if (reason && !this.stopped) {
+        if (reason === "hung") log.error("shard.mount_hung", { timeoutMs: this.timeoutMs });
+        try { await this.onDead(reason); }
         catch (error) { log.error("shard.mount_recovery_failed", { error: error instanceof Error ? error.message.slice(0, 160) : String(error) }); }
       }
     } finally {

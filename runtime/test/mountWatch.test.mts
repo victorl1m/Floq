@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { encryptSecret } from "../dist/crypto.js";
 import { MountWatchdog, RestartStormGuard, recoverFromMountDeath } from "../dist/mountWatch.js";
-import { gocryptfsArgv } from "../dist/shard.js";
+import { gocryptfsArgv, probeMountAsync } from "../dist/shard.js";
 import { ShardService } from "../dist/shards.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -109,4 +109,69 @@ test("gocryptfs starts with a very low oom score unless disabled", () => {
   assert.deepEqual(on.args.slice(3), ["-q", "cipher", "mnt"]);
   assert.match(gocryptfsArgv([], { FLOQ_GOCRYPTFS_OOM_SCORE_ADJ: "-5000" }).args[1], /echo -1000 /);
   assert.deepEqual(gocryptfsArgv(["x"], { FLOQ_GOCRYPTFS_OOM_SCORE_ADJ: "0" }), { command: "gocryptfs", args: ["x"] });
+});
+
+test("watchdog marks a probe that never settles as hung after the timeout and never stacks probes", async () => {
+  let probes = 0;
+  const reasons: string[] = [];
+  const dog = new MountWatchdog(() => { probes++; return new Promise<boolean>(() => undefined); }, (reason) => { reasons.push(reason); }, 10_000, 40);
+  dog.start();
+  const t0 = Date.now();
+  const first = dog.tick();
+  assert.equal(await dog.tick(), false, "no second probe while the first is pending");
+  assert.equal(probes, 1);
+  await first;
+  assert.ok(Date.now() - t0 >= 35, "waited for the timeout");
+  assert.deepEqual(reasons, ["hung"]);
+  assert.equal(probes, 1);
+  dog.stop();
+});
+
+test("probeMountAsync classifies alive, dead and hung without blocking", async () => {
+  assert.equal(await probeMountAsync("/", 1000, "true", []), "alive");
+  assert.equal(await probeMountAsync("/", 1000, "sh", ["-c", "echo 'ls: x: Transport endpoint is not connected' >&2; exit 2"]), "dead");
+  assert.equal(await probeMountAsync("/", 1000, "sh", ["-c", "echo 'ls: x: No such file' >&2; exit 2"]), "alive");
+  assert.equal(await probeMountAsync("/", 1000, "definitely-not-a-binary-xyz", []), "alive");
+  let ticks = 0;
+  const spin = setInterval(() => { ticks++; }, 5);
+  const t0 = Date.now();
+  assert.equal(await probeMountAsync("/", 150, "sleep", ["30"]), "hung");
+  clearInterval(spin);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.ok(ticks >= 10, "event loop kept running during the hung probe");
+});
+
+test("ShardService: a hung mount is abandoned (never probed synchronously), remounted, and recovery fires", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "floq-hung-"));
+  try {
+    const encryptionKey = randomBytes(32);
+    const row = { uid: 20000, data_key_enc: encryptSecret(encryptionKey, randomBytes(32).toString("hex"), "shard:u1") };
+    const pool = { query: async (sql: string) => ({ rows: sql.startsWith("SELECT uid") ? [row] : [] }) };
+    let hung = false, wakes = 0, abandons = 0, syncProbes = 0;
+    const driver = {
+      name: "linux",
+      wake: async () => { wakes++; hung = false; return { userId: "u1", uid: 20000, mountPath: temp }; },
+      sleep: async () => undefined,
+      isAlive: () => { syncProbes++; return !hung; },
+      probe: async () => (hung ? "hung" as const : "alive" as const),
+      abandon: async () => { abandons++; },
+    };
+    const config = { encryptionKey, skelDir: join(temp, "no-skel"), preinstallSkills: false };
+    const service = new ShardService(pool as never, config as never, driver as never);
+    service.probeMs = 20;
+    let recovered = 0;
+    service.onMountRecovered = () => { recovered++; };
+    await service.wake("u1");
+    const before = syncProbes;
+    await sleep(60);
+    assert.equal(syncProbes, before, "the timer never uses the synchronous probe when the driver has probe()");
+    hung = true;
+    await sleep(120);
+    assert.equal(abandons, 1);
+    assert.equal(wakes, 2);
+    assert.equal(recovered, 1);
+    await service.sleep("u1");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 });

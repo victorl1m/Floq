@@ -5,7 +5,7 @@ import type pg from "pg";
 import type { Config } from "./config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { log } from "./logger.js";
-import { MountWatchdog } from "./mountWatch.js";
+import { MOUNT_CHILD_PROBE_MS, MountWatchdog } from "./mountWatch.js";
 import { loadRemovedSkills, PROTECTED_SKILLS } from "./skills.js";
 import { copySeedTree, ownHomeTree, type ShardDriver, type ShardHandle } from "./shard.js";
 
@@ -37,6 +37,8 @@ export class ShardService {
   private readonly watchdogs = new Map<string, MountWatchdog>();
   /** Users whose mount died and has not been successfully remounted yet (a failed remount drops the handle, so this outlives it). */
   private readonly needsRecovery = new Set<string>();
+  /** Users whose mount the watchdog found hung: wake() must not probe it synchronously, only remount. */
+  private readonly forcedDead = new Set<string>();
   /** Liveness probe interval; tests shorten it. */
   probeMs?: number;
 
@@ -72,13 +74,21 @@ export class ShardService {
    */
   private watch(userId: string, handle: ShardHandle): void {
     this.watchdogs.get(userId)?.stop();
-    const isAlive = this.driver.isAlive;
-    if (!isAlive) return;
+    const driver = this.driver;
+    if (!driver.probe && !driver.isAlive) return;
+    // Never the synchronous readdir here: a hung FUSE mount would freeze the event loop for every user.
+    const probe = () => (driver.probe ? driver.probe(handle, MOUNT_CHILD_PROBE_MS) : driver.isAlive!(handle));
     const dog = new MountWatchdog(
-      () => isAlive.call(this.driver, handle),
-      async () => {
+      probe,
+      async (reason) => {
         // Defeat the wake() probe throttle: this probe already proved the mount dead.
         this.aliveCheckedAt.delete(userId);
+        if (reason === "hung") {
+          // wake() would readdirSync the hung mount (blocking), so mark it dead and detach it without touching it.
+          this.forcedDead.add(userId);
+          try { await driver.abandon?.(handle); }
+          catch (error) { log.warn("shard.abandon_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }); }
+        }
         await this.wake(userId);
       },
       this.probeMs,
@@ -104,7 +114,7 @@ export class ShardService {
   wake(userId: string): Promise<ShardHandle> {
     return this.serial(userId, async () => {
       const cached = this.handles.get(userId);
-      if (cached && this.alive(userId, cached)) return cached;
+      if (cached && !this.forcedDead.has(userId) && this.alive(userId, cached)) return cached;
       if (cached) {
         this.needsRecovery.add(userId);
         // The gocryptfs daemon died under an awake shard (OOM kill, crash): every access fails with ENOTCONN until the
@@ -133,6 +143,7 @@ export class ShardService {
       this.seed(handle.mountPath, ".", handle.uid, removed);
       repairToolCaches(handle.mountPath, handle.uid);
       this.handles.set(userId, handle);
+      this.forcedDead.delete(userId);
       this.watch(userId, handle);
       await this.pool.query("UPDATE shards SET state = 'awake', last_active_at = now() WHERE user_id = $1", [userId]);
       if (this.needsRecovery.delete(userId) && this.onMountRecovered) {
@@ -182,6 +193,7 @@ export class ShardService {
     return this.serial(userId, async () => {
       this.unwatch(userId);
       this.needsRecovery.delete(userId);
+      this.forcedDead.delete(userId);
       const handle = this.handles.get(userId);
       if (!handle) return;
       await this.driver.sleep(handle);

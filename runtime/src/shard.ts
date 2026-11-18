@@ -147,6 +147,14 @@ export interface ShardDriver {
   wake(identity: ShardIdentity, dataKey: Buffer): Promise<ShardHandle>;
   /** False when an unlocked home stopped responding (its FUSE daemon died): the caller drops the handle and wakes again. */
   isAlive?(handle: ShardHandle): boolean;
+  /**
+   * Non-blocking liveness probe for the periodic watchdog: runs the directory read in a short-lived child process killed after
+   * `timeoutMs`, so neither the event loop nor libuv's threadpool can be pinned by a hung (not just dead) FUSE mount.
+   * "hung" = no answer in time. Unlike isAlive() it never touches the mount from the runtime process.
+   */
+  probe?(handle: ShardHandle, timeoutMs: number): Promise<"alive" | "dead" | "hung">;
+  /** Detach a hung mount (lazy unmount, no access to it) so wake() can mount the home again. */
+  abandon?(handle: ShardHandle): Promise<void>;
   spawn(handle: ShardHandle, spec: SpawnSpec): PtyProcess;
   /** Same sandbox and network namespace as spawn(), but plain pipes (exact bytes, no PTY): for runtime-driven git on agent-controlled repos. */
   spawnPipe(handle: ShardHandle, spec: Omit<SpawnSpec, "cols" | "rows">): ChildProcess;
@@ -633,6 +641,32 @@ function isAlive(path: string): boolean {
   }
 }
 
+/** stderr of `ls` for the errno values isAlive() treats as a dead mount. */
+const DEAD_MOUNT_STDERR = /Transport endpoint is not connected|Input\/output error|Software caused connection abort/i;
+
+/**
+ * Directory read of a mount in a child process (`ls -f`, no sort, no stat per entry). Resolves "hung" after `timeoutMs` and
+ * SIGKILLs the child; a child stuck in an uninterruptible FUSE call is simply abandoned (it is not awaited, holds no libuv thread).
+ */
+export function probeMountAsync(path: string, timeoutMs: number, command = "ls", args = ["-f", "--", path]): Promise<"alive" | "dead" | "hung"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let stderr = "";
+    const done = (result: "alive" | "dead" | "hung") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } done("hung"); }, timeoutMs);
+    child.stderr?.on("data", (chunk: Buffer) => { if (stderr.length < 2048) stderr += chunk.toString(); });
+    // The probe tool itself is unavailable: do not report a healthy mount as dead.
+    child.on("error", () => done("alive"));
+    child.on("close", (code) => done(code === 0 || !DEAD_MOUNT_STDERR.test(stderr) ? "alive" : "dead"));
+  });
+}
+
 async function lazyUnmount(path: string): Promise<void> {
   try {
     await run("fusermount3", ["-u", "-z", path], { timeout: 10_000 });
@@ -852,6 +886,14 @@ export class LinuxShardDriver implements ShardDriver {
 
   isAlive(handle: ShardHandle): boolean {
     return isAlive(handle.mountPath);
+  }
+
+  probe(handle: ShardHandle, timeoutMs: number): Promise<"alive" | "dead" | "hung"> {
+    return probeMountAsync(handle.mountPath, timeoutMs);
+  }
+
+  async abandon(handle: ShardHandle): Promise<void> {
+    await lazyUnmount(handle.mountPath);
   }
 
   hostPath(handle: ShardHandle, relative: string): string {
