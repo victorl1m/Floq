@@ -201,6 +201,34 @@ export function useAutoResumeOnClick(): [boolean, (value: boolean) => void] {
     return [value, update];
 }
 
+// --- Automatic updates ---
+
+const AUTO_UPDATE_KEY = "floq.autoUpdate";
+const AUTO_UPDATE_EVENT = "floq:auto-update-pref";
+
+/** On by default (only an explicit "0" turns it off). Desktop app only; stored on this device. */
+export function loadAutoUpdate(): boolean {
+    return read(AUTO_UPDATE_KEY) !== "0";
+}
+
+function subscribeAutoUpdate(callback: () => void) {
+    window.addEventListener(AUTO_UPDATE_EVENT, callback);
+    window.addEventListener("storage", callback);
+    return () => {
+        window.removeEventListener(AUTO_UPDATE_EVENT, callback);
+        window.removeEventListener("storage", callback);
+    };
+}
+
+export function useAutoUpdate(): [boolean, (value: boolean) => void] {
+    const value = useSyncExternalStore(subscribeAutoUpdate, loadAutoUpdate, () => true);
+    const update = useCallback((next: boolean) => {
+        write(AUTO_UPDATE_KEY, next ? "1" : "0");
+        window.dispatchEvent(new Event(AUTO_UPDATE_EVENT));
+    }, []);
+    return [value, update];
+}
+
 // --- Home composer (last used / defaults) ---
 
 export type Folder =

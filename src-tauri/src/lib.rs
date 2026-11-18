@@ -1158,6 +1158,11 @@ pub fn run() {
             desktop::set_desktop_preference
         ])
         .setup(|app| {
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
             // Handle window creation here: Tauri panics if an automatically
             // created window fails during the native event-loop callback.
             let result = (|| -> tauri::Result<()> {

@@ -28,6 +28,17 @@
       "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "PUBKEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/victorl1m/Floq/releases/download/updater/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

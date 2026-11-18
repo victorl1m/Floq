@@ -31,7 +31,7 @@ const SECTIONS: { section: string; label: string; keywords: string; admin?: bool
     { section: "git", label: "Git & GitHub", keywords: "github repositories clone push token" },
     { section: "desktop", label: "Desktop", keywords: "windows tray startup", windowsDesktop: true },
     { section: "runtime", label: "Runtime", keywords: "server status version sessions providers" },
-    { section: "advanced", label: "Advanced", keywords: "resume coauthor commits" },
+    { section: "advanced", label: "Advanced", keywords: "resume coauthor commits update version upgrade" },
     { section: "about", label: "About", keywords: "version updates website release" },
     { section: "users", label: "Users", keywords: "administration admin members accounts", admin: true },
 ];
@@ -76,6 +76,8 @@ const ROWS: { section: string; id: string; label: string; description: string; k
     { section: "accounts", id: "accounts-add-claude", label: "Add another Claude account", description: "A second login stays in reserve for usage limits.", keywords: "second account login switch" },
     { section: "git", id: "git-github", label: "GitHub", description: "Connect GitHub so agents can clone private repositories and push.", keywords: "git login oauth device token" },
     { section: "advanced", id: "advanced-auto-resume", label: "Resume sleeping agents when opened", description: "Clicking a sleeping agent resumes it right away.", keywords: "wake sleep click" },
+    { section: "advanced", id: "advanced-updates", label: "Check for updates", description: "Current version, check for updates and automatic updates.", keywords: "update upgrade version release restart" },
+    { section: "advanced", id: "advanced-auto-update", label: "Update automatically", description: "Download new versions in the background.", keywords: "auto update upgrade" },
     { section: "advanced", id: "advanced-coauthor", label: "Floq co-author on commits", description: "Add a Floq co-author trailer to agent commits.", keywords: "git trailer attribution" },
     { section: "about", id: "about-updates", label: "Check for updates", description: "Compares installed versions with the latest releases.", keywords: "update upgrade version release" },
 ];
