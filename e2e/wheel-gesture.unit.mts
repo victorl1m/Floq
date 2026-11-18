@@ -50,3 +50,34 @@ test("pixels and pinch factor", () => {
   assert.ok(Math.abs(pinchFactor(-2) - 1) < Math.abs(pinchFactor(-6) - 1));
   assert.equal(pinchFactor(-1000), pinchFactor(-60));
 });
+
+import { GESTURE_GAP_MS, newGestureLatch, routeWheel, type RouteInput } from "../src/lib/wheel-gesture.ts";
+
+const canvas: RouteInput = { inNoWheel: false, innerOwnsWheel: false, innerCanScroll: false };
+const flatInput: RouteInput = { inNoWheel: true, innerOwnsWheel: false, innerCanScroll: false };
+const scrollingList: RouteInput = { inNoWheel: true, innerOwnsWheel: false, innerCanScroll: true };
+const terminal: RouteInput = { inNoWheel: true, innerOwnsWheel: true, innerCanScroll: false };
+const pad = ev({ deltaY: 3.5 });
+
+test("a touchpad pan that slides over a terminal input keeps panning the canvas", () => {
+  const latch = newGestureLatch();
+  assert.equal(routeWheel(pad, "touchpad", canvas, latch, 1000), "canvas");
+  assert.equal(routeWheel(pad, "touchpad", scrollingList, latch, 1016), "canvas");
+  assert.equal(routeWheel(pad, "touchpad", terminal, latch, 1032), "canvas");
+  // After the fingers pause, a new gesture over the terminal belongs to the terminal.
+  assert.equal(routeWheel(pad, "touchpad", terminal, latch, 1032 + GESTURE_GAP_MS + 1), "inner");
+  assert.equal(routeWheel(pad, "touchpad", canvas, latch, 1032 + GESTURE_GAP_MS + 17), "inner");
+});
+
+test("a gesture over an input that cannot scroll pans the canvas; a scrollable one scrolls itself", () => {
+  assert.equal(routeWheel(pad, "touchpad", flatInput, newGestureLatch(), 1000), "canvas");
+  assert.equal(routeWheel(pad, "touchpad", scrollingList, newGestureLatch(), 1000), "inner");
+  assert.equal(routeWheel(ev({ deltaY: 100 }), "mouse", flatInput, newGestureLatch(), 1000), "inner");
+});
+
+test("pinch always zooms the canvas, even over a terminal or mid inner scroll", () => {
+  const latch = newGestureLatch();
+  assert.equal(routeWheel(pad, "touchpad", terminal, latch, 1000), "inner");
+  assert.equal(routeWheel(ev({ deltaY: 2.5, ctrlKey: true }), "touchpad", terminal, latch, 1010), "canvas");
+  assert.equal(routeWheel(ev({ deltaY: 100, ctrlKey: true }), "mouse", terminal, newGestureLatch(), 1000), "canvas");
+});

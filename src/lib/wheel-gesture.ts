@@ -53,3 +53,38 @@ export function pinchFactor(deltaY: number, deltaMode = 0): number {
   const d = Math.max(-60, Math.min(60, deltaMode === 1 ? deltaY * 16 : deltaY));
   return Math.exp(-d * 0.01);
 }
+
+/** A touchpad gesture keeps its owner until the fingers pause this long (no wheel events). */
+export const GESTURE_GAP_MS = 180;
+
+/** Who handles a wheel event: the canvas (pan/zoom) or the element under the cursor (its own scroll). */
+export type WheelOwner = "canvas" | "inner";
+export interface GestureLatch { owner: WheelOwner | null; at: number }
+export function newGestureLatch(): GestureLatch { return { owner: null, at: -Infinity }; }
+
+export interface RouteInput {
+  /** Event target sits inside a `.nowheel` element (terminal, composer, input, list). */
+  inNoWheel: boolean;
+  /** That element insists on the wheel (an interactive terminal mirror scrolling its TUI). */
+  innerOwnsWheel: boolean;
+  /** Something between the target and the `.nowheel` boundary can still scroll in the gesture's direction. */
+  innerCanScroll: boolean;
+}
+
+/**
+ * Route one wheel event. Pinch (Ctrl/Cmd+wheel) always zooms the canvas, even over a terminal: the page must
+ * never zoom and terminals have no pinch of their own. A touchpad gesture stays with whoever started it until
+ * the fingers pause, so a pan that slides over a terminal's input keeps panning instead of dying mid-gesture.
+ * A new gesture that starts over an input which cannot scroll that way pans the canvas.
+ */
+export function routeWheel(e: WheelLike, kind: WheelKind, input: RouteInput, latch: GestureLatch, now: number): WheelOwner {
+  const continuing = kind === "touchpad" && latch.owner !== null && now - latch.at < GESTURE_GAP_MS;
+  let owner: WheelOwner;
+  if (e.ctrlKey || e.metaKey) owner = "canvas";
+  else if (continuing) owner = latch.owner!;
+  else if (!input.inNoWheel) owner = "canvas";
+  else if (input.innerOwnsWheel || input.innerCanScroll || kind === "mouse") owner = "inner";
+  else owner = "canvas";
+  if (kind === "touchpad") { latch.owner = owner; latch.at = now; } else latch.owner = null;
+  return owner;
+}

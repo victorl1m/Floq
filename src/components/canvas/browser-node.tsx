@@ -279,7 +279,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
             )}
           </>
         )}
-        <div ref={viewRef} className="nokey relative min-h-0 flex-1 bg-black/90">
+        <div ref={viewRef} data-wheel-owner="" className="nokey relative min-h-0 flex-1 bg-black/90">
           {live ? (
             <>
               {frame && <img ref={imgRef} data-testid="browser-frame" alt="Browser page" draggable={false} src={`data:image/jpeg;base64,${frame.jpeg}`}

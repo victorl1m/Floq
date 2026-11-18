@@ -182,6 +182,7 @@ export default memo(function SessionMirror({ session, interactive = false }: { s
     <div
       ref={hostRef}
       tabIndex={interactive ? 0 : undefined}
+      data-wheel-owner={interactive ? "" : undefined}
       className={cn("terminal-surface size-full overflow-hidden", interactive && "nodrag nopan nowheel nokey cursor-default outline-none")}
       aria-label={interactive ? `Live output of ${session.title}: scroll and click go to the agent` : `Live output of ${session.title} (view only)`}
       onWheel={interactive ? (event) => {
