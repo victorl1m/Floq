@@ -23,7 +23,7 @@ import { artifactsGuidance, artifactsRel, ensureArtifactsDir } from "./artifacts
 import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, mkcertEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
-import { CheckpointScheduler, checkpointTranscript, findCodexRolloutPath } from "./checkpoints.js";
+import { CheckpointScheduler, checkpointTranscript, findCodexRolloutPath, restoreFromCheckpoint as restoreCheckpointFile } from "./checkpoints.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
 import { createWorktree } from "./worktree.js";
 import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
@@ -2103,8 +2103,12 @@ export class SessionManager {
   }
 
   /** Provider-side checkpoint restore hook (A.2 not-found). Wired by the checkpoint feature; false = nothing restored. */
-  async restoreFromCheckpoint(_sessionId: string, _provider: ProviderId, _providerSessionId: string): Promise<boolean> {
-    return false;
+  /** Copy the last-good checkpoint back where the provider reads it (only when the live transcript is missing or shorter). */
+  async restoreFromCheckpoint(handle: ShardHandle, sessionId: string, provider: ProviderId, providerSessionId: string): Promise<boolean> {
+    if (provider !== "claude" && provider !== "codex") return false; // OpenCode exports and agy dirs are not files the CLI reads back
+    const restored = restoreCheckpointFile({ home: this.hostHome(handle), uid: handle.uid }, sessionId, provider, providerSessionId);
+    if (restored) log.info("session.checkpoint_restored", { sessionId, provider });
+    return restored;
   }
 
   private notifyUser(userId: string, n: { sessionId: string; projectId: string | null; title: string; body: string }): void {
@@ -2167,7 +2171,7 @@ export class SessionManager {
           try {
             const handle = await this.shards.wake(session.userId);
             restored = row.provider === "claude" && this.relocateClaudeTranscript(handle, row);
-            if (!restored) restored = await this.restoreFromCheckpoint(row.id, row.provider, providerId);
+            if (!restored) restored = await this.restoreFromCheckpoint(handle, row.id, row.provider, providerId);
           } catch (error) { log.warn("session.resume_restore_failed", { sessionId: session.id, error: String(error).slice(0, 160) }); }
         }
       }
