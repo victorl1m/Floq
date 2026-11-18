@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconAppWindow, IconBug, IconCopy, IconExternalLink, IconPlugConnected, IconX } from "@tabler/icons-react";
+import { IconAppWindow, IconBug, IconCopy, IconExternalLink, IconPlugConnected, IconX, IconChevronRight } from "@tabler/icons-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "cn";
 import { toast } from "sonner";
@@ -111,7 +111,7 @@ export function ForwardedPorts() {
                                 <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">Forwarded</p>
                                 {forwardedPorts.map((port) => (
                                     <div key={port} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
-                                        <span className="min-w-0 flex-1 truncate font-medium tabular-nums">:{port} <span className="font-normal text-muted-foreground">→ localhost:{port}</span></span>
+                                        <span className="min-w-0 flex-1 truncate font-medium tabular-nums">:{port} <span className="font-normal text-muted-foreground"><IconChevronRight size={12} aria-hidden className="mr-0.5 inline align-[-1px]" />localhost:{port}</span></span>
                                         <Button type="button" variant="ghost" size="icon-xs" title="Open in browser" aria-label={`Open localhost:${port} in browser`} onClick={() => void openUrl(`http://localhost:${port}`)}>
                                             <IconExternalLink />
                                         </Button>
