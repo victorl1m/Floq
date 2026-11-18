@@ -136,13 +136,13 @@ test('UI types mirror the runtime sdk and host key lists field by field', () => 
   }
 });
 
-test('right sidebar: core tabs unchanged, plugin tabs resolve only while active, otherwise fall back to changes', async () => {
+test('right sidebar: core tabs unchanged, plugin tabs resolve only while active, otherwise fall back to files', async () => {
   const { resolveRightSidebarTab, CORE_TABS } = await import('../../src/lib/right-sidebar.ts');
-  assert.deepEqual(CORE_TABS, ['changes', 'files', 'conversations', 'app']);
+  assert.deepEqual(CORE_TABS, ['files', 'conversations', 'artifacts']);
   for (const t of CORE_TABS) assert.equal(resolveRightSidebarTab(t, []), t);
   assert.equal(resolveRightSidebarTab('plugin:echo/tab', ['plugin:echo/tab']), 'plugin:echo/tab');
-  assert.equal(resolveRightSidebarTab('plugin:echo/tab', []), 'changes'); // plugin disabled or removed
-  assert.equal(resolveRightSidebarTab('plugin:echo/tab', ['plugin:other/tab']), 'changes');
+  assert.equal(resolveRightSidebarTab('plugin:echo/tab', []), 'files'); // plugin disabled or removed
+  assert.equal(resolveRightSidebarTab('plugin:echo/tab', ['plugin:other/tab']), 'files');
 });
 
 test('plugin icons resolve by name with a safe fallback', async () => {
