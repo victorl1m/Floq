@@ -26,6 +26,7 @@
 //   floq mcp list|add|remove                     install MCP servers (add/remove: lead agents only)
 //   floq secret list|get NAME                    secrets available to this agent (global env vault entries); list prints names only; never print or commit values
 //   floq secrets list                            list vault secret names
+//   floq task list|show|create|update|done|comment   the project's task list (see --help)
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { runSetup, SETUP_BLOCK } from "./floq-setup.mjs";
@@ -85,6 +86,10 @@ Commands:
   floq decision request --question TEXT [--options-json JSON] [--detail TEXT] [--wait]
   floq decision status ID [--wait] | floq decision cancel ID
   (without --wait, Floq types "[FLOQ DECISION <id> ANSWERED] question -> answer" into your terminal when the user answers; full text via status)
+  floq task list [--status todo|in_progress|blocked|done|cancelled] [--mine]   this project's task list (the user's to-do list); --mine = tasks assigned to you
+  floq task show ID | floq task create "title" [--description T] [--priority low|normal|high|urgent] [--due ISO] [--run-at ISO]
+  floq task update ID [--status S] [--title T] [--description T] [--comment TEXT] | floq task done ID [--comment TEXT] | floq task comment ID TEXT
+  (when the user lets agents work on tasks automatically, Floq types "Task <id>: ..." into the project's orchestrator; keep the task up to date with update/done. --run-at: the task is only handed out at/after that time. Only your own project's tasks are visible)
   floq notify --title TEXT [--body TEXT] [--level info|success|warning|error] [--category release|build|agent|cost|security|message|system|custom] [--action-url URL | --action-canvas ID | --action-agent ID | --action-settings SECTION] [--action-label TEXT]
   (one-way notice in the user's Notification Center and a toast; prints the id and never waits. Use it instead of a decision when no answer is needed)
   floq approval request --action "TEXT" [--detail TEXT] [--target <UUID|Name|self>] [--wait] [--timeout SEC]   ask the USER (in the Floq app) to approve an irreversible/outward action (merge, push to main, deploy, delete remote data). --target asks on behalf of another agent. --wait blocks until the user answers: keep it running (run it in the foreground or keep the background task alive); if it is interrupted or killed the request is withdrawn and nothing is approved. It never times out by default: the user answers yes or no whenever they like; --timeout SEC makes this command give up and withdraw after SEC seconds
@@ -253,6 +258,7 @@ const allowedOptions: Record<string, string[]> = {
   wired: [], sticky: ["color", "kind", "x", "y"], help: [],
   secrets: [],
   secret: [],
+  task: ["status", "mine", "description", "priority", "due", "run-at", "title", "comment"],
   memory: ["title", "type", "user", "pin", "unpin", "pinned", "k", "text", "reason"],
 };
 if (!allowedOptions[command]) usage();
@@ -552,6 +558,40 @@ switch (command) {
     const action = kind ? { kind, target: String(named["action-" + kind]), label: typeof named["action-label"] === "string" ? named["action-label"] : kind === "url" ? "Open" : "Go" } : undefined;
     const r = await call<{ id: string }>("notifications/create", { title: named.title, body: named.body, level: named.level ?? "info", category: named.category ?? "custom", action });
     console.log(r.id);
+    break;
+  }
+  case "task": {
+    const [sub, ...rest] = positional;
+    for (const k of ["status", "description", "priority", "due", "run-at", "title", "comment"]) if (named[k] !== undefined && typeof named[k] !== "string") usage();
+    type TaskView = { id: string; title: string; description: string; status: string; priority: string; assigneeSessionId: string | null; createdBy: string; dueAt: string | null; runAt: string | null; automationId: string | null; updatedAt: string };
+    type TaskEventView = { at: string; actor: string; kind: string; text: string };
+    const line = (t: TaskView) => t.id + "  [" + t.status + ", " + t.priority + (t.dueAt ? ", due " + t.dueAt : "") + (t.runAt ? ", starts " + t.runAt : "") + "]  " + t.title;
+    const detail = (t: TaskView) => [line(t), "created by: " + t.createdBy + (t.assigneeSessionId ? "; assigned to: " + t.assigneeSessionId : ""), t.description ? "description: " + t.description : ""].filter(Boolean).join("\n");
+    const needId = (): string => { if (rest.length < 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rest[0])) { console.error("floq: task " + sub + " needs the task UUID (see: floq task list)"); process.exit(2); } return rest[0]; };
+    if (sub === "list" && rest.length === 0) {
+      const r = await call<{ tasks: TaskView[] }>("tasks/list", { status: named.status, mine: named.mine === true });
+      console.log(r.tasks.length ? r.tasks.map(line).join("\n") : "(no tasks)");
+    } else if (sub === "show" && rest.length === 1) {
+      const r = await call<{ task: TaskView; events: TaskEventView[] }>("tasks/show", { id: needId() });
+      console.log(detail(r.task) + (r.events.length ? "\nhistory:\n" + r.events.map((e) => "  " + e.at + "  " + e.actor + "  " + e.kind + (e.text ? ": " + e.text : "")).join("\n") : ""));
+    } else if (sub === "create" && rest.length === 1) {
+      const r = await call<{ task: TaskView }>("tasks/create", { title: rest[0], description: named.description, priority: named.priority, dueAt: named.due, runAt: named["run-at"] });
+      console.log("created " + line(r.task));
+    } else if (sub === "update" && rest.length === 1) {
+      if (named.status === undefined && named.title === undefined && named.description === undefined && named.comment === undefined) { console.error("floq: task update needs at least one of --status, --title, --description, --comment"); process.exit(2); }
+      const r = await call<{ task: TaskView }>("tasks/update", { id: needId(), status: named.status, title: named.title, description: named.description, comment: named.comment });
+      console.log("updated " + line(r.task));
+    } else if (sub === "done" && rest.length === 1) {
+      const r = await call<{ task: TaskView }>("tasks/done", { id: needId(), comment: named.comment });
+      console.log("done " + line(r.task));
+    } else if (sub === "comment" && rest.length === 2) {
+      const id = needId();
+      await call("tasks/comment", { id, text: rest[1] });
+      console.log("comment added to " + id);
+    } else {
+      console.error('usage: floq task list [--status S] [--mine] | show ID | create "title" [--description T] [--priority P] [--due ISO] [--run-at ISO] | update ID [--status S] [--title T] [--description T] [--comment TEXT] | done ID [--comment TEXT] | comment ID TEXT');
+      process.exit(2);
+    }
     break;
   }
   case "decision": {

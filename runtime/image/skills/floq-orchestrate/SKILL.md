@@ -173,6 +173,27 @@ Rules you must follow, because the CLI cannot enforce them:
 4. **Authoring a skill:** use the `skill-creator` skill (Claude Code) or `writing-skills` (both providers) to design it, keep it in a scratch directory, then install it with `floq skills create NAME --from DIR` after the user approves `--dry-run`. `create` writes text files only (no symlinks, at most 120 files / 512 KiB, SKILL.md at most 32 KiB), refuses a name that already exists instead of overwriting it, and never creates or replaces Floq's own skills (`floq-orchestrate`, `floq-vault`). The default location is this session's project (commit it to share it); `--global` puts it in the user's home for every project.
 5. New skills and MCP servers load when a session starts or resumes. After an approved MCP change, save current work and run `floq session restart`; verify tool availability after the session resumes. This does not perform OAuth or prove the server authenticated.
 
+## Tasks & Automations
+
+Every project has a task list: the user's to-do list, which you can read and keep up to date. The user can also switch on "agents work on tasks automatically" for the project, and can set up automations (a task created once or on a schedule, such as "every day at 09:00" or "only on day 19").
+
+```
+floq task list [--status todo|in_progress|blocked|done|cancelled] [--mine]
+floq task show ID
+floq task create "title" [--description TEXT] [--priority low|normal|high|urgent] [--due ISO] [--run-at ISO]
+floq task update ID [--status S] [--title T] [--description T] [--comment TEXT]
+floq task done ID [--comment TEXT]
+floq task comment ID TEXT
+```
+
+- You only see your own project's tasks. `--mine` lists the tasks assigned to you.
+- When automatic work is on, the runtime types a message such as `Task <UUID>: <title> ... Report with floq task update ...` into the project's orchestrator (or the agent the user picked), and the task is already `in_progress`. Each task is handed out once. It arrives after a restart or wake-up too.
+- Keep the task current: `floq task update ID --comment "what you did"` for progress, `--status blocked --comment "why"` when you cannot continue, `floq task done ID --comment "summary"` when finished. The user watches the history.
+- `--run-at ISO` creates a task that is handed out only at or after that instant (for example "only on day 19"). Use it for follow-ups you want to come back to later; do not poll.
+- An orchestrator that receives a task can split it: `floq task create` for the parts and delegate them with `floq subagent recruit`, then close the parent with `floq task done`.
+- Tasks created by an automation are named `<automation title> - <date>`. Do not create or edit automations yourself; the user manages them in the app.
+- Never put secrets in a task title, description or comment.
+
 ## Integrate and close
 
 The coordinator owns the requested outcome. Read worker notes and inspect their output or file changes, resolve overlaps, run the appropriate checks for your changes, and communicate any incomplete work. A worker's assertion that work is done is not verification. If Floq CLI is unavailable or no suitable session is reachable, continue directly rather than guessing undocumented commands or treating a task queue as a running agent.
