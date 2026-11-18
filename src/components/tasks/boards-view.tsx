@@ -76,7 +76,7 @@ function formatTaskDueDate(value: string): string {
   return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export default function TasksPage() {
+export default function BoardsView() {
   const { client, user, organizations, organizationsLoading, organizationsError, refreshOrganizations, activeOrganizationId, selectOrganization } = useRuntime();
   const organizationId = activeOrganizationId ?? "";
   const [boards, setBoards] = useState<Omit<TaskBoard, "lists">[]>([]);
@@ -470,7 +470,7 @@ export default function TasksPage() {
     if (next.startsWith("b:")) { selectBoard(id); requestAnimationFrame(() => boardTabRefs.current.get(id)?.focus()); }
     else { updateSourcePrefs((current) => openSource(current, id)); requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-task-source-tab="${CSS.escape(id)}"]`)?.focus()); }
   };
-  if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-5"><h1 className="text-base font-semibold">Tasks</h1><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
+  if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-5"><h1 className="text-base font-semibold">Boards</h1><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col text-foreground">
@@ -501,7 +501,7 @@ export default function TasksPage() {
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5 sm:px-5">
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-base font-semibold">Tasks{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h1>
+              <h1 className="truncate text-base font-semibold">Boards{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h1>
             </div>
             {organizations.length > 0 && <Button ref={boardPickerTriggerRef} variant="outline" size="sm" aria-label="Choose a board" onClick={(event) => openBoardPicker(event.currentTarget)}><IconChecklist /><span className="hidden sm:inline">Boards</span></Button>}
             {selectedOrganization && <div className="hidden items-center gap-2 sm:flex" role="group" aria-label="Organization members">

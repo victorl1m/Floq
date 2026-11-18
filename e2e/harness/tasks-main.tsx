@@ -2,7 +2,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@/index.css";
-import TasksPage from "@/components/tasks/tasks-page";
+import BoardsView from "@/components/tasks/boards-view";
 import { RuntimeProvider } from "@/lib/runtime/store";
 import { PluginsProvider } from "@/plugins/host";
 import { Toaster } from "@/components/ui/sonner";
@@ -13,7 +13,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <TooltipProvider>
       <RuntimeProvider>
         <PluginsProvider>
-          <main className="h-screen min-h-0 bg-background"><TasksPage /></main>
+          <main className="h-screen min-h-0 bg-background"><BoardsView /></main>
           <Toaster />
         </PluginsProvider>
       </RuntimeProvider>

@@ -85,6 +85,8 @@ function skillFileParams(skill: { scope: string; projectId?: string | null; prov
   return params;
 }
 
+import type { CatchUp, ProjectAutomation, ProjectTask, ProjectTaskEvent, ProjectTaskSettings, Schedule, TaskPriority } from "@/lib/project-tasks";
+
 export class RuntimeError extends Error {
   readonly status: number;
   readonly code: string;
@@ -517,6 +519,48 @@ export class RuntimeClient {
   }
 
   // --- task sources (plugins) ---
+
+  // --- project tasks + automations ---
+
+  projectTasks(projectId?: string): Promise<{ tasks: ProjectTask[]; settings: Record<string, ProjectTaskSettings> }> {
+    return this.call("GET", `/v1/tasks${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+  }
+  async createProjectTask(projectId: string, input: { title: string; description?: string; priority?: TaskPriority; dueAt?: string | null; runAt?: string | null; assigneeSessionId?: string | null }): Promise<ProjectTask> {
+    return (await this.call<{ task: ProjectTask }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/tasks`, input)).task;
+  }
+  async updateProjectTask(projectId: string, taskId: string, patch: Partial<Pick<ProjectTask, "title" | "description" | "status" | "priority" | "dueAt" | "runAt" | "assigneeSessionId" | "position">>): Promise<ProjectTask> {
+    return (await this.call<{ task: ProjectTask }>("PATCH", `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`, patch)).task;
+  }
+  async deleteProjectTask(projectId: string, taskId: string): Promise<void> {
+    await this.call("DELETE", `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`);
+  }
+  async projectTaskEvents(projectId: string, taskId: string): Promise<ProjectTaskEvent[]> {
+    return (await this.call<{ events: ProjectTaskEvent[] }>("GET", `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/events`)).events;
+  }
+  async commentProjectTask(projectId: string, taskId: string, text: string): Promise<ProjectTaskEvent[]> {
+    return (await this.call<{ events: ProjectTaskEvent[] }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/events`, { text })).events;
+  }
+  async saveProjectTaskSettings(projectId: string, input: { autoAgent: boolean; agentSessionId?: string | null }): Promise<ProjectTaskSettings> {
+    return (await this.call<{ settings: ProjectTaskSettings }>("PUT", `/v1/projects/${encodeURIComponent(projectId)}/task-settings`, input)).settings;
+  }
+  async automations(projectId?: string): Promise<ProjectAutomation[]> {
+    return (await this.call<{ automations: ProjectAutomation[] }>("GET", `/v1/automations${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`)).automations;
+  }
+  async previewSchedule(schedule: Schedule): Promise<string[]> {
+    return (await this.call<{ upcoming: string[] }>("POST", "/v1/automations/preview", { schedule })).upcoming;
+  }
+  async createAutomation(projectId: string, input: { title: string; instructions: string; enabled: boolean; schedule: Schedule; catchUp: CatchUp }): Promise<ProjectAutomation> {
+    return (await this.call<{ automation: ProjectAutomation }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/automations`, input)).automation;
+  }
+  async updateAutomation(projectId: string, id: string, patch: Partial<{ title: string; instructions: string; enabled: boolean; schedule: Schedule; catchUp: CatchUp }>): Promise<ProjectAutomation> {
+    return (await this.call<{ automation: ProjectAutomation }>("PATCH", `/v1/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}`, patch)).automation;
+  }
+  async deleteAutomation(projectId: string, id: string): Promise<void> {
+    await this.call("DELETE", `/v1/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}`);
+  }
+  async runAutomation(projectId: string, id: string): Promise<ProjectTask> {
+    return (await this.call<{ task: ProjectTask }>("POST", `/v1/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}/run`)).task;
+  }
 
   async taskSources(): Promise<TaskSourceInfo[]> {
     return (await this.call<{ sources: TaskSourceInfo[] }>("GET", "/v1/task-sources")).sources;

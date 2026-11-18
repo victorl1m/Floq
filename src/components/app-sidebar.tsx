@@ -23,7 +23,7 @@ import { resolvePluginIcon } from "@/plugins/icons";
 
 const NAV: { view: View; label: string; icon: typeof IconHome }[] = [
     { view: "home", label: "Home", icon: IconHome },
-    { view: "tasks", label: "Tasks", icon: IconChecklist },
+    { view: "tasks", label: "Tasks & Automations", icon: IconChecklist },
     { view: "skills", label: "Skills & MCP", icon: IconSparkles },
     { view: "secrets", label: "Secrets", icon: IconLock },
     { view: "terminal", label: "Terminal", icon: IconTerminal2 },

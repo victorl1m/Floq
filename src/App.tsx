@@ -51,7 +51,7 @@ function App() {
   const islandReady = useIslandBridge();
   const pendingApprovals = usePendingApprovals();
   useEffect(() => {
-    const title = titleWithPending(view === "plugin" ? `${pluginViewLabel ?? "Plugin"} — Floq` : view === "tasks" ? "Tasks — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
+    const title = titleWithPending(view === "plugin" ? `${pluginViewLabel ?? "Plugin"} — Floq` : view === "tasks" ? "Tasks & Automations — Floq" : view === "skills" ? "Skills — Floq" : view === "secrets" ? "Secrets — Floq" : view === "canvas" ? "Canvas — Floq" : view === "terminal" ? "Terminal — Floq" : view === "session" ? "Agent — Floq" : "Floq", pendingApprovals);
     document.title = title;
     // Native window title too, so the taskbar shows "(1) Floq" while the window is minimized or unfocused.
     if (isTauri()) void getCurrentWindow().setTitle(title).catch(() => undefined);

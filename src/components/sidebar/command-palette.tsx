@@ -94,7 +94,7 @@ export default function CommandPalette() {
                             Home
                         </CommandItem>
                         <CommandItem onSelect={run(() => navigate("tasks"))}>
-                            <IconChecklist />Tasks
+                            <IconChecklist />Tasks & Automations
                         </CommandItem>
                         <CommandItem onSelect={run(() => navigate("skills"))}>
                             <IconSparkles />
