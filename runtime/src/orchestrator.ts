@@ -192,6 +192,39 @@ export class Orchestrator {
     return this.outbox.isDelivered(id);
   }
 
+  /**
+   * Runtime-originated message (task dispatch): persisted in the outbox FIRST, so a sleeping target, a slow start or a
+   * restart never loses it. Wakes a sleeping target (refused with provider_not_connected when the user is logged out of
+   * its provider: nothing is queued then). Long bodies go through the target's inbox like a long `floq ask`.
+   * "delivered" = typed now; "queued" = stored, typed on the target's next ready.
+   */
+  async deliverSystem(userId: string, sessionId: string, from: { id: string; title: string }, body: string): Promise<"delivered" | "queued"> {
+    const other = (await this.rows(userId)).find((r) => r.id === sessionId);
+    if (!other) throw notFound("Target agent not found");
+    let live = this.manager.findLive(sessionId, userId);
+    if (!live || !live.isAlive) await this.manager.assertProviderConnected(userId, other.provider);
+    const one = body.replace(/\r?\n/g, " ").trim();
+    let typedBody = one;
+    if (needsInbox(one)) {
+      const stored = await this.inbox.store(userId, from, sessionId, body);
+      typedBody = inboxPointer(one, stored.id, stored.chars);
+    }
+    const outboxId = await this.outbox.enqueue(userId, sessionId, "message", neutralizeApprovalMarker("[Message from " + from.title + "] " + typedBody));
+    if (!live || !live.isAlive) {
+      try {
+        await this.manager.resume(userId, await this.settings.profile(userId), sessionId);
+      } catch (error) {
+        if (error instanceof HttpError && error.code === "provider_not_connected") throw error;
+        log.warn("agent.system_message_queued_wake_failed", { userId, toSessionId: sessionId, error: String(error).slice(0, 120) });
+        return "queued";
+      }
+      live = this.manager.findLive(sessionId, userId);
+      if (!live || !(await this.awaitReady(live))) return "queued";
+    }
+    await this.deliverPending(userId, sessionId);
+    return (await this.outbox.isDelivered(outboxId)) ? "delivered" : "queued";
+  }
+
   /** Whether the target TUI takes bracketed paste: what it announced in its output, else yes for the agent TUIs (both enable it). */
   private bracketed(live: Session): boolean {
     try {

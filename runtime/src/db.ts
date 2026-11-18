@@ -630,4 +630,61 @@ async function migrateOrganizations(pool: pg.Pool): Promise<void> {
     END
     $tg$;
   `);
+  // Project tasks + automations (additive; org boards in collaboration.* are untouched).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automations (
+      id UUID PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      project_id UUID NOT NULL REFERENCES floq_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      instructions TEXT NOT NULL DEFAULT '',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      schedule JSONB NOT NULL,
+      catch_up TEXT NOT NULL DEFAULT 'once' CHECK (catch_up IN ('skip','once')),
+      next_run_at TIMESTAMPTZ,
+      last_run_at TIMESTAMPTZ,
+      last_status TEXT,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS automations_project_idx ON automations (project_id, created_at);
+    CREATE INDEX IF NOT EXISTS automations_due_idx ON automations (next_run_at) WHERE enabled AND next_run_at IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS project_tasks (
+      id UUID PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      project_id UUID NOT NULL REFERENCES floq_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','blocked','done','cancelled')),
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high','urgent')),
+      assignee_session_id UUID,
+      created_by TEXT NOT NULL DEFAULT 'user',
+      due_at TIMESTAMPTZ,
+      run_at TIMESTAMPTZ,
+      automation_id UUID REFERENCES automations(id) ON DELETE SET NULL,
+      position DOUBLE PRECISION NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS project_tasks_project_idx ON project_tasks (project_id, status, position);
+    CREATE INDEX IF NOT EXISTS project_tasks_user_idx ON project_tasks (user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS project_tasks_dispatch_idx ON project_tasks (project_id, run_at) WHERE status = 'todo';
+    CREATE TABLE IF NOT EXISTS task_events (
+      id BIGSERIAL PRIMARY KEY,
+      task_id UUID NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+      at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      actor TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('created','status','update','comment','dispatched','run_failed')),
+      text TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events (task_id, id);
+    CREATE TABLE IF NOT EXISTS project_task_settings (
+      project_id UUID PRIMARY KEY REFERENCES floq_projects(id) ON DELETE CASCADE,
+      auto_agent BOOLEAN NOT NULL DEFAULT FALSE,
+      agent_session_id UUID,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
