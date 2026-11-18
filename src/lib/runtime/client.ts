@@ -72,6 +72,7 @@ import type {
   ExternalTask,
   ExternalTaskPage,
   PluginCatalogItem,
+  AgentConversation,
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
 import type { ArtifactListing, FileContent, FileListing } from "./workspace-files";
@@ -671,6 +672,21 @@ export class RuntimeClient {
 
   async resumeSession(id: string): Promise<SessionSummary> {
     return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/resume`, {})).session;
+  }
+
+  /** Every provider conversation this agent has had (pointer history), newest first. */
+  async listConversations(id: string): Promise<AgentConversation[]> {
+    return (await this.call<{ conversations: AgentConversation[] }>("GET", `/v1/sessions/${id}/conversations`)).conversations;
+  }
+
+  /** Explicit, reversible fresh start: the current conversation stays in the history. */
+  async startFresh(id: string): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/start-fresh`, {})).session;
+  }
+
+  /** Make an earlier conversation current again and resume it. */
+  async switchConversation(id: string, conversationId: string): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/conversations/${conversationId}/switch`, {})).session;
   }
 
   /** Usage-limit fallback actions from the agent badge: return to the original model now, keep the fallback, or set the per-agent policy. */

@@ -7,6 +7,16 @@ export type KeyProviderId = "opencode" | "antigravity";
 
 export type SessionState = "starting" | "running" | "sleeping" | "exited" | "failed";
 
+/** One provider conversation an agent has had (agent_conversations). `current` = the one a resume continues. */
+export interface AgentConversation {
+  id: string;
+  provider: ProviderId;
+  providerSessionId: string;
+  startedAt: string;
+  endedReason: "fresh_start" | "provider_switch" | "switched" | "superseded" | null;
+  current: boolean;
+}
+
 export interface SessionSummary {
   id: string;
   provider: ProviderId;
