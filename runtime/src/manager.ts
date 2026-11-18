@@ -23,6 +23,7 @@ import { artifactsGuidance, artifactsRel, ensureArtifactsDir } from "./artifacts
 import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, mkcertEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
+import { CheckpointScheduler, checkpointTranscript, findCodexRolloutPath } from "./checkpoints.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
 import { createWorktree } from "./worktree.js";
 import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
@@ -389,6 +390,9 @@ export class SessionManager {
     lastNativeTitle: string | null;
     checking: boolean;
   }>();
+  /** "Last-good" transcript checkpoints (checkpoints.ts): debounced per session, flushed on sleep. */
+  private readonly checkpointStamps = new Map<string, string>();
+  private readonly checkpoints = new CheckpointScheduler((id) => this.runCheckpoint(id), { onError: (id, error) => log.warn("checkpoint.failed", { sessionId: id, error: error instanceof Error ? error.message : String(error) }) });
   private readonly codexModelCatalog: CodexModelCatalog;
   private readonly specKitTasks = new Map<string, Promise<void>>();
   private readonly capacityReservations = new CapacityReservations();
@@ -642,7 +646,25 @@ export class SessionManager {
       ? (() => { const path = claudeTranscriptPath(home, state.providerSessionId ?? id); return path ? readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine) : null; })()
       : withRollout(home, this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"), (path) => readTranscriptTail(path, MAX_TRANSCRIPT_TAIL_BYTES, confine));
     if (!tail) return null;
-    return { ...analyzeTranscript(state.provider, tail.text), mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
+    const turnNow = analyzeTranscript(state.provider, tail.text);
+    if (turnNow.status !== "working") this.checkpoints.notify(id);
+    return { ...turnNow, mtimeMs: tail.mtimeMs, trailingAssistantText: state.provider === "claude" && endsWithAssistantText(tail.text) };
+  }
+
+  /** Copy the new bytes of a live Claude/Codex agent's transcript into its last-good checkpoint (skipped when the file did not change). */
+  private async runCheckpoint(id: string): Promise<void> {
+    const state = this.nativeTitleSessions.get(id);
+    if (!state || !state.providerSessionId) return;
+    const home = this.hostHome(state.handle);
+    const sourcePath = state.provider === "claude"
+      ? claudeTranscriptPath(home, id)
+      : findCodexRolloutPath(home, this.shards.driver.hostPath(state.handle, codexHomeRel(id) + "/sessions"), state.handle.uid);
+    if (!sourcePath) return;
+    const st = statSync(sourcePath);
+    const stamp = st.mtimeMs + ":" + st.size;
+    if (this.checkpointStamps.get(id) === stamp) return;
+    await checkpointTranscript({ home, uid: state.handle.uid, sessionId: id, provider: state.provider, providerSessionId: state.providerSessionId, sourcePath });
+    this.checkpointStamps.set(id, stamp);
   }
 
   /** Tail text of a live Claude agent's transcript (the usage-limit fallback reads it); null when unavailable. */
@@ -3064,6 +3086,9 @@ export class SessionManager {
       const handle = await this.shards.wake(session.userId);
       await this.captureCodexId(id, handle, true).catch(() => false);
     }
+    await this.checkpoints.flush(id).catch(() => undefined);
+    this.checkpoints.forget(id);
+    this.checkpointStamps.delete(id);
     this.cliProbes.delete(id);
     this.releaseAgyGate(id);
     this.agyMirror?.stop(id);
