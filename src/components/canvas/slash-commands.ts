@@ -53,5 +53,6 @@ export function matchSlash(provider: string, text: string): SlashCommand[] {
   if (!m) return [];
   const query = m[1].toLowerCase();
   const all = slashCommandsFor(provider);
-  return [...all.filter((c) => c.name.startsWith(query)), ...all.filter((c) => !c.name.startsWith(query) && c.name.includes(query))];
+  // An exact name comes first, so "/model" + Enter sends /model, not a longer command that starts with it.
+  return [...all.filter((c) => c.name === query), ...all.filter((c) => c.name !== query && c.name.startsWith(query)), ...all.filter((c) => !c.name.startsWith(query) && c.name.includes(query))];
 }

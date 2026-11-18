@@ -43,11 +43,12 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
     area.style.height = `${Math.min(area.scrollHeight, 88)}px`;
   }, [text, inputRef]);
 
-  async function submit() {
-    if (phase === "sending" || (!text.trim() && attachments.items.length === 0 && !sleeping)) return;
+  async function submit(override?: string) {
+    const message = (override ?? text).trim();
+    if (phase === "sending" || (!message && attachments.items.length === 0 && !sleeping)) return;
     setPhase("sending");
     attachments.resetProgress();
-    const ok = await send(session, text.trim(), attachments.items, attachments.setFraction);
+    const ok = await send(session, message, attachments.items, attachments.setFraction);
     if (ok) {
       setText("");
       attachments.clear();
@@ -69,7 +70,7 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
           {slash.map((command, index) => (
             <li key={command.name} role="option" aria-selected={index === slashIndex}>
               <button type="button" className={cn("flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left", index === slashIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/60")}
-                onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashIndex(index)} onClick={() => { completeSlash(command.name); inputRef.current?.focus(); }}>
+                onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashIndex(index)} onClick={() => { setSlashDismissed(true); setSlashIndex(0); void submit("/" + command.name); inputRef.current?.focus(); }}>
                 <span className="font-mono font-medium">/{command.name}</span>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">{command.hint}</span>
               </button>
@@ -93,7 +94,15 @@ export default function NodeMessageBar({ session, inputRef, send }: Props) {
             event.stopPropagation();
             if (slashOpen && !event.nativeEvent.isComposing) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setSlashIndex((i) => (i + (event.key === "ArrowDown" ? 1 : slash.length - 1)) % slash.length); return; }
-              if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) { event.preventDefault(); completeSlash(slash[Math.min(slashIndex, slash.length - 1)].name); return; }
+              // Tab fills the command in (to add arguments); Enter picks it and sends it right away, no second Enter.
+              if (event.key === "Tab") { event.preventDefault(); completeSlash(slash[Math.min(slashIndex, slash.length - 1)].name); return; }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                const name = slash[Math.min(slashIndex, slash.length - 1)].name;
+                setSlashDismissed(true); setSlashIndex(0);
+                void submit("/" + name);
+                return;
+              }
               if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
             }
             // Empty bar on a running agent: control keys (Shift+Tab, Esc, arrows, Tab, Ctrl+C/O/R...) drive the agent's terminal.
