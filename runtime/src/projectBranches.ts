@@ -67,6 +67,22 @@ async function readCurrentBranch(run: GitCommand): Promise<string | null> {
 }
 
 /**
+ * A single-branch clone (what `git clone --depth` makes, and what older Floq imports are) only fetches the default branch,
+ * so other remote branches never appear and cannot be tracked. Turn such a remote back into a normal one
+ * (`git remote set-branches <remote> '*'`, the standard fix); remotes with a custom refspec are left alone.
+ */
+async function trackAllRemoteBranches(run: GitCommand): Promise<void> {
+  const remotes = await run(["remote"]);
+  if (remotes.exitCode !== 0) return;
+  for (const remote of lines(remotes.stdout)) {
+    if (!/^[\w.-]+$/.test(remote)) continue;
+    const specs = lines((await run(["config", "--get-all", `remote.${remote}.fetch`])).stdout);
+    const singleBranch = specs.length > 0 && specs.every((spec) => /^\+?refs\/heads\/[^*]+:refs\/remotes\/[^*]+$/.test(spec));
+    if (singleBranch) await run(["remote", "set-branches", remote, "*"]);
+  }
+}
+
+/**
  * Branches to offer in the switcher. With `fetch`, first updates remote-tracking branches from every remote (best effort:
  * no tags, prune deleted ones; a failure only sets `fetchError`, the list still shows what was already known).
  */
@@ -74,7 +90,9 @@ export async function listProjectBranches(run: GitCommand, options: { fetch?: bo
   let fetchError: string | undefined;
   if (options.fetch) {
     try {
-      const fetched = await run(["fetch", "--all", "--prune", "--no-tags", "--quiet"]);
+      await trackAllRemoteBranches(run);
+      const shallow = (await run(["rev-parse", "--is-shallow-repository"])).stdout.trim() === "true";
+      const fetched = await run(["fetch", "--all", "--prune", "--no-tags", "--quiet", ...(shallow ? ["--depth=50"] : [])]);
       if (fetched.exitCode !== 0) fetchError = "Could not fetch from the remote (offline or no access). Showing the branches already known.";
     } catch {
       fetchError = "Fetching from the remote took too long. Showing the branches already known.";

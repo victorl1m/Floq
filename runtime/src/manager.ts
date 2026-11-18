@@ -1578,7 +1578,7 @@ export class SessionManager {
       // Cloned inside the sandbox (netns egress rules apply; a hostile repo's config cannot run on the host).
       const child = this.shards.driver.spawnPipe(handle, {
         file: "git",
-        args: [...GIT_HARDENING_ARGS, "clone", "--depth", "50", "--", url, this.shards.driver.homePath(handle) + "/" + rel],
+        args: [...GIT_HARDENING_ARGS, "clone", "--depth", "50", "--no-single-branch", "--", url, this.shards.driver.homePath(handle) + "/" + rel],
         cwd: ".",
         env: { ...buildSessionEnv(this.config, "claude", profile, "clone"), HOME: "/tmp" },
       });

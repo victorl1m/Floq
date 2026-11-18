@@ -67,3 +67,18 @@ test("unknown, option-like and agent branches are refused", async (t) => {
   await assert.rejects(checkProjectBranchSwitch(runner(clone), "--orphan"), /valid branch/);
   await assert.rejects(checkProjectBranchSwitch(runner(clone), "floq/2765ee49-77a7-4a51-96ec-4ca2b9394c59"), /no longer available/);
 });
+
+test("a single-branch shallow clone (how Floq imported projects) gets every remote branch after a fetch", async (t) => {
+  const { origin } = await setup(t);
+  const root = mkdtempSync(join(tmpdir(), "floq-single-branch-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const clone = join(root, "clone");
+  await execFile("git", ["clone", "--quiet", "--depth", "50", `file://${origin}`, clone], { env: ENV });
+  assert.deepEqual((await listProjectBranches(runner(clone))).branches, ["main"], "single-branch clone knows only main");
+  const fetched = await listProjectBranches(runner(clone), { fetch: true });
+  assert.equal(fetched.fetchError, undefined);
+  assert.deepEqual(fetched.remoteOnly, ["homologacao/maria-enesa-ia-generativa"]);
+  assert.equal((await git(clone, ["config", "--get-all", "remote.origin.fetch"])).trim(), "+refs/heads/*:refs/remotes/origin/*");
+  assert.equal(await switchProjectBranch(runner(clone), "homologacao/maria-enesa-ia-generativa"), "homologacao/maria-enesa-ia-generativa");
+  assert.equal((await git(clone, ["rev-parse", "--abbrev-ref", "@{upstream}"])).trim(), "origin/homologacao/maria-enesa-ia-generativa");
+});
