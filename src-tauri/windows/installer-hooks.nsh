@@ -13,15 +13,36 @@
 ; floq.exe of this user is left (with its WebView2 child processes), then wait for the files to unlock.
 
 !macro FLOQ_STOP_APP
-  ; /T also ends the WebView2 children; /FI keeps it to the current user's processes (nsExec runs no
-  ; shell, so the user name is read here instead of relying on %USERNAME% expansion).
+  ; Fast path: nothing to stop when floq.exe is not running (the common case on a fresh install and
+  ; on an uninstall after the app was closed). nsProcess is the plugin Tauri's NSIS template already
+  ; bundles and uses; _FindProcess leaves 0 in $R0 when the process exists.
   Push $0
   Push $1
-  ReadEnvStr $1 USERNAME
-  nsExec::Exec 'taskkill /F /T /IM "${MAINBINARYNAME}.exe" /FI "USERNAME eq $1"'
+  nsProcess::_FindProcess "${MAINBINARYNAME}.exe"
   Pop $0
-  ; Give Windows a moment to release the file handles of whatever was ended.
-  Sleep 1000
+  ${If} $0 == 0
+    ; /T also ends the WebView2 children; /FI keeps it to the current user's processes (nsExec runs
+    ; no shell, so the user name is read here instead of relying on %USERNAME% expansion).
+    ReadEnvStr $1 USERNAME
+    nsExec::Exec 'taskkill /F /T /IM "${MAINBINARYNAME}.exe" /FI "USERNAME eq $1"'
+    Pop $0
+    ; Poll instead of a fixed Sleep: leave as soon as the process is gone (usually the first or
+    ; second check), at most 15 x 200 ms = 3 s, then continue anyway like the old fixed wait did.
+    StrCpy $1 0
+    floq_wait_loop:
+      Sleep 200
+      nsProcess::_FindProcess "${MAINBINARYNAME}.exe"
+      Pop $0
+      ${If} $0 != 0
+        Goto floq_wait_done
+      ${EndIf}
+      IntOp $1 $1 + 1
+      ${If} $1 < 15
+        Goto floq_wait_loop
+      ${EndIf}
+    floq_wait_done:
+  ${EndIf}
+  nsProcess::_Unload
   Pop $1
   Pop $0
 !macroend
@@ -39,8 +60,10 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; During an upgrade the installer's PREINSTALL hook has just stopped the app: skip the second
+  ; kill and wait. Keep the registration; the new process rechecks it.
+  IfFileExists "${FLOQ_UPGRADE_MARKER}" floq_upgrade_uninstall 0
   !insertmacro FLOQ_STOP_APP
-  ; If the installer is replacing this version, keep the registration; the new process rechecks it.
-  IfFileExists "${FLOQ_UPGRADE_MARKER}" +2 0
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Floq"
+  floq_upgrade_uninstall:
 !macroend

@@ -37,6 +37,7 @@
     "shortDescription": "Run Claude Code and Codex agents on a server you host",
     "longDescription": "Floq is a desktop workspace for running Claude Code and Codex agents on a self-hosted runtime. Organize agents, notes and secrets on a canvas, group them into projects, and review agent actions before they run.",
     "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "./windows/installer-hooks.nsh"
