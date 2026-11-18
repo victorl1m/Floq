@@ -61,7 +61,7 @@ function norm(path: string): string {
 
 interface Entry { path: string; head: string | null; branch: string | null; }
 
-function parseWorktrees(stdout: string): Entry[] {
+export function parseWorktrees(stdout: string): Entry[] {
   const entries: Entry[] = [];
   let current: Entry | null = null;
   for (const raw of stdout.split(/\r?\n/)) {
@@ -96,7 +96,7 @@ async function branchExists(run: RunGit, cwd: string, name: string): Promise<boo
   return (await run(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])).exitCode === 0;
 }
 
-async function defaultBranch(run: RunGit, projectCwd: string): Promise<{ base: string | null; protectedNames: string[] }> {
+export async function defaultBranch(run: RunGit, projectCwd: string): Promise<{ base: string | null; protectedNames: string[] }> {
   const protectedNames = new Set<string>();
   let base: string | null = null;
   const remoteHead = await run(projectCwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
