@@ -32,6 +32,7 @@ import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, typ
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { moveProjectsInFolders, pruneProjectFromFolders } from "./projectFolders.js";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
+import { classifyResumeExit, resumeRetryDelay, bootRetryDelay, isTransientBootError, claudeProjectSlug, RESUME_FAILED_REASON, RESUME_FAILED_TITLE, BOOT_PAUSED_TITLE, type ResumeExitKind } from "./resumeRecovery.js";
 import { claudeTranscriptPath, readClaudeNativeTitle, readCodexNativeTitle, readTranscriptHead, readTranscriptTail } from "./nativeTitle.js";
 import { fallbackBadge, type FallbackState } from "./fallback.js";
 import { agentStatus, analyzeTranscript, endsWithAssistantText, type TranscriptTurn } from "./turn.js";
@@ -397,6 +398,9 @@ export class SessionManager {
   private readonly shardActivityCounts = new Map<string, number>();
   private readonly shardActivities = new Set<Promise<unknown>>();
   private shuttingDown = false;
+  private readonly bootRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly resumeRetries = new Map<string, number>();
+  private readonly userNoticeListeners: Array<(userId: string, n: { sessionId: string; projectId: string | null; title: string; body: string }) => void> = [];
   private readyListeners?: Array<(userId: string, sessionId: string) => void>;
   private bootNotices?: Map<string, string>;
   /** Usage-limit fallback (set by index.ts); fed every Claude PTY output frame. */
@@ -1806,6 +1810,8 @@ export class SessionManager {
     this.cancelLock(row.user_id);
 
     const launchedAt = Date.now();
+    // A resume that outlives the fast-exit window succeeded: the retry counter starts over.
+    if (resuming) setTimeout(() => { if (this.live.get(row.id) === session) this.resumeRetries.delete(row.id); }, RESUME_FALLBACK_MS + 1_000).unref();
     let agyTail = "";
     session.subscribe((frame) => {
       if (frame.type === "output") {
@@ -2069,6 +2075,99 @@ export class SessionManager {
     this.codexPollers.delete(id);
   }
 
+  /** Provider-side checkpoint restore hook (A.2 not-found). Wired by the checkpoint feature; false = nothing restored. */
+  async restoreFromCheckpoint(_sessionId: string, _provider: ProviderId, _providerSessionId: string): Promise<boolean> {
+    return false;
+  }
+
+  private notifyUser(userId: string, n: { sessionId: string; projectId: string | null; title: string; body: string }): void {
+    for (const cb of this.userNoticeListeners) {
+      try { cb(userId, n); } catch (error) { log.warn("session.notice_listener_failed", { error: String(error).slice(0, 120) }); }
+    }
+  }
+
+  /** Register a callback for user-facing notices raised by the manager (resume failures). */
+  onUserNotice(cb: (userId: string, n: { sessionId: string; projectId: string | null; title: string; body: string }) => void): void {
+    this.userNoticeListeners.push(cb);
+  }
+
+  /** Claude only: copy a transcript found under another project folder into the folder Claude will look in for this cwd. */
+  private relocateClaudeTranscript(handle: ShardHandle, row: Row): boolean {
+    const home = this.hostHome(handle);
+    const found = claudeTranscriptPath(home, row.id);
+    if (!found) return false;
+    const dest = join(home, ".claude", "projects", claudeProjectSlug(row.cwd), row.id + ".jsonl");
+    if (resolve(dest) === resolve(found)) return false; // already where Claude looks: it really cannot read it
+    try {
+      mkdirOwned(handle.mountPath, dirname(dest), handle.uid);
+      writeFileOwned(handle.mountPath, dest, readFileSync(found), handle.uid, 0o600);
+      return true;
+    } catch (error) {
+      log.warn("session.transcript_relocate_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+      return false;
+    }
+  }
+
+  private async giveUpResume(session: Session, kind: ResumeExitKind, projectId: string | null): Promise<void> {
+    this.resumeRetries.delete(session.id);
+    await this.pool.query(
+      "UPDATE agent_sessions SET state = 'failed', sleep_reason = $2, last_seq = $3, last_active_at = now(), slept_at = now() WHERE id = $1 AND state = 'running'",
+      [session.id, RESUME_FAILED_REASON, session.toSummary().seq],
+    );
+    this.notifyUser(session.userId, {
+      sessionId: session.id,
+      projectId,
+      title: RESUME_FAILED_TITLE,
+      body: kind === "not_found"
+        ? "The provider could not find this conversation. It was not replaced; use Retry, switch to another conversation, or Start fresh."
+        : "The agent could not be resumed after several tries. The conversation is untouched; use Retry or Start fresh.",
+    });
+  }
+
+  /** A resume exited within RESUME_FALLBACK_MS. Keep the pointer; retry transient causes; never start a fresh conversation. */
+  private async recoverFailedResume(session: Session, profile: RuntimeProfile): Promise<void> {
+    const output = session.replaySince(0).chunks.map((c) => c.data).join("").slice(-8192);
+    const kind = classifyResumeExit(output);
+    const attempt = this.resumeRetries.get(session.id) ?? 0;
+    log.info("session.resume_classified", { sessionId: session.id, provider: session.provider, kind, attempt });
+    let row = await this.row(session.id, session.userId);
+    if (kind === "not_found") {
+      let restored = false;
+      if (attempt < 1) {
+        const providerId = row.provider === "claude" ? row.id : row.provider_session_id;
+        if (providerId) {
+          try {
+            const handle = await this.shards.wake(session.userId);
+            restored = row.provider === "claude" && this.relocateClaudeTranscript(handle, row);
+            if (!restored) restored = await this.restoreFromCheckpoint(row.id, row.provider, providerId);
+          } catch (error) { log.warn("session.resume_restore_failed", { sessionId: session.id, error: String(error).slice(0, 160) }); }
+        }
+      }
+      if (!restored) return this.giveUpResume(session, kind, row.project_id);
+      this.resumeRetries.set(session.id, attempt + 1);
+      log.info("session.resume_restored", { sessionId: session.id, provider: row.provider });
+    } else {
+      const delay = resumeRetryDelay(attempt);
+      if (delay === null) return this.giveUpResume(session, kind, row.project_id);
+      this.resumeRetries.set(session.id, attempt + 1);
+      await new Promise((r) => { const t = setTimeout(r, delay); t.unref(); });
+    }
+    if (this.shuttingDown || this.live.has(session.id)) return; // the user (or shutdown) got there first
+    try {
+      row = await this.row(session.id, session.userId);
+      const handle = await this.shards.wake(session.userId); // includes the mount liveness check; launch() refreshes credentials
+      const fresh = await this.launch({ ...row, resume_count: session.resumeCount - 1 }, profile, handle, true);
+      fresh.broadcast({ type: "state", session: fresh.toSummary() });
+    } catch (error) {
+      log.warn("session.resume_retry_failed", { sessionId: session.id, attempt, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+      if (this.shuttingDown) return;
+      const next = resumeRetryDelay(attempt + 1);
+      if (next === null) return this.giveUpResume(session, "transient", row.project_id);
+      this.resumeRetries.set(session.id, attempt + 1);
+      return this.recoverFailedResume(session, profile);
+    }
+  }
+
   private async onExit(
     session: Session,
     state: SessionState,
@@ -2095,20 +2194,12 @@ export class SessionManager {
     this.nativeTitleSessions.delete(session.id);
 
     if (resumeFailedFast && state === "failed") {
-      // Nothing to continue (e.g. the conversation was never saved): start a fresh agent instead.
-      log.info("session.resume_fallback", { sessionId: session.id });
+      // Never guess "conversation gone" from elapsed time: the pointer is kept and the exit is classified from its output.
       this.live.delete(session.id);
-      try {
-        const row = await this.row(session.id, session.userId);
-        // The dead conversation id must not stay on the row: the fresh conversation gets captured and stored instead.
-        if (row.provider !== "claude") await this.pool.query("UPDATE agent_sessions SET provider_session_id = NULL WHERE id = $1", [session.id]);
-        const fresh = await this.launch({ ...row, provider_session_id: null, resume_count: session.resumeCount - 1 }, profile, handle, false);
-        fresh.broadcast({ type: "state", session: fresh.toSummary() });
-      } catch (error) {
-        log.error("session.fallback_failed", { sessionId: session.id, error: error instanceof Error ? error.message : String(error) });
-      }
+      void this.recoverFailedResume(session, profile).catch((error) => log.error("session.resume_recovery_failed", { sessionId: session.id, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }));
       return;
     }
+    this.resumeRetries.delete(session.id);
 
     await this.pool.query(
       "UPDATE agent_sessions SET state = $2, last_seq = $3, last_active_at = now(), slept_at = now() WHERE id = $1",
@@ -3117,33 +3208,57 @@ export class SessionManager {
         WHERE s.resume_on_boot = TRUE AND s.state = 'sleeping'
         ORDER BY s.last_active_at DESC`,
     );
-    const rows = found.rows as Array<{ id: string; user_id: string; provider: ProviderId; interrupted_turn: boolean; project_gone: boolean }>;
+    const rows = found.rows as Array<{ id: string; user_id: string; provider: ProviderId; interrupted_turn: boolean; project_gone: boolean; project_id: string | null }>;
     // Flags on rows that are not sleeping any more (a user resumed them first, or they exited) are stale.
     await this.pool.query("UPDATE agent_sessions SET resume_on_boot = FALSE, interrupted_turn = FALSE WHERE resume_on_boot = TRUE AND state <> 'sleeping'").catch(() => undefined);
     const queue = [...rows];
+    const pending = this.bootRetryTimers;
+    const attempts = new Map<string, number>();
+    const settle = async (row: (typeof rows)[number], reason: string, error?: unknown) => {
+      log.warn("session.boot_resume_skipped", { sessionId: row.id, userId: row.user_id, reason, error: error instanceof Error ? error.message.slice(0, 160) : undefined });
+      await this.pool.query("UPDATE agent_sessions SET resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1", [row.id]).catch(() => undefined);
+    };
+    // Returns true when resumed. A transient failure re-queues at 30 s and 120 s (resume_on_boot stays set) before giving up.
+    const attemptResume = async (row: (typeof rows)[number]): Promise<boolean> => {
+      if (this.shuttingDown) return false;
+      if (row.project_gone) { result.skipped++; await settle(row, "project_deleted"); return false; }
+      if (this.live.has(row.id)) { result.skipped++; await settle(row, "already_running"); return false; }
+      const bootNotices = (this.bootNotices ??= new Map());
+      if (row.interrupted_turn && row.provider !== "shell") bootNotices.set(row.id, BOOT_RESUME_NOTICE);
+      try {
+        const profile = await profileFor(row.user_id);
+        await this.resume(row.user_id, profile, row.id, { boot: true });
+        result.resumed++;
+        log.info("session.boot_resumed", { sessionId: row.id, userId: row.user_id, interrupted: row.interrupted_turn });
+        return true;
+      } catch (error) {
+        bootNotices.delete(row.id);
+        const n = attempts.get(row.id) ?? 0;
+        const delay = isTransientBootError(error) ? bootRetryDelay(n) : null;
+        if (delay !== null && !this.shuttingDown) {
+          attempts.set(row.id, n + 1);
+          log.warn("session.boot_resume_requeued", { sessionId: row.id, attempt: n + 1, delayMs: delay, error: error instanceof Error ? error.message.slice(0, 160) : undefined });
+          const timer = setTimeout(() => {
+            pending.delete(timer);
+            void this.pool.query("SELECT 1 FROM agent_sessions WHERE id = $1 AND resume_on_boot = TRUE AND state = 'sleeping'", [row.id])
+              .then((r) => r.rows[0] ? attemptResume(row) : undefined)
+              .catch(() => undefined);
+          }, delay);
+          timer.unref();
+          pending.add(timer);
+          return false;
+        }
+        result.skipped++;
+        const code = (error as { code?: string } | null)?.code;
+        await settle(row, code === "worktree_deleted" ? "worktree_deleted" : "resume_failed", error);
+        if (code !== "worktree_deleted") this.notifyUser(row.user_id, { sessionId: row.id, projectId: row.project_id, title: BOOT_PAUSED_TITLE, body: "The agent could not be restarted automatically after the runtime restarted. Resume it from the canvas." });
+        return false;
+      }
+    };
     const worker = async () => {
       for (let row = queue.shift(); row; row = queue.shift()) {
         if (this.shuttingDown) return;
-        const skip = async (reason: string, error?: unknown) => {
-          result.skipped++;
-          log.warn("session.boot_resume_skipped", { sessionId: row!.id, userId: row!.user_id, reason, error: error instanceof Error ? error.message.slice(0, 160) : undefined });
-          await this.pool.query("UPDATE agent_sessions SET resume_on_boot = FALSE, interrupted_turn = FALSE WHERE id = $1", [row!.id]).catch(() => undefined);
-        };
-        if (row.project_gone) { await skip("project_deleted"); continue; }
-        if (this.live.has(row.id)) { await skip("already_running"); continue; }
-        const notice = row.interrupted_turn && row.provider !== "shell";
-        const bootNotices = (this.bootNotices ??= new Map());
-        if (notice) bootNotices.set(row.id, BOOT_RESUME_NOTICE);
-        try {
-          const profile = await profileFor(row.user_id);
-          await this.resume(row.user_id, profile, row.id, { boot: true });
-          result.resumed++;
-          log.info("session.boot_resumed", { sessionId: row.id, userId: row.user_id, interrupted: row.interrupted_turn });
-        } catch (error) {
-          bootNotices.delete(row.id);
-          const code = (error as { code?: string } | null)?.code;
-          await skip(code === "worktree_deleted" ? "worktree_deleted" : "resume_failed", error);
-        }
+        await attemptResume(row);
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, queue.length || 1)) }, worker));
@@ -3155,6 +3270,7 @@ export class SessionManager {
     this.lifecycle.close();
     this.agyMirror?.dispose();
     clearInterval(this.reaper);
+    for (const timer of this.bootRetryTimers) clearTimeout(timer);
     for (const timer of this.lockTimers.values()) clearTimeout(timer);
     await Promise.allSettled([...this.shardActivities]);
     await Promise.allSettled([...this.restartTasks.values()]);
