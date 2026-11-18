@@ -33,6 +33,8 @@ import { isAllowedProjectIconColor, isAllowedProjectIconName, isAllowedProjectIm
 import { checkProjectBranchSwitch, listProjectBranches, switchProjectBranch, type GitCommandResult } from "./projectBranches.js";
 import { countPlainFiles, countPorcelain, planCheckouts, removeManagedCheckout, type CheckoutReport, type ProjectDeleteResult, type ProjectDeleteStatus } from "./projectDelete.js";
 import { moveProjectsInFolders, pruneProjectFromFolders } from "./projectFolders.js";
+import type { StorageSenseHost } from "./storageSense/service.js";
+import { statfs } from "node:fs/promises";
 import { assertCanDelete, deleteWorktree, inspectWorktree, type WorktreeDeleteResult, type WorktreeStatus } from "./worktreeDelete.js";
 import { CLAUDE_CONVERSATION_SQL, canSwitchTo, endConversation, listConversations, planFreshStart, recordConversation, resolveClaudeConversationId, type ConversationRow } from "./agentConversations.js";
 import { classifyResumeExit, resumeRetryDelay, bootRetryDelay, isTransientBootError, claudeProjectSlug, RESUME_FAILED_REASON, RESUME_FAILED_TITLE, BOOT_PAUSED_TITLE, type ResumeExitKind } from "./resumeRecovery.js";
@@ -1276,6 +1278,43 @@ export class SessionManager {
       log.info("worktree.deleted", { userId, projectId, workspaceId, force, branchDeleted: result.branchDeleted !== null });
       return { ...result, idleSessions: sessions.idle };
     }));
+  }
+
+  /**
+   * What Storage Sense needs from the runtime. Only awake shards are ever touched (a sleeping home is never woken for cleanup),
+   * and git runs in the user's own sandbox through the same runner the worktree delete uses.
+   */
+  storageSenseHost(): StorageSenseHost {
+    return {
+      awakeUserIds: () => [...this.shards.awakeUserIds()],
+      homeOf: (userId) => { const handle = this.shards.awakeHandle(userId); return handle ? this.hostHome(handle) : null; },
+      sessions: async (userId) => (await this.pool.query("SELECT id, workspace_id, state, last_active_at FROM agent_sessions WHERE user_id = $1", [userId])).rows.map((r: Record<string, unknown>) => ({
+        id: String(r.id), workspaceId: r.workspace_id ? String(r.workspace_id) : null,
+        // A session still held in memory counts as live whatever its row says.
+        state: this.live.get(String(r.id))?.isAlive ? "running" : String(r.state),
+        lastActiveMs: r.last_active_at ? new Date(r.last_active_at as string).getTime() : 0,
+      })),
+      workspaces: async (userId) => (await this.pool.query(
+        `SELECT w.id, w.project_id, w.cwd, w.is_worktree, w.available, w.created_at, p.cwd AS project_cwd
+         FROM floq_project_workspaces w JOIN floq_projects p ON p.id = w.project_id AND p.user_id = w.user_id WHERE w.user_id = $1`, [userId])).rows.map((r: Record<string, unknown>) => ({
+        id: String(r.id), projectId: String(r.project_id), cwd: String(r.cwd), projectCwd: String(r.project_cwd),
+        isWorktree: r.is_worktree === true, available: r.available !== false, createdMs: new Date(r.created_at as string).getTime(),
+      })),
+      git: async (userId, cwd, args) => {
+        const handle = this.shards.awakeHandle(userId);
+        if (!handle) throw unavailable("Home is asleep");
+        return this.runWorkspaceGit(handle, cwd, args);
+      },
+      withProject: (_userId, projectId, fn) => this.withProjectBranchLock(projectId, fn),
+      withActivity: (userId, fn) => this.withShardActivity(userId, fn),
+      markWorkspaceUnavailable: async (userId, projectId, workspaceId) => { await this.pool.query("UPDATE floq_project_workspaces SET available=FALSE WHERE id=$1 AND project_id=$2 AND user_id=$3", [workspaceId, projectId, userId]); },
+      freePercent: async (userId) => {
+        const handle = this.shards.awakeHandle(userId);
+        if (!handle) return null;
+        const st = await statfs(this.hostHome(handle));
+        return st.blocks > 0 ? Math.round((st.bavail / st.blocks) * 1000) / 10 : null;
+      },
+    };
   }
 
   private async worktreeDeleteTarget(userId: string, projectId: string, workspaceId: string): Promise<{ cwd: string; projectCwd: string }> {

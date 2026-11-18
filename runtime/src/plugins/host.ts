@@ -196,6 +196,10 @@ export class PluginHost {
   /** Called by the server once it has built Approvals. */
   setApprovals(approvals: NonNullable<typeof this.approvals>): void { this.approvals = approvals; }
 
+  private storageSense?: ReturnType<NonNullable<ContextDeps["storageSense"]>>;
+  /** Called by index.ts once the session manager exists (backs `ctx.storageSense`). */
+  setStorageSense(api: NonNullable<typeof this.storageSense>): void { this.storageSense = api; }
+
   private attention?: ReturnType<NonNullable<ContextDeps["attention"]>>;
   /** Called by the server once it has built Approvals and Decisions (backs `ctx.attention`). */
   setAttention(attention: NonNullable<typeof this.attention>): void { this.attention = attention; }
@@ -481,7 +485,7 @@ export class PluginHost {
   }
 
   private contextDeps(e: Entry): ContextDeps {
-    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals, attention: () => this.attention };
+    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals, attention: () => this.attention, storageSense: () => this.storageSense, enabledUserIds: async () => ((await this.pool.query("SELECT user_id FROM floq_plugin_user_settings WHERE plugin_id = $1 AND enabled", [e.id])).rows as { user_id: string }[]).map((r) => r.user_id) };
   }
 
   /** Pending migrations and their ledger rows commit or roll back together. */

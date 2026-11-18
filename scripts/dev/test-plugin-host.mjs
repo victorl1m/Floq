@@ -68,7 +68,7 @@ test('a component that throws renders the boundary fallback instead of a blank a
     assert.match(ok, /child/);
     // only the dev-only example may be registered
     const { UI_PLUGINS } = await server.ssrLoadModule('/src/plugins/index.ts');
-    assert.deepEqual(Object.keys(UI_PLUGINS).filter((id) => id !== 'example'), []);
+    assert.deepEqual(Object.keys(UI_PLUGINS).filter((id) => id !== 'example'), ['storage-sense']);
   } finally { await server.close(); }
 });
 

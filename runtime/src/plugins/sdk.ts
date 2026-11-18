@@ -171,6 +171,15 @@ export interface PluginAttention {
   resolveApproval(id: string, decision: "allow" | "deny"): Promise<void>;
 }
 
+/** Host API for the bundled `storage-sense` plugin only (other plugins get a refusal): cleanup of what agents leave in awake homes. */
+export interface PluginStorageSense {
+  awakeUserIds(): string[];
+  run(userId: string, config: import("../storageSense/plan.js").StorageSenseConfig, options: { dryRun: boolean; trigger: "schedule" | "low-space" | "manual"; budgetMs?: number }): Promise<import("../storageSense/plan.js").StorageSenseReport | null>;
+  freePercent(userId: string): Promise<number | null>;
+  /** Sends a notification (category system) to the user. */
+  notify(userId: string, note: { title: string; body: string; level: "info" | "warning" }): Promise<void>;
+}
+
 export interface PluginContext {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
@@ -202,6 +211,10 @@ export interface PluginContext {
     set(userId: string, key: string, value: unknown): Promise<void>;
   };
   taskSources: PluginTaskSources;
+  /** User ids that switched this (user-scoped) plugin on. */
+  enabledUserIds(): Promise<string[]>;
+  /** Only for the bundled `storage-sense` plugin; throws for any other plugin. */
+  storageSense: PluginStorageSense;
   events: PluginEvents;
   approvals: PluginApprovals;
   attention: PluginAttention;

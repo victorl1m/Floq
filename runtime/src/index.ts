@@ -37,6 +37,7 @@ import { WorkspaceFiles } from "./workspaceFiles.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { TasksService } from "./tasks.js";
+import { StorageSense } from "./storageSense/service.js";
 import { PluginHost } from "./plugins/host.js";
 import { BUILTIN_PLUGINS } from "./plugins/index.js";
 import { removeOwnedPluginSkill } from "./plugins/skillOwnership.js";
@@ -193,6 +194,17 @@ await plugins.load();
 // A dead gocryptfs mount was remounted: live agent sandboxes still hold the dead mount, so restart them (guarded) and tell the user.
 const notifications = new Notifications({ pool });
 const mountStormGuard = new RestartStormGuard();
+// Storage Sense (bundled plugin) reaches awake homes only through this narrow host API.
+{
+  const storageSense = new StorageSense(manager.storageSenseHost());
+  const host = manager.storageSenseHost();
+  plugins.setStorageSense({
+    awakeUserIds: () => host.awakeUserIds(),
+    run: (userId, config, options) => storageSense.run(userId, config, options),
+    freePercent: (userId) => host.freePercent(userId),
+    notify: async (userId, note) => { await notifications.create(userId, { title: note.title, body: note.body, level: note.level, category: "system" }); },
+  });
+}
 shards.onMountRecovered = async (userId) => {
   await recoverFromMountDeath({
     guard: mountStormGuard,

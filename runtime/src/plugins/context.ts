@@ -7,7 +7,7 @@ import type { Decisions } from "../decisions.js";
 import type { PluginEvents } from "./events.js";
 import type { TaskSourceRegistry } from "./taskSources.js";
 import { INSTALL_OWNER, type PluginSecrets } from "./secrets.js";
-import type { AttentionPending, AttentionResolved, WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
+import type { PluginStorageSense, AttentionPending, AttentionResolved, WebhookHandler, WebhookRequest, PluginContext, PluginFetchInit, PluginFetchResponse, PluginLog, PluginManifest, PluginRouteHandler, PluginRouteMethod } from "./sdk.js";
 
 export const FETCH_TIMEOUT_MS = 15_000;
 export const FETCH_MAX_BYTES = 5 * 1024 * 1024;
@@ -28,6 +28,10 @@ export interface ContextDeps {
   approvals?: () => Pick<Approvals, "askAsPlugin"> | undefined;
   /** Lazy, like approvals. Backs `ctx.attention`. */
   attention?: () => { approvals: Pick<Approvals, "subscribe" | "list" | "resolve">; decisions: Pick<Decisions, "subscribe" | "list" | "resolve"> } | undefined;
+  /** Lazy. Backs `ctx.storageSense` (bundled storage-sense plugin only). */
+  storageSense?: () => PluginStorageSense | undefined;
+  /** Backs `ctx.enabledUserIds()`. */
+  enabledUserIds?: () => Promise<string[]>;
   sink?: (level: "debug" | "info" | "warn" | "error", event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -302,6 +306,15 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
         deps.taskSources.register(id, sourceId, provider);
       },
     },
+    enabledUserIds: () => deps.enabledUserIds?.() ?? Promise.resolve([]),
+    storageSense: new Proxy({} as PluginStorageSense, {
+      get(_t, prop) {
+        if (id !== "storage-sense") throw new Error("storageSense is only available to the storage-sense plugin");
+        const api = deps.storageSense?.();
+        if (!api) throw new Error("storage sense is not available");
+        return (api as unknown as Record<string | symbol, unknown>)[prop];
+      },
+    }),
     events: {
       publish(userId, name, data) {
         if (!deps.events) throw new Error("events are not available");
