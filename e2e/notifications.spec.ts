@@ -60,18 +60,18 @@ test('level filter narrows the list; category and project filters too; groups by
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Release build failed');
   await page.getByRole('radio', { name: 'All' }).click();
-  // Styled (Radix) selects, not native <select>: open the menu, pick the option.
-  await page.getByRole('combobox', { name: 'Category' }).click();
-  await expect(page.getByRole('option', { name: 'All categories' })).toBeVisible();
+  // One Filter button opens a dropdown with Category and Project radio groups.
+  await page.getByRole('button', { name: 'Filters' }).click();
+  await expect(page.getByRole('menuitemradio', { name: 'All categories' })).toBeVisible();
   await page.waitForTimeout(400); // let the 100 ms fade/zoom-in finish before capturing
   await page.screenshot({ path: '.tmp/shots/notification-filter-menu.png' });
-  await page.getByRole('option', { name: 'Cost' }).click();
-  await expect(page.getByRole('combobox', { name: 'Category' })).toContainText('Cost');
+  await page.getByRole('menuitemradio', { name: 'Cost' }).click();
+  await expect(page.getByRole('menuitemradio', { name: 'Cost' })).toHaveAttribute('aria-checked', 'true');
   await expect(rows).toHaveCount(1);
-  await page.getByRole('combobox', { name: 'Category' }).click();
-  await page.getByRole('option', { name: 'All categories' }).click();
-  await page.getByRole('combobox', { name: 'Project' }).click();
-  await page.getByRole('option').nth(2).click();
+  await page.getByRole('menuitemradio', { name: 'All categories' }).click();
+  await page.getByRole('menuitemradio', { name: 'All projects' }).locator('xpath=following-sibling::*[1]').click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Filters (1 active)' })).toBeVisible();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Usage at 80%');
 });

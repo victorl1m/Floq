@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import { IconBell, IconChecks, IconTrash } from "@tabler/icons-react";
+import { IconBell, IconChecks, IconFilter, IconTrash } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useRuntime } from "@/lib/runtime/store";
 import {
@@ -60,6 +62,7 @@ export function NotificationCenterPanel({ onNavigate }: { onNavigate?: () => voi
   const groups = useMemo(() => groupByDay(visible), [visible]);
   const categoryItems = useMemo(() => [{ value: "all", label: "All categories" }, ...CATEGORIES.map((c) => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) }))], []);
   const projectItems = useMemo(() => [{ value: "all", label: "All projects" }, ...projectIds.map((id) => ({ value: id, label: projectName(id) ?? "Project" }))], [projectIds, projects]);
+  const menuFilters = (filters.category !== "all" ? 1 : 0) + (filters.project !== "all" ? 1 : 0);
   const filtered = filters.level !== "all" || filters.category !== "all" || filters.project !== "all";
   const open = (n: AppNotification) => { run(n); markRead([n.id]); onNavigate?.(); };
 
@@ -82,16 +85,35 @@ export function NotificationCenterPanel({ onNavigate }: { onNavigate?: () => voi
             );
           })}
         </div>
-        <Select value={filters.category} onValueChange={(value) => setFilters((f) => ({ ...f, category: (value ?? "all") as NotificationCategory | "all" }))}>
-          <SelectTrigger size="sm" className="ml-auto max-w-36" aria-label="Category"><SelectValue /></SelectTrigger>
-          <SelectContent>{categoryItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-        </Select>
-        {projectIds.length > 0 && (
-          <Select value={filters.project} onValueChange={(value) => setFilters((f) => ({ ...f, project: value ?? "all" }))}>
-            <SelectTrigger size="sm" className="max-w-36" aria-label="Project"><SelectValue /></SelectTrigger>
-            <SelectContent>{projectItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-          </Select>
-        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="xs" variant={menuFilters > 0 ? "secondary" : "ghost"} className="ml-auto" aria-label={menuFilters > 0 ? `Filters (${menuFilters} active)` : "Filters"}>
+              <IconFilter />Filter
+              {menuFilters > 0 && <span className="rounded-full bg-foreground/15 px-1.5 text-[10px] leading-4 tabular-nums" aria-hidden>{menuFilters}</span>}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52 max-h-80">
+            <DropdownMenuLabel className="text-xs text-muted-foreground">Category</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={filters.category} onValueChange={(value) => setFilters((f) => ({ ...f, category: value as NotificationCategory | "all" }))}>
+              {categoryItems.map((item) => <DropdownMenuRadioItem key={item.value} value={item.value} onSelect={(e) => e.preventDefault()}>{item.label}</DropdownMenuRadioItem>)}
+            </DropdownMenuRadioGroup>
+            {projectIds.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs text-muted-foreground">Project</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={filters.project} onValueChange={(value) => setFilters((f) => ({ ...f, project: value }))}>
+                  {projectItems.map((item) => <DropdownMenuRadioItem key={item.value} value={item.value} onSelect={(e) => e.preventDefault()}><span className="truncate">{item.label}</span></DropdownMenuRadioItem>)}
+                </DropdownMenuRadioGroup>
+              </>
+            )}
+            {menuFilters > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setFilters((f) => ({ ...f, category: "all", project: "all" }))}>Reset filters</DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {groups.length === 0 ? (
