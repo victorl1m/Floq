@@ -46,7 +46,7 @@ export function FallbackBadge({ sessionId, fallback }: { sessionId: string; fall
     return (
         <Popover>
             <PopoverTrigger asChild>
-                <button type="button" className="nodrag nopan shrink-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/70" aria-label={fallbackBadgeText(fallback)}>
+                <button type="button" className="nodrag nopan inline-flex shrink-0 items-center rounded-md leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring/70" aria-label={fallbackBadgeText(fallback)}>
                     <Badge
                         variant="outline"
                         data-testid="fallback-badge"
