@@ -37,6 +37,9 @@ import { WorkspaceFiles } from "./workspaceFiles.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { TasksService } from "./tasks.js";
+import { ProjectTasks } from "./projectTasks.js";
+import { Automations } from "./automations.js";
+import { TaskScheduler } from "./taskScheduler.js";
 import { StorageSense } from "./storageSense/service.js";
 import { PluginHost } from "./plugins/host.js";
 import { BUILTIN_PLUGINS } from "./plugins/index.js";
@@ -212,7 +215,9 @@ shards.onMountRecovered = async (userId) => {
     notify: async (id, n) => { await notifications.create(id, { title: n.title, body: n.body, level: n.level, category: "system" }); },
   }, userId);
 };
-const server = createRuntimeServer({ notifications, config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
+const projectTasks = new ProjectTasks(pool);
+const automations = new Automations(pool, projectTasks);
+const server = createRuntimeServer({ projectTasks, automations, notifications, config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
 
 // The one synchronous CLI version check happens here, before clients connect; afterwards it only refreshes in the background.
 warmProviderVersions(config);
@@ -230,12 +235,20 @@ void manager.resumeAfterBoot((userId) => settings.profile(userId))
   .then((r) => log.info("runtime.boot_resume_done", r))
   .catch((error) => log.error("runtime.boot_resume_failed", { error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
 
+// Task scheduler: due automations create tasks, due todo tasks go to their agent (auto-agent projects only). State lives in Postgres, so a restart resumes cleanly.
+const taskScheduler = new TaskScheduler(pool, automations, projectTasks, {
+  deliver: (userId, sessionId, from, text) => orchestrator.deliverSystem(userId, sessionId, from, text),
+  notify: async (userId, n) => { await notifications.create(userId, { title: n.title, body: n.body, level: n.level, category: "agent", projectId: n.projectId }); },
+}, { firstDelayMs: 20_000 });
+taskScheduler.start();
+
 let stopping = false;
 async function stop(signal: string): Promise<void> {
   if (stopping) return;
   stopping = true;
   log.info("runtime.stopping", { signal });
   credentials.stop();
+  taskScheduler.stop();
   await plugins.stopAll();
   await browser.shutdown();
   browser.egress?.close();

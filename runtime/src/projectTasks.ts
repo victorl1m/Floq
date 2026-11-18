@@ -180,17 +180,22 @@ export class ProjectTasks {
     await this.pool.query("INSERT INTO task_events (task_id, actor, kind, text) VALUES ($1,$2,$3,$4)", [taskId, actor, kind, text.slice(0, 8000)]);
   }
 
-  async list(userId: string, opts: { projectId?: string; status?: string; assigneeSessionId?: string } = {}): Promise<{ tasks: Task[]; settings: Record<string, TaskSettings> }> {
+  async list(userId: string, opts: { projectId?: string; status?: string; assigneeSessionId?: string; organizationId?: string | null } = {}): Promise<{ tasks: Task[]; settings: Record<string, TaskSettings> }> {
     const where = ["p.user_id = $1"];
     const params: unknown[] = [userId];
     if (opts.projectId) { await this.requireProject(userId, opts.projectId); params.push(opts.projectId); where.push(`t.project_id = $${params.length}`); }
+    else if (opts.organizationId) { params.push(opts.organizationId); where.push(`p.organization_id = $${params.length}`); }
     if (opts.status) {
       const statuses = opts.status.split(",").map((s) => cleanStatus(s.trim()));
       params.push(statuses); where.push(`t.status = ANY($${params.length}::text[])`);
     }
     if (opts.assigneeSessionId) { params.push(opts.assigneeSessionId); where.push(`t.assignee_session_id = $${params.length}`); }
     const rows = (await this.pool.query(`SELECT t.* FROM project_tasks t JOIN floq_projects p ON p.id = t.project_id WHERE ${where.join(" AND ")} ORDER BY t.position, t.created_at LIMIT 5000`, params)).rows as Row[];
-    const sets = (await this.pool.query(`SELECT s.project_id, s.auto_agent, s.agent_session_id FROM project_task_settings s JOIN floq_projects p ON p.id = s.project_id WHERE p.user_id = $1${opts.projectId ? " AND s.project_id = $2" : ""}`, opts.projectId ? [userId, opts.projectId] : [userId])).rows;
+    const setParams: unknown[] = [userId];
+    let setWhere = "";
+    if (opts.projectId) { setParams.push(opts.projectId); setWhere = " AND s.project_id = $2"; }
+    else if (opts.organizationId) { setParams.push(opts.organizationId); setWhere = " AND p.organization_id = $2"; }
+    const sets = (await this.pool.query(`SELECT s.project_id, s.auto_agent, s.agent_session_id FROM project_task_settings s JOIN floq_projects p ON p.id = s.project_id WHERE p.user_id = $1${setWhere}`, setParams)).rows;
     const settings: Record<string, TaskSettings> = {};
     for (const s of sets) settings[s.project_id as string] = { autoAgent: Boolean(s.auto_agent), agentSessionId: (s.agent_session_id as string | null) ?? null };
     return { tasks: rows.map(toTask), settings };

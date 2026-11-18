@@ -66,9 +66,12 @@ export interface AutomationHooks {
 export class Automations {
   constructor(private readonly pool: pg.Pool, private readonly tasks: ProjectTasks) {}
 
-  async list(userId: string, projectId?: string, now = new Date()): Promise<Automation[]> {
+  async list(userId: string, projectId?: string, now = new Date(), organizationId?: string | null): Promise<Automation[]> {
     if (projectId) await this.tasks.requireProject(userId, projectId);
-    const r = await this.pool.query(`SELECT a.* FROM automations a WHERE a.user_id = $1${projectId ? " AND a.project_id = $2" : ""} ORDER BY a.created_at`, projectId ? [userId, projectId] : [userId]);
+    const r = await this.pool.query(
+      `SELECT a.* FROM automations a JOIN floq_projects p ON p.id = a.project_id WHERE a.user_id = $1${projectId ? " AND a.project_id = $2" : organizationId ? " AND p.organization_id = $2" : ""} ORDER BY a.created_at`,
+      projectId ? [userId, projectId] : organizationId ? [userId, organizationId] : [userId],
+    );
     return (r.rows as Row[]).map((row) => toAutomation(row, now));
   }
 

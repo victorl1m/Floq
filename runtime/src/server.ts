@@ -62,6 +62,8 @@ import { displayStatus, portIsFreeInNetns, stopDisplayServer } from "./display.j
 import { acquireTunnelSlot, connectInNetns } from "./netns.js";
 import { databasePort, listAllListeners, listSessionPorts, MANUAL_DENY_PORTS, manualPortOwned, pipeTunnel, tunnelTarget } from "./ports.js";
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
+import { ProjectTasks } from "./projectTasks.js";
+import { Automations } from "./automations.js";
 
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
@@ -106,6 +108,9 @@ interface Deps {
   /** Enables the WebDAV mounts (Open in Explorer). */
   shards?: ShardService;
   tasks: TasksService;
+  /** Per-project task list + automations (shared with the scheduler started in index.ts); defaults are built from `pool`. */
+  projectTasks?: ProjectTasks;
+  automations?: Automations;
   /** Optional so existing callers keep working; absent = the browser routes answer "unavailable". */
   plugins?: PluginHost;
   browser?: BrowserService;
@@ -119,7 +124,9 @@ function toolkitProvider(provider: string): "claude" | "codex" {
   throw badRequest("Skills and MCP servers are only managed for Claude and Codex; pass --provider claude or --provider codex");
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks, notifications: sharedNotifications }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, projectTasks: sharedProjectTasks, automations: sharedAutomations, shards, plugins, browser, browserLinks, notifications: sharedNotifications }: Deps) {
+  const projectTasks = sharedProjectTasks ?? new ProjectTasks(pool);
+  const automations = sharedAutomations ?? new Automations(pool, projectTasks);
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup, reservedEmail: config.bootstrapAdminEmail });
@@ -531,6 +538,32 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const { requester } = await orchestrator.approvalParties(userId, sessionId, undefined);
           const n = await notifications.create(userId, { title: body.title, body: body.body, level: body.level, category: body.category, action: body.action, projectId: requester.projectId, sessionId, sessionName: requester.name });
           return send(res, 200, { id: n.id, notification: n });
+        }
+        // Project task list (agents only ever see their own project's tasks).
+        case "tasks/list": {
+          const ctx = await projectTasks.agentContext(userId, sessionId);
+          const status = typeof body.status === "string" && body.status ? body.status : undefined;
+          const { tasks: list } = await projectTasks.list(userId, { projectId: ctx.projectId, status, assigneeSessionId: body.mine === true ? sessionId : undefined });
+          return send(res, 200, { tasks: list });
+        }
+        case "tasks/show": {
+          const ctx = await projectTasks.agentContext(userId, sessionId);
+          const taskId = String(body.id ?? "");
+          return send(res, 200, { task: await projectTasks.get(userId, ctx.projectId, taskId), events: await projectTasks.events(userId, ctx.projectId, taskId) });
+        }
+        case "tasks/create": {
+          const ctx = await projectTasks.agentContext(userId, sessionId);
+          return send(res, 200, { task: await projectTasks.create(userId, ctx.projectId, { title: body.title, description: body.description, priority: body.priority, dueAt: body.dueAt, runAt: body.runAt }, ctx) });
+        }
+        case "tasks/update":
+        case "tasks/done": {
+          const ctx = await projectTasks.agentContext(userId, sessionId);
+          const patch = path === "tasks/done" ? { status: "done", comment: body.comment } : { title: body.title, description: body.description, status: body.status, comment: body.comment };
+          return send(res, 200, { task: await projectTasks.update(userId, ctx.projectId, String(body.id ?? ""), patch, ctx) });
+        }
+        case "tasks/comment": {
+          const ctx = await projectTasks.agentContext(userId, sessionId);
+          return send(res, 200, { events: await projectTasks.comment(userId, ctx.projectId, String(body.id ?? ""), body.text, ctx) });
         }
         case "decisions/status": return send(res, 200, await decisions.status(userId, sessionId, body.id, Math.max(0, Number(body.waitSec) || 0) * 1000));
         case "decisions/cancel": return send(res, 200, await decisions.cancel(userId, sessionId, body.id));
@@ -1559,6 +1592,37 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return send(res, 200, url.pathname.endsWith("/read") ? await notifications.markRead(userId, body.ids ?? "all") : await notifications.clear(userId, body.ids ?? "all"));
     }
 
+    // Project tasks + automations (user session). Project-scoped routes are org-checked above; the cross-project lists follow the active organization.
+    if (url.pathname === "/v1/tasks" && method === "GET") {
+      const projectId = url.searchParams.get("projectId") || undefined;
+      return send(res, 200, await projectTasks.list(userId, { projectId, status: url.searchParams.get("status") || undefined, organizationId: projectId ? undefined : await activeOrg() }));
+    }
+    const taskRoute = /^\/v1\/projects\/([\w-]+)\/tasks(?:\/([\w-]+)(?:\/(events))?)?$/.exec(url.pathname);
+    if (taskRoute) {
+      const [, pid, tid, sub] = taskRoute;
+      if (!tid && method === "POST") return send(res, 200, { task: await projectTasks.create(userId, pid, await readJson<Record<string, unknown>>(req)) });
+      if (tid && !sub && method === "PATCH") return send(res, 200, { task: await projectTasks.update(userId, pid, tid, await readJson<Record<string, unknown>>(req)) });
+      if (tid && !sub && method === "DELETE") { await projectTasks.remove(userId, pid, tid); return send(res, 200, { ok: true }); }
+      if (tid && sub && method === "GET") return send(res, 200, { events: await projectTasks.events(userId, pid, tid) });
+      if (tid && sub && method === "POST") return send(res, 200, { events: await projectTasks.comment(userId, pid, tid, (await readJson<{ text?: unknown }>(req)).text) });
+    }
+    const taskSettingsRoute = /^\/v1\/projects\/([\w-]+)\/task-settings$/.exec(url.pathname);
+    if (taskSettingsRoute && method === "PUT") return send(res, 200, { settings: await projectTasks.putSettings(userId, taskSettingsRoute[1], await readJson<Record<string, unknown>>(req)) });
+    if (taskSettingsRoute && method === "GET") return send(res, 200, { settings: await projectTasks.getSettings(userId, taskSettingsRoute[1]) });
+    if (url.pathname === "/v1/automations" && method === "GET") {
+      const projectId = url.searchParams.get("projectId") || undefined;
+      return send(res, 200, { automations: await automations.list(userId, projectId, new Date(), projectId ? undefined : await activeOrg()) });
+    }
+    if (url.pathname === "/v1/automations/preview" && method === "POST") return send(res, 200, automations.preview((await readJson<{ schedule?: unknown }>(req)).schedule));
+    const projectAutomations = /^\/v1\/projects\/([\w-]+)\/automations(?:\/([\w-]+)(?:\/(run))?)?$/.exec(url.pathname);
+    if (projectAutomations) {
+      const [, pid, aid, sub] = projectAutomations;
+      if (!aid && method === "POST") return send(res, 200, { automation: await automations.create(userId, pid, await readJson<Record<string, unknown>>(req)) });
+      if (aid && !sub && method === "PATCH") return send(res, 200, { automation: await automations.update(userId, pid, aid, await readJson<Record<string, unknown>>(req)) });
+      if (aid && !sub && method === "DELETE") { await automations.remove(userId, pid, aid); return send(res, 200, { ok: true }); }
+      if (aid && sub === "run" && method === "POST") return send(res, 200, await automations.runNow(userId, pid, aid));
+    }
+
     const portsMatch = /^\/v1\/sessions\/([\w-]+)\/ports$/.exec(url.pathname);
     if (portsMatch && method === "GET") {
       const live = manager.getLive(portsMatch[1], userId);
@@ -1770,11 +1834,12 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const offApprovals = approvals.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDecisions = decisions.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offNotifications = notifications.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
+          const offTasks = projectTasks.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offDisplays = manager.displays.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); });
           const offVirtual = manager.agyMirror?.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) ?? (() => undefined);
           for (const frame of manager.agyMirror?.frames(userId) ?? []) ws.send(JSON.stringify(frame));
           const offPlugins = plugins ? plugins.events.subscribe(userId, (frame) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame)); }) : () => undefined;
-          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offNotifications(); offDisplays(); offPlugins(); offVirtual(); };
+          const offAll = () => { off(); offPorts(); offApprovals(); offDecisions(); offNotifications(); offTasks(); offDisplays(); offPlugins(); offVirtual(); };
           ws.on("close", offAll);
           ws.on("error", offAll);
         });
