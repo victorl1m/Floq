@@ -25,6 +25,8 @@ Each `vX.Y.Z` tag build uploads its installer to the `vX.Y.Z` release first, the
 npx tauri signer generate -w ~/.tauri/floq.key
 ```
 
+> **This repo (victorl1m/Floq):** set up on 2026-11-18. The public key is in `tauri.conf.json`; the secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are set; the only backup of the private key and its password is at `~/.floq/keys/floq-updater.key` / `.password` (mode 0600) in the maintainer's Floq home: move it to a password manager. Losing it means installed apps can never verify another update.
+
 1. Put the **public** key (`floq.key.pub` contents) in `src-tauri/tauri.conf.json` > `plugins.updater.pubkey`, replacing `PUBKEY_PLACEHOLDER` (TODO: until then, update checks fail with "Updates are not configured in this build").
 2. Add repository secrets `TAURI_SIGNING_PRIVATE_KEY` (the key file content) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit the private key.
 3. Without those secrets CI still builds; it just skips signing and publishes no `latest.json`.
