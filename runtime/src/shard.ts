@@ -642,6 +642,20 @@ async function lazyUnmount(path: string): Promise<void> {
 }
 
 /**
+ * Command line that starts gocryptfs with a very low OOM score. The daemon is tiny, and when it is killed every agent of
+ * that user loses its writes (ENOTCONN) until a restart, so under memory pressure the kernel must pick sandboxes (500) first.
+ * The score is written inside the shell right before exec, so the forked daemon inherits it. Lowering it needs CAP_SYS_RESOURCE
+ * (the runtime runs as root); on a host that refuses, the write fails silently and gocryptfs still starts.
+ * FLOQ_GOCRYPTFS_OOM_SCORE_ADJ (-1000..1000, default -900); 0 starts gocryptfs directly.
+ */
+export function gocryptfsArgv(args: string[], env: NodeJS.ProcessEnv = process.env): { command: string; args: string[] } {
+  const n = Number.parseInt(env.FLOQ_GOCRYPTFS_OOM_SCORE_ADJ ?? "", 10);
+  const oom = Number.isFinite(n) ? Math.max(-1000, Math.min(1000, n)) : -900;
+  if (!oom) return { command: "gocryptfs", args };
+  return { command: "/bin/sh", args: ["-c", `{ echo ${oom} > /proc/self/oom_score_adj; } 2>/dev/null; exec gocryptfs "$@"`, "floq-gocryptfs", ...args] };
+}
+
+/**
  * Run gocryptfs without ever giving it a pipe to Node: in daemon mode the forked filesystem process
  * inherits the parent's stdio, and a pipe closed by Node would kill it (EPIPE) right after mounting.
  * Its stderr goes to a private log file instead; we wait for the launcher process to exit.
@@ -655,7 +669,8 @@ async function runGocryptfs(args: string[], logFile: string): Promise<void> {
   const fd = openSync(logFile, "a", 0o600);
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("gocryptfs", args, { stdio: ["ignore", "ignore", fd] });
+      const argv = gocryptfsArgv(args);
+      const child = spawn(argv.command, argv.args, { stdio: ["ignore", "ignore", fd] });
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("gocryptfs timed out"));

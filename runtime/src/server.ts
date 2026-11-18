@@ -74,6 +74,8 @@ const STREAM_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SELF_RESTART_DELAY_MS = 750;
 
 interface Deps {
+  /** Shared notification center (the dead-mount recovery in index.ts notifies through it so live viewers get the frame). */
+  notifications?: Notifications;
   config: Config;
   /** One-time setup token for the bootstrap admin; defaults to a DB-backed instance. */
   setupToken?: SetupToken;
@@ -117,7 +119,7 @@ function toolkitProvider(provider: string): "claude" | "codex" {
   throw badRequest("Skills and MCP servers are only managed for Claude and Codex; pass --provider claude or --provider codex");
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks, notifications: sharedNotifications }: Deps) {
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
   const authHandler = toNodeHandler(auth);
   const organizations = new OrganizationsService(pool, { limits: organizationLimitsFromEnv(), inboxRequiresVerifiedEmail: config.allowSignup, reservedEmail: config.bootstrapAdminEmail });
@@ -155,7 +157,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   const memoryOff = () => new HttpError(503, "memory_disabled", "Memory is disabled on this Floq server (set FLOQ_REDIS_URL)");
   const decisions = new Decisions({ pool, deliver: (userId, sessionId, text) => orchestrator.deliverApproval(userId, sessionId, text) });
   const decisionsReady = decisions.init();
-  const notifications = new Notifications({ pool });
+  const notifications = sharedNotifications ?? new Notifications({ pool });
   plugins?.setAttention({ approvals, decisions });
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.

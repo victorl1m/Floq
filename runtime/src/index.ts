@@ -17,6 +17,8 @@ import { SessionManager } from "./manager.js";
 import { createShardDriver } from "./shard.js";
 import { ShardService } from "./shards.js";
 import { createRuntimeServer } from "./server.js";
+import { Notifications } from "./notifications.js";
+import { MOUNT_RECOVERY_NOTICE, RestartStormGuard, recoverFromMountDeath } from "./mountWatch.js";
 import { SetupToken } from "./setupToken.js";
 import { SettingsStore } from "./settings.js";
 import { AgentLinks } from "./links.js";
@@ -188,7 +190,17 @@ plugins.setSecretMigrationPort({
   remove: (userId, name, provider) => skills.removeMcp(userId, { scope: "global", provider, name }),
 });
 await plugins.load();
-const server = createRuntimeServer({ config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
+// A dead gocryptfs mount was remounted: live agent sandboxes still hold the dead mount, so restart them (guarded) and tell the user.
+const notifications = new Notifications({ pool });
+const mountStormGuard = new RestartStormGuard();
+shards.onMountRecovered = async (userId) => {
+  await recoverFromMountDeath({
+    guard: mountStormGuard,
+    restartSessions: async (id) => manager.restartLiveSessionsForUser(id, await settings.profile(id), MOUNT_RECOVERY_NOTICE),
+    notify: async (id, n) => { await notifications.create(id, { title: n.title, body: n.body, level: n.level, category: "system" }); },
+  }, userId);
+};
+const server = createRuntimeServer({ notifications, config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
 
 // The one synchronous CLI version check happens here, before clients connect; afterwards it only refreshes in the background.
 warmProviderVersions(config);

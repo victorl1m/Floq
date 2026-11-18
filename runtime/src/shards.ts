@@ -5,6 +5,7 @@ import type pg from "pg";
 import type { Config } from "./config.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { log } from "./logger.js";
+import { MountWatchdog } from "./mountWatch.js";
 import { loadRemovedSkills, PROTECTED_SKILLS } from "./skills.js";
 import { copySeedTree, ownHomeTree, type ShardDriver, type ShardHandle } from "./shard.js";
 
@@ -31,6 +32,13 @@ export class ShardService {
   private readonly aliveCheckedAt = new Map<string, number>();
   /** Fired (not awaited, never throws into wake) each time a user's home was just unlocked. The agent browser uses it to sync its MCP entry. */
   onWake?: (userId: string) => void;
+  /** Fired (not awaited, never throws) after a dead mount was remounted, whether a request or the liveness timer noticed it. Live agent sandboxes still point at the dead mount and need a restart. */
+  onMountRecovered?: (userId: string) => Promise<void> | void;
+  private readonly watchdogs = new Map<string, MountWatchdog>();
+  /** Users whose mount died and has not been successfully remounted yet (a failed remount drops the handle, so this outlives it). */
+  private readonly needsRecovery = new Set<string>();
+  /** Liveness probe interval; tests shorten it. */
+  probeMs?: number;
 
   constructor(
     private readonly pool: pg.Pool,
@@ -58,6 +66,32 @@ export class ShardService {
     return ok;
   }
 
+  /**
+   * Probe an awake home every few seconds (the same readdir wake() uses) so a dead gocryptfs daemon is found and remounted
+   * promptly instead of on the next request. A failed remount keeps the timer running, so it is retried each tick.
+   */
+  private watch(userId: string, handle: ShardHandle): void {
+    this.watchdogs.get(userId)?.stop();
+    const isAlive = this.driver.isAlive;
+    if (!isAlive) return;
+    const dog = new MountWatchdog(
+      () => isAlive.call(this.driver, handle),
+      async () => {
+        // Defeat the wake() probe throttle: this probe already proved the mount dead.
+        this.aliveCheckedAt.delete(userId);
+        await this.wake(userId);
+      },
+      this.probeMs,
+    );
+    this.watchdogs.set(userId, dog);
+    dog.start();
+  }
+
+  private unwatch(userId: string): void {
+    this.watchdogs.get(userId)?.stop();
+    this.watchdogs.delete(userId);
+  }
+
   isAwake(userId: string): boolean {
     return this.handles.has(userId);
   }
@@ -72,6 +106,7 @@ export class ShardService {
       const cached = this.handles.get(userId);
       if (cached && this.alive(userId, cached)) return cached;
       if (cached) {
+        this.needsRecovery.add(userId);
         // The gocryptfs daemon died under an awake shard (OOM kill, crash): every access fails with ENOTCONN until the
         // home is mounted again. Drop the handle so driver.wake() below unmounts the dead mount and remounts it.
         log.error("shard.mount_died", { userId, uid: cached.uid });
@@ -98,7 +133,13 @@ export class ShardService {
       this.seed(handle.mountPath, ".", handle.uid, removed);
       repairToolCaches(handle.mountPath, handle.uid);
       this.handles.set(userId, handle);
+      this.watch(userId, handle);
       await this.pool.query("UPDATE shards SET state = 'awake', last_active_at = now() WHERE user_id = $1", [userId]);
+      if (this.needsRecovery.delete(userId) && this.onMountRecovered) {
+        setImmediate(() => {
+          void Promise.resolve().then(() => this.onMountRecovered?.(userId)).catch((error) => log.error("shard.mount_recovered_hook_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }));
+        });
+      }
       // After this serial task: the hook's own wake/activity calls queue behind it instead of deadlocking on it.
       if (this.onWake) setImmediate(() => { try { this.onWake?.(userId); } catch { /* best effort */ } });
       return handle;
@@ -139,6 +180,8 @@ export class ShardService {
 
   sleep(userId: string): Promise<void> {
     return this.serial(userId, async () => {
+      this.unwatch(userId);
+      this.needsRecovery.delete(userId);
       const handle = this.handles.get(userId);
       if (!handle) return;
       await this.driver.sleep(handle);

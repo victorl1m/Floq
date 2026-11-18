@@ -2603,6 +2603,44 @@ export class SessionManager {
     });
   }
 
+  /**
+   * After a user's gocryptfs mount died and was remounted: every live sandbox of that user still points at the dead mount,
+   * so restart each agent through the same sleep -> strict resume path as restartSelf (same conversation id) and queue a
+   * notice telling it to re-check state. Shells and agents without a saved conversation are skipped, not restarted fresh.
+   * Never throws per session; at most 3 restart at a time so the CPU is not saturated.
+   */
+  async restartLiveSessionsForUser(userId: string, profile: RuntimeProfile, notice: string): Promise<{ restarted: number; skipped: number; failed: number }> {
+    const report = { restarted: 0, skipped: 0, failed: 0 };
+    const targets = [...this.live.values()].filter((s) => s.userId === userId && s.isAlive && !this.logins.has(s.id));
+    const queue = targets.filter((s) => {
+      if (s.provider === "shell") { report.skipped++; return false; }
+      return true;
+    });
+    const worker = async () => {
+      for (let session = queue.shift(); session; session = queue.shift()) {
+        const id = session.id;
+        try {
+          await this.assertSelfRestartable(userId, id);
+        } catch (error) {
+          report.skipped++;
+          log.warn("session.mount_restart_skipped", { sessionId: id, userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+          continue;
+        }
+        this.queueBootNotice(id, notice);
+        try {
+          await this.restartSelf(userId, profile, id);
+          report.restarted++;
+        } catch (error) {
+          this.dropBootNotice(id);
+          report.failed++;
+          log.error("session.mount_restart_failed", { sessionId: id, userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, Math.max(1, queue.length)) }, worker));
+    return report;
+  }
+
   isLogin(id: string): boolean {
     return this.logins.has(id);
   }
