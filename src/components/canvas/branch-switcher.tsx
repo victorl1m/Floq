@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconAlertTriangle, IconCheck, IconChevronUp, IconGitBranch, IconLoader2, IconSearch } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCheck, IconChevronUp, IconCloud, IconGitBranch, IconLoader2, IconSearch } from "@tabler/icons-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -14,27 +14,38 @@ interface BranchSwitcherProps {
   inWorktree: ReadonlySet<string>;
   /** True while a switch is running: the pill is disabled and shows a spinner. */
   busy: boolean;
-  load: () => Promise<{ currentBranch: string | null; branches: string[] }>;
+  /** `fetch` = update remote branches first (slower); the popover loads without it, then refreshes with it. */
+  load: (fetch?: boolean) => Promise<{ currentBranch: string | null; branches: string[]; remoteOnly?: string[]; fetchError?: string }>;
   onSwitch: (branch: string) => void;
   className?: string;
 }
 
-/** Compact pill (branch icon + name) that lists every local branch of the project and switches the main checkout. */
+/** Compact pill (branch icon + name) that lists the project's local and remote branches and switches the main checkout. */
 export default function BranchSwitcher({ currentBranch, inWorktree, busy, load, onSwitch, className }: BranchSwitcherProps) {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<{ status: "idle" | "loading" | "ready" | "error"; branches: string[]; error: string }>({ status: "idle", branches: [], error: "" });
+  const [state, setState] = useState<{ status: "idle" | "loading" | "ready" | "error"; branches: string[]; remoteOnly: ReadonlySet<string>; error: string; fetching: boolean; fetchError: string }>({ status: "idle", branches: [], remoteOnly: new Set(), error: "", fetching: false, fetchError: "" });
   const [query, setQuery] = useState("");
   const loadSeq = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Two phases: what is known locally right away, then the same list after fetching from the remote (new remote branches appear).
   const fetchBranches = useCallback(async () => {
     const seq = ++loadSeq.current;
-    setState((current) => ({ ...current, status: "loading", error: "" }));
+    setState((current) => ({ ...current, status: "loading", error: "", fetching: true, fetchError: "" }));
+    const apply = (result: Awaited<ReturnType<typeof load>>, fetching: boolean) => setState({ status: "ready", branches: result.branches, remoteOnly: new Set(result.remoteOnly ?? []), error: "", fetching, fetchError: result.fetchError ?? "" });
     try {
-      const result = await load();
-      if (seq === loadSeq.current) setState({ status: "ready", branches: result.branches, error: "" });
+      const local = await load(false);
+      if (seq !== loadSeq.current) return;
+      apply(local, true);
     } catch (error) {
-      if (seq === loadSeq.current) setState((current) => ({ ...current, status: "error", error: errorMessage(error) }));
+      if (seq === loadSeq.current) setState((current) => ({ ...current, status: "error", error: errorMessage(error), fetching: false }));
+      return;
+    }
+    try {
+      const fetched = await load(true);
+      if (seq === loadSeq.current) apply(fetched, false);
+    } catch (error) {
+      if (seq === loadSeq.current) setState((current) => ({ ...current, fetching: false, fetchError: errorMessage(error) }));
     }
   }, [load]);
 
@@ -98,7 +109,7 @@ export default function BranchSwitcher({ currentBranch, inWorktree, busy, load, 
       <PopoverContent side="top" align="end" sideOffset={8} className="w-72 gap-1.5 rounded-2xl border border-border/70 bg-card/95 p-1.5 shadow-sm">
         <div className="flex items-center justify-between px-2 pt-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
           <span>Switch branch</span>
-          {state.status === "loading" && <IconLoader2 size={12} className="animate-spin motion-reduce:animate-none" aria-label="Loading branches" />}
+          {(state.status === "loading" || state.fetching) && <IconLoader2 size={12} className="animate-spin motion-reduce:animate-none" aria-label={state.fetching ? "Fetching branches from the remote" : "Loading branches"} />}
         </div>
         {searchable && (
           <div className="relative px-1">
@@ -126,11 +137,12 @@ export default function BranchSwitcher({ currentBranch, inWorktree, busy, load, 
           </div>
         )}
         {state.branches.length > 0 && (
-          <div ref={listRef} role="listbox" aria-label="Local branches" onKeyDown={onListKeyDown} className="flex max-h-64 flex-col gap-0.5 overflow-y-auto overscroll-contain">
+          <div ref={listRef} role="listbox" aria-label="Branches" onKeyDown={onListKeyDown} className="flex max-h-64 flex-col gap-0.5 overflow-y-auto overscroll-contain">
             {visible.length === 0 && <p className="px-2 py-3 text-center text-xs text-muted-foreground">No branches match "{query}"</p>}
             {visible.map((branch) => {
               const current = branch === currentBranch;
               const held = !current && inWorktree.has(branch);
+              const remote = state.remoteOnly.has(branch);
               return (
                 <button
                   key={branch}
@@ -138,7 +150,7 @@ export default function BranchSwitcher({ currentBranch, inWorktree, busy, load, 
                   role="option"
                   aria-selected={current}
                   disabled={held}
-                  title={held ? `${branch} is checked out in another worktree` : branch}
+                  title={held ? `${branch} is checked out in another worktree` : remote ? `${branch} exists only on the remote: switching creates a local branch that tracks it` : branch}
                   autoFocus={!searchable && current}
                   onClick={() => choose(branch)}
                   className={cn(
@@ -149,12 +161,14 @@ export default function BranchSwitcher({ currentBranch, inWorktree, busy, load, 
                   <IconCheck size={13} className={cn("shrink-0 text-primary-text", !current && "invisible")} aria-hidden />
                   <span className="min-w-0 flex-1 truncate">{branch}</span>
                   {held && <span className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground">in worktree</span>}
+                  {remote && <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground"><IconCloud size={10} aria-hidden />remote</span>}
                 </button>
               );
             })}
           </div>
         )}
-        {state.status === "ready" && state.branches.length === 0 && <p className="px-2 py-3 text-center text-xs text-muted-foreground">No local branches</p>}
+        {state.status === "ready" && state.branches.length === 0 && !state.fetching && <p className="px-2 py-3 text-center text-xs text-muted-foreground">No branches</p>}
+        {state.fetchError && <p role="status" className="px-2 text-[10px] leading-snug text-muted-foreground">{state.fetchError}</p>}
         <p className="px-2 pb-1 text-[10px] leading-snug text-muted-foreground">Switching sleeps running agents and checks the branch out. Each branch keeps its own canvas.</p>
       </PopoverContent>
     </Popover>

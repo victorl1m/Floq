@@ -1192,13 +1192,13 @@ export class SessionManager {
     }));
   }
 
-  async projectBranches(userId: string, projectId: string, workspaceId: string): Promise<{ currentBranch: string | null; branches: string[] }> {
+  async projectBranches(userId: string, projectId: string, workspaceId: string, options: { fetch?: boolean } = {}): Promise<{ currentBranch: string | null; branches: string[]; remoteOnly: string[]; fetchError?: string }> {
     return this.withShardActivity(userId, async () => {
       const { cwd } = await this.getRegisteredWorkspace(userId, projectId, workspaceId);
       const handle = await this.shards.wake(userId);
       this.assertLifecycleOpen();
       this.assertSafeRegisteredCheckout(handle, cwd);
-      return listProjectBranches((args) => this.runWorkspaceGit(handle, cwd, args));
+      return listProjectBranches((args) => this.runWorkspaceGit(handle, cwd, args), options);
     });
   }
 

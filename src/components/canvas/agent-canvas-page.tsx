@@ -713,9 +713,9 @@ function AgentCanvas() {
     () => new Set(orderedWorkspaces.filter((workspace) => workspace.id !== groundWorkspaceId && workspace.branch).map((workspace) => workspace.branch as string)),
     [orderedWorkspaces, groundWorkspaceId],
   );
-  const loadBranches = useCallback(async () => {
+  const loadBranches = useCallback(async (fetch = false) => {
     if (!client || !activeProjectId || !groundWorkspaceId) throw new Error("The runtime is not connected");
-    return client.projectBranches(activeProjectId, groundWorkspaceId);
+    return client.projectBranches(activeProjectId, groundWorkspaceId, { fetch });
   }, [client, activeProjectId, groundWorkspaceId]);
 
   const switchBranch = async (target: string) => {

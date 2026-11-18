@@ -1416,7 +1416,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     }
     const projectBranches = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)\/branches$/.exec(url.pathname);
     if (projectBranches && method === "GET") {
-      return send(res, 200, await manager.projectBranches(userId, projectBranches[1], projectBranches[2]));
+      return send(res, 200, await manager.projectBranches(userId, projectBranches[1], projectBranches[2], { fetch: url.searchParams.get("fetch") === "1" }));
     }
     const projectBranch = /^\/v1\/projects\/([\w-]+)\/workspaces\/([\w-]+)\/branch$/.exec(url.pathname);
     if (projectBranch && method === "POST") {

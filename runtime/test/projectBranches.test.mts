@@ -55,11 +55,11 @@ async function makeRepo(t) {
   return { root, repo, run };
 }
 
-test("lists only local branches and switches clean worktrees", async (t) => {
+test("lists local branches (no remote here) and switches clean worktrees", async (t) => {
   const { run } = await makeRepo(t);
-  assert.deepEqual(await listProjectBranches(run), { currentBranch: "main", branches: ["feature", "main"] });
+  assert.deepEqual(await listProjectBranches(run), { currentBranch: "main", branches: ["feature", "main"], remoteOnly: [] });
   assert.equal(await switchProjectBranch(run, "feature"), "feature");
-  assert.deepEqual(await listProjectBranches(run), { currentBranch: "feature", branches: ["feature", "main"] });
+  assert.deepEqual(await listProjectBranches(run), { currentBranch: "feature", branches: ["feature", "main"], remoteOnly: [] });
 });
 
 test("refuses invalid branches", async (t) => {

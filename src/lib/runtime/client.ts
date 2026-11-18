@@ -487,8 +487,9 @@ export class RuntimeClient {
     return (await this.call<{ project: RuntimeProject }>("PATCH", `/v1/projects/${encodeURIComponent(id)}`, { organizationId })).project;
   }
 
-  projectBranches(projectId: string, workspaceId: string): Promise<{ currentBranch: string | null; branches: string[] }> {
-    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branches`, undefined, { timeoutMs: 30_000 });
+  /** `fetch` first updates remote branches from every remote (best effort; slower). */
+  projectBranches(projectId: string, workspaceId: string, options: { fetch?: boolean } = {}): Promise<{ currentBranch: string | null; branches: string[]; remoteOnly?: string[]; fetchError?: string }> {
+    return this.call("GET", `/v1/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branches${options.fetch ? "?fetch=1" : ""}`, undefined, { timeoutMs: options.fetch ? 45_000 : 30_000 });
   }
 
   /** Pre-flight for `switchProjectBranch`: rejects with the same error, changes nothing. */
