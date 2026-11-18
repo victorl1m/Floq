@@ -216,7 +216,7 @@ export default function NewAgentDialog() {
                     </div>
                 )}
 
-                {roles.length > 0 && usable.length > 0 && (
+                {roles.length > 0 && usable.length > 0 && role !== ORCHESTRATOR_ROLE && (
                     <div className="flex flex-col gap-2">
                         <Label htmlFor="agent-role">Role</Label>
                         <Select value={!role || role === ORCHESTRATOR_ROLE ? GENERALIST : role} disabled={busy} onValueChange={(value) => setRole(value === GENERALIST ? "" : value)}>
