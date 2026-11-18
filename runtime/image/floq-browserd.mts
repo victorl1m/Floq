@@ -639,7 +639,10 @@ async function main() {
           const r = (await mux.command("Runtime.evaluate", { expression: SELECTED_TEXT, returnByValue: true }, v.sid, 2000).catch(() => ({}))) as { result?: { result?: { value?: unknown } } };
           if (typeof r.result?.result?.value === "string") copied = r.result.result.value.slice(0, 32768);
         }
-        await mux.command("Input.dispatchKeyEvent", { type: c.kind === "keyDown" && text && !(c.modifiers & 6) ? "keyDown" : c.kind, key: c.key, code: c.code, modifiers: c.modifiers, ...(c.kind === "keyUp" ? {} : { text: command ? "" : text }), ...(command ? { commands: [command] } : {}), windowsVirtualKeyCode: vkey(c.key) }, v.sid);
+        // An editing command (Ctrl/Cmd+A, C, X, Z, Y) must ride a rawKeyDown: on a "keyDown" with empty text Chromium drops it,
+        // so Ctrl+A in the page selected nothing. Every other key keeps its old type (Enter etc. still need "keyDown").
+        const type = command ? "rawKeyDown" : c.kind === "keyDown" && text && !(c.modifiers & 6) ? "keyDown" : c.kind;
+        await mux.command("Input.dispatchKeyEvent", { type, key: c.key, code: c.code, modifiers: c.modifiers, ...(c.kind === "keyUp" ? {} : { text: command ? "" : text }), ...(command ? { commands: [command] } : {}), windowsVirtualKeyCode: vkey(c.key) }, v.sid);
         if (copied) out({ type: "clipboard", targetId: v.targetId, text: copied }); // the node writes it to the user's clipboard
         return;
       }
