@@ -373,6 +373,37 @@ export function restoreFromCheckpoint(home: string | CheckpointHome, sessionId: 
   } catch { return false; }
 }
 
+/**
+ * Head and tail text of the latest checkpoint copy of a Claude/Codex conversation (for the "Start fresh with summary" handoff).
+ * Reads only the recorded `offset` bytes; null when there is no usable checkpoint. Partial lines at either cut are dropped.
+ */
+export function readCheckpointText(target: CheckpointHome, sessionId: string, provider: CheckpointProvider | string, providerSessionId: string, headBytes = 256 * 1024, tailBytes = 1024 * 1024): { head: string; tail: string } | null {
+  try {
+    if (provider !== "claude" && provider !== "codex") return null;
+    const pid = segment(providerSessionId, "provider session id");
+    const dir = sessionDir(target.home, sessionId);
+    const meta = readMeta(target, dir, pid);
+    if (!meta || meta.provider !== provider || meta.offset <= 0) return null;
+    const source = openConfined(target.home, join(dir, dataName(pid, meta.generation)), target.uid);
+    if (!source) return null;
+    try {
+      const size = Math.min(source.stat.size, meta.offset);
+      const read = (len: number, at: number): string => {
+        const buf = Buffer.allocUnsafe(len);
+        let got = 0;
+        while (got < len) { const n = readSync(source.fd, buf, got, len - got, at + got); if (n <= 0) break; got += n; }
+        return buf.subarray(0, got).toString("utf8");
+      };
+      let head = read(Math.min(size, headBytes), 0);
+      if (size > headBytes) head = head.slice(0, head.lastIndexOf("\n") + 1);
+      const tailLen = Math.min(size, tailBytes);
+      let tail = read(tailLen, size - tailLen);
+      if (size > tailLen) tail = tail.slice(tail.indexOf("\n") + 1);
+      return { head, tail };
+    } finally { source.close(); }
+  } catch { return null; }
+}
+
 function lstatHomeSafe(home: string, path: string): Stats | null | "unsafe" {
   const parent = (() => { try { return openHomeDir(home, dirname(path)); } catch { return "unsafe" as const; } })();
   if (parent === "unsafe") return "unsafe";

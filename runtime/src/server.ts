@@ -1596,7 +1596,10 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     if (convMatch) {
       const [, sid, kind, cid] = convMatch;
       if (kind === "conversations" && !cid && method === "GET") return send(res, 200, { conversations: await manager.conversations(sid!, userId) });
-      if (kind === "start-fresh" && method === "POST") return send(res, 200, { session: await manager.startFresh(userId, await settings.profile(userId), sid!) });
+      if (kind === "start-fresh" && method === "POST") {
+        const body = await readJson<{ summary?: unknown }>(req);
+        return send(res, 200, { session: await manager.startFresh(userId, await settings.profile(userId), sid!, { summary: body.summary === true }) });
+      }
       if (kind === "conversations" && cid && method === "POST") return send(res, 200, { session: await manager.switchConversation(userId, await settings.profile(userId), sid!, cid) });
       throw new HttpError(405, "method_not_allowed", "Unsupported method");
     }

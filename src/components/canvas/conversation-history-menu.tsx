@@ -56,7 +56,33 @@ export function ConversationHistoryMenu({ session }: { session: SessionSummary }
                 <DropdownMenuItem disabled={busy} onSelect={() => void run(() => client.startFresh(session.id), "Could not start fresh")}>
                     Start fresh (keeps the current conversation)
                 </DropdownMenuItem>
+                {(session.provider === "claude" || session.provider === "codex") && (
+                    <DropdownMenuItem disabled={busy} onSelect={() => void run(() => client.startFresh(session.id, { summary: true }), "Could not start fresh with a summary")}>
+                        <div className="flex min-w-0 flex-col">
+                            <span className="text-xs">Start fresh with summary</span>
+                            <span className="text-[10px] text-muted-foreground">New conversation whose first prompt recaps the old one</span>
+                        </div>
+                    </DropdownMenuItem>
+                )}
             </DropdownMenuContent>
         </DropdownMenu>
+    );
+}
+
+/** Action on the "couldn't resume" notice: explicit, never automatic. A new conversation whose first prompt recaps the old transcript. */
+export function StartFreshWithSummaryButton({ session }: { session: SessionSummary }) {
+    const client = useClient();
+    const { upsertSession } = useRuntime();
+    const [busy, setBusy] = useState(false);
+    async function go() {
+        setBusy(true);
+        try { upsertSession(await client.startFresh(session.id, { summary: true })); }
+        catch (e) { toast.error("Could not start fresh with a summary", { description: errorMessage(e) }); }
+        finally { setBusy(false); }
+    }
+    return (
+        <Button type="button" size="xs" variant="secondary" className="nodrag nopan" disabled={busy} title="New conversation; the first prompt summarizes the old one. The old conversation stays in the history." onClick={() => void go()}>
+            Start fresh with summary
+        </Button>
     );
 }

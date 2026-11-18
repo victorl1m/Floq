@@ -679,9 +679,9 @@ export class RuntimeClient {
     return (await this.call<{ conversations: AgentConversation[] }>("GET", `/v1/sessions/${id}/conversations`)).conversations;
   }
 
-  /** Explicit, reversible fresh start: the current conversation stays in the history. */
-  async startFresh(id: string): Promise<SessionSummary> {
-    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/start-fresh`, {})).session;
+  /** Explicit, reversible fresh start: the current conversation stays in the history. `summary` makes the first prompt a handoff built from the old transcript (Claude and Codex). */
+  async startFresh(id: string, options: { summary?: boolean } = {}): Promise<SessionSummary> {
+    return (await this.call<{ session: SessionSummary }>("POST", `/v1/sessions/${id}/start-fresh`, options.summary ? { summary: true } : {})).session;
   }
 
   /** Make an earlier conversation current again and resume it. */

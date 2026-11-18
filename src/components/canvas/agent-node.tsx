@@ -6,7 +6,7 @@ import { IconChevronDown, IconChevronRight, IconLink, IconNote, IconPlayerPlay, 
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { FallbackBadge } from "./fallback-badge";
-import { ConversationHistoryMenu } from "./conversation-history-menu";
+import { ConversationHistoryMenu, StartFreshWithSummaryButton } from "./conversation-history-menu";
 import { FallbackPolicyMenu } from "./fallback-policy-menu";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -160,6 +160,7 @@ export default memo(function AgentNodeCard({ id, data, selected }: NodeProps<Age
         <div role="status" className="flex shrink-0 items-center gap-2 border-t bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
           <span className="min-w-0 flex-1 truncate">Couldn't resume, conversation kept</span>
           <Button type="button" size="xs" variant="secondary" className="nodrag nopan" onClick={() => ctx.wake(session)}>Retry</Button>
+          {(session.provider === "claude" || session.provider === "codex") && <StartFreshWithSummaryButton session={session} />}
           <ConversationHistoryMenu session={session} />
         </div>
       )}

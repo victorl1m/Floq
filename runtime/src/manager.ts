@@ -23,7 +23,8 @@ import { artifactsGuidance, artifactsRel, ensureArtifactsDir } from "./artifacts
 import { buildSessionEnv, detectVersion, forcedSessionEnv, withUserBin, mkcertEnv, getProviderDefinition, resolveModel } from "./providers.js";
 import { CodexModelCatalog, fetchCodexModelList } from "./codexModels.js";
 import { Session } from "./session.js";
-import { CheckpointScheduler, checkpointTranscript, findCodexRolloutPath, restoreFromCheckpoint as restoreCheckpointFile } from "./checkpoints.js";
+import { CheckpointScheduler, checkpointTranscript, sweepCheckpoints, findCodexRolloutPath, readCheckpointText, restoreFromCheckpoint as restoreCheckpointFile } from "./checkpoints.js";
+import { buildResumeSummary } from "./resumeSummary.js";
 import { CapacityReservations, ClosingGate, coalesce } from "./lifecycleGate.js";
 import { createWorktree } from "./worktree.js";
 import { codexTrustArgs, managedTrustDirectories } from "./codexTrust.js";
@@ -70,6 +71,9 @@ const MAX_UPLOADS_PER_USER = 3;
 const uploadsInFlight = new Map<string, number>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REAP_INTERVAL_MS = 15_000;
+/** Retention sweep of last-good checkpoints of deleted agents: hourly, first run a minute after boot. */
+const CHECKPOINT_SWEEP_INTERVAL_MS = 3600_000;
+const CHECKPOINT_SWEEP_FIRST_MS = 60_000;
 /** If a resumed agent dies this fast with an error, there was nothing to resume: start fresh. */
 const RESUME_FALLBACK_MS = 8_000;
 const CODEX_ID_POLL_MS = 3_000;
@@ -422,6 +426,7 @@ export class SessionManager {
   settings?: { claudeAiConnectors(userId: string): Promise<boolean> };
   private readonly browserRunning = new Set<string>();
   private readonly reaper: NodeJS.Timeout;
+  private readonly checkpointSweepTimers: NodeJS.Timeout[] = [];
 
   constructor(
     private readonly config: Config,
@@ -432,6 +437,32 @@ export class SessionManager {
     this.codexModelCatalog = new CodexModelCatalog((userId) => this.discoverCodexModels(userId), config.models.codex);
     this.reaper = setInterval(() => void this.reap(), REAP_INTERVAL_MS);
     this.reaper.unref();
+    const first = setTimeout(() => void this.sweepCheckpointsOnce(), CHECKPOINT_SWEEP_FIRST_MS);
+    const every = setInterval(() => void this.sweepCheckpointsOnce(), CHECKPOINT_SWEEP_INTERVAL_MS);
+    first.unref(); every.unref();
+    this.checkpointSweepTimers.push(first, every);
+  }
+
+  /**
+   * Retention sweep over every awake shard: a checkpoint dir whose agent row is gone is removed 7 days after it was first seen
+   * missing. Sleeping shards are not woken (swept when next awake). One user at a time, yielding to the event loop in between.
+   */
+  async sweepCheckpointsOnce(): Promise<number> {
+    let removed = 0;
+    for (const userId of this.shards.awakeUserIds()) {
+      if (this.shuttingDown) break;
+      try {
+        const handle = this.shards.awakeHandle(userId);
+        if (!handle) continue;
+        const ids = new Set<string>((await this.pool.query("SELECT id FROM agent_sessions WHERE user_id = $1", [userId])).rows.map((r) => String(r.id)));
+        removed += sweepCheckpoints({ home: this.hostHome(handle), uid: handle.uid }, ids);
+      } catch (error) {
+        log.warn("checkpoint.sweep_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+      }
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    if (removed) log.info("checkpoint.swept", { removed });
+    return removed;
   }
 
   /** Wire the agent browser: a running daemon counts as shard activity (no idle lock) until it has fully stopped. */
@@ -2515,7 +2546,7 @@ export class SessionManager {
    * Explicit, reversible "Start fresh": the current conversation stays in the history (ended_reason fresh_start) and can be
    * switched back to. Claude starts under a NEW id (never the old one, which would collide with "already in use").
    */
-  async startFresh(userId: string, profile: RuntimeProfile, id: string): Promise<SessionSummary> {
+  async startFresh(userId: string, profile: RuntimeProfile, id: string, options: { summary?: boolean } = {}): Promise<SessionSummary> {
     this.assertLifecycleOpen();
     return coalesce(this.restartTasks, userId + ":" + id, async () => {
       if ((await this.row(id, userId)).provider === "shell") throw badRequest("Shell sessions have no conversation", "invalid_provider");
@@ -2523,16 +2554,46 @@ export class SessionManager {
       const row = await this.row(id, userId); // after the stop: a Codex/OpenCode id may only have been captured while stopping
       try {
         const current = row.provider === "claude" ? resolveClaudeConversationId(row) : row.provider_session_id;
+        // Built before any pointer changes, so a missing transcript leaves the agent exactly as it was.
+        let prompt: string | undefined;
+        if (options.summary && (row.provider === "claude" || row.provider === "codex")) {
+          prompt = (await this.buildSummaryPrompt(userId, row, current)) ?? undefined;
+          if (!prompt) throw conflict("Nothing to summarize: neither the transcript nor a checkpoint of this conversation could be read.", "no_summary_available");
+        }
         const plan = planFreshStart(row.provider, current);
         if (plan.endCurrent) await endConversation(this.pool, id, plan.endCurrent.provider, plan.endCurrent.providerSessionId, plan.endCurrent.reason);
         if (plan.newClaudeId) await recordConversation(this.pool, id, "claude", plan.newClaudeId);
         else await this.pool.query("UPDATE agent_sessions SET provider_session_id = NULL WHERE id = $1 AND user_id = $2", [id, userId]);
-        log.info("session.fresh_start", { sessionId: id, provider: row.provider });
-        return await this.resumeOnce(userId, profile, id, true, { fresh: true });
+        log.info("session.fresh_start", { sessionId: id, provider: row.provider, summary: prompt !== undefined });
+        return await this.resumeOnce(userId, profile, id, true, { fresh: true, prompt });
       } finally {
         this.intentionalSleep.delete(id);
       }
     });
+  }
+
+  /**
+   * Deterministic handoff prompt for "Start fresh with summary": from the live transcript when it is still readable, otherwise from the
+   * last-good checkpoint. Null when neither gives anything. No model call.
+   */
+  private async buildSummaryPrompt(userId: string, row: Row, providerId: string | null): Promise<string | null> {
+    if ((row.provider !== "claude" && row.provider !== "codex") || !providerId) return null;
+    const handle = await this.shards.wake(userId);
+    const home = this.hostHome(handle);
+    const confine = { home, uid: handle.uid };
+    let texts: { head: string; tail: string } | null = null;
+    try {
+      const path = row.provider === "claude"
+        ? claudeTranscriptPath(home, providerId)
+        : findCodexRolloutPath(home, this.shards.driver.hostPath(handle, codexHomeRel(row.id) + "/sessions"), handle.uid);
+      if (path) {
+        const tail = readTranscriptTail(path, 1024 * 1024, confine);
+        if (tail && tail.text.trim()) texts = { head: readTranscriptHead(path, 256 * 1024, confine) ?? "", tail: tail.text };
+      }
+    } catch (error) { log.warn("session.summary_live_read_failed", { sessionId: row.id, error: String(error).slice(0, 120) }); }
+    if (!texts) texts = readCheckpointText({ home, uid: handle.uid }, row.id, row.provider, providerId);
+    if (!texts) return null;
+    return buildResumeSummary({ provider: row.provider, tailText: texts.tail, headText: texts.head, cwd: row.cwd });
   }
 
   /** Make an earlier conversation of this agent current again and resume it. */
@@ -3405,6 +3466,7 @@ export class SessionManager {
     this.lifecycle.close();
     this.agyMirror?.dispose();
     clearInterval(this.reaper);
+    for (const timer of this.checkpointSweepTimers) { clearTimeout(timer); clearInterval(timer); }
     for (const timer of this.bootRetryTimers) clearTimeout(timer);
     for (const timer of this.lockTimers.values()) clearTimeout(timer);
     await Promise.allSettled([...this.shardActivities]);

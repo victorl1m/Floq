@@ -106,6 +106,11 @@ export class ShardService {
     return this.handles.has(userId);
   }
 
+  /** Users whose shard is awake right now (a snapshot; sleeping shards are never woken by callers of this). */
+  awakeUserIds(): string[] {
+    return [...this.handles.keys()];
+  }
+
   /** Return an already-unlocked user's mount without waking a sleeping shard. */
   awakeHandle(userId: string): ShardHandle | undefined {
     return this.handles.get(userId);
