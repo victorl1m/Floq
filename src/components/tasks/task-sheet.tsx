@@ -149,7 +149,7 @@ function Body({ task, onClose, data, projectLabel }: Omit<Props, "task"> & { tas
                 return <li key={ev.id} className="flex gap-2.5 text-sm">
                   <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted">{sid ? (agent ? <AgentAvatar session={agent} size={20} /> : <IconRobot className="size-3" />) : ev.actor === "user" ? <IconUser className="size-3" /> : <IconClockPlay className="size-3" />}</span>
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground"><span className="font-medium text-foreground">{sid ? <AgentLabel session={agent} size={0} /> : ev.actor === "user" ? "You" : "System"}</span><span>{ev.kind.replace("_", " ")}</span><time dateTime={ev.at}>{formatWhen(ev.at)}</time></div>
+                    <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground"><span className="font-medium text-foreground">{sid ? {agent?.title ?? "Agent removed"} : ev.actor === "user" ? "You" : "System"}</span><span>{ev.kind.replace("_", " ")}</span><time dateTime={ev.at}>{formatWhen(ev.at)}</time></div>
                     {ev.text && <p className={`whitespace-pre-wrap break-words ${ev.kind === "run_failed" ? "text-destructive" : ""}`}>{ev.text}</p>}
                   </div>
                 </li>;
