@@ -4,6 +4,7 @@ import { log } from "./logger.js";
 import { claudeLimitEvent, type ClaudeLimitEvent } from "./turn.js";
 import { claudeBackNotice, codexHandoffPrompt, codexResumeNotice } from "./handoff.js";
 import type { UsageWindow } from "./usage.js";
+import { appendTail, classifyBanner, NEAR_FULL_PERCENT, type LimitKind } from "./limitText.js";
 
 /** Claude usage-limit fallback (docs/design/claude-swap-fallback.md). Steps: lower model, other account, Codex. */
 
@@ -126,6 +127,8 @@ export interface FallbackState {
   swaps: string[];
   ineffective: string[];
   lastEventUuid?: string;
+  /** Claude slots found blocked during this fallback (until their reset), skipped while walking the account chain. */
+  tried?: Array<{ slot: string; until: string }>;
   /** The model this service set (model step); lets a later park still restore the origin model. */
   lowered?: string;
   /** Sandbox paths of the handoff files written for this fallback (the Codex step). */
@@ -170,7 +173,6 @@ export function planFallback(input: PlanInput): Plan {
     if (!step.enabled) continue;
     if (override === "model" && step.kind !== "model") continue; // per-agent "Model only"
     if (step.kind === "account") {
-      if (state?.ineffective.includes("account@" + event.rateLimitType)) continue;
       const slot = input.accounts?.[0];
       if (slot) return { action: "account", slot };
     }
@@ -243,9 +245,26 @@ export interface FallbackAccounts {
 }
 
 /** A reserve account can take over when its usage is known and neither the blocked window nor an account-wide window is full. */
-export function accountUsable(windows: UsageWindow[] | null, rateLimitType: string): boolean {
+export function accountUsable(windows: UsageWindow[] | null, rateLimitType: string, kind: LimitKind = "window"): boolean {
   if (!windows) return false;
-  return !windows.some((w) => w.usedPercent >= 100 && (w.id === rateLimitType || w.id === "five_hour" || w.id === "seven_day"));
+  // 98 % and up is exhausted in practice (the CLI blocks at 99-100 %): taking over there would just block again.
+  if (windows.some((w) => w.usedPercent >= NEAR_FULL_PERCENT && (w.id === rateLimitType || w.id === "five_hour" || w.id === "seven_day"))) return false;
+  // An exhausted extra-usage / spend cap blocks an account whose plan windows still have room.
+  return !windows.some((w) => w.id === "extra_usage" && w.usedPercent >= 100 && kind !== "window");
+}
+
+/** Reserve slots that can take over: usable usage and not already found blocked in this fallback. Pure part of the chain walk. */
+export function walkableSlots(candidates: Array<{ slot: string; windows: UsageWindow[] | null }>, rateLimitType: string, kind: LimitKind, tried: Array<{ slot: string; until: string }>, now: number): string[] {
+  const blocked = new Set(tried.filter((t) => Date.parse(t.until) > now).map((t) => t.slot));
+  return candidates.filter((c) => !blocked.has(c.slot) && accountUsable(c.windows, rateLimitType, kind)).map((c) => c.slot);
+}
+
+/** Add the slot that just got blocked (until its reset, or one hour when unknown); expired entries are dropped. */
+export function markTried(tried: Array<{ slot: string; until: string }> | undefined, slot: string | null, resetsAt: string | null, now: number): Array<{ slot: string; until: string }> {
+  const live = (tried ?? []).filter((t) => Date.parse(t.until) > now && t.slot !== slot);
+  if (!slot) return live;
+  const reset = resetsAt ? Date.parse(resetsAt) : NaN;
+  return [...live, { slot, until: new Date(Number.isFinite(reset) && reset > now ? reset : now + 3_600_000).toISOString() }];
 }
 
 export interface FallbackUsage {
@@ -281,6 +300,8 @@ export class FallbackService {
   private readonly debounce = new Map<string, NodeJS.Timeout>();
   private readonly evaluating = new Map<string, Promise<void>>();
   private readonly restoring = new Map<string, Promise<void>>();
+  private readonly screen = new Map<string, string>();
+  private readonly ttyEvents = new Map<string, { rateLimitType: string; kind: LimitKind; resetsAt: string | null; text: string }>();
   private stopped = false;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -318,8 +339,16 @@ export class FallbackService {
   }
 
   /** Called for every PTY output frame of a Claude agent; debounced, reads the transcript tail only after a pause. */
-  onOutput(id: string, userId: string): void {
-    if (this.stopped || this.debounce.has(id)) return;
+  onOutput(id: string, userId: string, data?: string): void {
+    if (this.stopped) return;
+    // Terminal banner ("Usage limit reached · continuing automatically at ..."): the CLI may write no transcript record while it waits.
+    if (data) {
+      const tail = appendTail(this.screen.get(id) ?? "", data);
+      this.screen.set(id, tail);
+      const hit = classifyBanner(tail, this.now());
+      if (hit && !this.ttyEvents.has(id)) this.ttyEvents.set(id, { rateLimitType: hit.rateLimitType, kind: hit.kind, resetsAt: hit.resetsAt, text: tail.slice(-300) });
+    }
+    if (this.debounce.has(id)) return;
     const timer = setTimeout(() => {
       this.debounce.delete(id);
       void this.evaluate(id, userId).catch((error) => log.warn("fallback.evaluate_failed", { sessionId: id, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
@@ -353,15 +382,23 @@ export class FallbackService {
     const row = await this.load(id, userId);
     if (!row || row.provider !== "claude" || !this.host.isLive(id, userId)) return;
     const text = this.host.readTranscript(id, userId);
-    const event = text ? claudeLimitEvent(text) : null;
-    const done = () => { if (stamp !== null) this.seenStamp.set(id, stamp); };
+    let event: ClaudeLimitEvent | null = text ? claudeLimitEvent(text) : null;
+    const tty = this.ttyEvents.get(id);
+    this.ttyEvents.delete(id);
+    if (!event && tty) {
+      const slot = this.accounts ? await this.accounts.activeSlot(userId) : "primary";
+      const when = this.now();
+      event = { uuid: `tty:${slot}:${tty.rateLimitType}:${tty.resetsAt ?? Math.floor(when / 3_600_000)}`, rateLimitType: tty.rateLimitType, resetsAt: tty.resetsAt, timestamp: new Date(when).toISOString(), text: tty.text, latest: true, kind: tty.kind, source: "terminal" };
+    }
+    const done = () => { if (stamp !== null && event?.source !== "terminal") this.seenStamp.set(id, stamp); };
     if (!event || event.uuid === row.fallback_state?.lastEventUuid || event.uuid === row.fallback_last_event) return done();
     const now = this.now();
     const resets = event.resetsAt ? Date.parse(event.resetsAt) : NaN;
     // A structured block with a reset time in the past is stale (an old record in the tail): nothing to do.
     if (Number.isFinite(resets) && resets <= now) return done();
     // The CLI has ended its turn when the terminal goes quiet; never cut a running tool short.
-    if (this.host.quietMs(id) < QUIET_BEFORE_SWAP_MS) {
+    // A terminal banner is the CLI waiting by itself (its countdown redraws, so the terminal is never quiet): no wait then.
+    if (event.source !== "terminal" && this.host.quietMs(id) < QUIET_BEFORE_SWAP_MS) {
       this.onOutput(id, userId);
       return;
     }
@@ -376,11 +413,14 @@ export class FallbackService {
     if (state?.current.kind === "model" && state.scope.window === event.rateLimitType && state.swaps.length > 0 && now - Date.parse(state.swaps[state.swaps.length - 1]!) < 10 * 60_000) {
       ineffective.add("model@" + event.rateLimitType);
     }
-    if ((state?.current.kind === "account" || state?.current.kind === "codex") && state.scope.window === event.rateLimitType && state.swaps.length > 0 && now - Date.parse(state.swaps[state.swaps.length - 1]!) < 10 * 60_000) {
+    // Account steps are walked slot by slot (tried), not switched off: only Codex is marked ineffective as a whole.
+    if (state?.current.kind === "codex" && state.scope.window === event.rateLimitType && state.swaps.length > 0 && now - Date.parse(state.swaps[state.swaps.length - 1]!) < 10 * 60_000) {
       ineffective.add(state.current.kind + "@" + event.rateLimitType);
     }
+    const activeNow = this.accounts ? await this.accounts.activeSlot(userId) : null;
     const base: FallbackState = {
       origin: state?.origin ?? { provider: "claude", model: row.model },
+      tried: markTried(state?.tried, activeNow, event.resetsAt, now),
       current: state?.current ?? { kind: "paused" },
       scope: { window: event.rateLimitType, family, ...(this.accounts ? { slot: await this.accounts.activeSlot(userId) } : {}) },
       resetsAt: event.resetsAt,
@@ -401,9 +441,9 @@ export class FallbackService {
     }
     let usable: string[] = [];
     if (this.accounts && accountStep && accountStep.kind === "account" && override === "default") {
-      for (const reserve of await this.accounts.reserveSlots(userId, accountStep.slots)) {
-        if (accountUsable(await this.accounts.usageOf(userId, reserve.slot), event.rateLimitType)) usable.push(reserve.slot);
-      }
+      const candidates: Array<{ slot: string; windows: UsageWindow[] | null }> = [];
+      for (const reserve of await this.accounts.reserveSlots(userId, accountStep.slots)) candidates.push({ slot: reserve.slot, windows: await this.accounts.usageOf(userId, reserve.slot) });
+      usable = walkableSlots(candidates, event.rateLimitType, event.kind ?? "window", base.tried ?? [], now);
     }
     let codexModel: string | null = null;
     const codexStep = settings.steps.find((st) => st.kind === "codex" && st.enabled);
@@ -412,6 +452,7 @@ export class FallbackService {
     }
     const plan = planFallback({ settings, override, event, model: row.model, state: base, now, accounts: usable, codex: codexModel });
     done();
+    this.screen.delete(id);
     if (plan.action === "account") {
       await this.applyAccount(row, userId, event, base, plan.slot, false);
       return;
@@ -787,7 +828,9 @@ export class FallbackService {
     if (row.provider !== "claude" || !this.usage) return null;
     const userId = row.user_id;
     const stored = await this.load(row.id, userId);
-    if (!stored || stored.fallback_state || (stored.fallback_override?.mode ?? "default") === "pause") return null;
+    // A paused or Codex row is handled elsewhere; an agent already on a lowered model or a reserve account may need the NEXT step (its account can be exhausted too).
+    const prior = stored?.fallback_state ?? null;
+    if (!stored || (prior && prior.current.kind !== "model" && prior.current.kind !== "account") || (stored.fallback_override?.mode ?? "default") === "pause") return null;
     const settings = await this.loadSettings(userId);
     if (!settings.enabled) return null;
     const blocked = await this.usage.claudeBlocked(userId).catch(() => null);
@@ -795,15 +838,18 @@ export class FallbackService {
     const now = this.now();
     const override = stored.fallback_override?.mode ?? "default";
     const event = { rateLimitType: blocked.window };
+    const activeNow = this.accounts ? await this.accounts.activeSlot(userId) : null;
+    const tried = markTried(prior?.tried, activeNow, blocked.resetsAt, now);
     let usable: string[] = [];
     const accountStep = settings.steps.find((st) => st.kind === "account" && st.enabled);
     if (this.accounts && accountStep && accountStep.kind === "account" && override === "default") {
-      for (const reserve of await this.accounts.reserveSlots(userId, accountStep.slots)) {
-        if (accountUsable(await this.accounts.usageOf(userId, reserve.slot), blocked.window)) usable.push(reserve.slot);
-      }
+      const candidates: Array<{ slot: string; windows: UsageWindow[] | null }> = [];
+      for (const reserve of await this.accounts.reserveSlots(userId, accountStep.slots)) candidates.push({ slot: reserve.slot, windows: await this.accounts.usageOf(userId, reserve.slot) });
+      usable = walkableSlots(candidates, blocked.window, "window", tried, now);
     }
-    const plan = planFallback({ settings, override, event, model: stored.model, state: null, now, accounts: usable, codex: null });
-    const base: FallbackState = { origin: { provider: "claude", model: stored.model }, current: { kind: "paused" }, scope: { window: blocked.window, family: limitFamily(blocked.window) }, resetsAt: blocked.resetsAt, since: new Date(now).toISOString(), swaps: [new Date(now).toISOString()], ineffective: [] };
+    const swaps = (prior?.swaps ?? []).filter((at) => now - Date.parse(at) < 3_600_000);
+    const base: FallbackState = { origin: prior?.origin ?? { provider: "claude", model: stored.model }, current: { kind: "paused" }, scope: { window: blocked.window, family: limitFamily(blocked.window) }, resetsAt: blocked.resetsAt, since: prior?.since ?? new Date(now).toISOString(), swaps: [...swaps, new Date(now).toISOString()], ineffective: prior?.ineffective ?? [], tried, ...(prior?.lowered ? { lowered: prior.lowered } : {}) };
+    const plan = planFallback({ settings, override, event, model: stored.model, state: { ...base, current: prior?.current ?? base.current, swaps }, now, accounts: usable, codex: null });
     if (plan.action === "model") {
       const next: FallbackState = { ...base, current: { kind: "model", model: plan.model }, lowered: plan.model };
       await this.pool.query("UPDATE agent_sessions SET model = $3, fallback_state = $4 WHERE id = $1 AND user_id = $2", [row.id, userId, plan.model, JSON.stringify(next)]);
@@ -816,9 +862,9 @@ export class FallbackService {
       await this.accounts.switchTo(userId, plan.slot);
       const labels = await this.accounts.list(userId);
       const label = labels.find((a) => a.slot === plan.slot)?.label ?? "another account";
-      const next: FallbackState = { ...base, origin: { provider: "claude", model: stored.model, slot: from }, current: { kind: "account", slot: plan.slot, label } };
+      const next: FallbackState = { ...base, origin: { provider: "claude", model: base.origin.model, slot: base.origin.slot ?? from }, current: { kind: "account", slot: plan.slot, label } };
       await this.pool.query("UPDATE agent_sessions SET fallback_state = $3 WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(next)]);
-      await this.recordAccountSwitch(userId, plan.slot, { slot: from, window: blocked.window, resetsAt: blocked.resetsAt });
+      await this.recordAccountSwitch(userId, plan.slot, { slot: base.origin.slot ?? from, window: blocked.window, resetsAt: blocked.resetsAt });
       log.info("fallback.launch_account", { sessionId: row.id, window: blocked.window, to: plan.slot });
       return { model: stored.model, notice: `[Floq] The Claude usage limit${resetNote(blocked.resetsAt)} was reached on your other account. You are on ${label}.` };
     }
@@ -870,6 +916,8 @@ export function windowName(rateLimitType: string): string {
     case "seven_day": return "The weekly";
     case "seven_day_opus": return "The Opus weekly";
     case "seven_day_sonnet": return "The Sonnet weekly";
+    case "spend_limit": return "The spend";
+    case "extra_usage": return "The extra-usage";
     default: return "The usage";
   }
 }

@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { classifyLimitText, type LimitKind } from "./limitText.js";
 
 /** Pure helpers that read an agent's native transcript (Claude projects jsonl, Codex rollout jsonl). */
 
@@ -152,6 +153,10 @@ export interface ClaudeLimitEvent {
   text: string;
   /** True when no real user prompt follows this record (the block ended the current turn). */
   latest: boolean;
+  /** window: a plan window; spend: an org/individual spend cap; extra_usage: extra usage exhausted. A spend cap blocks even when its window has room. */
+  kind?: LimitKind;
+  /** Where the event was seen: the transcript record (default) or the terminal banner (the CLI did not write a record). */
+  source?: "transcript" | "terminal";
 }
 
 const warnedApiErrors = new Set<string>();
@@ -184,10 +189,17 @@ export function claudeLimitEvent(text: string): ClaudeLimitEvent | null {
     if (!message || message.model !== "<synthetic>" || typeof rec.uuid !== "string") continue;
     const params = isRec(rec.apiErrorParams) ? rec.apiErrorParams : null;
     const info = params && isRec(params.rate_limit_info) ? params.rate_limit_info : null;
-    if (!info || info.status !== "rejected" || typeof info.rateLimitType !== "string" || !/^[a-z0-9_]{1,40}$/.test(info.rateLimitType)) continue;
-    const resets = typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt) ? new Date(info.resetsAt * 1000).toISOString() : null;
     const body = blocks(message.content).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("").slice(0, 300);
-    found = { uuid: rec.uuid, rateLimitType: info.rateLimitType, resetsAt: resets, timestamp: typeof rec.timestamp === "string" && Number.isFinite(Date.parse(rec.timestamp)) ? new Date(rec.timestamp).toISOString() : null, text: body, latest: true };
+    const ts = typeof rec.timestamp === "string" && Number.isFinite(Date.parse(rec.timestamp)) ? new Date(rec.timestamp).toISOString() : null;
+    const asText = classifyLimitText(body, ts ? Date.parse(ts) : Date.now());
+    if (info && info.status === "allowed") continue; // an explicit "allowed" is never a block
+    const typed = info && typeof info.rateLimitType === "string" && /^[a-z0-9_]{1,40}$/.test(info.rateLimitType) ? info.rateLimitType : null;
+    // Without usable structured info (monthly spend caps and extra-usage notices carry none) the CLI's own message text decides.
+    const rateLimitType = typed ?? asText?.rateLimitType ?? null;
+    if (!rateLimitType || (info && info.status !== "rejected" && !asText)) continue;
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? new Date(v * 1000).toISOString() : null);
+    const resets = (info ? num(info.resetsAt) ?? (asText?.kind === "window" ? null : num(info.overageResetsAt)) : null) ?? asText?.resetsAt ?? null;
+    found = { uuid: rec.uuid, rateLimitType, resetsAt: resets, timestamp: ts, text: body, latest: true, kind: asText?.kind ?? "window", source: "transcript" };
   }
   return found;
 }

@@ -6,6 +6,7 @@ import { ClaudeOAuth } from "./claudeOauth.js";
 import { UsageService } from "./usage.js";
 import { ClaudeConnectors, apiKeyReachesSessions } from "./claudeConnectors.js";
 import { FallbackService } from "./fallback.js";
+import { NEAR_FULL_PERCENT } from "./limitText.js";
 import { buildHandoff, parseClaudeContext } from "./handoff.js";
 import { ClaudeAccounts } from "./claudeAccounts.js";
 import { CredentialBroker } from "./credentials.js";
@@ -135,7 +136,7 @@ fallback.accounts = claudeAccounts;
 fallback.usage = {
   claudeBlocked: async (userId) => {
     const windows = (await usage.get(userId)).claude?.windows ?? [];
-    const full = windows.filter((w) => w.id !== "extra_usage" && w.usedPercent >= 100 && w.resetsAt && Date.parse(w.resetsAt) > Date.now());
+    const full = windows.filter((w) => w.id !== "extra_usage" && w.usedPercent >= NEAR_FULL_PERCENT && w.resetsAt && Date.parse(w.resetsAt) > Date.now());
     full.sort((a, b) => Date.parse(b.resetsAt!) - Date.parse(a.resetsAt!));
     return full[0] ? { window: full[0].id, resetsAt: full[0].resetsAt! } : null;
   },

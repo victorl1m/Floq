@@ -483,7 +483,10 @@ const okUsage = { acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 10 }, { id: "s
 
 test("T-3 accountUsable: unknown usage or a full account-wide/blocked window is not usable", () => {
   assert.equal(accountUsable(null, "five_hour"), false);
-  assert.equal(accountUsable([{ id: "five_hour", usedPercent: 99 } as never], "five_hour"), true);
+  assert.equal(accountUsable([{ id: "five_hour", usedPercent: 99 } as never], "five_hour"), false, "99 % is exhausted in practice");
+  assert.equal(accountUsable([{ id: "five_hour", usedPercent: 90 } as never], "five_hour"), true);
+  assert.equal(accountUsable([{ id: "five_hour", usedPercent: 10 }, { id: "extra_usage", usedPercent: 100 }] as never, "spend_limit", "spend"), false, "an exhausted spend cap blocks despite plan room");
+  assert.equal(accountUsable([{ id: "five_hour", usedPercent: 10 }, { id: "extra_usage", usedPercent: 100 }] as never, "five_hour"), true);
   assert.equal(accountUsable([{ id: "seven_day", usedPercent: 100 } as never], "five_hour"), false);
   assert.equal(accountUsable([{ id: "seven_day_opus", usedPercent: 100 } as never], "seven_day_opus"), false);
   assert.equal(accountUsable([{ id: "seven_day_opus", usedPercent: 100 } as never], "five_hour"), true);
@@ -590,7 +593,8 @@ test("T-10 same window blocked again right after an account switch: step ineffec
   await h.svc.evaluate("a1", "u1");
   assert.deepEqual(a.st.switches, ["acct_b0b0b0b0"]);
   assert.deepEqual(h.calls, ["restart:opus", "sleep:usage-limit"]);
-  assert.deepEqual(h.row.fallback_state?.ineffective, ["account@five_hour"]);
+  assert.deepEqual(h.row.fallback_state?.ineffective, []);
+  assert.deepEqual(h.row.fallback_state?.tried?.map((t) => t.slot).sort(), ["acct_b0b0b0b0", "primary"], "both blocked slots are remembered, none is left to try");
   h.svc.stop();
 });
 
@@ -980,4 +984,65 @@ test("advisor-3 UsageService.invalidate: after an account switch the next read r
     assert.equal((await svc.get("u1")).claude?.windows[0]?.usedPercent, 5);
     assert.equal(claudeFetches, 2);
   } finally { globalThis.fetch = realFetch; }
+});
+
+
+// ---- limit kinds, terminal banner, chain walking ----
+
+import { classifyLimitText, classifyBanner, parseResetClock } from "../dist/limitText.js";
+import { walkableSlots, markTried } from "../dist/fallback.js";
+
+test("limitText: every limit kind is classified, spend caps win over the window they mention", () => {
+  const now = Date.parse("2026-11-18T01:00:00Z");
+  assert.equal(classifyLimitText("You've hit your 5-hour limit · resets 4:20am (UTC)", now)?.rateLimitType, "five_hour");
+  assert.equal(classifyLimitText("You've hit your weekly limit · resets Nov 12, 3pm (UTC)", now)?.rateLimitType, "seven_day");
+  assert.equal(classifyLimitText("You've hit your Opus weekly limit · resets 3pm (UTC)", now)?.rateLimitType, "seven_day_opus");
+  assert.equal(classifyLimitText("You've hit your Sonnet weekly limit", now)?.rateLimitType, "seven_day_sonnet");
+  const spend = classifyLimitText("You've hit your org's monthly spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 2:50am (UTC)", now);
+  assert.deepEqual([spend?.rateLimitType, spend?.kind, spend?.resetsAt], ["spend_limit", "spend", "2026-11-18T02:50:00.000Z"]);
+  assert.equal(classifyLimitText("You're out of extra usage · resets 3am", now)?.kind, "extra_usage");
+  assert.equal(classifyLimitText("Refactor the usage service please", now), null);
+});
+
+test("limitText: reset clock rolls to the next UTC occurrence", () => {
+  const now = Date.parse("2026-11-18T03:00:00Z");
+  assert.equal(parseResetClock("resets 2:50am (UTC)", now), "2026-11-19T02:50:00.000Z");
+  assert.equal(parseResetClock("continuing automatically at 6pm", now), "2026-11-18T18:00:00.000Z");
+  assert.equal(parseResetClock("no clock here", now), null);
+});
+
+test("limitText: only the CLI's own banner counts as a terminal limit (plain prose does not)", () => {
+  const now = Date.now();
+  assert.equal(classifyBanner("\u001b[2mUsage limit reached · continuing automatically at 2:50am · Esc to cancel\u001b[0m", now)?.rateLimitType, "usage_limit");
+  assert.equal(classifyBanner("the spend limit message says usage limit reached, then what", now), null);
+});
+
+test("claudeLimitEvent: a spend-cap record without rate_limit_info is detected from the CLI text", () => {
+  const base = limit(fiveHour, "five_hour", "s1") as { message: { content: Array<{ text: string }> } };
+  const rec = { ...base, apiErrorParams: {}, message: { ...base.message, content: [{ type: "text", text: "You've hit your org's monthly spend limit · run /usage-credits · your 5-hour limit resets 2:50am (UTC)" }] } };
+  const ev = claudeLimitEvent(jl(user("go"), rec));
+  assert.equal(ev?.rateLimitType, "spend_limit");
+  assert.equal(ev?.kind, "spend");
+});
+
+test("walkableSlots/markTried: tried and near-full slots are skipped, expired tries are forgotten", () => {
+  const now = Date.now();
+  const w = (p: number) => [{ id: "five_hour", usedPercent: p }] as never;
+  const cand = [{ slot: "a", windows: w(99) }, { slot: "b", windows: w(10) }, { slot: "c", windows: w(20) }];
+  assert.deepEqual(walkableSlots(cand, "five_hour", "window", [], now), ["b", "c"]);
+  const tried = markTried(undefined, "b", new Date(now + 60_000).toISOString(), now);
+  assert.deepEqual(walkableSlots(cand, "five_hour", "window", tried, now), ["c"]);
+  assert.deepEqual(walkableSlots(cand, "five_hour", "window", tried, now + 120_000), ["b", "c"]);
+});
+
+test("chain walk: the first reserve is also exhausted, the second is used; terminal banner alone triggers the swap with no quiet wait", async () => {
+  const h = harness({ transcript: "", settings: accountChain() });
+  const a = fakeAccounts({ usage: { acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 99 }], acct_c1c1c1c1: [{ id: "five_hour", usedPercent: 5 }] }, reserves: ["acct_b0b0b0b0", "acct_c1c1c1c1"] });
+  h.svc.accounts = a.api;
+  h.svc.onOutput("a1", "u1", "Usage limit reached · continuing automatically at 2:50am · Esc to cancel");
+  await h.svc.evaluate("a1", "u1");
+  assert.deepEqual(a.st.switches, ["acct_c1c1c1c1"]);
+  assert.ok(h.calls.some((c) => c.startsWith("restart")), "process restarted so the CLI's own wait is gone");
+  assert.ok(h.notices.some((n) => n.includes("Continue the task")), "automatic continue turn queued");
+  h.svc.stop();
 });

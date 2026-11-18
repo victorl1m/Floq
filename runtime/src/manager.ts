@@ -400,7 +400,7 @@ export class SessionManager {
   private readyListeners?: Array<(userId: string, sessionId: string) => void>;
   private bootNotices?: Map<string, string>;
   /** Usage-limit fallback (set by index.ts); fed every Claude PTY output frame. */
-  fallback?: { onOutput(id: string, userId: string): void; sweep?(live: Array<{ id: string; userId: string }>): void; beforeLaunch?(row: { id: string; user_id: string; provider: string; model: string | null }): Promise<{ model: string | null; notice?: string } | null> };
+  fallback?: { onOutput(id: string, userId: string, data?: string): void; sweep?(live: Array<{ id: string; userId: string }>): void; beforeLaunch?(row: { id: string; user_id: string; provider: string; model: string | null }): Promise<{ model: string | null; notice?: string } | null> };
   /** Extra Claude logins (set by index.ts): attributes CLI-refreshed credentials to the right account and forgets extras on disconnect. */
   accounts?: { adoptAttributed(userId: string, data: CredentialData): Promise<"single" | "active" | "reserve" | "unmatched" | "retry">; reset(userId: string): Promise<void> };
   /** Test hook: overrides the TUI-ready detection timing. */
@@ -1815,7 +1815,7 @@ export class SessionManager {
           if (AGY_LOGIN_LOST.test(agyTail)) { agyTail = ""; this.markAgyLoginLost(row.user_id); }
         }
         void this.updateNativeTitle(row.id);
-        if (row.provider === "claude") this.fallback?.onOutput(row.id, row.user_id);
+        if (row.provider === "claude") this.fallback?.onOutput(row.id, row.user_id, frame.data);
         return;
       }
       if (frame.type === "exit") void this.onExit(session, frame.session.state, !strictResume && resuming && Date.now() - launchedAt < RESUME_FALLBACK_MS, profile, handle);
