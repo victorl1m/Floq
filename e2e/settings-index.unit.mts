@@ -27,8 +27,11 @@ test("every literal SettingRow label is indexed or explicitly exempt", () => {
 test("every indexed row id is declared by a SettingRow, and its label is the real one", () => {
     const source = files.map(([, s]) => s).join("\n");
     for (const e of SETTINGS_INDEX.filter((x) => x.id)) {
-        assert.ok(new RegExp(`settingId="${e.id}"`).test(source), `no SettingRow declares settingId="${e.id}"`);
-        assert.ok(source.includes(`label="${e.label}"`), `label "${e.label}" not found in settings sources`);
+        const literal = new RegExp(`settingId="${e.id}"`).test(source);
+        // A row rendered per item picks its id in an expression (settingId={p.id === "x" ? "id" : undefined}) and builds its label in JSX.
+        const computed = new RegExp(`settingId=\\{[^}]*"${e.id}"`).test(source);
+        assert.ok(literal || computed, `no SettingRow declares settingId="${e.id}"`);
+        if (literal) assert.ok(source.includes(`label="${e.label}"`), `label "${e.label}" not found in settings sources`);
     }
     for (const [, s] of files) for (const m of s.matchAll(/settingId="([^"]+)"/g)) assert.ok(ROW_IDS.has(m[1]!), `settingId ${m[1]} missing from the index`);
 });
