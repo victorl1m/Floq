@@ -882,7 +882,8 @@ function AgentCanvas() {
   const appAnchor = useMemo(() => ({ x: nodes.reduce((max, node) => Math.max(max, node.position.x + (node.width ?? DEFAULT_NODE_SIZE.width)), 0) + 80, y: nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0 }), [nodes]);
   const appWindows = useCanvasAppWindows(client, projectSessions, appAnchor);
   const browserAnchor = useMemo(() => ({ x: appAnchor.x, y: appAnchor.y + 40 + (appWindows.nodes.length * 480) }), [appAnchor, appWindows.nodes.length]);
-  const browser = useCanvasBrowsers(client, activeProjectId ?? null, browserAnchor, true, projectSessions.length > 0);
+  const projectSessionIds = useMemo(() => new Set(projectSessions.map((session) => session.id)), [projectSessions]);
+  const browser = useCanvasBrowsers(client, activeProjectId ?? null, browserAnchor, true, projectSessionIds);
   const browserLinks = useBrowserLinks(client, activeProjectId, titleOf);
   browserUnlinkRef.current = browserLinks.unlink;
   // An agent that connected to the shared browser without a wire drives its own tab, which no Browser node can show. Wire each such agent of this

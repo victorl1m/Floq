@@ -10,6 +10,7 @@ import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/
 import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
 import { robotAvatarSvg } from "@/lib/robot-avatar";
 import { egressBadge } from "@/lib/browser-egress";
+import { projectAgentConnected } from "@/lib/browser-autoopen";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels, type BrowserStreamState } from "@/lib/runtime/browser-stream";
 
@@ -388,7 +389,8 @@ const newId = () => Math.random().toString(36).slice(2, 8);
  * Nodes belong to the project they were created on: the list is tagged with its project (a stale list from the previous project is never
  * shown or written under the new one) and the runtime registers each node id to one project.
  */
-export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true, projectHasAgents = true) {
+const EMPTY_IDS: ReadonlySet<string> = new Set();
+export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true, projectSessionIds: ReadonlySet<string> = EMPTY_IDS) {
   const anchorRef = useRef(anchor); anchorRef.current = anchor;
   const [state, setState] = useState<{ projectId: string | null; stored: Stored }>(() => ({ projectId, stored: projectId ? read(projectId, anchor) : { nodes: [] } }));
   // During the render that follows a project switch the old list is still in state: treat it as empty until the effect swaps it.
@@ -433,15 +435,17 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
     update((prev) => ({ seen: true, nodes: prev.nodes.filter((n) => n.id !== id) }));
   }, [update]);
 
+  const idsRef = useRef(projectSessionIds); idsRef.current = projectSessionIds;
+  const hasSessions = projectSessionIds.size > 0;
   const count = stored.nodes.length;
   useEffect(() => {
-    if (!client || !projectId || count > 0 || !autoOpenPoll || !projectHasAgents) return;
+    if (!client || !projectId || count > 0 || !autoOpenPoll || !hasSessions) return;
     let stopped = false;
-    const poll = async () => { try { const s = await client.browserStatus(); if (stopped) return; if ((s.agents ?? 0) === 0) dismissed.current = false; else if (!dismissed.current && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
+    const poll = async () => { try { const s = await client.browserStatus(); if (stopped) return; if (!projectAgentConnected(s, idsRef.current)) dismissed.current = false; else if (!dismissed.current && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
     void poll();
     const t = setInterval(() => { if (document.visibilityState !== "hidden") void poll(); }, POLL_MS);
     return () => { stopped = true; clearInterval(t); };
-  }, [client, projectId, count, autoOpenPoll, projectHasAgents, open]);
+  }, [client, projectId, count, autoOpenPoll, hasSessions, open]);
 
   const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
     id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),
