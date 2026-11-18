@@ -107,3 +107,9 @@ test("Claude cache TTL: a value Floq wrote is removed when the config returns to
   assert.equal("floqManaged" in own, false);
   assert.equal(claudeStartupSettings(own, false, { ttl: "auto" }).promptCacheTtl, "1h");
 });
+
+test("Claude startup disables transcript cleanup and a user value cannot lower it", () => {
+  assert.equal(claudeStartupSettings({}, false).cleanupPeriodDays, 100000);
+  assert.equal(claudeStartupSettings({ cleanupPeriodDays: 30 }, false).cleanupPeriodDays, 100000);
+  assert.equal(claudeStartupSettings({ cleanupPeriodDays: 1 }, true).cleanupPeriodDays, 100000);
+});

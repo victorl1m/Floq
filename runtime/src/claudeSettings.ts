@@ -6,6 +6,9 @@ export interface ClaudeCacheOptions {
   helperTtl?: CacheTtl;
 }
 
+/** Effectively never: Claude Code's own transcript cleanup must not delete a sleeping agent's conversation. */
+export const CLAUDE_CLEANUP_PERIOD_DAYS = 100_000;
+
 const CACHE_KEYS = ["promptCacheTtl", "subagentPromptCacheTtl"] as const;
 
 /**
@@ -40,6 +43,9 @@ export function claudeStartupSettings(settings: Record<string, unknown>, autoApp
     ...defaults,
     ...base,
     ...(Object.keys(managed).length ? { floqManaged: managed } : {}),
+    // Claude Code deletes transcripts older than this many days whenever any Claude process starts. Floq owns
+    // retention (a conversation goes only with its agent), so a user value can never lower it.
+    cleanupPeriodDays: CLAUDE_CLEANUP_PERIOD_DAYS,
     env: { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "150000", ...env },
     tui: "fullscreen",
     skipDangerousModePermissionPrompt: autoApprove,
