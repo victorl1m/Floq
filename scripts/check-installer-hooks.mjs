@@ -14,9 +14,13 @@ for (const m of ['NSIS_HOOK_PREINSTALL', 'NSIS_HOOK_POSTINSTALL', 'NSIS_HOOK_PRE
 for (const body of code.split(/!macroend/)) {
   const pushes = (body.match(/^\s*Push\s/gm) || []).length;
   const pops = (body.match(/^\s*Pop\s/gm) || []).length;
-  const results = (body.match(/^\s*(nsExec::Exec|nsProcess::_FindProcess)\b/gm) || []).length;
+  // nsExec::Exec leaves one result to pop, nsExec::ExecToStack two (exit code, output).
+  const results = (body.match(/^\s*nsExec::Exec\b/gm) || []).length + 2 * (body.match(/^\s*nsExec::ExecToStack\b/gm) || []).length;
   if (pushes !== pops - results) fail('Push/Pop unbalanced in a macro');
 }
+// Only plugins that ship with stock NSIS or Tauri's template may be called (no nsProcess etc.).
+for (const m of code.matchAll(/\b([A-Za-z_]\w*)::\w+/g))
+  if (!['nsExec', 'System', 'nsis_tauri_utils'].includes(m[1])) fail(`unsupported plugin ${m[1]}`);
 // Every Goto target must be a defined label.
 const labels = new Set([...code.matchAll(/^\s*([A-Za-z_]\w*):\s*$/gm)].map((m) => m[1]));
 for (const m of code.matchAll(/(?:Goto|IfFileExists\s+"[^"]*")\s+([A-Za-z_]\w*)/g))

@@ -15,7 +15,8 @@ behaviour, not measurements. Verify on a Windows CI build (see "Untested").
 
 ## Changes
 
-1. `FLOQ_STOP_APP` only runs `taskkill` when `nsProcess::_FindProcess` finds `floq.exe`, and then polls every 200 ms
+1. `FLOQ_STOP_APP` only runs `taskkill` when `tasklist` (via stock `nsExec::ExecToStack`) lists `floq.exe` for the
+   current user (first output character `"` means a match), and then polls every 200 ms
    (max 3 s) instead of a fixed 1 s sleep. Not running: cost ~0 ms. Running: usually 200-400 ms.
 2. PREUNINSTALL skips the stop entirely while the upgrade marker exists (PREINSTALL just stopped the app).
    The Run-key removal is still skipped during upgrades and still done on a real uninstall.
@@ -46,8 +47,8 @@ pays the old second kill.
 
 - NSIS compile (CI Windows build is the only check); labels `floq_wait_loop`/`floq_wait_done` are unique per
   section but check for "label already declared" warnings.
-- That `nsProcess` is available to hooks (the Tauri template includes it and uses it for its own running-app
-  check). If the build fails on it, fall back to the previous unconditional taskkill.
+- `tasklist` output detection (a match prints a CSV line starting with `"`; no match prints a localized `INFO:`
+  line). No plugin beyond stock `nsExec` is used: Tauri's template does not bundle nsProcess.
 - Real timings.
 
 `node scripts/check-installer-hooks.mjs` does a static check (balanced macros/If/Push/Pop, defined labels,
