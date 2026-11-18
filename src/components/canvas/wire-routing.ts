@@ -1,5 +1,4 @@
 import { Position } from "@xyflow/react";
-import { recruitEndpoints } from "./wire-endpoints";
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type Pt = { x: number; y: number };
@@ -48,15 +47,15 @@ export function anchor(from: Rect, to: Rect): Anchor {
   return dy > 0 ? { x: from.x + from.width / 2, y: from.y + from.height, position: Position.Bottom } : { x: from.x + from.width / 2, y: from.y, position: Position.Top };
 }
 
-/** Natural floating route first; if it crosses another node, try detours while preserving recruit endpoints. */
-export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number, recruit = false): Curve {
+/** Natural floating route first (every wire, recruit included, leaves and enters by the nearest sides, so it follows the
+ *  cards when they move); if it crosses another node, try top/bottom detours. `_recruit` is kept for callers. */
+export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number, _recruit = false): Curve {
   const natural = (() => {
-    const fixed = recruitEndpoints(from, to, fan);
-    const a = recruit ? { ...fixed.a, position: Position.Bottom } : anchor(from, to);
-    const b = recruit ? { ...fixed.b, position: Position.Top } : anchor(to, from);
+    const a = anchor(from, to);
+    const b = anchor(to, from);
     const horizontal = a.position === Position.Left || a.position === Position.Right;
     const reach = Math.max(40, (horizontal ? Math.abs(a.x - b.x) : Math.abs(a.y - b.y)) * 0.35);
-    const shifted = (p: Anchor): Anchor => recruit ? p : (horizontal ? { ...p, y: p.y + fan } : { ...p, x: p.x + fan });
+    const shifted = (p: Anchor): Anchor => (p.position === Position.Left || p.position === Position.Right ? { ...p, y: p.y + fan } : { ...p, x: p.x + fan });
     return curveOf(shifted(a), shifted(b), reach);
   })();
   const candidates = [natural];
@@ -64,9 +63,8 @@ export function route(from: Rect, to: Rect, obstacles: Rect[], fan: number, recr
     const left = Math.min(from.x, to.x), right = Math.max(from.x + from.width, to.x + to.width);
     const between = obstacles.filter((rect) => rect.x < right && rect.x + rect.width > left);
     for (const position of [Position.Bottom, Position.Top] as const) {
-      const fixed = recruitEndpoints(from, to, fan);
-      const a = recruit ? { ...fixed.a, position: Position.Bottom } : side(from, position, fan);
-      const b = recruit ? { ...fixed.b, position: Position.Top } : side(to, position, fan);
+      const a = side(from, position, fan);
+      const b = side(to, position, fan);
       const edgeY = position === Position.Bottom
         ? Math.max(a.y, b.y, ...between.map((rect) => rect.y + rect.height)) + 36
         : Math.min(a.y, b.y, ...between.map((rect) => rect.y)) - 36;
