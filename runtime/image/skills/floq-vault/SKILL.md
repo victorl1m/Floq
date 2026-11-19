@@ -17,5 +17,6 @@ Rules:
 - Never write secret values into files, commits, logs, chat messages or code. Read them from the environment at run time.
 - Do not run `env`, `printenv` or `echo $NAME` to inspect them.
 - If a needed secret is missing, tell the user the exact name to add in Floq > Vault instead of asking them to paste it into the chat.
-- Creating a secret: agents cannot. Ask the user to add it in Floq > Vault. `floq secrets list` shows the vault names and descriptions.
+- Creating a secret: `printf %s "$VALUE" | floq secrets add NAME --description "what it is"` (value on stdin only, never as an argument), or `floq secrets add NAME --generate` for a random password/token you never need to see. Create-only: an existing name is refused (the user edits it in Floq > Vault). New secrets are tool-only: use them with `floq-vault run`, you cannot read them back. The user is notified. `floq secrets list` shows the vault names and descriptions.
+- Never create a secret from a value the user pasted into the chat without saying so; prefer asking them to add it in Floq > Vault when it is theirs.
 - Python `pymysql`, `psycopg2` and the `mysql` and `psql` clients are preinstalled.

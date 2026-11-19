@@ -335,16 +335,32 @@ test("floq project create requires a trimmed name and reports the created projec
   assert.equal(h.manager.projectCreates.length, 2, "invalid CLI invocations do not reach the API");
 });
 
-test("floq secrets add is gone (agents cannot create secrets); floq secret list/get read env-exposed vault entries", async (t) => {
+test("floq secrets add creates create-only tool secrets from stdin or --generate; floq secret list/get read env-exposed vault entries", async (t) => {
   const h = await harness(t);
   const seed = (name, value, expose) => h.vaultRows.set("owner" + name, { user_id: "owner", name, description: null, expose, value_enc: encryptSecret(key, value, "owner:vault:" + name), created_at: new Date(), updated_at: new Date(), last_used_at: null });
   const requestsBefore = h.statements.length;
-  for (const args of [["secrets", "add", "OTHER_KEY"], ["secrets", "add", "OTHER_KEY", "--keychain", "Pay"], ["secret", "get", "X", "--keychain", "Pay"]]) {
-    const r = await runFloq(h, args, { input: SECRET + "\n" });
+  // Refused locally, nothing sent: a value as an argument, the old keychain flag, a bad name, an empty stdin.
+  for (const [args, input] of [[["secrets", "add", "OTHER_KEY", SECRET], ""], [["secrets", "add", "OTHER_KEY", "--keychain", "Pay"], SECRET + "\n"], [["secret", "get", "X", "--keychain", "Pay"], ""], [["secrets", "add", "lower_case"], SECRET + "\n"], [["secrets", "add", "EMPTY_ONE"], "\n"]]) {
+    const r = await runFloq(h, args, { input });
     assert.equal(r.code, 2, args.join(" "));
     assert.ok(!r.stdout.includes(SECRET) && !r.stderr.includes(SECRET));
   }
   assert.equal(h.statements.length, requestsBefore, "no request was sent for refused invocations");
+  const added = await runFloq(h, ["secrets", "add", "OTHER_KEY", "--description", "Pay API"], { input: SECRET + "\n" });
+  assert.equal(added.code, 0, added.stderr);
+  assert.ok(!added.stdout.includes(SECRET) && !added.stderr.includes(SECRET));
+  const row = h.vaultRows.get("ownerOTHER_KEY");
+  assert.ok(row, "the secret was stored");
+  assert.equal(row.expose, "tool", "agent-created secrets are tool-only");
+  assert.ok(!String(row.value_enc).includes(SECRET), "stored encrypted");
+  const dup = await runFloq(h, ["secrets", "add", "OTHER_KEY"], { input: "other\n" });
+  assert.notEqual(dup.code, 0, "create-only: an existing name is refused");
+  const gen = await runFloq(h, ["secrets", "add", "GEN_TOKEN", "--generate"]);
+  assert.equal(gen.code, 0, gen.stderr);
+  assert.match(gen.stdout, /generated value, never shown/);
+  assert.equal(h.vaultRows.get("ownerGEN_TOKEN")?.expose, "tool");
+  const listedTool = await runFloq(h, ["secret", "list"]);
+  assert.ok(!listedTool.stdout.includes("OTHER_KEY") && !listedTool.stdout.includes("GEN_TOKEN"), "tool-only secrets are not readable by agents");
   seed("DB_PASSWORD", SECRET, "env");
   const list = await runFloq(h, ["secret", "list"]);
   assert.equal(list.code, 0, list.stderr);

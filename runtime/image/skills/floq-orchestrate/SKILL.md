@@ -163,6 +163,7 @@ floq mcp add NAME --url https://example.com/mcp           # a remote HTTP server
 floq mcp add --json config.json                           # JSON copied from a server's docs (the only way to set env or headers)
 floq mcp remove NAME                                      # lead only; bundled servers such as context7 cannot be removed
 floq secrets list                                         # names and descriptions only
+floq secrets add NAME --description T < value-file        # create a secret (stdin only; --generate for a random one); create-only, tool exposure
 ```
 
 Rules you must follow, because the CLI cannot enforce them:

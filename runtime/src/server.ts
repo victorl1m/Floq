@@ -410,6 +410,27 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       switch (path) {
         case "vault/secrets":
           return send(res, 200, { secrets: (await vault.list(userId)).map((s) => ({ name: s.name, description: s.description })) });
+        // `floq secrets add`: create-only, tool exposure (the agent can use it via floq-vault run, never read it back).
+        // `generate` makes a random value server-side so the agent never sees it. The user is told about every creation.
+        case "vault/create": {
+          if (method !== "POST") return send(res, 405, { error: { code: "method_not_allowed", message: "Use POST" } });
+          let value = body.value;
+          if (body.generate !== undefined) {
+            const bytes = body.generate === true ? 32 : Number(body.generate);
+            if (!Number.isInteger(bytes) || bytes < 16 || bytes > 256) throw badRequest("generate must be 16-256 bytes", "invalid_secret");
+            if (body.value !== undefined) throw badRequest("Use either a value or generate, not both", "invalid_secret");
+            value = randomBytes(bytes).toString("base64url");
+          }
+          await vault.create(userId, sessionId, { name: body.name, value, description: body.description });
+          const me = await orchestrator.toolkitCaller(userId, sessionId, false).catch(() => null);
+          const name = String(body.name);
+          void notifications.create(userId, {
+            title: "Agent created a secret: " + name,
+            body: (me ? me.name : "An agent") + " added " + name + " to your vault" + (body.generate !== undefined ? " (generated value)" : "") + ". Agents can use it but not read it. Review or delete it in Floq > Vault.",
+            level: "info", category: "security", projectId: me?.projectId ?? null, sessionId, sessionName: me?.name,
+          }).catch((error) => log.warn("vault.notice_failed", { error: String(error).slice(0, 120) }));
+          return send(res, 201, { name, generated: body.generate !== undefined });
+        }
         case "vault/reveal": {
           const names = Array.isArray(body.names) ? body.names.filter((n): n is string => typeof n === "string") : null;
           // Bulk reveal never returns tool-only secrets and needs a lead. A named reveal of a tool-only secret
