@@ -475,9 +475,9 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
           const argv = Array.isArray(body.argv) && body.argv.length > 0 && body.argv.length <= 512 && body.argv.every((a) => typeof a === "string" && a.length <= 32768 && !a.includes("\0")) ? (body.argv as string[]) : null;
           if (!argv || argv[0] === "") throw badRequest("argv must be a non-empty list of strings", "invalid_argv");
           if (names && (names.length > 100 || names.some((n) => !/^[A-Z][A-Z0-9_]{0,63}$/.test(n)))) throw badRequest("invalid secret names", "invalid_name");
-          // Same authorization as a reveal: a lead for anything beyond secrets already in the sandbox environment.
-          const exposure = new Map((await vault.list(userId)).map((s) => [s.name, s.expose]));
-          if (!names || names.some((n) => exposure.get(n) !== "env")) await orchestrator.toolkitCaller(userId, sessionId, true);
+          // Any agent of the user, subagents included: the secrets only reach the launched command and the output comes back scrubbed,
+          // so the agent never holds the cleartext. (A plain reveal, which does return cleartext, still needs a lead.)
+          await orchestrator.toolkitCaller(userId, sessionId, false);
           const handle = shards?.awakeHandle(userId);
           if (!shards || !handle) throw unavailable("Your sandbox is not running", "sandbox_unavailable");
           const given = body.env && typeof body.env === "object" && !Array.isArray(body.env) ? Object.entries(body.env as Record<string, unknown>) : [];

@@ -445,11 +445,10 @@ test("floq mcp add: vault references work, unknown ones and plain credentials ar
   assert.match(cli.stdout, /claude\tpay\tstdio\tnpx\t\(uses vault secrets: STRIPE_KEY\)/);
 });
 
-test("vault run (server-side injection): non-lead is refused, bad argv is rejected, and no cleartext route result carries a secret (RA-03)", async (t) => {
+test("vault run (server-side injection): subagents may use it, bad argv is rejected, and no cleartext route result carries a secret (RA-03)", async (t) => {
   const h = await harness(t);
-  const member = await h.call("s-member", "vault/run", { names: ["ANY_SECRET"], argv: ["true"] });
-  assert.equal(member.status, 403);
-  assert.equal(member.json.error.code, "not_lead");
+  const member = await h.call("s-member", "vault/run", { names: [], argv: ["true"] });
+  assert.equal(member.status, 503); // authorized; only the missing sandbox stops it here
   const bad = await h.call("s-lead", "vault/run", { names: ["ANY_SECRET"], argv: [] });
   assert.equal(bad.status, 400);
   const noSandbox = await h.call("s-lead", "vault/run", { names: [], argv: ["true"] });
