@@ -6,12 +6,13 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { useRuntime } from "@/lib/runtime/store";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+import AppUpdatesGroup from "./app-updates-group";
 
 export default function AboutSection() {
     const { info } = useRuntime();
 
     return (
-        <SettingsPage title="About" description="Version information.">
+        <SettingsPage title="About" description="Version information and app updates.">
             <SettingsGroup>
                 <div className="flex items-center gap-3 p-4">
                     <IconBrandFloq size={36} variant="brand" />
@@ -42,6 +43,7 @@ export default function AboutSection() {
                     <span className="text-sm text-muted-foreground">{info?.server.version || "—"}</span>
                 </SettingRow>
             </SettingsGroup>
+            <AppUpdatesGroup />
         </SettingsPage>
     );
 }
