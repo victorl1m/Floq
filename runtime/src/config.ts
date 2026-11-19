@@ -143,6 +143,8 @@ export interface Config {
   cacheHelperTtl: CacheTtl;
   /** Debug kill switch: sets DISABLE_PROMPT_CACHING=1 for Claude sessions. */
   cacheDisable: boolean;
+  /** CLAUDE_CODE_EXPERIMENTAL_CODE_MODE for Claude sessions (default on; FLOQ_CLAUDE_CODE_MODE=0 turns it off). */
+  claudeCodeMode: boolean;
   defaultCols: number;
   defaultRows: number;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -291,6 +293,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cacheTtl: parseCacheTtl(env.FLOQ_CACHE_TTL),
     cacheHelperTtl: parseCacheTtl(env.FLOQ_CACHE_HELPER_TTL),
     cacheDisable: readBool(env.FLOQ_CACHE_DISABLE, false),
+    claudeCodeMode: readBool(env.FLOQ_CLAUDE_CODE_MODE, true),
     defaultCols: readInt(env.FLOQ_DEFAULT_COLS, DEFAULTS.defaultCols, 20, 500),
     defaultRows: readInt(env.FLOQ_DEFAULT_ROWS, DEFAULTS.defaultRows, 5, 200),
     logLevel: (env.FLOQ_LOG_LEVEL?.trim() as Config["logLevel"]) || "info",

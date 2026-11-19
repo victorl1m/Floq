@@ -197,18 +197,20 @@ export function resolveModel(config: Config, provider: ProviderId, requested: un
  * misfires. CLAUDE_CODE_NO_FLICKER=1 is the documented override: it forces fullscreen, skips the check and is
  * never recorded. A user's `/tui` relaunch clears it for that process only.
  */
-export function forcedSessionEnv(provider: ProviderId, opts: { cacheDisable?: boolean } = {}): Record<string, string> {
+export function forcedSessionEnv(provider: ProviderId, opts: { cacheDisable?: boolean; codeMode?: boolean } = {}): Record<string, string> {
   // DISABLE_AUTOUPDATER=1 is Claude Code's documented switch: the managed image's install is read-only for the
   // per-user uid, so self-update could only fail ("Auto-update failed"). Floq ships the CLI version itself.
   // CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 turns on Claude Code's function-hook surface: plugins whose hooks.json lists
   // "modules" (e.g. fast-jev-compaction) are read but never loaded without it. Users cannot set it themselves (CLAUDE.*
   // is a reserved secret name and the env allowlist drops it), so the runtime always provides it.
+  // CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 is on by default (CLAUDE.* names are reserved, so only the runtime can set it);
+  // the operator turns it off with FLOQ_CLAUDE_CODE_MODE=0.
   // FLOQ_CACHE_DISABLE=1 is a debugging kill switch for Claude's prompt cache; forced here so a vault entry cannot flip it.
   // opencode / agy self-update in the background; the image pins their versions, so both are switched off here.
   if (provider === "opencode") return { OPENCODE_DISABLE_AUTOUPDATE: "1" };
   if (provider === "antigravity") return { AGY_CLI_DISABLE_AUTO_UPDATE: "true" };
   return provider === "claude"
-    ? { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", ...(opts.cacheDisable ? { DISABLE_PROMPT_CACHING: "1" } : {}) }
+    ? { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", ...(opts.codeMode !== false ? { CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: "1" } : {}), ...(opts.cacheDisable ? { DISABLE_PROMPT_CACHING: "1" } : {}) }
     : {};
 }
 

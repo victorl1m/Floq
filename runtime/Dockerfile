@@ -61,7 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3-tools \
         python3 python3-yaml python3-pymysql python3-psycopg2 default-mysql-client postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 opencode-ai@1.19.5 \
+    && npm install -g @anthropic-ai/claude-code@2.1.328 @openai/codex@0.167.0 opencode-ai@1.19.5 \
     && npm cache clean --force
 # Agent browser, layer 1: only the shared libraries the full chrome binary links against (ldd; adds libcups2, libcairo2, libpango to the shell's set) + fontconfig + fonts. No X server, no GTK.
 # fonts-noto-cjk is ~91 MB: swap for fonts-wqy-zenhei (~17 MB) if size matters more than CJK quality.

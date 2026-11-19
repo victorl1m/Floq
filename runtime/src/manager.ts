@@ -1696,7 +1696,7 @@ export class SessionManager {
     }
     // Secrets the user marked "env" are injected; the rest are only reachable through `floq-vault`.
     Object.assign(env, await this.vault.reveal(row.user_id, null, "env", row.id));
-    Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
+    Object.assign(env, forcedSessionEnv(row.provider, { cacheDisable: this.config.cacheDisable, codeMode: this.config.claudeCodeMode })); // a vault entry must not undo the renderer pin or the FLOQ_CACHE_DISABLE kill switch
     // Clear secret files that older versions wrote under <home>/.floq/secrets/<sessionId>/ (nothing writes them any more).
     // Vault secrets marked "env" were injected above; the rest are reached through `floq secret get` / the floq-vault skill.
     try { this.syncSecretFiles(handle, row.id, {}); } catch (error) { log.warn("secret.sync_failed", { sessionId: row.id, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }

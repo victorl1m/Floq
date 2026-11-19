@@ -54,7 +54,8 @@ test("Claude sessions pin the fullscreen renderer; Codex and shell sessions do n
     assert.equal(buildSessionEnv({ ...cfg, passHostEnv: true }, "claude", profile, "s1").CLAUDE_CODE_NO_FLICKER, "1");
     assert.equal("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" in buildSessionEnv({ ...cfg, passHostEnv: true }, "claude", profile, "s1"), false);
     for (const p of ["codex", "shell"]) assert.equal("CLAUDE_CODE_NO_FLICKER" in buildSessionEnv(cfg, p, profile, "s1"), false);
-    assert.deepEqual(forcedSessionEnv("claude"), { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1" });
+    assert.deepEqual(forcedSessionEnv("claude"), { CLAUDE_CODE_NO_FLICKER: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: "1" });
+    assert.equal(forcedSessionEnv("claude", { codeMode: false }).CLAUDE_CODE_EXPERIMENTAL_CODE_MODE, undefined, "FLOQ_CLAUDE_CODE_MODE=0 turns it off");
     assert.equal(buildSessionEnv(cfg, "claude", profile, "s1").CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, "1");
     for (const p of ["codex", "shell"]) assert.equal("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS" in buildSessionEnv(cfg, p, profile, "s1"), false);
     assert.deepEqual(forcedSessionEnv("codex"), {});
