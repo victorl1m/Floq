@@ -63,7 +63,7 @@ export default function TasksPage() {
             {projects.map((p) => <NativeSelectOption key={p.id} value={p.id}>{label(p.id)}</NativeSelectOption>)}
           </NativeSelect>
         </label>
-        <div className="ml-auto flex min-w-0 max-w-full items-center gap-3 rounded-xl border border-border/70 bg-muted/30 px-3 py-1.5 glass-surface">
+        <div className="material-content ml-auto flex min-w-0 max-w-full items-center gap-3 rounded-2xl border px-3 py-1.5">
           <IconBolt className={`size-4 shrink-0 ${autoOn ? "text-amber-500" : "text-muted-foreground"}`} aria-hidden />
           <div className="min-w-0 text-xs leading-tight">
             <div className="font-medium text-sm" id="auto-agent-label">Agents work on tasks</div>

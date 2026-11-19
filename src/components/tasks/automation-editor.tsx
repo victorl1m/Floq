@@ -96,7 +96,7 @@ function Form({ automation, projectId, projects, onClose, onSaved }: Omit<Props,
       <Field label="Name" id="title" error={err("title")}><Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Monthly report" {...invalid("title")} /></Field>
       <Field label="Instructions for the agent" id="instructions" error={err("instructions")}><Textarea id="instructions" rows={4} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="What should the agent do each time?" {...invalid("instructions")} /></Field>
 
-      <fieldset className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+      <fieldset className="material-content space-y-3 rounded-2xl border p-3">
         <legend className="px-1 text-sm font-medium">Schedule</legend>
         <div role="radiogroup" aria-label="Schedule type" className="inline-flex rounded-lg border p-0.5">
           {(["once", "repeat"] as const).map((m) => <button key={m} type="button" role="radio" aria-checked={form.mode === m} onClick={() => set({ mode: m })} className={`rounded-md px-3 py-1 text-sm ${form.mode === m ? "bg-muted font-medium" : "text-muted-foreground"}`}>{m === "once" ? "Once" : "Repeat"}</button>)}
@@ -130,7 +130,7 @@ function Form({ automation, projectId, projects, onClose, onSaved }: Omit<Props,
             </div>
           </div>
         )}
-        <div className="rounded-lg bg-background/50 p-2.5 text-sm" aria-live="polite">
+        <div className="rounded-xl bg-[var(--glass-row-hover)] p-2.5 text-sm" aria-live="polite">
           <p className="font-medium">{sentence ?? "Complete the schedule to see when it runs."}</p>
           {previewError && <p className="mt-1 text-xs text-destructive">{previewError}</p>}
           {upcoming && <div className="mt-1.5"><p className="text-xs text-muted-foreground">Next runs</p>

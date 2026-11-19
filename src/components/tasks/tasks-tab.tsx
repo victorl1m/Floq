@@ -84,7 +84,7 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
     const assignee = agentOf(task.assigneeSessionId);
     return (
       <div key={task.id} data-task-id={task.id} draggable onDragStart={(e) => { setDragId(task.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", task.id); }} onDragEnd={() => { setDragId(null); setDropStatus(null); }}
-        className={`group glass-surface relative rounded-lg border border-border/60 p-3 text-left transition-colors hover:border-border ${dragId === task.id ? "opacity-50" : ""} ${compact ? "flex items-center gap-3" : "space-y-2"}`}>
+        className={`group relative rounded-xl border border-border/50 bg-transparent p-3 text-left transition-colors hover:border-border hover:bg-[var(--glass-row-hover)] ${dragId === task.id ? "opacity-50" : ""} ${compact ? "flex items-center gap-3" : "space-y-2"}`}>
         <button type="button" onClick={() => setOpenId(task.id)} className="absolute inset-0 rounded-lg focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Open task: ${task.title}`} />
         <div className="pointer-events-none flex min-w-0 flex-1 items-start gap-2">
           <span className={`mt-1.5 size-2 shrink-0 rounded-full ${PRIORITY_DOT[task.priority]}`} title={`${PRIORITY_LABEL[task.priority]} priority`} />
@@ -135,7 +135,7 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
       {data.error && <div className="px-3 pb-2 sm:px-5"><ErrorBanner>{data.error}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void data.reload()}>Retry</Button></ErrorBanner></div>}
       {data.loading ? (
         <div role="status" aria-busy="true" aria-label="Loading tasks" className="flex min-h-0 flex-1 gap-3 overflow-hidden px-3 sm:px-5">
-          {[3, 2, 1, 1].map((n, i) => <div key={i} className="w-72 shrink-0 space-y-2 rounded-xl border border-border/70 bg-muted/20 p-2.5">{Array.from({ length: n }, (_, j) => <Skeleton key={j} rows={1} className="h-16 w-full rounded-lg" />)}</div>)}
+          {[3, 2, 1, 1].map((n, i) => <div key={i} className="material-content w-72 shrink-0 space-y-2 rounded-2xl border p-2.5">{Array.from({ length: n }, (_, j) => <Skeleton key={j} rows={1} className="h-16 w-full rounded-lg" />)}</div>)}
         </div>
       ) : data.tasks.length === 0 ? (
         <Empty className="m-auto max-w-md border-0">
@@ -149,7 +149,7 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
         <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto px-3 pb-4 sm:px-5" role="list" aria-label="Task columns">
           {BOARD_STATUSES.map((status) => (
             <section key={status} role="listitem" aria-label={STATUS_LABEL[status]} onDragOver={(e) => { if (dragId) { e.preventDefault(); setDropStatus(status); } }} onDragLeave={() => setDropStatus((s) => (s === status ? null : s))} onDrop={(e) => onDrop(e, status)}
-              className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/20 transition-colors ${dropStatus === status ? "border-primary/60 bg-primary/5" : "border-border/70"}`}>
+              className={`material-content flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-2xl border transition-colors ${dropStatus === status ? "border-primary/60! bg-primary/5!" : ""}`}>
               <header className="flex h-11 shrink-0 items-center justify-between border-b border-border/60 px-3">
                 <h2 className="text-sm font-medium">{STATUS_LABEL[status]}</h2>
                 <Badge variant="secondary">{groups[status].length}</Badge>

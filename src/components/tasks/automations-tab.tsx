@@ -45,7 +45,7 @@ export default function AutomationsTab({ data, projectId, projectLabel }: Props)
       ) : (
         <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4 sm:px-5" aria-label="Automations">
           {data.automations.map((a) => (
-            <li key={a.id} className="glass-surface flex flex-wrap items-start gap-3 rounded-xl border border-border/70 p-3.5">
+            <li key={a.id} className="material-content flex flex-wrap items-start gap-3 rounded-2xl border p-3.5">
               <div className="min-w-0 flex-1 basis-64 space-y-1">
                 <div className="flex flex-wrap items-center gap-2"><h2 className="truncate text-sm font-medium">{a.title}</h2>{!projectId && <Badge variant="outline">{projectLabel(a.projectId)}</Badge>}{!a.enabled && <Badge variant="secondary">Paused</Badge>}</div>
                 <p className="text-sm text-muted-foreground">{describeSchedule(a.schedule)}</p>

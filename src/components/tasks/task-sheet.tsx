@@ -113,7 +113,7 @@ function Body({ task, onClose, data, projectLabel }: Omit<Props, "task"> & { tas
             <Button type="button" size="xs" variant="ghost" onClick={() => setPreview((v) => !v)}>{preview ? "Edit" : "Preview"}</Button>
           </div>
           {preview
-            ? <article aria-label="Description preview" className="min-h-24 space-y-2 rounded-lg border bg-background/45 p-3 text-sm leading-6 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5" dangerouslySetInnerHTML={{ __html: html || "<p class='text-muted-foreground'>Nothing here yet.</p>" }} />
+            ? <article aria-label="Description preview" className="material-content min-h-24 space-y-2 rounded-xl border p-3 text-sm leading-6 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5" dangerouslySetInnerHTML={{ __html: html || "<p class='text-muted-foreground'>Nothing here yet.</p>" }} />
             : <Textarea id="task-desc" rows={5} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What should be done? Agents read this." />}
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -130,7 +130,7 @@ function Body({ task, onClose, data, projectLabel }: Omit<Props, "task"> & { tas
               {assignee && !agents.some((a) => a.id === assignee) && <NativeSelectOption value={assignee}>Agent removed</NativeSelectOption>}
             </NativeSelect></div>
         </div>
-        <fieldset className="space-y-1.5 rounded-xl border border-border/70 bg-muted/20 p-3">
+        <fieldset className="material-content space-y-1.5 rounded-2xl border p-3">
           <legend className="flex items-center gap-1.5 px-1 text-sm font-medium"><IconAlarm className="size-4" aria-hidden />Run on</legend>
           <div className="flex gap-2">
             <Input aria-label="Run on date and time" type="datetime-local" value={runOn} onChange={(e) => setRunOn(e.target.value)} aria-invalid={!!errors.runAt} aria-describedby="task-runon-copy" />
