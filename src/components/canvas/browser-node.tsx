@@ -10,7 +10,6 @@ import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/
 import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
 import { robotAvatarSvg } from "@/lib/robot-avatar";
 import { egressBadge } from "@/lib/browser-egress";
-import { projectAgentConnected } from "@/lib/browser-autoopen";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import { FRAME_QUALITY, MAX_FRAME, buttonName, createClickCounter, looksLikeChallenge, mapPointer, mapPointerClamped, modifierBits, normalizeUrl, useBrowserStream, wheelPixels, type BrowserStreamState } from "@/lib/runtime/browser-stream";
 
@@ -20,7 +19,6 @@ export const isBrowserId = (id: string) => id.startsWith(BROWSER_PREFIX);
 export const BROWSER_DEFAULT = { width: 900, height: 620 };
 const CHALLENGE_STALL_MS = 15_000;
 const ACTIVITY_MS = 4_000;
-const POLL_MS = 5_000;
 const MOVE_MIN_MS = 16;
 const MAX_AVATARS = 3;
 const VIEWPORT_DEBOUNCE_MS = 250;
@@ -390,7 +388,8 @@ const newId = () => Math.random().toString(36).slice(2, 8);
  * shown or written under the new one) and the runtime registers each node id to one project.
  */
 const EMPTY_IDS: ReadonlySet<string> = new Set();
-export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, autoOpenPoll = true, projectSessionIds: ReadonlySet<string> = EMPTY_IDS) {
+/** Browser nodes of one project. They appear only when the user (or an agent command) adds one: never opened or wired automatically. */
+export function useCanvasBrowsers(client: RuntimeClient | null, projectId: string | null, anchor: { x: number; y: number }, _autoOpenPoll = false, _projectSessionIds: ReadonlySet<string> = EMPTY_IDS) {
   const anchorRef = useRef(anchor); anchorRef.current = anchor;
   const [state, setState] = useState<{ projectId: string | null; stored: Stored }>(() => ({ projectId, stored: projectId ? read(projectId, anchor) : { nodes: [] } }));
   // During the render that follows a project switch the old list is still in state: treat it as empty until the effect swaps it.
@@ -420,7 +419,6 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
   }, [client, projectId, state, update]);
 
 
-  const dismissed = useRef(false);
   const open = useCallback((at?: { x: number; y: number }): string => {
     const id = newId();
     update((prev) => {
@@ -431,21 +429,8 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
   }, [update]);
   const close = useCallback((nodeId: string) => {
     const id = nodeId.startsWith(BROWSER_PREFIX) ? nodeId.slice(BROWSER_PREFIX.length) : nodeId;
-    dismissed.current = true; // stays closed until the agent connection ends; a later connection opens a node again
     update((prev) => ({ seen: true, nodes: prev.nodes.filter((n) => n.id !== id) }));
   }, [update]);
-
-  const idsRef = useRef(projectSessionIds); idsRef.current = projectSessionIds;
-  const hasSessions = projectSessionIds.size > 0;
-  const count = stored.nodes.length;
-  useEffect(() => {
-    if (!client || !projectId || count > 0 || !autoOpenPoll || !hasSessions) return;
-    let stopped = false;
-    const poll = async () => { try { const s = await client.browserStatus(); if (stopped) return; if (!projectAgentConnected(s, idsRef.current)) dismissed.current = false; else if (!dismissed.current && storedRef.current.nodes.length === 0) open(); } catch { /* older runtime / disabled */ } };
-    void poll();
-    const t = setInterval(() => { if (document.visibilityState !== "hidden") void poll(); }, POLL_MS);
-    return () => { stopped = true; clearInterval(t); };
-  }, [client, projectId, count, autoOpenPoll, hasSessions, open]);
 
   const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
     id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),
@@ -463,5 +448,5 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
     }
     if (patches.size) update((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (patches.has(n.id) ? { ...n, ...patches.get(n.id) } : n)) }));
   }, [update]);
-  return { nodes, onNodesChange, open, close, count, isOpen: count > 0 };
+  return { nodes, onNodesChange, open, close, count: stored.nodes.length, isOpen: stored.nodes.length > 0 };
 }
