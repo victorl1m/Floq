@@ -36,7 +36,7 @@ export function buildReplyHint(from: CrossParty, waiting: boolean): string {
 export class CrossProjectGuard {
   private readonly sent = new Map<string, number[]>();
   private readonly recent = new Map<string, number>();
-  private readonly inbound = new Map<string, { hop: number; at: number }>();
+  private readonly inbound = new Map<string, { hop: number; at: number; from: string }>();
   constructor(
     private readonly now: () => number = Date.now,
     private readonly limits = { perMinute: CROSS_MAX_PER_MINUTE, maxChars: CROSS_MAX_CHARS, maxHops: CROSS_MAX_HOPS, dedupeMs: CROSS_DEDUPE_MS },
@@ -47,7 +47,10 @@ export class CrossProjectGuard {
     const t = this.now();
     if (body.length > this.limits.maxChars) throw new HttpError(413, "cross_project_too_large", `Cross-project messages are limited to ${this.limits.maxChars} characters; send a shorter message or share files in the target's project.`);
     const inbound = this.inbound.get(fromId);
-    const hop = inbound && t - inbound.at < CROSS_CHAIN_MS ? inbound.hop + 1 : 1;
+    // A reply to the agent that last messaged you is a conversation, not a forward: it keeps the hop count, so two agents
+    // can talk back and forth across projects. Only passing the message on to a third agent counts as another hop.
+    const chained = inbound && t - inbound.at < CROSS_CHAIN_MS;
+    const hop = !chained ? 1 : inbound.from === toId ? inbound.hop : inbound.hop + 1;
     if (hop > this.limits.maxHops) throw new HttpError(429, "cross_project_loop", `Refused: this message would be forwarded across projects ${hop} times in a row (limit ${this.limits.maxHops}). Answer the sender directly or tell the user.`);
     const key = fromId + ">" + toId + ":" + body.trim();
     for (const [k, at] of this.recent) if (t - at >= this.limits.dedupeMs) this.recent.delete(k);
@@ -57,7 +60,7 @@ export class CrossProjectGuard {
     window.push(t);
     this.sent.set(fromId, window);
     this.recent.set(key, t);
-    this.inbound.set(toId, { hop, at: t });
+    this.inbound.set(toId, { hop, at: t, from: fromId });
     return { hop };
   }
 }

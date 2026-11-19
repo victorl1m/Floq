@@ -69,7 +69,7 @@ export class Decisions {
     this.sweep();
     if(input.providerRequestId) for(const e of this.records.values()) if(e.userId===userId&&e.view.sessionId===input.sessionId&&e.providerRequestId===input.providerRequestId) return {id:e.view.id,decision:e.view,deduped:true};
     const pending=[...this.records.values()].filter(e=>e.userId===userId&&e.view.status==='pending');
-    const recent=(this.requests.get(userId)??[]).filter(t=>this.now()-t<600000); if(pending.length>=12||pending.filter(e=>e.view.sessionId===input.sessionId).length>=3||recent.length>=10) throw new HttpError(429,'rate_limited','Too many decisions');
+    const recent=(this.requests.get(userId)??[]).filter(t=>this.now()-t<600000); if(pending.length>=12||pending.filter(e=>e.view.sessionId===input.sessionId).length>=3||recent.length>=10) throw new HttpError(429,'rate_limited','Too many decisions: at most 3 pending per agent, 12 pending in total and 10 new in 10 minutes. Wait for the user to answer the pending ones (floq decision list) before asking more.');
     const ttl=input.ttlMs===undefined?600000:Number(input.ttlMs); if(!Number.isFinite(ttl)||ttl<=0) throw badRequest('invalid ttl');
     const now=this.now(); const view:DecisionView={id:randomUUID(),source:input.source??'cli',sessionId:input.sessionId,projectId:input.projectId,sessionName:input.sessionName,provider:input.provider??null,questions,status:'pending',createdAt:new Date(now).toISOString(),expiresAt:new Date(now+10*365*24*3600000).toISOString(),answerMode:input.answerMode??'direction'};
     const entry:RecordEntry={userId,view,waiter:input.wait===true,polled:now,providerRequestId:input.providerRequestId};

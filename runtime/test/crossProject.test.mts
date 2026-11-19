@@ -127,6 +127,18 @@ test("rate limit, duplicate and size cap", async () => {
   assert.equal(typed.length, 4);
 });
 
+test("a back-and-forth conversation across projects never hits the loop limit; only forwarding to a third agent adds a hop", () => {
+  let t = 5_000;
+  const guard = new CrossProjectGuard(() => t);
+  for (let i = 0; i < 12; i++) {
+    t += 7_000; // stays under the per-minute rate limit
+    assert.equal(guard.admit("orch", "api", "question " + i).hop, 1);
+    t += 7_000;
+    assert.equal(guard.admit("api", "orch", "answer " + i).hop, 1);
+  }
+  assert.equal(guard.admit("orch", "uteis", "new topic").hop, 2); // a message to someone else after receiving one
+});
+
 test("loop protection stops endless forwarding and identical repeats", () => {
   let t = 5_000;
   const guard = new CrossProjectGuard(() => t);
