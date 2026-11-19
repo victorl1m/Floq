@@ -27,7 +27,35 @@ export interface UpdatesConfig {
   runtimeDir: string;
   /** Operator-defined argv that upgrades the runtime (e.g. a deploy script). Never derived from requests. */
   runtimeCommand: string[] | null;
+  /** Dokploy compose redeploy (FLOQ_DOKPLOY_URL + FLOQ_DOKPLOY_COMPOSE_ID, key in FLOQ_DOKPLOY_API_KEY): "Update runtime" asks Dokploy to pull, rebuild and restart. */
+  dokploy?: { url: string; composeId: string } | null;
 }
+
+/**
+ * Dokploy settings from the environment, or null when incomplete. The URL must be http(s) without credentials or query;
+ * the compose id is Dokploy's own id (letters, digits, - and _). The API key stays in the environment and is read by the
+ * deploy step itself, so it never appears in argv, logs or the update output.
+ */
+export function dokployFromEnv(env: NodeJS.ProcessEnv): { url: string; composeId: string } | null {
+  const raw = env.FLOQ_DOKPLOY_URL?.trim(), composeId = env.FLOQ_DOKPLOY_COMPOSE_ID?.trim(), key = env.FLOQ_DOKPLOY_API_KEY?.trim();
+  if (!raw || !composeId || !key) return null;
+  let url: URL;
+  try { url = new URL(raw); } catch { return null; }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) return null;
+  if (!/^[\w-]{1,128}$/.test(composeId)) return null;
+  return { url: url.origin + url.pathname.replace(/\/+$/, ""), composeId };
+}
+
+/** Node one-liner (node is always in the image, curl is not): POST compose.deploy, exit 1 with the HTTP status on failure. */
+export const DOKPLOY_DEPLOY_SCRIPT = [
+  "const e=process.env;",
+  "fetch(e.FLOQ_DOKPLOY_URL.replace(/\\/+$/,'')+'/api/compose.deploy',{method:'POST',signal:AbortSignal.timeout(30000),",
+  "headers:{'x-api-key':e.FLOQ_DOKPLOY_API_KEY,'content-type':'application/json',accept:'application/json'},",
+  "body:JSON.stringify({composeId:e.FLOQ_DOKPLOY_COMPOSE_ID})})",
+  ".then(async r=>{if(!r.ok){console.error('Dokploy answered HTTP '+r.status+': '+(await r.text()).slice(0,300));process.exit(1)}",
+  "console.log('Dokploy redeploy queued for compose '+e.FLOQ_DOKPLOY_COMPOSE_ID+': it pulls, rebuilds and restarts the runtime.')})",
+  ".catch(x=>{console.error('Could not reach Dokploy: '+x.message);process.exit(1)})",
+].join("");
 
 const CLI_PACKAGES = { claude: "@anthropic-ai/claude-code", codex: "@openai/codex" } as const;
 const CACHE_MS = 10 * 60_000;
@@ -81,6 +109,7 @@ export function updatesConfigFromEnv(env: NodeJS.ProcessEnv, base: { version: st
     repo: /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "victorl1m/Floq",
     runtimeDir: env.FLOQ_UPDATE_RUNTIME_DIR?.trim() || process.cwd(),
     runtimeCommand: parseCommand(env.FLOQ_UPDATE_RUNTIME_COMMAND),
+    dokploy: dokployFromEnv(env),
   };
 }
 
@@ -184,8 +213,9 @@ export class UpdateService {
   plan(target: UpdateTarget): { file: string; args: string[]; cwd?: string }[] {
     if (target !== "runtime") return [{ file: "npm", args: ["install", "-g", `${CLI_PACKAGES[target]}@latest`] }];
     if (this.cfg.runtimeCommand) return [{ file: this.cfg.runtimeCommand[0], args: this.cfg.runtimeCommand.slice(1) }];
+    if (this.cfg.dokploy) return [{ file: process.execPath, args: ["-e", DOKPLOY_DEPLOY_SCRIPT] }];
     const root = this.gitRoot();
-    if (!root) throw conflict("This runtime runs from a container image. Rebuild and redeploy the image, or set FLOQ_UPDATE_RUNTIME_COMMAND.", "update_unsupported");
+    if (!root) throw conflict("This runtime runs from a container image. Rebuild and redeploy the image, set FLOQ_DOKPLOY_URL, FLOQ_DOKPLOY_API_KEY and FLOQ_DOKPLOY_COMPOSE_ID to redeploy through Dokploy, or set FLOQ_UPDATE_RUNTIME_COMMAND.", "update_unsupported");
     return [
       { file: "git", args: ["pull", "--ff-only"], cwd: root },
       { file: "npm", args: ["ci", "--include=dev"], cwd: this.cfg.runtimeDir },

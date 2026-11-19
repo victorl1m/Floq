@@ -97,3 +97,19 @@ test("a configured bootstrap email never lets the earliest other user become adm
   await getRole(db, null, "attacker"); // no bootstrap email configured: legacy earliest-user behaviour
   assert.equal(inserted.length, 1);
 });
+
+test("Dokploy redeploy: configured only when URL, key and compose id are all valid; the key never reaches argv", async () => {
+  const { dokployFromEnv, DOKPLOY_DEPLOY_SCRIPT } = await import("../dist/updates.js");
+  const ok = { FLOQ_DOKPLOY_URL: "http://dokploy:3000/", FLOQ_DOKPLOY_API_KEY: "k_secret_value", FLOQ_DOKPLOY_COMPOSE_ID: "abc_DEF-123" };
+  assert.deepEqual(dokployFromEnv(ok), { url: "http://dokploy:3000", composeId: "abc_DEF-123" });
+  assert.equal(dokployFromEnv({ ...ok, FLOQ_DOKPLOY_API_KEY: "" }), null);
+  assert.equal(dokployFromEnv({ ...ok, FLOQ_DOKPLOY_URL: "ftp://x" }), null);
+  assert.equal(dokployFromEnv({ ...ok, FLOQ_DOKPLOY_URL: "https://u:p@host" }), null);
+  assert.equal(dokployFromEnv({ ...ok, FLOQ_DOKPLOY_COMPOSE_ID: "a b;rm" }), null);
+  const service = new UpdateService({ version: "0.2.0", providers: { claude: "claude", codex: "codex" }, repo: "o/r", runtimeDir: "/nonexistent/app", runtimeCommand: null, dokploy: dokployFromEnv(ok) }, () => 0, () => undefined);
+  const [step] = service.plan("runtime");
+  assert.equal(step.file, process.execPath);
+  assert.deepEqual(step.args, ["-e", DOKPLOY_DEPLOY_SCRIPT]);
+  assert.ok(!step.args.join(" ").includes("k_secret_value"), "the API key is read from the environment, not argv");
+  assert.match(DOKPLOY_DEPLOY_SCRIPT, /\/api\/compose\.deploy/);
+});

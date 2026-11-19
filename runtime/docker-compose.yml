@@ -138,6 +138,13 @@ services:
       # Extra IPv4 destinations (comma-separated addresses/CIDRs) the sandboxes may reach despite the private-range drops,
       # e.g. an internal database on the Docker network. Empty = none.
       FLOQ_NETNS_ALLOW: ${FLOQ_NETNS_ALLOW:-}
+      # In-app "Update runtime" (Settings > Runtime > Updates). With Dokploy: the panel URL as seen from this container
+      # (on Dokploy's network usually http://dokploy:3000), an API key (Dokploy > Settings > Profile > API/CLI) and this
+      # compose service's id (in its Dokploy URL). Or FLOQ_UPDATE_RUNTIME_COMMAND: a JSON argv run instead.
+      FLOQ_DOKPLOY_URL: ${FLOQ_DOKPLOY_URL:-}
+      FLOQ_DOKPLOY_API_KEY: ${FLOQ_DOKPLOY_API_KEY:-}
+      FLOQ_DOKPLOY_COMPOSE_ID: ${FLOQ_DOKPLOY_COMPOSE_ID:-}
+      FLOQ_UPDATE_RUNTIME_COMMAND: ${FLOQ_UPDATE_RUNTIME_COMMAND:-}
       FLOQ_SHARD_ROOT: /var/lib/floq/shards
       FLOQ_SHARD_LOCK_DELAY_MS: ${FLOQ_SHARD_LOCK_DELAY_MS:-30000}
       FLOQ_SESSION_IDLE_TIMEOUT_MS: ${FLOQ_SESSION_IDLE_TIMEOUT_MS:-300000}
