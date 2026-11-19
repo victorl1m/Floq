@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "floq"
-version = "1.0.26"
+version = "1.0.27"
 dependencies = [
  "chrono",
  "futures-util",
