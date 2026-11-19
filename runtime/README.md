@@ -9,7 +9,7 @@ Cloud runtime that runs Claude Code and Codex CLI sessions inside a container, e
 3. Domains tab: service `runtime`, port `8787`, HTTPS on. Do not add host ports.
 4. Deploy. Postgres (`db`) starts first. Runtime startup applies the checked-in Prisma migrations to the isolated `collaboration` schema, then runs the existing idempotent app bootstrap and Better Auth migrations. The database role needs permission to create that schema and its tables.
 5. In Floq point the runtime URL at your domain and sign in.
-6. Optional, one-click runtime updates from Floq (Settings › Runtime › Updates › Update runtime): set `FLOQ_DOKPLOY_URL` (the Dokploy panel as seen from the runtime container; on Dokploy's own network usually `http://dokploy:3000`), `FLOQ_DOKPLOY_API_KEY` (Dokploy › Settings › Profile › API/CLI) and `FLOQ_DOKPLOY_COMPOSE_ID` (the id in this compose service's Dokploy URL), then redeploy once. "Update runtime" then asks Dokploy to redeploy the compose (pull, rebuild, restart); the key is read from the environment only, never put in argv or logs. Alternatively `FLOQ_UPDATE_RUNTIME_COMMAND` takes a JSON argv (`["/path/deploy.sh"]`) run instead.
+6. Updates: Settings › Runtime › Updates › **Update runtime** rebuilds the runtime from the newest GitHub release and swaps its container in place (same env, volumes, networks); if the new container does not start, the old one comes back. It uses the Docker socket that `docker-compose.yml` mounts at `/run/floq-docker.sock` (hidden from agent sandboxes); remove that volume to disable in-app updates. `FLOQ_UPDATE_RUNTIME_COMMAND` (JSON argv) overrides it with your own deploy script.
 
 ## First run (admin account)
 

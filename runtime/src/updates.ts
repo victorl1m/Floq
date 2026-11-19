@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { badRequest, conflict, HttpError } from "./errors.js";
 import { log } from "./logger.js";
+import { dockerSelfUpdateAvailable, startDockerSelfUpdate, latestReleaseTag } from "./selfUpdate.js";
 
 export const UPDATE_TARGETS = ["runtime", "claude", "codex"] as const;
 export type UpdateTarget = (typeof UPDATE_TARGETS)[number];
@@ -27,36 +28,9 @@ export interface UpdatesConfig {
   runtimeDir: string;
   /** Operator-defined argv that upgrades the runtime (e.g. a deploy script). Never derived from requests. */
   runtimeCommand: string[] | null;
-  /** Dokploy compose redeploy (FLOQ_DOKPLOY_URL + FLOQ_DOKPLOY_COMPOSE_ID, key in FLOQ_DOKPLOY_API_KEY): "Update runtime" asks Dokploy to pull, rebuild and restart. */
-  dokploy?: { url: string; composeId: string } | null;
+  /** Docker self-update (socket mounted, see selfUpdate.ts). Injected for tests; defaults to checking the socket. */
+  dockerSelfUpdate?: boolean;
 }
-
-/**
- * Dokploy settings from the environment, or null when incomplete. The URL must be http(s) without credentials or query;
- * the compose id is Dokploy's own id (letters, digits, - and _). The API key stays in the environment and is read by the
- * deploy step itself, so it never appears in argv, logs or the update output.
- */
-export function dokployFromEnv(env: NodeJS.ProcessEnv): { url: string; composeId: string } | null {
-  const raw = env.FLOQ_DOKPLOY_URL?.trim(), composeId = env.FLOQ_DOKPLOY_COMPOSE_ID?.trim(), key = env.FLOQ_DOKPLOY_API_KEY?.trim();
-  if (!raw || !composeId || !key) return null;
-  let url: URL;
-  try { url = new URL(raw); } catch { return null; }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) return null;
-  if (!/^[\w-]{1,128}$/.test(composeId)) return null;
-  return { url: url.origin + url.pathname.replace(/\/+$/, ""), composeId };
-}
-
-/** Node one-liner (node is always in the image, curl is not): POST compose.deploy, exit 1 with the HTTP status on failure. */
-export const DOKPLOY_DEPLOY_SCRIPT = [
-  "const e=process.env;",
-  "fetch(e.FLOQ_DOKPLOY_URL.replace(/\\/+$/,'')+'/api/compose.deploy',{method:'POST',signal:AbortSignal.timeout(30000),",
-  "headers:{'x-api-key':e.FLOQ_DOKPLOY_API_KEY,'content-type':'application/json',accept:'application/json'},",
-  "body:JSON.stringify({composeId:e.FLOQ_DOKPLOY_COMPOSE_ID})})",
-  ".then(async r=>{if(!r.ok){console.error('Dokploy answered HTTP '+r.status+': '+(await r.text()).slice(0,300));process.exit(1)}",
-  "console.log('Dokploy redeploy queued for compose '+e.FLOQ_DOKPLOY_COMPOSE_ID+': it pulls, rebuilds and restarts the runtime.')})",
-  ".catch(x=>{console.error('Could not reach Dokploy: '+x.message);process.exit(1)})",
-].join("");
-
 const CLI_PACKAGES = { claude: "@anthropic-ai/claude-code", codex: "@openai/codex" } as const;
 const CACHE_MS = 10 * 60_000;
 const NET_TIMEOUT_MS = 8_000;
@@ -109,7 +83,6 @@ export function updatesConfigFromEnv(env: NodeJS.ProcessEnv, base: { version: st
     repo: /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "victorl1m/Floq",
     runtimeDir: env.FLOQ_UPDATE_RUNTIME_DIR?.trim() || process.cwd(),
     runtimeCommand: parseCommand(env.FLOQ_UPDATE_RUNTIME_COMMAND),
-    dokploy: dokployFromEnv(env),
   };
 }
 
@@ -160,8 +133,8 @@ export class UpdateService {
   private async checkRuntime(): Promise<UpdateItem> {
     const item: UpdateItem = { target: "runtime", current: this.cfg.version, latest: null, updateAvailable: false, source: `github:${this.cfg.repo}` };
     try {
-      const rel = (await fetchJson(`https://api.github.com/repos/${this.cfg.repo}/releases/latest`)) as { tag_name?: string };
-      item.latest = rel.tag_name ? parseVersion(rel.tag_name) : null;
+      const tag = await latestReleaseTag(this.cfg.repo);
+      item.latest = tag ? parseVersion(tag) : null;
       item.updateAvailable = isNewer(item.current, item.latest);
       if (!item.latest) item.error = "Latest release has no version tag";
     } catch (error) {
@@ -213,14 +186,31 @@ export class UpdateService {
   plan(target: UpdateTarget): { file: string; args: string[]; cwd?: string }[] {
     if (target !== "runtime") return [{ file: "npm", args: ["install", "-g", `${CLI_PACKAGES[target]}@latest`] }];
     if (this.cfg.runtimeCommand) return [{ file: this.cfg.runtimeCommand[0], args: this.cfg.runtimeCommand.slice(1) }];
-    if (this.cfg.dokploy) return [{ file: process.execPath, args: ["-e", DOKPLOY_DEPLOY_SCRIPT] }];
     const root = this.gitRoot();
-    if (!root) throw conflict("This runtime runs from a container image. Rebuild and redeploy the image, set FLOQ_DOKPLOY_URL, FLOQ_DOKPLOY_API_KEY and FLOQ_DOKPLOY_COMPOSE_ID to redeploy through Dokploy, or set FLOQ_UPDATE_RUNTIME_COMMAND.", "update_unsupported");
+    if (!root) throw conflict("This runtime runs in Docker without access to the Docker socket. Redeploy it once with the docker-compose.yml from v1.0.25 or newer (it mounts the socket); after that Update runtime works by itself.", "update_unsupported");
     return [
       { file: "git", args: ["pull", "--ff-only"], cwd: root },
       { file: "npm", args: ["ci", "--include=dev"], cwd: this.cfg.runtimeDir },
       { file: "npm", args: ["run", "build"], cwd: this.cfg.runtimeDir },
     ];
+  }
+
+  /** Docker: start the updater container; it rebuilds the image from the newest release and swaps this container. */
+  private async applyDocker(actorId: string, live: number, force: boolean) {
+    this.applying = "runtime";
+    try {
+      const tag = await latestReleaseTag(this.cfg.repo);
+      if (!tag) throw new Error("no release found");
+      if (!isNewer(this.cfg.version, parseVersion(tag)) && !force) throw conflict(`Already on the newest release (${tag}).`, "up_to_date");
+      log.info("admin.update_apply", { actorId, target: "runtime", via: "docker", tag, activeSessions: live });
+      const msg = await startDockerSelfUpdate(this.cfg.repo, tag);
+      return { target: "runtime" as const, ok: true, restarting: true, log: msg, activeSessions: live };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(500, "update_failed", "Could not start the update: " + message(error));
+    } finally {
+      this.applying = null;
+    }
   }
 
   async apply(actorId: string, body: { target?: unknown; force?: unknown }) {
@@ -231,6 +221,9 @@ export class UpdateService {
       throw conflict(`${live} agent session(s) are running; restarting the runtime will stop them. Retry with force to continue.`, "sessions_active");
     }
     if (this.applying) throw conflict(`An update for ${this.applying} is already in progress`, "update_in_progress");
+    if (target === "runtime" && !this.cfg.runtimeCommand && !this.gitRoot() && (this.cfg.dockerSelfUpdate ?? dockerSelfUpdateAvailable())) {
+      return this.applyDocker(actorId, live, body.force === true);
+    }
     const steps = this.plan(target);
     this.applying = target;
     log.info("admin.update_apply", { actorId, target, force: body.force === true, activeSessions: live });
