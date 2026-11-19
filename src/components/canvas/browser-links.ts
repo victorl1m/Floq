@@ -13,6 +13,9 @@ export const browserWireId = (nodeId: string, sessionId: string) => `${BROWSER_W
 /** `bwire:<nodeId>:<sessionId>` -> parts (node id without the `browser:` prefix; node ids never contain ":"). */
 export const parseBrowserWire = (id: string) => { const [nodeId, sessionId] = id.slice(BROWSER_WIRE_PREFIX.length).split(":"); return { nodeId, sessionId }; };
 const POLL_MS = 15_000;
+const CLEANUP_KEY = "floq.browserLinks.autoWireCleanup.v1:";
+const readFlag = (key: string) => { try { return localStorage.getItem(key) === "1"; } catch { return true; } };
+const writeFlag = (key: string) => { try { localStorage.setItem(key, "1"); } catch { /* storage off: cleanup is skipped */ } };
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const bare = (flowId: string) => (flowId.startsWith(BROWSER_PREFIX) ? flowId.slice(BROWSER_PREFIX.length) : flowId);
 
@@ -21,7 +24,18 @@ export function useBrowserLinks(client: RuntimeClient | null, projectId: string 
   const hidden = useRef(new Set<string>()); // wires deleted locally: an in-flight poll must not resurrect them
   const refresh = useCallback(async () => {
     if (!client || !projectId) { setLinks([]); return; }
-    try { setLinks((await client.browserLinks(projectId)).filter((l) => !hidden.current.has(browserWireId(l.nodeId, l.sessionId)))); } catch { /* older runtime or browser off: no wires */ }
+    try {
+      let list = await client.browserLinks(projectId);
+      // One-time cleanup: before v1.0.27 the canvas wired agents to browsers by itself. Drop those wires once per project; from now on
+      // wires come only from the user or from an agent's explicit `floq browser link`.
+      const key = CLEANUP_KEY + projectId;
+      if (list.length && !readFlag(key)) {
+        await Promise.allSettled(list.map((l) => client.unlinkBrowser(l.nodeId, l.sessionId)));
+        list = [];
+      }
+      writeFlag(key);
+      setLinks(list.filter((l) => !hidden.current.has(browserWireId(l.nodeId, l.sessionId))));
+    } catch { /* older runtime or browser off: no wires */ }
   }, [client, projectId]);
   useEffect(() => {
     hidden.current.clear();

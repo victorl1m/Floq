@@ -408,6 +408,32 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         return send(res, 200, await plugins.handleInternal({ userId, sessionId, pluginId: pluginCall[1], path: pluginCall[2], body, signal: gone.signal }));
       }
       switch (path) {
+        // `floq browser list|link|unlink`: an agent wires itself (or another agent of its project, e.g. its subagent) to a Browser node
+        // of its own project on purpose. Nothing is ever wired automatically; the node must already be on the project's canvas.
+        case "browser/list":
+        case "browser/link":
+        case "browser/unlink": {
+          if (!browserLinks) throw unavailable("This Floq server has no browser", "unavailable");
+          const me = await orchestrator.toolkitCaller(userId, sessionId, false);
+          const nodes = await browserLinks.nodes(userId, me.projectId);
+          const links = await browserLinks.list(userId, me.projectId);
+          if (path === "browser/list") return send(res, 200, { nodes: nodes.map((id) => ({ id, agents: links.filter((l) => l.nodeId === id).map((l) => l.sessionId) })) });
+          if (method !== "POST") return send(res, 405, { error: { code: "method_not_allowed", message: "Use POST" } });
+          const target = body.sessionId === undefined ? sessionId : body.sessionId;
+          if (typeof target !== "string") throw badRequest("sessionId must be a string", "invalid_link");
+          if (path === "browser/link") {
+            const nodeId = body.nodeId === undefined && nodes.length === 1 ? nodes[0] : body.nodeId;
+            if (typeof nodeId !== "string" || !nodes.includes(nodeId)) throw badRequest(nodes.length ? "nodeId must be one of this project's Browser nodes (floq browser list)" : "This project has no Browser node on its canvas; ask the user to add one", "invalid_link");
+            const { link, replacedNode } = await browserLinks.link(userId, nodeId, target); // refuses a session of another project
+            browser?.setAgentScope(userId, link.sessionId, link.nodeId);
+            await touchSessions([link.sessionId]);
+            return send(res, 200, { link, replacedNode });
+          }
+          const linked = links.filter((l) => l.sessionId === target && (body.nodeId === undefined || l.nodeId === body.nodeId));
+          for (const l of linked) await browserLinks.unlink(userId, l.nodeId, l.sessionId);
+          if (linked.length) { browser?.setAgentScope(userId, target, null); await touchSessions([target]); }
+          return send(res, 200, { removed: linked.length });
+        }
         case "vault/secrets":
           return send(res, 200, { secrets: (await vault.list(userId)).map((s) => ({ name: s.name, description: s.description })) });
         // `floq secrets add`: create-only, tool exposure (the agent can use it via floq-vault run, never read it back).

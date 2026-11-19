@@ -163,6 +163,7 @@ floq mcp add NAME --url https://example.com/mcp           # a remote HTTP server
 floq mcp add --json config.json                           # JSON copied from a server's docs (the only way to set env or headers)
 floq mcp remove NAME                                      # lead only; bundled servers such as context7 cannot be removed
 floq secrets list                                         # names and descriptions only
+- `floq browser list` / `floq browser link [NODE] [--agent ID]` / `floq browser unlink [--agent ID]`: wire yourself or a subagent of this project to a Browser node the user put on the canvas, so its floq-browser tools drive (and the user watches) that page. Nothing is wired automatically: link when an agent needs the user to see or help with a page (logins, checks), unlink when done.
 floq secrets add NAME --description T < value-file        # create a secret (stdin only; --generate for a random one); create-only, tool exposure
 ```
 
