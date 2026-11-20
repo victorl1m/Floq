@@ -21,9 +21,11 @@ export const storageSenseManifest = {
     { key: "scratchpadDays", type: "number", label: "Agent scratchpads of ended sessions (days)", description: "Default 7, 0 = never." },
     { key: "attachmentDays", type: "number", label: "Uploaded attachments (days)", description: "Default 60, 0 = never." },
     { key: "tmpDays", type: "number", label: "Other temp files (days)", description: "Entries in your persistent /tmp. Default 14, 0 = never." },
+    { key: "notify", type: "boolean", label: "Notify me after cleanups", description: "Send a notification when a run removes something or keeps something that needs your attention. Default off; the footer button always shows the last report." },
     { key: "lowSpacePercent", type: "number", label: "Also clean when free space is below (%)", description: "Checked every 15 minutes, at most one extra run per hour. Default 10, 0 = never." },
   ],
-  contributes: { views: [{ id: "main", label: "Storage Sense", icon: "IconTrash" }], routes: true },
+  // No sidebar view: the app shows Storage Sense as a footer button next to memory usage.
+  contributes: { routes: true },
 };
 
 export default definePlugin({
@@ -42,7 +44,7 @@ export default definePlugin({
       const report = await ctx.storageSense.run(userId, config, { dryRun, trigger, budgetMs: trigger === "manual" ? MANUAL_BUDGET_MS : undefined });
       if (!report) return null;
       await store(userId, report);
-      const note = summarize(report);
+      const note = (await ctx.settings.get(userId)).notify === true ? summarize(report) : null; // notifications are opt-in
       if (note) await ctx.storageSense.notify(userId, note).catch((e) => ctx.log.warn("notify failed", { error: String(e).slice(0, 120) }));
       ctx.log.info("storage sense run", { dryRun, trigger, removed: report.counts.removed, kept: report.counts.kept, failed: report.counts.failed, partial: report.partial });
       return report;

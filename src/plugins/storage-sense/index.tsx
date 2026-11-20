@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconEye, IconTrash } from "@tabler/icons-react";
-import { Badge, Button, PluginPage, PluginState, toast, usePluginApi, usePluginEvent } from "@/plugins/kit";
-import { defineUiPlugin, type PluginViewProps } from "@/plugins/sdk";
+import { Badge, Button, PluginState, toast, usePluginApi, usePluginEvent } from "@/plugins/kit";
+import { defineUiPlugin } from "@/plugins/sdk";
 
 interface Entry { category: string; label: string; action: "removed" | "would-remove" | "kept" | "failed"; reason: string; detail: string; bytes?: number; attention?: boolean }
 interface Report { at: string; dryRun: boolean; trigger: string; durationMs: number; partial: boolean; freedBytes: number; counts: { removed: number; kept: number; failed: number; attention: number }; entries: Entry[] }
-interface State { mode: "off" | "report" | "clean"; awake: boolean; freePercent: number | null; lastRunAt: number | null; report: Report | null }
+export interface StorageSenseState { mode: "off" | "report" | "clean"; awake: boolean; freePercent: number | null; lastRunAt: number | null; report: Report | null }
 
 const CATEGORY: Record<string, string> = { worktree: "Worktrees", branch: "Branches", scratchpad: "Scratchpads", attachment: "Attachments", tmp: "Temp files" };
-const MODE: Record<State["mode"], string> = { off: "Off", report: "Report only", clean: "Cleaning automatically" };
+const MODE: Record<StorageSenseState["mode"], string> = { off: "Off", report: "Report only", clean: "Cleaning automatically" };
 
-function size(n?: number): string {
+export function size(n?: number): string {
   if (!n) return "";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = n, i = 0;
@@ -18,19 +18,19 @@ function size(n?: number): string {
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
-/** Storage Sense view: when it last ran, what it removed, and what it kept and why. Thresholds live in Settings > Plugins. */
-function StorageSenseView({ plugin }: PluginViewProps) {
-  const api = usePluginApi(plugin.id);
-  const [state, setState] = useState<State | null>(null);
+/** Storage Sense panel (footer popover): when it last ran, what it removed, and what it kept and why. Thresholds and notifications live in Settings > Plugins. */
+export function StorageSensePanel({ pluginId, onState }: { pluginId: string; onState?: (state: StorageSenseState) => void }) {
+  const api = usePluginApi(pluginId);
+  const [state, setState] = useState<StorageSenseState | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [busy, setBusy] = useState<"preview" | "clean" | null>(null);
 
   const load = useCallback(async () => {
-    try { setFailed(null); setState(await api<State>("/state")); }
+    try { setFailed(null); const next = await api<StorageSenseState>("/state"); setState(next); onState?.(next); }
     catch (error) { setFailed(error instanceof Error ? error.message : "Request failed"); }
-  }, [api]);
+  }, [api, onState]);
   useEffect(() => { void load(); }, [load]);
-  usePluginEvent(plugin.id, "report", () => { void load(); });
+  usePluginEvent(pluginId, "report", () => { void load(); });
 
   const run = async (dryRun: boolean) => {
     setBusy(dryRun ? "preview" : "clean");
@@ -45,11 +45,17 @@ function StorageSenseView({ plugin }: PluginViewProps) {
   const report = state?.report ?? null;
   const groups = report ? Object.entries(CATEGORY).map(([key, label]) => ({ label, entries: report.entries.filter((e) => e.category === key) })).filter((g) => g.entries.length) : [];
   return (
-    <PluginPage title="Storage Sense" description="Removes what agents leave behind: merged worktrees, orphan branches, old scratchpads, uploads and temp files. Artifacts, transcripts, checkpoints and unsaved work are never touched. Thresholds are in Settings > Plugins."
-      actions={<div className="flex gap-2">
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-foreground">Storage Sense</div>
+          <p className="text-xs text-muted-foreground">Removes merged worktrees, orphan branches, old scratchpads, uploads and temp files. Never touches Artifacts, transcripts or unsaved work.</p>
+        </div>
+      </div>
+      <div className="flex gap-2">
         <Button size="sm" variant="outline" disabled={busy !== null || !state?.awake} onClick={() => void run(true)}><IconEye /> Preview</Button>
         <Button size="sm" disabled={busy !== null || !state?.awake || state?.mode === "off"} onClick={() => void run(false)}><IconTrash /> Clean now</Button>
-      </div>}>
+      </div>
       {failed ? <PluginState state="error" description={failed} onRetry={() => void load()} />
         : !state ? <PluginState state="loading" />
         : <div className="space-y-4">
@@ -81,8 +87,9 @@ function StorageSenseView({ plugin }: PluginViewProps) {
               ))}
             </div>}
         </div>}
-    </PluginPage>
+    </div>
   );
 }
 
-export default defineUiPlugin({ views: { main: StorageSenseView } });
+// No views: Storage Sense lives in the footer (src/components/window/storage-sense-footer.tsx).
+export default defineUiPlugin({});
