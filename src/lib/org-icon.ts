@@ -83,7 +83,7 @@ export function orgIconSvg(seed: string, opts?: { monogram?: string }): string {
     const text = letters.length
         ? `<text x="32" y="32" dy=".36em" text-anchor="middle" fill="#fff" font-weight="700" font-size="${letters.length === 1 ? 36 : 27}" letter-spacing="${letters.length === 1 ? "0" : "-.5"}">${escapeXml(mono)}</text>`
         : "";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="100%" height="100%" aria-hidden="true" data-org-color="${spec.colorName}" data-org-motif="${spec.motif}" data-org-turn="${spec.turn}">`
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="100%" height="100%" style="display:block;width:100%;height:100%" aria-hidden="true" data-org-color="${spec.colorName}" data-org-motif="${spec.motif}" data-org-turn="${spec.turn}">`
         + `<rect width="64" height="64" fill="${spec.color}"/><g${turn}>${motif.body}</g>${text}</svg>`;
     svgCache.set(key, svg);
     return svg;

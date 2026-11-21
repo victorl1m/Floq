@@ -7,6 +7,8 @@ import "./font-shim";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider } from "@/components/ui/sidebar";
 import { RowAction } from "@/components/sidebar/project-folder";
+import { OrganizationAvatar } from "@/components/organization/organization-avatar";
+import { RuntimeProvider } from "@/lib/runtime/store";
 
 const q = new URLSearchParams(location.search);
 if (q.get("theme") === "dark") document.documentElement.classList.add("dark");
@@ -23,11 +25,11 @@ function Folder({ name, children }: { name: string; children: React.ReactNode })
 }
 const project = (name: string, active = false) => <li key={name} className="canonical-project-row"><SidebarMenuButton isActive={active} className="h-8 text-[13px]"><span>{name}</span></SidebarMenuButton></li>;
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
+ReactDOM.createRoot(document.getElementById("root")!).render(<RuntimeProvider>
   <div style={{ height: "100%", padding: 12, background: "linear-gradient(135deg,#6d8fc7,#c78fb3 60%,#e8b97a)" }}>
     <SidebarProvider style={{ minHeight: 0 }}>
       <div data-slot="sidebar-inner" style={{ width: 270, height: "100%", display: "flex", flexDirection: "column", borderRadius: 14, overflow: "hidden", background: "var(--shell-pane, var(--sidebar))" }}>
-        <div data-slot="sidebar-header" style={{ height: 70 }} />
+        <div data-slot="sidebar-header" style={{ height: 70, padding: 8 }}><SidebarMenu><SidebarMenuItem><SidebarMenuButton data-testid="org-switcher" className="h-14 rounded-[12px]"><OrganizationAvatar name="Personal" seed="org_personal" className="size-9 rounded-[10px]" /><span>Personal</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu></div>
         <div data-slot="sidebar-content" style={{ flex: 1 }}>
           <SidebarMenu className="sidebar-nav">
             <SidebarMenuItem><SidebarMenuButton isActive><IconHome /><span>Home</span></SidebarMenuButton></SidebarMenuItem>
@@ -41,5 +43,5 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <div data-slot="sidebar-footer"><div style={{ height: 44, padding: 12, fontSize: 13, fontWeight: 600 }} title="Victor Hugo Lima e Silva">Victor Silva</div></div>
       </div>
     </SidebarProvider>
-  </div>,
+  </div></RuntimeProvider>,
 );

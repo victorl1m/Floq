@@ -89,3 +89,7 @@ test("golden specs", () => {
   assert.deepEqual(orgIconSpec("floq"), { color: "#8A5412", colorName: "clay", motif: "floors", turn: 270 });
   assert.deepEqual(orgIconSpec(UUID), { color: "#1D5FC4", colorName: "blue", motif: "fold", turn: 270 });
 });
+
+test("the svg sizes itself inline so parent [&_svg]:size-4 rules (sidebar menu) cannot shrink it", () => {
+    assert.match(orgIconSvg("org_size_check", { monogram: "P" }), /<svg[^>]*style="display:block;width:100%;height:100%"/);
+});
