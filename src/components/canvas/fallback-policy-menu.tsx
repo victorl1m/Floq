@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadio
 import { errorMessage, useClient } from "@/lib/runtime/store";
 
 type Policy = "default" | "model" | "pause";
-const LABEL: Record<Policy, string> = { default: "Use default chain", model: "Model only", pause: "Pause instead" };
+const LABEL: Record<Policy, string> = { default: "Keep going", model: "Switch model only", pause: "Pause" };
 
 /** Per-agent usage-limit policy (agent card header). The account switch is user-wide, so it is not a per-agent choice. */
 export function FallbackPolicyMenu({ sessionId, value }: { sessionId: string; value: "model" | "pause" | null | undefined }) {
@@ -30,12 +30,12 @@ export function FallbackPolicyMenu({ sessionId, value }: { sessionId: string; va
     return (
         <DropdownMenu>
             <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`Usage-limit fallback: ${LABEL[current]}`} title={`Usage-limit fallback: ${LABEL[current]}`} data-policy={current}>
+                <Button type="button" variant="ghost" size="icon-xs" className="nodrag nopan size-7" aria-label={`On usage limit: ${LABEL[current]}`} title={`On usage limit: ${LABEL[current]}`} data-policy={current}>
                     <IconShieldHalf size={14} className={current === "default" ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400"} />
                 </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="nodrag nopan w-56">
-                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">When this agent hits a Claude usage limit</DropdownMenuLabel>
+            <DropdownMenuContent align="end" className="nodrag nopan w-44">
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">On usage limit</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={current} onValueChange={(v) => void choose(v)}>
                     {(Object.keys(LABEL) as Policy[]).map((policy) => <DropdownMenuRadioItem key={policy} value={policy}>{LABEL[policy]}</DropdownMenuRadioItem>)}
                 </DropdownMenuRadioGroup>

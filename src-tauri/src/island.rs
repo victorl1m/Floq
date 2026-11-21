@@ -7,7 +7,8 @@ const COLLAPSED_WIDTH: f64 = 220.0;
 const EXPANDED_WIDTH: f64 = 440.0;
 const COLLAPSED_HEIGHT: f64 = 40.0;
 const MAX_HEIGHT: f64 = 560.0;
-const TOP_GAP: f64 = 12.0;
+/// Below a typical browser tab strip (about 40 px), so the island never covers the tabs.
+const TOP_GAP: f64 = 48.0;
 const HIDE_DELAY_MS: u64 = 320;
 
 /// True while the island was hidden (or its show was skipped) because a full-screen app is in front.

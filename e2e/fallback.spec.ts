@@ -105,14 +105,14 @@ test('T-13 badge: an account fallback reads "Fallback: Work" (no doubled word) a
 
 test('T-13 per-agent policy: the card menu shows the current choice and saves Model only / Pause instead / default', async ({ page }) => {
   await open(page, '?policy=pause');
-  const trigger = page.getByRole('button', { name: /Usage-limit fallback: Pause instead/ });
+  const trigger = page.getByRole('button', { name: /On usage limit: Pause/ });
   await expect(trigger).toHaveAttribute('data-policy', 'pause');
   await trigger.click();
-  await expect(page.getByRole('menuitemradio', { name: 'Pause instead' })).toBeChecked();
-  await page.getByRole('menuitemradio', { name: 'Model only' }).click();
-  await expect(page.getByRole('button', { name: /Usage-limit fallback: Model only/ })).toHaveAttribute('data-policy', 'model');
-  await page.getByRole('button', { name: /Usage-limit fallback/ }).click();
-  await page.getByRole('menuitemradio', { name: 'Use default chain' }).click();
+  await expect(page.getByRole('menuitemradio', { name: 'Pause' })).toBeChecked();
+  await page.getByRole('menuitemradio', { name: 'Switch model only' }).click();
+  await expect(page.getByRole('button', { name: /On usage limit: Switch model only/ })).toHaveAttribute('data-policy', 'model');
+  await page.getByRole('button', { name: /On usage limit/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Keep going' }).click();
   const sent = (await calls(page)).filter((c) => c.name === 'fallbackAction').map((c) => (c.args as unknown[]).slice(1));
   expect(sent).toEqual([['override', 'model'], ['override', 'default']]);
 });

@@ -26,7 +26,7 @@ export function FallbackToaster() {
       if (!session.fallback) continue;
       const fb = session.fallback;
       if (fb.kind === "paused") {
-        const why = fb.reason === "pause_override" ? "Its policy is \"Pause instead\"."
+        const why = fb.reason === "pause_override" ? "Its policy is \"Pause\"."
           : fb.reason === "fallback_loop" ? "It was moved too many times in an hour."
           : fb.reason === "steps_unavailable" ? "No fallback has room right now (your other account is full, or Codex is at its limit)."
           : "No fallback applies to this limit. Add a second Claude account or enable Codex in Settings > LLM Providers to keep working.";
