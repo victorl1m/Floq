@@ -57,7 +57,7 @@ export function ExternalTaskList({ source }: { source: TaskSourceInfo }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-slot="external-task-list" data-source={`${source.pluginId}/${source.sourceId}`}>
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2.5 sm:px-5">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5 sm:px-8">
         <div className="relative min-w-40 flex-1 sm:max-w-sm">
           <IconSearch aria-hidden="true" className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-muted-foreground" />
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${source.label}…`} aria-label={`Search ${source.label}`} className="h-7 pr-8 pl-8 text-[13px]" />
@@ -69,13 +69,13 @@ export function ExternalTaskList({ source }: { source: TaskSourceInfo }) {
           ))}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8">
         {phase === "loading" ? <PluginState state="loading" label={source.label} />
           : phase === "not-configured" ? <PluginState state="not-configured" title={`Set up ${source.label}`} description={missing.length ? undefined : notConfigured || undefined} missingSecrets={missing} />
           : phase === "error" ? <PluginState state="error" title={`Could not load ${source.label}`} description={error} onRetry={() => void load(applied)} />
           : visible.length === 0 ? <PluginState state="empty" title={applied || filter !== "all" ? "No matching items" : `No items in ${source.label}`} description={applied || filter !== "all" ? "Try a different search or status." : "Items you can access will show up here."} />
           : (
-            <div role="list" aria-label={`${source.label} items`} className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30">
+            <div role="list" aria-label={`${source.label} items`} className="settings-group material-content divide-y divide-border rounded-2xl [&>div]:p-0!">
               {visible.map((task) => <div role="listitem" key={task.externalId}><ExternalTaskRow task={task} sourceLabel={source.label} selected={selected?.externalId === task.externalId} onSelect={setSelected} /></div>)}
             </div>
           )}

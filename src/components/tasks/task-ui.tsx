@@ -57,3 +57,11 @@ export function DateChips({ task, className }: { task: ProjectTask; className?: 
 }
 
 export const statusLabel = (s: TaskStatus) => STATUS_LABEL[s];
+
+/** True when a keystroke belongs to a field, a menu or a dialog rather than to the page shortcut. */
+export function typingTarget(e: KeyboardEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return true;
+  if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return true;
+  return !!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
+}

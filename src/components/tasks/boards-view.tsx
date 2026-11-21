@@ -35,7 +35,7 @@ type Cursor = { userId: string; name: string; x: number; y: number };
 function BoardSkeleton() {
   return <div role="status" aria-label="Loading task board" aria-busy="true" className="flex min-h-0 flex-1 items-start gap-3 overflow-hidden p-5">
     <span className="sr-only">Loading lists and cards…</span>
-    {[3, 2, 2].map((count, column) => <div key={column} aria-hidden="true" className="w-[min(19rem,84vw)] shrink-0 overflow-hidden rounded-xl border border-border/70 bg-muted/20">
+    {[3, 2, 2].map((count, column) => <div key={column} aria-hidden="true" className="tasks-column w-[min(19rem,84vw)] shrink-0 overflow-hidden rounded-2xl">
       <div className="flex h-12 items-center justify-between border-b border-border/60 px-3">
         <Skeleton rows={1} className="h-3 w-24" />
         <Skeleton rows={1} className="size-5 rounded-full" />
@@ -470,7 +470,7 @@ export default function BoardsView() {
     if (next.startsWith("b:")) { selectBoard(id); requestAnimationFrame(() => boardTabRefs.current.get(id)?.focus()); }
     else { updateSourcePrefs((current) => openSource(current, id)); requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-task-source-tab="${CSS.escape(id)}"]`)?.focus()); }
   };
-  if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-5"><h1 className="text-base font-semibold">Boards</h1><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
+  if (organizationsLoading) return <section className="flex h-full min-h-0 flex-col"><header className="flex h-[53px] shrink-0 items-center justify-between gap-4 border-b px-4 sm:px-8"><h2 className="text-base font-semibold">Boards</h2><Skeleton rows={1} className="h-7 w-24 rounded-lg" /></header><BoardSkeleton /></section>;
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col text-foreground">
@@ -499,9 +499,9 @@ export default function BoardsView() {
         titlebarSlot,
       )}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5 sm:px-5">
+          <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5 sm:px-8">
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-base font-semibold">Boards{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h1>
+              <h2 className="truncate text-base font-semibold">Boards{selectedOrganization && <span className="ml-2 font-normal text-muted-foreground">{selectedOrganization.name}</span>}</h2>
             </div>
             {organizations.length > 0 && <Button ref={boardPickerTriggerRef} variant="outline" size="sm" aria-label="Choose a board" onClick={(event) => openBoardPicker(event.currentTarget)}><IconChecklist /><span className="hidden sm:inline">Boards</span></Button>}
             {selectedOrganization && <div className="hidden items-center gap-2 sm:flex" role="group" aria-label="Organization members">
@@ -538,11 +538,11 @@ export default function BoardsView() {
             ) : (
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={boardSurface} onPointerMove={onPointerMove}>
                 {cursors.filter((cursor) => cursor.userId !== user?.id).map((cursor) => <div key={cursor.userId} className="pointer-events-none absolute z-20 transition-[left,top] duration-75" style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true"><div className="flex items-center gap-1.5"><span className="size-3 rotate-[-25deg] rounded-sm rounded-bl-none bg-primary shadow" /><span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground shadow">{cursor.name}</span></div></div>)}
-                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden p-5" role="region" aria-label={`${visibleBoard.title} board`}>
-                  {visibleBoard.lists.map((list) => <section key={list.id} className={`flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-xl border bg-muted/30 transition-colors ${dropTargetListId === list.id ? "border-primary bg-primary/5" : ""}`} aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
-                    <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-semibold">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, success: "List deleted", action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
+                <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto overflow-y-hidden px-4 py-5 sm:px-8" role="region" aria-label={`${visibleBoard.title} board`}>
+                  {visibleBoard.lists.map((list) => <section key={list.id} data-drop={dropTargetListId === list.id || undefined} className="tasks-column flex max-h-full w-[min(19rem,84vw)] shrink-0 flex-col rounded-2xl" aria-labelledby={`list-${list.id}`} onDragOver={(event) => { if (draggingCardId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetListId(list.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetListId((current) => current === list.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingCardId; if (cardId) void moveCardToList(cardId, list.id); }}>
+                    <header className="tasks-column-head flex h-11 items-center justify-between gap-2 px-3.5"><h3 id={`list-${list.id}`} className="truncate text-sm font-medium">{list.title}</h3><div className="flex items-center gap-1"><Badge variant="outline">{list.cards.length}</Badge><Button size="icon-xs" variant="ghost" aria-label={`Delete ${list.title} list`} onClick={() => { setPendingDelete({ title: `Delete “${list.title}”?`, description: `This removes the list and its ${list.cards.length} ${list.cards.length === 1 ? "card" : "cards"}.`, success: "List deleted", action: async () => { await client?.deleteTaskList(visibleBoard.id, list.id); await refreshBoard(); } }); setDeleteOpen(true); }}><IconTrash className="size-3 text-muted-foreground" /></Button></div></header>
                     <div className="min-h-10 space-y-2 overflow-y-auto p-2.5">
-                      {list.cards.map((card) => <Card key={card.id} size="sm" className={`gap-0 rounded-lg p-2.5 py-2.5 shadow-sm transition-colors hover:bg-accent/40 ${draggingCardId === card.id ? "opacity-50" : ""}`}>
+                      {list.cards.map((card) => <Card key={card.id} size="sm" data-dragging={draggingCardId === card.id || undefined} className="tasks-card gap-0 rounded-xl p-3 py-3 ring-0">
                         <Button type="button" variant="ghost" draggable aria-description="Drag to move this card, or open details and change its list with the keyboard." aria-label={"Open card: " + card.title} className="h-auto w-full cursor-grab flex-col items-stretch gap-2 whitespace-normal rounded-md p-0 text-left active:cursor-grabbing" onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); setDraggingCardId(card.id); }} onDragEnd={() => { setDraggingCardId(null); setDropTargetListId(null); }} onClick={() => setActiveCard(card)}>
                           <span className="text-sm font-medium leading-5">{card.title}</span>
                           {card.description && <span className="line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{card.description}</span>}
@@ -559,11 +559,11 @@ export default function BoardsView() {
                     </form> : <Button className="m-2 mt-0 justify-start text-muted-foreground" size="sm" variant="ghost" onClick={() => setAddingCardTo(list.id)}><IconPlus />Add a card</Button>}
                   </section>)}
                   {addingList
-                    ? <form className="w-[min(19rem,84vw)] shrink-0 space-y-2 self-start rounded-xl border bg-muted/30 p-2.5" noValidate onSubmit={onCreateList}>
+                    ? <form className="tasks-column w-[min(19rem,84vw)] shrink-0 space-y-2 self-start rounded-2xl p-2.5" noValidate onSubmit={onCreateList}>
                       <Label className="sr-only" htmlFor="new-list">New list name</Label><Input autoFocus id="new-list" maxLength={80} placeholder="List name" value={listName} onChange={(event) => setListName(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setAddingList(false); setListName(""); } }} />
                       <div className="flex justify-end gap-1.5"><Button size="sm" variant="ghost" type="button" onClick={() => { setAddingList(false); setListName(""); }}>Cancel</Button><Button size="sm" disabled={busy || !listName.trim()}>Add list</Button></div>
                     </form>
-                    : <Button className="w-[min(19rem,84vw)] shrink-0 justify-start self-start rounded-xl border bg-muted/30 text-muted-foreground" size="sm" variant="ghost" onClick={() => setAddingList(true)}><IconPlus />Add a list</Button>}
+                    : <Button className="h-11 w-[min(19rem,84vw)] shrink-0 justify-start self-start rounded-2xl border border-dashed text-muted-foreground" size="sm" variant="ghost" onClick={() => setAddingList(true)}><IconPlus />Add a list</Button>}
                 </div>
                 <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!busy) setDeleteOpen(open); }}>
                   <AlertDialogContent>

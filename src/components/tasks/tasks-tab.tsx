@@ -17,20 +17,12 @@ import {
 } from "@/lib/project-tasks";
 import { cn } from "cn";
 import TaskSheet from "./task-sheet";
-import { DateChips, PriorityMark, StatusDot } from "./task-ui";
+import { DateChips, PriorityMark, StatusDot, typingTarget } from "./task-ui";
 import type { ProjectTasksData } from "./use-project-tasks";
 
 const VIEW_KEY = "floq.tasks.view.v1";
 const readView = (): "board" | "list" => { try { return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "board"; } catch { return "board"; } };
 type BoardStatus = (typeof BOARD_STATUSES)[number];
-
-/** True when a keystroke belongs to a field, a menu or a dialog rather than to the page shortcut. */
-export function typingTarget(e: KeyboardEvent): boolean {
-  const el = e.target as HTMLElement | null;
-  if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return true;
-  if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return true;
-  return !!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
-}
 
 interface Props { data: ProjectTasksData; projectId: string | null; projectLabel: (id: string) => string; autoOn: boolean; target: string | null }
 
