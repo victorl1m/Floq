@@ -130,6 +130,8 @@ interface Entry {
   egressMode: "server" | "desktop";
   /** The user's machine (screen, timezone, languages, pointer) as last reported by a viewer; applied to the NEXT daemon start only (never mid-session). */
   clientEnv?: ClientEnv;
+  /** Last click / key / text from a viewer: a person is mid-login, so the route is not switched under them. */
+  lastInputAt?: number;
   egressPipe: { push(chunk: Buffer): void; close(): void } | null;
   idleTimer: NodeJS.Timeout | null;
   ackTimer: NodeJS.Timeout | null;
@@ -151,6 +153,9 @@ const exitedPromise = (): { promise: Promise<void>; resolve: () => void } => {
   const promise = new Promise<void>((r) => { resolve = r; });
   return { promise, resolve };
 };
+
+const EGRESS_QUIET_MS = 15_000;
+const EGRESS_MAX_DEFER_MS = 90_000;
 
 export class BrowserService {
   private readonly entries = new Map<string, Entry>();
@@ -700,6 +705,7 @@ export class BrowserService {
     // Only the high-rate events are throttled: dropping a press/release/key would leave a button or key stuck.
     if ((msg.type === "input.wheel" || (msg.type === "input.mouse" && msg.kind === "mouseMoved")) && !viewer.input.allow()) return;
     if (entry.state !== "running") return;
+    if (msg.type === "input.key" || msg.type === "input.text" || (msg.type === "input.mouse" && msg.kind === "mousePressed")) entry.lastInputAt = Date.now();
     if (msg.type === "page.close") {
       // The user closed the node: destroy its page and drop the agent links to it.
       this.write(entry, { type: "page.close", nodeId: viewer.nodeId });
@@ -783,6 +789,11 @@ export class BrowserService {
   }
 
   private egressTimers = new Map<string, NodeJS.Timeout>();
+  /** A route switch restarts Chromium and changes the IP: never while a page is loading or a person typed / clicked in the last 15 s (a clearance cookie is tied to the IP it was issued to). */
+  private routeBusy(e: Entry): boolean {
+    if ([...e.nav.values()].some((n) => n.type === "nav" && n.loading)) return true;
+    return Date.now() - (e.lastInputAt ?? 0) < EGRESS_QUIET_MS;
+  }
   /** The hub reports a desktop came or went (and rtt changes): tell viewers, and for desktop-fallback restart onto the right route. */
   onEgressChange(userId: string, rttOnly = false): void {
     if (rttOnly) { void this.pushEgress(userId); return; } // a PONG every ~20 s: no settings reads, no route decision
@@ -809,17 +820,27 @@ export class BrowserService {
     const want = await this.effectiveEgress(userId);
     if (want === entry.egressMode) { const t = this.egressTimers.get(userId); if (t) { clearTimeout(t); this.egressTimers.delete(userId); } return; }
     if (this.egressTimers.has(userId)) return;
-    const timer = setTimeout(() => {
-      this.egressTimers.delete(userId);
-      void (async () => {
-        const e = this.entries.get(userId);
-        if (!e || e.state !== "running" || (await this.effectiveEgress(userId)) === e.egressMode) return;
-        log.info("browser.egress_switch", { userId, from: e.egressMode });
-        await this.restart(userId).catch((error) => log.warn("browser.egress_restart_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
-      })();
-    }, delayMs);
-    timer.unref?.();
-    this.egressTimers.set(userId, timer);
+    const since = Date.now();
+    const arm = (ms: number) => {
+      const timer = setTimeout(() => {
+        this.egressTimers.delete(userId);
+        void (async () => {
+          const e = this.entries.get(userId);
+          if (!e || e.state !== "running" || (await this.effectiveEgress(userId)) === e.egressMode) return;
+          // Held back while the browser is busy (bounded, so a page that never settles cannot pin the old route forever).
+          if (this.routeBusy(e) && Date.now() - since < EGRESS_MAX_DEFER_MS) return arm(2000);
+          await this.switchRoute(userId, e);
+        })();
+      }, ms);
+      timer.unref?.();
+      this.egressTimers.set(userId, timer);
+    };
+    arm(delayMs);
+  }
+
+  private async switchRoute(userId: string, e: Entry): Promise<void> {
+    log.info("browser.egress_switch", { userId, from: e.egressMode });
+    await this.restart(userId).catch((error) => log.warn("browser.egress_restart_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
   }
 
   /** The user toggled `agentBrowser`: stop a running daemon when it went off, and fix the MCP entries either way. */

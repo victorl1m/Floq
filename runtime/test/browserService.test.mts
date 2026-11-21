@@ -584,3 +584,18 @@ test("a viewer's machine (screen, timezone, languages) reaches the daemon env at
   h.close();
   await service.shutdown();
 });
+
+test("a route switch is held back while a page loads or a person is typing / clicking", async () => {
+  const { service } = harness();
+  await service.ensure("alice");
+  const e = (service as any).entries.get("alice");
+  assert.equal((service as any).routeBusy(e), false);
+  e.nav.set("T1", { type: "nav", targetId: "T1", url: "https://x.test/", title: "", loading: true, canBack: false, canForward: false });
+  assert.equal((service as any).routeBusy(e), true, "page loading");
+  e.nav.clear();
+  e.lastInputAt = Date.now();
+  assert.equal((service as any).routeBusy(e), true, "user input a moment ago");
+  e.lastInputAt = Date.now() - 60_000;
+  assert.equal((service as any).routeBusy(e), false);
+  await service.shutdown();
+});

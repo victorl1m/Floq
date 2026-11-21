@@ -205,6 +205,16 @@ Order: R1 → D → T(runtime) can start in parallel with Rust; FE last. About 1
 - It only works while the user's computer is on, online, and running Floq.
 - Responsibility: traffic from the agent browser comes from the user's IP. The Settings copy says so plainly.
 
+## 6b. CAPTCHA changes (v1.0.37, see browser-captcha-research.md)
+
+A person must be able to solve Turnstile / reCAPTCHA / hCaptcha in the node. What changed in the browser, none of it driven by agents:
+
+- **Headful on Xvfb.** `floq-browserd` starts a private Xvfb (`-displayfd`, TCP off) sized like the user's screen and runs Chromium on it, so the UA and client hints no longer say `HeadlessChrome`. The CDP screencast and `Input.dispatch*` are unchanged. Without Xvfb (or when it cannot start, or `FLOQ_BROWSER_HEADLESS=1`) it falls back to `--headless=new`; `ready.display` says which ("xvfb" | "headless").
+- **The user's machine.** The app puts `env=` (screen size, DPR, `Intl` timezone, `navigator.languages`, `(pointer:fine)`, `(hover:hover)`) on the browser stream URL. The runtime validates it (`sanitizeClientEnv`) and hands it to the next daemon start as `FLOQ_BROWSER_CLIENT_ENV` + `TZ`; the daemon applies `--lang` / `--accept-lang`, `--blink-settings` (hover / fine pointer), `--screen-info` (headless only) and `screenWidth/Height` in `Emulation.setDeviceMetricsOverride`. Plain facts about the user's machine, nothing invented. It does not take effect on a daemon that is already running (never restarted for this).
+- **Challenge frames are left alone.** For `challenges.cloudflare.com`, `www.google.com/recaptcha`, `recaptcha.net`, `*.hcaptcha.com` the daemon only resumes the paused frame: no `Page.enable`, `Fetch.enable` or auto-attach hook, and no `Runtime.evaluate` cursor probe while such a frame exists. (T6 loses nothing: public hosts, and with egress on the desktop guard is the boundary.)
+- **Stable session.** No route switch mid-load / mid-login (above); session cookies survive restarts.
+- **Not changed:** `navigator.webdriver` stays true. The single place a flag would go is `WEBDRIVER_DECISION_FLAGS` in `runtime/image/floq-browserd.mts`, pending a product decision (it reverses the "no stealth" stance of §6).
+
 ## 7. Effort and risks
 
 | Track | Effort (one implementer, incl. tests) |
@@ -220,7 +230,7 @@ Risks:
 - **Performance:** the double hop plus WS framing (TCP-over-TCP) under loss is slow. Mitigate with credits, 32 KiB frames, and the per-stream window. Measure page load on a typical site before shipping, and show latency in the badge tooltip.
 - **Peer check portability:** reading `/proc/<pid>/fd` of Chromium children from the daemon. Children run as the same uid in the same pid namespace, so it should work. Verify it under `--unshare-pid` bwrap and with the Chromium sandbox on (zygote processes may restrict fd reading via `PR_SET_DUMPABLE=0`). **Fallback:** the uid check alone + document E2 as broader. Decide in implementation after a 1-hour spike.
 - **bwrap fd passing for fd 3** with `--die-with-parent`: verify early (spike).
-- **Chromium restart on toggle** loses session cookies (known, §A.9 "Session cookies"). The UI warns: "Switching restarts the browser; you may need to log in again on some sites."
+- **Chromium restart on toggle**: session cookies are saved to `~/.floq/browser/session-state.json` (every 5 s and on shutdown) and restored at the next start, so a restart no longer logs the user out. The restart itself is still an IP change, so the runtime never does it while a page is loading or within 15 s of a click / key from the user (it retries every 2 s, for at most 90 s).
 - **Multi-device** "which machine is active" confusion, mitigated by naming the machine in the badge and in Settings.
 - **Abuse via the operator or a compromised runtime (E4):** inherent. Off by default, visible, caps, one-click stop.
 - **Deployment:** the runtime ships via Dokploy on push to main (lead pushes), and the desktop part needs an app release. Ship the runtime first with the feature gated on `HELLO` from a capable app, so old apps simply don't offer the toggle.
