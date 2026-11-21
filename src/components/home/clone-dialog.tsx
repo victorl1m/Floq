@@ -5,9 +5,8 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { AppDialog, ErrorBanner } from "@/components/ui/app-dialog";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
+import { LoadingState, Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GithubFlowPanel, useGithubDeviceFlow } from "@/components/settings/github-device-flow";
 import { RuntimeError } from "@/lib/runtime/client";
@@ -141,11 +140,7 @@ function RepoPicker({ onSelect, selected }: { onSelect: (repo: GithubRepo) => vo
                     {error && <li className="flex items-center justify-between gap-2 p-2" role="alert"><ErrorBanner>{error}</ErrorBanner><Button variant="outline" size="sm" onClick={() => failedRequest && void load(failedRequest.query, failedRequest.page, failedRequest.append)}>Retry</Button></li>}
                 </ul>
             {loading && repos.length === 0 && (
-                <div className="flex flex-col gap-2">
-                    {[0, 1, 2, 3].map((i) => (
-                        <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                    ))}
-                </div>
+                <LoadingState label="Loading repositories…" className="min-h-44" />
             )}
         </div>
     );

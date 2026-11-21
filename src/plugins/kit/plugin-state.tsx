@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { IconAlertTriangle, IconInbox, IconKey, IconPlugOff, IconSettings } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { usePlugins } from "@/plugins/host";
 
 export type PluginStateKind = "loading" | "empty" | "error" | "not-configured" | "disabled";
@@ -34,15 +34,7 @@ export function PluginState({ state, title, description, onRetry, missingSecrets
   const { openSettings } = usePlugins();
   if (state === "loading") {
     return (
-      <div role="status" aria-label={`Loading ${label}`} data-slot="plugin-state" data-state="loading" className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30">
-        {Array.from({ length: 3 }, (_, i) => (
-          <div key={i} className="flex items-center gap-3 px-4 py-3">
-            <div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-3 w-40" /><Skeleton className="h-2.5 w-3/4" /></div>
-            <Skeleton className="h-5 w-14" />
-          </div>
-        ))}
-        <span className="sr-only">Loading {label}…</span>
-      </div>
+      <LoadingState label={`Loading ${label}…`} data-slot="plugin-state" data-state="loading" className="min-h-52 rounded-xl border border-border bg-card/30" />
     );
   }
   const copy = COPY[state];

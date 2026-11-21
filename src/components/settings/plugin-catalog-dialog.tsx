@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginCatalogItem, PluginRepoPreview } from "@/lib/runtime/types";
 import { ACTION_LABEL, FILTER_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, avatarUrl, categoryOf, confirmMatches, filterCatalog, matchesFilter, repoOf, type CatalogFilter, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
@@ -279,9 +279,7 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
                     ) : error ? (
                         <PaneState role="alert" icon={<IconAlertTriangle />} title="Could not load the catalog" text={error} action={<Button variant="outline" size="sm" onClick={() => { setItems(null); void load(); }}><IconRefresh />Retry</Button>} />
                     ) : items === null ? (
-                        <div role="status" aria-label="Loading the catalog" className="grid min-h-0 content-start gap-2 overflow-hidden p-3 sm:grid-cols-2 lg:grid-cols-3">
-                            {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-[8.5rem] rounded-xl" />)}
-                        </div>
+                        <LoadingState label="Loading the catalog…" className="min-h-0 p-3" />
                     ) : items.length === 0 ? (
                         <PaneState icon={<IconPlugConnected />} title="The catalog is empty" text="Nothing is published in floq-plugins yet. You can still install from a GitHub repository." action={<Button variant="outline" size="sm" onClick={() => setView("github")}><IconBrandGithub />From GitHub</Button>} />
                     ) : (

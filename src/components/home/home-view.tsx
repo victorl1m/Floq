@@ -24,6 +24,7 @@ import CloneDialog from "./clone-dialog";
 import SetupAgentsDialog from "@/components/agents/setup-agents-dialog";
 import { useUsableProviders } from "@/components/agents/use-usable-providers";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { loadComposerPrefs, saveComposerPrefs } from "@/lib/prefs";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import { ORCHESTRATOR_HINT, ORCHESTRATOR_ROLE, isOrchestrator } from "@/lib/runtime/orchestrator";
@@ -465,10 +466,7 @@ export default function HomeView() {
                             )}
                         </div>
                         {projectsLoading ? (
-                            <div role="status" aria-label="Loading projects" className="grid gap-2">
-                                <Skeleton rows={1} className="h-14 w-full rounded-2xl" />
-                                <Skeleton rows={1} className="h-14 w-full rounded-2xl" />
-                            </div>
+                            <LoadingState label="Loading projects…" className="min-h-28" />
                         ) : projects.length > 0 ? (
                             <ul className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2">
                                 {projects.slice(0, 6).map((project) => {

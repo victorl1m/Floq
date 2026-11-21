@@ -46,6 +46,7 @@ import { cn } from "cn";
 import { addFolder, applyDrop, containerOf, moveProjectInto, reconcileLayout, removeFolderFromLayout, saveLayout, type ProjectLayout } from "@/lib/project-folders";
 import { DndButton, DndRow, EmptyFolderDrop, InlineRename, ProjectDnd, RootEndDrop, RowAction, useSavedLayout } from "@/components/sidebar/project-folder";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import DeleteProjectDialog from "@/components/sidebar/delete-project-dialog";
 import { setFolderExpanded as cacheFolderExpanded, useFolderExpanded } from "@/lib/project-folders-cache";
 import { useProjectFoldersSync } from "@/lib/use-project-folders-sync";
@@ -388,7 +389,7 @@ export default function CanonicalProjectList() {
       </div>
       </div>
       <SidebarGroupContent>
-        {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <div role="status" aria-label="Loading projects" aria-busy="true" className="space-y-1 px-2 py-2">{[0, 1, 2].map((row) => <div key={row} className="flex h-8 items-center gap-2"><Skeleton className="size-4 shrink-0" /><Skeleton className="h-3 flex-1" /></div>)}</div> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
+        {projects.length === 0 && projectsError ? null : (!loaded || projectsLoading) && projects.length === 0 ? <LoadingState label="Loading projects…" className="px-2 py-6 text-xs" /> : projects.length === 0 ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">No projects found</p> :
           <ProjectDnd layout={layout} onLayout={(next) => saveLayout(scope, next)} isFolderExpanded={(id) => folderExpanded[id] ?? true} onExpandFolder={(id) => setFolderExpanded(id, true)}
             labelOf={(kind, id) => kind === "folder" ? foldersById.get(id)?.name ?? "folder" : projectsById.get(id) ? projectLabel(projectsById.get(id)!) : "project"}
             renderOverlay={(kind, id) => <div className="flex h-8 w-56 items-center gap-2 rounded-md border border-sidebar-border bg-popover px-2 text-[13px] font-medium text-popover-foreground shadow-md">

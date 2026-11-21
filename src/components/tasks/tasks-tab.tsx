@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } 
 import { IconArrowsMove, IconClockPlay, IconCornerDownLeft, IconDots, IconLayoutKanban, IconList, IconPlus, IconRobot } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { Kbd } from "@/components/ui/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -205,14 +205,7 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
       {data.error && <div className="px-4 pb-3 sm:px-8"><ErrorBanner>{data.error}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void data.reload()}>Retry</Button></ErrorBanner></div>}
 
       {data.loading ? (
-        <div role="status" aria-busy="true" aria-label="Loading tasks" className="flex min-h-0 flex-1 gap-3 overflow-hidden px-4 sm:px-8">
-          {[3, 2, 1, 1].map((n, i) => (
-            <div key={i} className="tasks-column w-[min(19rem,84vw)] shrink-0 self-start rounded-2xl">
-              <div className="tasks-column-head flex h-11 items-center gap-2 px-3.5"><Skeleton rows={1} className="h-3 w-20" /></div>
-              <div className="space-y-2 p-2">{Array.from({ length: n }, (_, j) => <Skeleton key={j} rows={1} className="h-[72px] w-full rounded-xl" />)}</div>
-            </div>
-          ))}
-        </div>
+        <LoadingState label="Loading tasks…" className="min-h-0 flex-1 px-4 sm:px-8" />
       ) : visibleCount === 0 && !data.error ? (
         <Empty className="mx-auto mt-[6vh] mb-auto max-w-md border-0">
           <EmptyHeader>

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { cn } from "cn";
 
 export function PanelEmpty({ icon, title, hint, className }: { icon: ReactNode; title: string; hint?: string; className?: string }) {
@@ -24,13 +24,8 @@ export function PanelError({ message, onRetry, className }: { message: string; o
   );
 }
 
-/** Fixed-height placeholder rows so content does not jump when it arrives. */
+/** Centered spinner for panel loads; the number of rows is unknown, so no placeholder rows. */
 export function RowSkeletons({ count = 6, rowClass = "h-6" }: { count?: number; rowClass?: string }) {
-  return (
-    <div aria-busy="true" aria-label="Loading" className="flex flex-col gap-1.5 p-3">
-      {Array.from({ length: count }, (_, index) => (
-        <Skeleton key={index} className={cn(rowClass, "rounded-md")} style={{ width: `${95 - ((index * 17) % 40)}%` }} />
-      ))}
-    </div>
-  );
+  void count; void rowClass;
+  return <LoadingState label="Loading…" className="min-h-24 px-3 py-6" />;
 }

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import type { RuntimeClient } from "@/lib/runtime/client";
@@ -191,7 +191,7 @@ export function MemoryDetail({ memory: m, client, related, supersededBy, onClose
         <section aria-label="History">
           <h4 className="mem-eyebrow mb-2">History</h4>
           <ol className="mem-timeline space-y-2.5 text-xs">
-            {events === null && <li aria-label="Loading history"><Skeleton rows={2} className="h-8 w-full" /></li>}
+            {events === null && <li><LoadingState label="Loading history…" className="min-h-16 text-xs" /></li>}
             {events?.length === 0 && <li className="text-muted-foreground">No history recorded.</li>}
             {events?.map((ev, i) => {
               const at = eventTime(ev as MemoryEvent & { at?: unknown });

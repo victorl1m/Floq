@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { ErrorBanner } from "@/components/ui/app-dialog";
@@ -51,11 +51,7 @@ export default function AutomationsTab({ data, projectId, projectLabel }: Props)
       </div>
       {data.error && <div className="px-4 pb-3 sm:px-8"><ErrorBanner>{data.error}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void data.reload()}>Retry</Button></ErrorBanner></div>}
       {data.loading ? (
-        <div role="status" aria-busy="true" aria-label="Loading automations" className="px-4 sm:px-8">
-          <div className="settings-group material-content mx-auto max-w-[960px] divide-y divide-border rounded-2xl">
-            {[0, 1, 2].map((i) => <div key={i} className="flex items-center gap-3"><Skeleton rows={1} className="size-9 rounded-xl" /><div className="flex-1 space-y-2"><Skeleton rows={1} className="h-3.5 w-48" /><Skeleton rows={1} className="h-3 w-72 max-w-full" /></div></div>)}
-          </div>
-        </div>
+        <LoadingState label="Loading automations…" className="min-h-48 px-4 sm:px-8" />
       ) : data.automations.length === 0 && !data.error ? (
         <Empty className="mx-auto mt-[6vh] mb-auto max-w-md border-0">
           <EmptyHeader><EmptyMedia variant="icon"><IconClockPlay /></EmptyMedia><EmptyTitle>No automations yet</EmptyTitle>

@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { usePerformancePrefs } from "@/lib/prefs";
 import { buildGraph } from "@/lib/memory-graph";
@@ -218,9 +218,7 @@ export default function MemoryDialog({ projectId, projectName, client, onClose }
 
         <div className="flex min-h-0 flex-1 flex-col px-5 pb-5">
           {loading && (
-            <div className="mem-pane flex min-h-0 flex-1 flex-col gap-1 overflow-hidden rounded-xl p-1.5" role="status" aria-label="Loading memories">
-              {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} rows={3} className="h-[72px] shrink-0 rounded-xl" />)}
-            </div>
+            <LoadingState label="Loading memories…" className="mem-pane min-h-0 flex-1 rounded-xl p-1.5" />
           )}
           {!loading && disabled && (
             <Empty role="status" className="mem-pane flex-1 rounded-xl border-solid">

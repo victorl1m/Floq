@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { Command, CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
@@ -33,23 +34,7 @@ import { closeSource, EMPTY_SOURCE_PREFS, openSource, readSourcePrefs, reconcile
 type Cursor = { userId: string; name: string; x: number; y: number };
 
 function BoardSkeleton() {
-  return <div role="status" aria-label="Loading task board" aria-busy="true" className="flex min-h-0 flex-1 items-start gap-3 overflow-hidden p-5">
-    <span className="sr-only">Loading lists and cards…</span>
-    {[3, 2, 2].map((count, column) => <div key={column} aria-hidden="true" className="tasks-column w-[min(19rem,84vw)] shrink-0 overflow-hidden rounded-2xl">
-      <div className="flex h-12 items-center justify-between border-b border-border/60 px-3">
-        <Skeleton rows={1} className="h-3 w-24" />
-        <Skeleton rows={1} className="size-5 rounded-full" />
-      </div>
-      <div className="space-y-2 p-2.5">
-        {Array.from({ length: count }, (_, card) => <div key={card} className="glass-surface space-y-3 rounded-lg border border-border/60 p-3">
-          <Skeleton rows={1} className={`h-3 ${card % 2 ? "w-3/4" : "w-5/6"}`} />
-          <div className="space-y-2"><Skeleton rows={1} className="h-2.5 w-full" />{card !== 1 && <Skeleton rows={1} className="h-2.5 w-2/3" />}</div>
-          <div className="flex items-center justify-between pt-1"><Skeleton rows={1} className="h-4 w-14 rounded" /><Skeleton rows={1} className="size-5 rounded-full" /></div>
-        </div>)}
-        <Skeleton rows={1} className="my-3 h-3 w-20" />
-      </div>
-    </div>)}
-  </div>;
+  return <LoadingState label="Loading lists and cards…" aria-label="Loading task board" className="min-h-0 flex-1 p-5" />;
 }
 type RealtimeFrame = { type: "hello" | "board"; board: TaskBoard } | { type: "presence"; userId: string; name: string; x: number; y: number } | { type: "presence-left"; userId: string };
 type BoardNavigationPreferences = { favorites: string[]; recent: string[]; openTabs: string[]; activeBoardId: string; tabsInitialized: boolean };

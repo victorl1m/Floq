@@ -19,7 +19,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
+import { FloqReveal } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { errorMessage, useClient } from "@/lib/runtime/store";
 import type { Exposure, PluginSecretMigration, SecretInfo } from "@/lib/runtime/types";
 import { MovedSecretsNotice } from "../settings/plugin-credentials";
@@ -154,12 +155,7 @@ export default function SecretsPage() {
             <SettingsGroup className="overflow-hidden">
             <FloqReveal className="block" loading={secrets === null && !loadError} revealOnMount={false}>
             {secrets === null && !loadError ? (
-                <div role="status" aria-label="Loading secrets" className="divide-y divide-border">
-                    {[0, 1, 2].map((row) => <div key={row} className="flex items-center gap-4 px-4 py-3">
-                        <Skeleton className="h-3 w-28" /><Skeleton className="h-3 min-w-0 flex-1" /><Skeleton className="h-6 w-14" /><Skeleton className="h-3 w-24" />
-                    </div>)}
-                    <span className="sr-only">Loading secrets…</span>
-                </div>
+                <LoadingState label="Loading secrets…" className="min-h-40" />
             ) : loadError ? (
                 <Empty className="min-h-32 flex-none border-0 bg-transparent p-5">
                     <EmptyHeader><EmptyTitle>Could not load secrets</EmptyTitle><EmptyDescription>{loadError}</EmptyDescription></EmptyHeader>

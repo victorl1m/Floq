@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { FloqReveal, Skeleton } from "@/components/ui/skeleton";
+import { FloqReveal } from "@/components/ui/skeleton";
+import { LoadingState } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SkillReader, type SkillReaderSource } from "@/components/skills/skill-reader";
 import { AddMcpDialog } from "@/components/skills/add-mcp-dialog";
@@ -31,14 +32,7 @@ function EmptyState({ title, detail, action }: { title: string; detail: string; 
 }
 
 function RowsLoading({ label }: { label: string }) {
-  return <div role="status" aria-label={`Loading ${label}`} className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30">
-    {Array.from({ length: 3 }, (_, index) => <div key={index} className="flex items-center gap-3 px-4 py-3">
-      <Skeleton className="size-4 rounded-sm" />
-      <div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-3 w-32" /><Skeleton className="h-2.5 w-3/4" /></div>
-      <Skeleton className="h-6 w-16" />
-    </div>)}
-    <span className="sr-only">Loading {label}…</span>
-  </div>;
+  return <LoadingState label={`Loading ${label}…`} className="min-h-40 rounded-xl border border-border bg-card/30" />;
 }
 
 // Icon-only provider marker; the name stays available as accessible text and a tooltip.
