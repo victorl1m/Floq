@@ -1,7 +1,7 @@
 {
   "name": "floq",
   "private": true,
-  "version": "1.0.38",
+  "version": "1.0.39",
   "description": "Desktop workspace for running Claude Code and Codex agents on a server you host",
   "author": "Victor Lima",
   "license": "MIT",
