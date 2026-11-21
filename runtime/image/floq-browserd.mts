@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  AGENT_ID, CdpMux, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
+  AGENT_ID, CdpMux, sanitizeClientEnv, type ClientEnv, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
 import { EgressMux, PeerChecker, attachMuxToStream, socketSink, startSocksListener } from "./floq-egress.mjs";
@@ -91,11 +91,29 @@ export function egressFlags(port: number): string[] {
 const egressRuntime: { port: number | null; rootPid?: number } = { port: null };
 
 /** Display of the current run: the Xvfb server number's DISPLAY value, or null = headless fallback. */
+const CLIENT_ENV = readClientEnv();
 const displayRuntime: { display: string | null; stop?: () => void } = { display: null };
 
-export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number; /** default true: headful needs an X display (DISPLAY in the env) */ headful?: boolean }): string[] {
+/** The user's machine, from the runtime (FLOQ_BROWSER_CLIENT_ENV, validated again here). Null = the desktop app told us nothing: flags stay as they were. */
+export function readClientEnv(env: Record<string, string | undefined> = process.env): ClientEnv | null {
+  try { return env.FLOQ_BROWSER_CLIENT_ENV ? sanitizeClientEnv(JSON.parse(env.FLOQ_BROWSER_CLIENT_ENV)) : null; } catch { return null; }
+}
+/** Flags that make the browser report the user's own screen (headless only: a headful Xvfb is created at that size), pointer and language. TZ goes in the process env. */
+export function clientEnvFlags(ce: ClientEnv | null, headful: boolean): string[] {
+  if (!ce) return [];
+  const f: string[] = [];
+  if (!headful) f.push("--screen-info={" + ce.screenW + "x" + ce.screenH + "}");
+  const blink: string[] = [];
+  if (ce.hover === true) blink.push("primaryHoverType=2", "availableHoverTypes=2");
+  if (ce.pointerFine === true) blink.push("primaryPointerType=4", "availablePointerTypes=4");
+  if (blink.length) f.push("--blink-settings=" + blink.join(","));
+  if (ce.langs.length) f.push("--lang=" + ce.langs[0], "--accept-lang=" + ce.langs.join(","));
+  return f;
+}
+
+export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number; /** default true: headful needs an X display (DISPLAY in the env) */ headful?: boolean; clientEnv?: ClientEnv | null }): string[] {
   return [
-    ...(opts.headful === false ? ["--headless=new"] : headfulFlags()), "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+    ...(opts.headful === false ? ["--headless=new"] : headfulFlags()), ...clientEnvFlags(opts.clientEnv ?? null, opts.headful !== false), "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
     "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.egressPort ? egressFlags(opts.egressPort) : []), ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];
@@ -168,7 +186,7 @@ export function sandboxFailureReason(code: number | null, stderrTail: string): s
 type Running = { child: ChildProcess; stderrTail: () => string };
 
 function launchChromium(exe: string, sandbox: boolean): Running {
-  const args = chromiumArgs({ sandbox, profile: PROFILE, headful: displayRuntime.display !== null, ...(egressRuntime.port ? { egressPort: egressRuntime.port } : {}) });
+  const args = chromiumArgs({ sandbox, profile: PROFILE, headful: displayRuntime.display !== null, clientEnv: CLIENT_ENV, ...(egressRuntime.port ? { egressPort: egressRuntime.port } : {}) });
   const limitMb = Number(process.env.FLOQ_BROWSER_MEM_MB);
   // Optional address-space cap (FLOQ_BROWSER_MEM_MB). Off unless the runtime passes it: RLIMIT_AS is hard on Chromium's large reservations.
   const [file, argv] = limitMb > 0 && spawnSync("sh", ["-c", "command -v prlimit"], { stdio: ["ignore", "ignore", "ignore", "ignore"] }).status === 0
@@ -176,7 +194,7 @@ function launchChromium(exe: string, sandbox: boolean): Running {
     : [exe, args] as const;
   const child = spawn(file, argv, {
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", HOME, ...(displayRuntime.display ? { DISPLAY: displayRuntime.display } : {}) },
+    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", HOME, ...(CLIENT_ENV?.tz ? { TZ: CLIENT_ENV.tz } : {}), ...(displayRuntime.display ? { DISPLAY: displayRuntime.display } : {}) },
   });
   egressRuntime.rootPid = child.pid;
   let tail = "";
@@ -275,7 +293,7 @@ async function main() {
   const xvfbBin = findXvfb();
   let started: Awaited<ReturnType<typeof startChromium>> | undefined;
   if (xvfbBin) {
-    xvfb = await startXvfb(xvfbBin, 1920, 1080);
+    xvfb = await startXvfb(xvfbBin, CLIENT_ENV?.screenW ?? 1920, CLIENT_ENV?.screenH ?? 1080); // the screen of the user's own machine
     if (xvfb) {
       displayRuntime.display = xvfb.display; displayRuntime.stop = xvfb.stop;
       try { started = await startChromium(exe, onChromiumExit); }
@@ -666,7 +684,7 @@ async function main() {
         const v = viewSession(c.targetId); if (!v) return noTarget();
         const dpr = Math.min(2, Math.max(1, c.dpr));
         if (c.width > viewport.w || c.height > viewport.h) viewport = { w: Math.max(c.width, viewport.w), h: Math.max(c.height, viewport.h) };
-        await mux.command("Emulation.setDeviceMetricsOverride", { width: c.width, height: c.height, deviceScaleFactor: dpr, mobile: false }, v.sid);
+        await mux.command("Emulation.setDeviceMetricsOverride", { width: c.width, height: c.height, deviceScaleFactor: dpr, mobile: false, ...(CLIENT_ENV ? { screenWidth: Math.max(CLIENT_ENV.screenW, c.width), screenHeight: Math.max(CLIENT_ENV.screenH, c.height) } : {}) }, v.sid);
         return;
       }
       case "input.mouse": {

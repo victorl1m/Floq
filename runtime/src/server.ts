@@ -1930,7 +1930,7 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
           const live: LivePeer = { ws, userId, authSessionId, headers };
           livePeers.add(live);
           ws.on("close", () => livePeers.delete(live));
-          attachBrowserViewer(ws, userId, url.searchParams.get("node") ?? "main");
+          attachBrowserViewer(ws, userId, url.searchParams.get("node") ?? "main", parseEnvParam(url.searchParams.get("env")));
         });
         return;
       }
@@ -1993,8 +1993,14 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
     }
   }
 
+  /** The `env` query parameter of the browser stream: a small JSON object (the user's screen, timezone, languages). BrowserService validates every field. */
+  function parseEnvParam(raw: string | null): unknown {
+    if (!raw || raw.length > 1024) return undefined;
+    try { return JSON.parse(raw); } catch { return undefined; }
+  }
+
   /** Relays one Browser node socket through BrowserService (allowlisted messages only). Messages that arrive before the attach finishes are queued. */
-  function attachBrowserViewer(ws: WebSocket, userId: string, nodeId: string): void {
+  function attachBrowserViewer(ws: WebSocket, userId: string, nodeId: string, clientEnv?: unknown): void {
     if (!browser) return void ws.close(1011, "Browser unavailable");
     const pending: string[] = [];
     let handle: ViewerHandle | null = null;
@@ -2012,7 +2018,7 @@ const wsToken = (req: IncomingMessage, url: URL): string | null => {
     const done = () => { clearInterval(heartbeat); gone = true; handle?.close(); };
     ws.on("close", done);
     ws.on("error", done);
-    browser.attachViewer(userId, { send: (text) => { if (ws.readyState === ws.OPEN) ws.send(text); }, bufferedAmount: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) }, nodeId)
+    browser.attachViewer(userId, { send: (text) => { if (ws.readyState === ws.OPEN) ws.send(text); }, bufferedAmount: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) }, nodeId, clientEnv)
       .then((h) => { if (gone) return h.close(); handle = h; for (const text of pending.splice(0)) h.onMessage(text); })
       .catch((error) => { log.warn("browser.attach_failed", { userId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); ws.close(1011, "Browser unavailable"); });
   }

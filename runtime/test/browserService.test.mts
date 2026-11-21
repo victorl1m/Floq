@@ -572,3 +572,15 @@ test("closing a node destroys its page and drops its links; a page that vanishes
   assert.equal(e.wsEndpoint, "ws://127.0.0.1:40111/devtools/browser?agent=22222222-2222-2222-2222-222222222222");
   await service.shutdown();
 });
+
+test("a viewer's machine (screen, timezone, languages) reaches the daemon env at spawn, sanitized", async () => {
+  const { service, state } = harness();
+  const sink = { send: () => undefined, bufferedAmount: () => 0, close: () => undefined };
+  const h = await service.attachViewer("alice", sink, "main", { screenW: 1920, screenH: 1080, dpr: 2, tz: "America/Sao_Paulo", langs: ["pt-BR", "--x"], pointerFine: true, extra: "no" });
+  await service.ensure("alice");
+  const env = state.spawns[0].env;
+  assert.equal(env.TZ, "America/Sao_Paulo");
+  assert.deepEqual(JSON.parse(env.FLOQ_BROWSER_CLIENT_ENV), { screenW: 1920, screenH: 1080, dpr: 2, tz: "America/Sao_Paulo", langs: ["pt-BR"], pointerFine: true });
+  h.close();
+  await service.shutdown();
+});

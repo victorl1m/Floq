@@ -19,6 +19,24 @@ export const MAX_FRAME_H = 1200;
 export const INPUT_PER_SECOND = 120;
 export const MAX_TABS_REPORTED = 64;
 
+/** What the desktop app tells the runtime about the user's machine when it opens a Browser node, so the browser reports true facts (not UTC / 800x600 / no mouse). */
+export type ClientEnv = { screenW: number; screenH: number; dpr: number; tz?: string; langs: string[]; pointerFine?: boolean; hover?: boolean };
+const TZ_RE = /^[A-Za-z][A-Za-z0-9_+\-]*(\/[A-Za-z0-9_+\-]+){0,2}$/;
+const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$/;
+/** Rebuilds the env field by field; anything off is dropped, an unusable value gives null. The same rules run in the daemon (floq-browserd-core.mts). */
+export function sanitizeClientEnv(raw: unknown): ClientEnv | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const m = raw as Record<string, unknown>;
+  const int = (v: unknown, lo: number, hi: number) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? Math.round(v) : null;
+  const screenW = int(m.screenW, 640, 7680), screenH = int(m.screenH, 480, 4320);
+  if (screenW === null || screenH === null) return null;
+  const dpr = typeof m.dpr === "number" && Number.isFinite(m.dpr) && m.dpr >= 0.5 && m.dpr <= 4 ? Math.round(m.dpr * 100) / 100 : 1;
+  const langs = Array.isArray(m.langs) ? m.langs.filter((l): l is string => typeof l === "string" && l.length <= 35 && LANG_RE.test(l)).slice(0, 5) : [];
+  const tz = typeof m.tz === "string" && m.tz.length <= 64 && TZ_RE.test(m.tz) && validTimeZone(m.tz) ? m.tz : undefined;
+  return { screenW, screenH, dpr, ...(tz ? { tz } : {}), langs, ...(typeof m.pointerFine === "boolean" ? { pointerFine: m.pointerFine } : {}), ...(typeof m.hover === "boolean" ? { hover: m.hover } : {}) };
+}
+function validTimeZone(tz: string): boolean { try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; } }
+
 export type MouseKind = "mousePressed" | "mouseReleased" | "mouseMoved";
 export type ClientMessage =
   | { type: "screencast.start"; targetId?: string; maxW: number; maxH: number; quality: number }

@@ -1,5 +1,6 @@
 import type { BrowserData, BrowserEgress, BrowserImportPreview, BrowserImportResult, BrowserStatus } from "./browser-types";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { collectBrowserEnv } from "./browser-env";
 import type {
   PluginRepoPreview,
   PluginUpdateNotice,
@@ -416,7 +417,10 @@ export class RuntimeClient {
     const url = new URL(this.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/v1/browser/stream";
-    url.search = new URLSearchParams({ token: this.token, node: nodeId }).toString();
+    const params = new URLSearchParams({ token: this.token, node: nodeId });
+    const env = collectBrowserEnv();
+    if (env) params.set("env", JSON.stringify(env));
+    url.search = params.toString();
     return url.toString();
   }
   /** The desktop app's egress relay dials this. No credentials in the URL: Rust sends the token in an Authorization header. */

@@ -8,8 +8,8 @@ import type { EgressHub } from "./browserEgress.js";
 import type { BrowserEgressMode } from "./settings.js";
 import type { ShardDriver, ShardHandle } from "./shard.js";
 import {
-  NODE_ID, JsonLines, RateWindow, encodeLine, toViewerMessage, validateClientMessage,
-  type ClientMessage, type ViewerMessage,
+  NODE_ID, JsonLines, RateWindow, encodeLine, sanitizeClientEnv, toViewerMessage, validateClientMessage,
+  type ClientEnv, type ClientMessage, type ViewerMessage,
 } from "./browserProtocol.js";
 
 /**
@@ -128,6 +128,8 @@ interface Entry {
   viewers: Set<Viewer>;
   /** How THIS daemon run routes its traffic (fixed at spawn; a change restarts the daemon). */
   egressMode: "server" | "desktop";
+  /** The user's machine (screen, timezone, languages, pointer) as last reported by a viewer; applied to the NEXT daemon start only (never mid-session). */
+  clientEnv?: ClientEnv;
   egressPipe: { push(chunk: Buffer): void; close(): void } | null;
   idleTimer: NodeJS.Timeout | null;
   ackTimer: NodeJS.Timeout | null;
@@ -304,6 +306,8 @@ export class BrowserService {
     if (this.options.memMb > 0) env.FLOQ_BROWSER_MEM_MB = String(this.options.memMb);
     if (this.options.sandbox) env.FLOQ_BROWSER_SANDBOX = this.options.sandbox;
     env.FLOQ_BROWSER_EGRESS = egress;
+    const ce = this.entries.get(userId)?.clientEnv;
+    if (ce) { env.FLOQ_BROWSER_CLIENT_ENV = JSON.stringify(ce); if (ce.tz) env.TZ = ce.tz; }
     return env;
   }
 
@@ -639,7 +643,7 @@ export class BrowserService {
    * Registers a Browser node's socket for this user (`nodeId`: one node, one page). Starts the daemon (waking the shard) when it is stopped
    * and allowed, and asks it for the node's page. The sink only ever receives allowlisted messages (state, page, frame, nav, cursor, agentActivity, clients, error).
    */
-  async attachViewer(userId: string, sink: ViewerSink, nodeId = "main"): Promise<ViewerHandle> {
+  async attachViewer(userId: string, sink: ViewerSink, nodeId = "main", clientEnv?: unknown): Promise<ViewerHandle> {
     const state = await this.state(userId);
     const send0 = (msg: ViewerMessage) => { try { sink.send(JSON.stringify(msg)); } catch { /* closing */ } };
     if (!NODE_ID.test(nodeId)) { send0({ type: "error", code: "bad_node" }); return { onMessage: () => undefined, close: () => undefined }; }
@@ -650,6 +654,8 @@ export class BrowserService {
       return { onMessage: () => undefined, close: () => undefined };
     }
     const entry = this.entryFor(userId);
+    const env = sanitizeClientEnv(clientEnv);
+    if (env) entry.clientEnv = env; // read when the daemon is (re)started, which may be triggered right below
     entry.viewers.add(viewer);
     if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
     const current = entry;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { JsonLines, RateWindow, normalizeNavUrl, toViewerMessage, validateClientMessage } from "../dist/browserProtocol.js";
+import { sanitizeClientEnv, JsonLines, RateWindow, normalizeNavUrl, toViewerMessage, validateClientMessage } from "../dist/browserProtocol.js";
 
 const TID = "C711BB681855D07964DB653782FFBE88";
 const ok = (m) => { const r = validateClientMessage(m); assert.equal(r.ok, true, JSON.stringify(m)); return r.msg; };
@@ -122,4 +122,16 @@ test("RateWindow allows `limit` per window and recovers in the next one", () => 
   assert.deepEqual([r.allow(), r.allow(), r.allow(), r.allow(), r.allow()], [true, true, true, false, false]);
   now += 999; assert.equal(r.allow(), false);
   now += 1; assert.equal(r.allow(), true);
+});
+
+test("sanitizeClientEnv keeps only plain facts about the user's machine", () => {
+  const good = { screenW: 1920, screenH: 1080, dpr: 1.25, tz: "America/Sao_Paulo", langs: ["pt-BR", "en"], pointerFine: true, hover: false };
+  assert.deepEqual(sanitizeClientEnv({ ...good, extra: 1 }), good);
+  assert.equal(sanitizeClientEnv(null), null);
+  assert.equal(sanitizeClientEnv({ ...good, screenW: "1920" }), null);
+  assert.equal(sanitizeClientEnv({ ...good, screenH: 99999 }), null);
+  assert.equal(sanitizeClientEnv({ ...good, tz: "Not/AZone" })?.tz, undefined);
+  assert.equal(sanitizeClientEnv({ ...good, tz: "UTC; rm" })?.tz, undefined);
+  assert.deepEqual(sanitizeClientEnv({ ...good, langs: ["en-US", "--x", 5, "pt_BR"] })?.langs, ["en-US"]);
+  assert.equal(sanitizeClientEnv({ ...good, dpr: 99 })?.dpr, 1);
 });

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
 import { agentToken, FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
-import { chromiumArgs, findXvfb, sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
+import { chromiumArgs, clientEnvFlags, findXvfb, readClientEnv, sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
 const DAEMON = fileURLToPath(new URL("../dist/image/floq-browserd.mjs", import.meta.url));
@@ -964,4 +964,22 @@ test("daemon: with Xvfb Chromium runs headful on its DISPLAY; without it (or whe
     assert.match(off.chromiumLog(), /--headless=new/);
     await off.stop();
   }
+});
+
+// -------------------------------------------------------------- the user's machine (screen, pointer, timezone, language)
+
+test("client env: sanitized, turned into the measured flags, TZ passed to Chromium, headful Xvfb sized to the user's screen", async (t) => {
+  const ce = { screenW: 2560, screenH: 1440, dpr: 2, tz: "America/Sao_Paulo", langs: ["pt-BR", "pt", "en-US"], pointerFine: true, hover: true };
+  assert.deepEqual(readClientEnv({ FLOQ_BROWSER_CLIENT_ENV: JSON.stringify({ ...ce, evil: "--x" }) }), ce);
+  assert.equal(readClientEnv({ FLOQ_BROWSER_CLIENT_ENV: JSON.stringify({ ...ce, screenW: 10 }) }), null);
+  assert.equal(readClientEnv({ FLOQ_BROWSER_CLIENT_ENV: JSON.stringify({ ...ce, tz: "../../etc/passwd" }) })?.tz, undefined);
+  assert.equal(readClientEnv({ FLOQ_BROWSER_CLIENT_ENV: JSON.stringify({ ...ce, langs: ["pt-BR", "x; rm -rf", "--evil"] }) })?.langs.join(), "pt-BR");
+  assert.equal(readClientEnv({}), null);
+  assert.deepEqual(clientEnvFlags(null, true), []);
+  assert.deepEqual(clientEnvFlags(ce, false), ["--screen-info={2560x1440}", "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4", "--lang=pt-BR", "--accept-lang=pt-BR,pt,en-US"]);
+  assert.equal(clientEnvFlags(ce, true).some((f) => f.startsWith("--screen-info")), false, "headful: the Xvfb screen itself has the size");
+  const d = await startDaemon(t, { env: { FLOQ_BROWSER_HEADLESS: "1", FLOQ_BROWSER_CLIENT_ENV: JSON.stringify(ce), TZ: "UTC" } });
+  assert.match(d.chromiumLog(), /--accept-lang=pt-BR,pt,en-US/);
+  assert.match(d.chromiumLog(), /--screen-info=\{2560x1440\}/);
+  await d.stop();
 });
