@@ -99,7 +99,7 @@ test("pasta runs with an explicit --runas (default 0) and a pid file", () => {
   const a = pastaArgv({ path: "/p", pidFile: "/p.pid" });
   assert.equal(a[a.indexOf("--runas") + 1], "0");
   assert.equal(pastaArgv({ path: "/p", pidFile: "/p.pid", runas: 65534 })[pastaArgv({ path: "/p", pidFile: "/p.pid", runas: 65534 }).indexOf("--runas") + 1], "65534");
-  assert.ok(a.includes("--pid"));
+  assert.ok(!a.includes("--pid")); // the runtime writes the pid file; unprivileged pasta cannot create it under /run/floq
 });
 
 test("host addresses: parsed from `ip -o -4 addr`, loopback skipped, dropped by the ruleset after the gateway rules", () => {

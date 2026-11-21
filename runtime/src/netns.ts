@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { chownSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
 import { Duplex } from "node:stream";
@@ -107,7 +107,8 @@ export function wrapLaunch(file: string, args: readonly string[], netns: string 
 
 export interface PastaOptions {
   path: string;
-  pidFile: string;
+  /** Unused by pasta: the runtime records pasta's pid itself (pasta runs --foreground, so the child is pasta). Kept for callers. */
+  pidFile?: string;
   /** uid pasta runs as after setup. Explicit on purpose: as root pasta otherwise drops to "nobody" and can no longer write its pid file under /run/floq. */
   runas?: number;
 }
@@ -129,7 +130,8 @@ export function pastaArgv(o: PastaOptions): string[] {
     "--dns-forward", NETNS_DNS,
     "--no-dhcp",
     "--runas", String(o.runas ?? 0),
-    "--pid", o.pidFile,
+    // No --pid: after dropping to --runas, pasta cannot create files under the root-owned /run/floq/netns ("Couldn't open PID file:
+    // Permission denied"), so unprivileged pasta failed and the runtime fell back to running it as root. The runtime writes the file.
   ];
 }
 
@@ -565,13 +567,12 @@ export class NetnsManager {
   private startPasta(path: string, pidFile: string, entry: Active): void {
     entry.timer = null;
     const bin = this.options.pastaBin ?? (process.env.FLOQ_PASTA_BIN?.trim() || PASTA_BIN);
-    if (this.pastaUid !== 0) {
-      // pasta writes its pid file after dropping to this uid: hand it the (root-created) file first.
-      try { writeFileSync(pidFile, "", { mode: 0o644 }); chownSync(pidFile, this.pastaUid, this.pastaUid); } catch (error) { log.warn("netns.pidfile_chown_failed", { error: String(error).slice(0, 120) }); }
-    }
-    const child = spawn(bin, pastaArgv({ path, pidFile, runas: this.pastaUid }), { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(bin, pastaArgv({ path, runas: this.pastaUid }), { stdio: ["ignore", "ignore", "pipe"] });
+    // --foreground: the child is pasta itself. Its pid file lets a restarted runtime stop an orphaned pasta (killPidFile).
+    if (child.pid) { try { writeFileSync(pidFile, String(child.pid), { mode: 0o644 }); } catch (error) { log.warn("netns.pidfile_write_failed", { error: String(error).slice(0, 120) }); } }
     let err = "";
-    child.stderr?.on("data", (c: Buffer) => { if (err.length < 400) err += c.toString(); });
+    // pasta prints this informational line on CPUs without AVX2; it is not an error.
+    child.stderr?.on("data", (c: Buffer) => { if (err.length < 400) err += c.toString().replace(/^Can't run AVX2 build, using non-AVX2 version[^\n]*\n?/m, ""); });
     entry.pasta = child;
     entry.startedAt = Date.now();
     child.on("error", (e) => log.error("netns.pasta_error", { path, error: e.message }));
