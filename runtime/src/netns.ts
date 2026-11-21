@@ -109,7 +109,7 @@ export interface PastaOptions {
   path: string;
   /** Unused by pasta: the runtime records pasta's pid itself (pasta runs --foreground, so the child is pasta). Kept for callers. */
   pidFile?: string;
-  /** uid pasta runs as after setup. Explicit on purpose: as root pasta otherwise drops to "nobody" and can no longer write its pid file under /run/floq. */
+  /** uid pasta runs as after setup (default 0, see envPastaUid). Explicit on purpose: as root pasta otherwise drops to "nobody". */
   runas?: number;
 }
 
@@ -370,7 +370,10 @@ export interface NetnsOptions {
 function envPastaUid(): number {
   const raw = process.env.FLOQ_NETNS_PASTA_UID?.trim();
   if (raw && /^\d{1,9}$/.test(raw)) return Number(raw);
-  return 65534;
+  // Default root: pasta attaches to a namespace the runtime (root) created, and after --runas <unprivileged> it may no longer join it
+  // ("Couldn't switch to pasta namespaces: Operation not permitted"), so the unprivileged attempt always failed six times before the
+  // fallback. pasta still sandboxes itself (own mount/user namespaces, seccomp, no capabilities it does not need).
+  return 0;
 }
 
 /** pasta restarts: at most this many in a row; the counter resets once a pasta has stayed up STABLE_MS. */
