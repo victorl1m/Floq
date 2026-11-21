@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "cn";
-import { organizationInitials } from "@/lib/organizations";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { organizationIconBackground, organizationInitials } from "@/lib/organizations";
 import { useRuntime } from "@/lib/runtime/store";
 import type { RuntimeClient } from "@/lib/runtime/client";
 
@@ -36,17 +37,24 @@ function useImageSrc(imageUrl: string | null | undefined, preview?: string | nul
     return preview ?? src;
 }
 
-/** Rounded-square tile: the organization image when it has one, else its initials (decorative; the name is always rendered next to it). */
+/** Rounded-square avatar: the organization image when it has one, else a generated icon (initials on a colour picked from the name). Decorative; the name is always rendered next to it. */
 export function OrganizationAvatar({ name, imageUrl, preview, className }: { name: string; imageUrl?: string | null; preview?: string | null; className?: string }) {
     const src = useImageSrc(imageUrl, preview);
     return (
-        <span
+        <Avatar
             aria-hidden="true"
             data-testid="org-avatar"
             data-has-image={src ? "true" : "false"}
-            className={cn("flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-xs font-semibold text-foreground ring-1 ring-foreground/10", className)}
+            className={cn("size-8 rounded-lg after:hidden ring-1 ring-foreground/10", className)}
         >
-            {src ? <img src={src} alt="" draggable={false} className="size-full object-cover" /> : organizationInitials(name)}
-        </span>
+            {src ? <AvatarImage src={src} alt="" draggable={false} className="rounded-[inherit]" /> : null}
+            <AvatarFallback
+                delayMs={0}
+                className="rounded-[inherit] text-xs font-semibold text-white dark:text-background"
+                style={{ backgroundImage: organizationIconBackground(name) }}
+            >
+                {organizationInitials(name)}
+            </AvatarFallback>
+        </Avatar>
     );
 }
