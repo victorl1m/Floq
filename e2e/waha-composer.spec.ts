@@ -170,8 +170,8 @@ for (const theme of ['light', 'dark']) {
       await field(page).press('Enter');
       await expect.poll(async () => (await sends(page, '/send-media')).length).toBe(1);
       const body = (await sends(page, '/send-media'))[0].body;
-      expect(body.text).toBe('Segue o orçamento');
-      expect(body.files).toEqual([{ name: 'orcamento-festa-40-canecas.pdf', mime: 'application/pdf', bytes: 120000, kind: 'document' }]);
+      expect(body).toMatchObject({ chatId: '5511987654321@c.us', kind: 'document', mime: 'application/pdf', filename: 'orcamento-festa-40-canecas.pdf', caption: 'Segue o orçamento' });
+      expect(Buffer.from(body.data, 'base64').length).toBe(120000);
       await expect(page.locator('.wa-att')).toHaveCount(0);
       await expect(action(page)).toHaveAttribute('data-mode', 'mic');
     });
@@ -230,7 +230,7 @@ for (const theme of ['light', 'dark']) {
       await page.getByRole('button', { name: 'Cancel recording' }).click();
       await expect(rec).toBeHidden();
       await expect(action(page)).toHaveAttribute('data-mode', 'mic');
-      expect(await sends(page, '/send-voice')).toHaveLength(0);
+      expect(await sends(page, '/send-media')).toHaveLength(0);
       // Esc cancels too
       await action(page).click();
       await expect(rec).toBeVisible();
@@ -240,19 +240,21 @@ for (const theme of ['light', 'dark']) {
       await action(page).click();
       await expect(page.locator('.wa-rec-time')).toHaveText('0:01', { timeout: 4000 });
       await page.getByRole('button', { name: 'Send voice message' }).click();
-      await expect.poll(async () => (await sends(page, '/send-voice')).length).toBe(1);
-      const b = (await sends(page, '/send-voice'))[0].body;
+      await expect.poll(async () => (await sends(page, '/send-media')).length).toBe(1);
+      const b = (await sends(page, '/send-media'))[0].body;
+      expect(b.kind).toBe('voice');
       expect(b.mime).toMatch(/^audio\/(ogg|webm|mp4)/);
-      expect(b.bytes).toBeGreaterThan(0);
-      expect(b.durationMs).toBeGreaterThan(900);
+      expect(Buffer.from(b.data, 'base64').length).toBeGreaterThan(0);
+      expect(b.duration).toBeGreaterThanOrEqual(1);
       await expect(page.locator('.wa-rec')).toBeHidden();
     });
 
     test('reply bar and edit bar', async ({ page }) => {
       await open(page, 'Marina Costa', theme);
       const msg = page.locator('.wa-msg', { hasText: 'Pode confirmar o endereço' });
-      await msg.hover();
-      await msg.getByRole('button', { name: 'Reply' }).click();
+      await msg.locator('.wa-bubble').hover();
+      await msg.locator('.wa-chev').click({ force: true });
+      await page.getByRole('menuitem', { name: 'Reply', exact: true }).click();
       const bar = page.locator('.wa-replybar');
       await expect(bar).toContainText('Marina Costa');
       await expect(bar).toContainText('Pode confirmar o endereço');
@@ -260,9 +262,19 @@ for (const theme of ['light', 'dark']) {
       await shot(page, theme, 'reply');
       await page.keyboard.press('Escape');
       await expect(bar).toBeHidden();
-      await page.evaluate(() => (window as unknown as { __waEdit: (id: string, b: string) => void }).__waEdit('m6', 'Dá sim. 40 unidades com gravação'));
+      // edit one of my own fresh messages from its menu
+      await field(page).fill('Texto novo para editar');
+      await field(page).press('Enter');
+      const mine = page.locator('.wa-msg[data-mid^="true_"]', { hasText: 'Texto novo para editar' }).last();
+      await expect(mine).toBeVisible();
+      await page.mouse.move(0, 0);
+      await mine.scrollIntoViewIfNeeded();
+      await mine.locator('.wa-bubble').hover();
+      await mine.locator('.wa-chev').click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
       await expect(page.locator('.wa-replybar')).toContainText('Edit message');
-      await expect(field(page)).toHaveValue('Dá sim. 40 unidades com gravação');
+      await expect(field(page)).toHaveValue('Texto novo para editar');
       await expect(action(page)).toHaveAccessibleName('Save edit');
       expect(await page.locator('.wa-ico-send svg').first().evaluate((e) => !!e.closest('.wa-ico-send'))).toBe(true);
       await shot(page, theme, 'edit');
@@ -275,7 +287,7 @@ for (const theme of ['light', 'dark']) {
       await open(page, 'Equipe Zoe', theme);
       await field(page).fill('oi @');
       const list = page.getByRole('listbox', { name: 'Mention someone' });
-      await expect(list.getByRole('option')).toHaveCount(3);
+      await expect(list.getByRole('option')).toHaveCount(4);
       await shot(page, theme, 'mentions');
       await field(page).press('ArrowDown');
       await expect(list.getByRole('option').nth(1)).toHaveAttribute('aria-selected', 'true');
@@ -313,8 +325,9 @@ for (const theme of ['light', 'dark']) {
       await shot(page, theme, 'narrow-menu');
       const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('menuitem', { name: 'Document' }).click()]);
       await chooser.setFiles([{ name: 'um-nome-de-arquivo-muito-muito-comprido-orcamento-final.pdf', mimeType: 'application/pdf', buffer: Buffer.alloc(2000) }]);
-      await page.locator('.wa-msg', { hasText: 'Pode confirmar o endereço' }).hover();
-      await page.locator('.wa-msg', { hasText: 'Pode confirmar o endereço' }).getByRole('button', { name: 'Reply' }).click({ force: true });
+      await page.locator('.wa-msg', { hasText: 'Pode confirmar o endereço' }).locator('.wa-bubble').hover();
+      await page.locator('.wa-msg', { hasText: 'Pode confirmar o endereço' }).locator('.wa-chev').click({ force: true });
+      await page.getByRole('menuitem', { name: 'Reply', exact: true }).click();
       await fits('tray + reply + long text');
       await shot(page, theme, 'narrow-full');
       await field(page).fill('');

@@ -151,11 +151,11 @@ for (const theme of ['light', 'dark']) {
       await shot(page, theme, 'quick-reactions');
       await page.getByRole('button', { name: 'React 👍' }).click();
       await expect(last.locator('.wa-react-me')).toContainText('👍');
-      expect((await calls(page, '/react')).at(-1)!.body.arg).toBe('👍');
+      await expect.poll(async () => (await calls(page, '/react')).at(-1)?.body.arg).toBe('👍');
       // click your chip again: removes it
       await last.locator('.wa-react-me').click();
       await expect(last.locator('.wa-react')).toHaveCount(0);
-      expect((await calls(page, '/react')).at(-1)!.body.arg).toBe('');
+      await expect.poll(async () => (await calls(page, '/react')).at(-1)?.body.arg).toBe('');
       // the full picker
       await last.locator('.wa-bubble').hover();
       await last.getByRole('button', { name: 'React', exact: true }).click();
@@ -229,7 +229,7 @@ for (const theme of ['light', 'dark']) {
       const poll = msg(page, 'poll', 0);
       await poll.getByRole('radio', { name: /Verde/ }).click();
       await expect(poll.getByRole('radio', { name: /Verde/ })).toHaveAttribute('aria-checked', 'true');
-      expect((await calls(page, '/vote')).at(-1)!.body.arg).toEqual(['Verde']);
+      await expect.poll(async () => (await calls(page, '/vote')).at(-1)?.body.arg).toEqual(['Verde']);
       await page.goto('about:blank');
       await open(page, theme, WIDE, '&engine=NOWEB');
       await scrollTo(page, 'poll', 0);
