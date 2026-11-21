@@ -681,6 +681,7 @@ export class SkillsService {
       for (let offset = 0; offset < body.length; offset += 48 * 1024) chunks.push(body.subarray(offset, offset + 48 * 1024).toString("base64"));
       const write = await this.runInSandbox(handle, target.cwd, MCP_FILE_SCRIPT, [encode({ op: "write", parts: target.parts, expect, bytes: body.length, chunks: chunks.length }), ...chunks], "mcp_write_timeout");
       if (write.exitCode === 0 && write.output.includes("MCP_WRITTEN")) return true;
+      if (write.exitCode === 0 && write.output.includes("MCP_GONE")) return false;
       if (write.output.includes("MCP_CHANGED")) continue;
       throw mcpHelperError(write.output);
     }

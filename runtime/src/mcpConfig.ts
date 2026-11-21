@@ -465,7 +465,8 @@ try {
     try { stat = fs.lstatSync(dir); }
     catch (error) {
       if (error.code !== "ENOENT") throw error;
-      if (!canCreate) { if (payload.op === "read") { process.stdout.write("MCP_ABSENT"); process.exit(0); } throw error; }
+      // A per-session Codex folder that vanished (the session ended or was cleaned up) between read and write: nothing to update.
+      if (!canCreate) { process.stdout.write(payload.op === "read" ? "MCP_ABSENT" : "MCP_GONE"); process.exit(0); }
       fs.mkdirSync(dir, { mode: 0o755 });
       stat = fs.lstatSync(dir);
     }
@@ -507,14 +508,15 @@ try {
 } catch (error) {
   if (tmp) try { fs.unlinkSync(tmp); } catch {}
   const message = error && error.message;
-  fail(message === "CHANGED" ? "MCP_CHANGED" : message === "TOO_LARGE" ? "MCP_TOO_LARGE" : message === "UNSAFE" ? "MCP_UNSAFE" : "MCP_FAILED");
+  fail(message === "CHANGED" ? "MCP_CHANGED" : message === "TOO_LARGE" ? "MCP_TOO_LARGE" : message === "UNSAFE" ? "MCP_UNSAFE" : "MCP_FAILED:" + String((error && error.code) || "unknown").replace(/[^A-Z0-9_]/gi, "").slice(0, 20));
 }
 `;
 
 export function mcpHelperError(output: string): HttpError {
   if (output.includes("MCP_UNSAFE")) return badRequest("The MCP config path contains an unsafe entry (a link or unexpected file type), so Floq did not touch it.", "mcp_config_unsafe");
   if (output.includes("MCP_TOO_LARGE")) return tooLarge();
-  return badRequest("Could not safely update the MCP config.", "mcp_write_failed");
+  const code = /MCP_FAILED:([A-Z0-9_]+)/i.exec(output)?.[1];
+  return badRequest(`Could not safely update the MCP config${code ? ` (${code})` : ""}.`, "mcp_write_failed");
 }
 
 /** Recognises the floq-vault wrapper this module writes. Returns the original command and secret names, or null. */
