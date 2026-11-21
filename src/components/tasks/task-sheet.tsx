@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Kbd } from "@/components/ui/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { ProjectMark } from "@/components/projects/project-identity";
@@ -18,7 +17,7 @@ import {
 } from "@/lib/project-tasks";
 import { cn } from "cn";
 import { projectAgents } from "./task-agents";
-import { StatusDot } from "./task-ui";
+import { Pick, StatusDot } from "./task-ui";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import type { ProjectTasksData } from "./use-project-tasks";
 
@@ -138,20 +137,17 @@ function Body({ task, onClose, data, projectLabel }: Omit<Props, "task"> & { tas
           {/* Metadata column */}
           <aside aria-label="Task properties" className="flex flex-col gap-4 md:col-start-2 md:row-span-3 md:row-start-1 md:border-l md:pl-6">
             <Meta label="Status" htmlFor="task-status">
-              <div className="relative">
-                <StatusDot status={status} className="pointer-events-none absolute top-1/2 left-2.5 z-10 -translate-y-1/2" />
-                <NativeSelect id="task-status" className="w-full [&_select]:pl-6" value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>{TASK_STATUSES.map((s) => <NativeSelectOption key={s} value={s}>{STATUS_LABEL[s]}</NativeSelectOption>)}</NativeSelect>
-              </div>
+              <Pick id="task-status" className="w-full" value={status} onChange={(v) => setStatus(v as TaskStatus)} options={TASK_STATUSES.map((s) => ({ value: s, label: <><StatusDot status={s} />{STATUS_LABEL[s]}</> }))} />
             </Meta>
             <Meta label="Priority" htmlFor="task-priority">
-              <NativeSelect id="task-priority" className="w-full" value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>{TASK_PRIORITIES.map((p) => <NativeSelectOption key={p} value={p}>{PRIORITY_LABEL[p]}</NativeSelectOption>)}</NativeSelect>
+              <Pick id="task-priority" className="w-full" value={priority} onChange={(v) => setPriority(v as TaskPriority)} options={TASK_PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))} />
             </Meta>
             <Meta label="Assigned agent" htmlFor="task-assignee">
-              <NativeSelect id="task-assignee" className="w-full" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
-                <NativeSelectOption value="">Project default</NativeSelectOption>
-                {agents.map((a) => <NativeSelectOption key={a.id} value={a.id}>{a.title}</NativeSelectOption>)}
-                {assignee && !agents.some((a) => a.id === assignee) && <NativeSelectOption value={assignee}>Agent removed</NativeSelectOption>}
-              </NativeSelect>
+              <Pick id="task-assignee" className="w-full" value={assignee} onChange={setAssignee} options={[
+                { value: "", label: "Project default" },
+                ...agents.map((a) => ({ value: a.id, label: a.title })),
+                ...(assignee && !agents.some((a) => a.id === assignee) ? [{ value: assignee, label: "Agent removed" }] : []),
+              ]} />
             </Meta>
             <Meta label="Due date" htmlFor="task-due">
               <div className="flex gap-1.5">

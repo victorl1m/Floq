@@ -4,10 +4,10 @@ import { toast } from "sonner";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Pick } from "./task-ui";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RuntimeError } from "@/lib/runtime/client";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
@@ -103,7 +103,7 @@ function Form({ automation, projectId, projects, onClose, onSaved }: Omit<Props,
         <section aria-labelledby="auto-what" className="space-y-3">
           <h3 id="auto-what" className="text-sm font-medium">What the agent does</h3>
           <div className="settings-group space-y-4 [&>div]:p-0!" style={{ padding: "16px 18px" }}>
-            {!automation && !projectId && <Field label="Project" id="auto-project"><NativeSelect id="auto-project" className="w-full" value={project} onChange={(e) => setProject(e.target.value)}>{projects.map((p) => <NativeSelectOption key={p.id} value={p.id}>{p.label}</NativeSelectOption>)}</NativeSelect></Field>}
+            {!automation && !projectId && <Field label="Project" id="auto-project"><Pick id="auto-project" className="w-full" value={project} onChange={setProject} options={projects.map((p) => ({ value: p.id, label: p.label }))} /></Field>}
             <Field label="Name" id="title" error={err("title")}><Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Monthly billing report" autoFocus={!automation} {...invalid("title")} /></Field>
             <Field label="Instructions" id="instructions" error={err("instructions")} hint="This becomes the task description. Markdown works.">
               <Textarea id="instructions" rows={4} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="What should the agent do each time, and what should it hand back?" className="min-h-24" {...invalid("instructions")} />
@@ -141,7 +141,7 @@ function Form({ automation, projectId, projects, onClose, onSaved }: Omit<Props,
                     <Label htmlFor="schedule.interval" className="sr-only">Interval</Label>
                     <Input id="schedule.interval" inputMode="numeric" className="w-16 text-center tabular-nums" value={form.interval} onChange={(e) => set({ interval: e.target.value })} {...invalid("schedule.interval")} />
                     <Label htmlFor="schedule.freq" className="sr-only">Unit</Label>
-                    <NativeSelect id="schedule.freq" value={form.freq} onChange={(e) => set({ freq: e.target.value as RecurringFreq })}>{(Object.keys(FREQ_UNIT) as RecurringFreq[]).map((f) => <NativeSelectOption key={f} value={f}>{unitLabel(f, form.interval)}</NativeSelectOption>)}</NativeSelect>
+                    <Pick id="schedule.freq" value={form.freq} onChange={(v) => set({ freq: v as RecurringFreq })} options={(Object.keys(FREQ_UNIT) as RecurringFreq[]).map((f) => ({ value: f, label: unitLabel(f, form.interval) }))} />
                     <span>at</span>
                     <Label htmlFor="schedule.time" className="sr-only">Time</Label>
                     <Input id="schedule.time" type="time" className="w-28" value={form.time} onChange={(e) => set({ time: e.target.value })} aria-invalid={!!err("schedule.time")} aria-describedby={err("schedule.time") ? "schedule.interval-err" : undefined} />
@@ -162,8 +162,8 @@ function Form({ automation, projectId, projects, onClose, onSaved }: Omit<Props,
                   <Field label="Starts" id="schedule.startDate" error={err("schedule.startDate")}><Input id="schedule.startDate" type="date" value={form.startDate} onChange={(e) => set({ startDate: e.target.value })} {...invalid("schedule.startDate")} /></Field>
                   <Field label="Time zone" id="schedule.timezone" error={err("schedule.timezone")}><Input id="schedule.timezone" value={form.timezone} onChange={(e) => set({ timezone: e.target.value })} list="tz-suggestions" {...invalid("schedule.timezone")} />
                     <datalist id="tz-suggestions"><option value={browserTimezone()} /><option value="UTC" /></datalist></Field>
-                  <Field label="Ends" id="end-mode"><NativeSelect id="end-mode" className="w-full" value={form.endMode} onChange={(e) => set({ endMode: e.target.value as ScheduleForm["endMode"] })}>
-                    <NativeSelectOption value="never">Never</NativeSelectOption><NativeSelectOption value="date">On a date</NativeSelectOption><NativeSelectOption value="count">After a number of runs</NativeSelectOption></NativeSelect></Field>
+                  <Field label="Ends" id="end-mode"><Pick id="end-mode" className="w-full" value={form.endMode} onChange={(v) => set({ endMode: v as ScheduleForm["endMode"] })}
+                    options={[{ value: "never", label: "Never" }, { value: "date", label: "On a date" }, { value: "count", label: "After a number of runs" }]} /></Field>
                   {form.endMode === "date" && <Field label="End date" id="schedule.endDate" error={err("schedule.endDate")}><Input id="schedule.endDate" type="date" value={form.endDate} onChange={(e) => set({ endDate: e.target.value })} {...invalid("schedule.endDate")} /></Field>}
                   {form.endMode === "count" && <Field label="Number of runs" id="schedule.count" error={err("schedule.count")}><Input id="schedule.count" inputMode="numeric" value={form.count} onChange={(e) => set({ count: e.target.value })} {...invalid("schedule.count")} /></Field>}
                 </div>

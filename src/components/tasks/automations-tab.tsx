@@ -46,7 +46,7 @@ export default function AutomationsTab({ data, projectId, projectLabel }: Props)
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 pb-4 sm:px-8">
         <p className="max-w-prose text-sm text-muted-foreground">Each run adds a task to the project. Schedule it once, or every few days, weeks, months or years.</p>
         <Button size="sm" shimmer onClick={() => setEditing("new")} disabled={!canCreate} className="h-8" title="New automation (N)">
-          <IconPlus />New automation<Kbd className="ml-1 hidden bg-primary-foreground/15 text-primary-foreground sm:inline-flex">N</Kbd>
+          <IconPlus />New automation<Kbd className="ml-1 hidden sm:inline-flex">N</Kbd>
         </Button>
       </div>
       {data.error && <div className="px-4 pb-3 sm:px-8"><ErrorBanner>{data.error}<Button className="ml-3 h-7" size="sm" variant="outline" onClick={() => void data.reload()}>Retry</Button></ErrorBanner></div>}

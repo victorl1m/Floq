@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Kbd } from "@/components/ui/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ErrorBanner } from "@/components/ui/app-dialog";
@@ -17,7 +16,7 @@ import {
 } from "@/lib/project-tasks";
 import { cn } from "cn";
 import TaskSheet from "./task-sheet";
-import { DateChips, PriorityMark, StatusDot, typingTarget } from "./task-ui";
+import { DateChips, Pick, PriorityMark, StatusDot, typingTarget } from "./task-ui";
 import type { ProjectTasksData } from "./use-project-tasks";
 
 const VIEW_KEY = "floq.tasks.view.v1";
@@ -187,11 +186,9 @@ export default function TasksTab({ data, projectId, projectLabel, autoOn, target
               onChange={(e) => { setTitle(e.target.value); setTitleError(null); }}
               onKeyDown={(e) => { if (e.key === "Escape") { setTitle(""); setTitleError(null); e.currentTarget.blur(); } }}
               placeholder="Add a task" aria-invalid={!!titleError} aria-describedby={titleError ? "task-title-error" : "task-quick-hint"}
-              className="h-full min-w-0 flex-1 px-1.5 text-sm placeholder:text-muted-foreground/80" />
+              className="h-full min-w-0 flex-1 border-0 bg-transparent px-1.5 text-sm shadow-none outline-none ring-0 placeholder:text-muted-foreground/80 focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:shadow-none!" />
             {!projectId && projects.length > 1 && (
-              <NativeSelect aria-label="Project for the new task" value={effectiveProject} onChange={(e) => setQuickProject(e.target.value)} size="sm" className="w-auto max-w-40 [&_select]:border-transparent [&_select]:bg-transparent dark:[&_select]:bg-transparent">
-                {projects.map((p) => <NativeSelectOption key={p.id} value={p.id}>{projectLabel(p.id)}</NativeSelectOption>)}
-              </NativeSelect>
+              <Pick label="Project for the new task" value={effectiveProject} onChange={setQuickProject} size="sm" className="max-w-44 border-transparent bg-transparent shadow-none dark:bg-transparent" options={projects.map((p) => ({ value: p.id, label: projectLabel(p.id) }))} />
             )}
             {title.trim()
               ? <Button type="submit" size="sm" disabled={!effectiveProject || adding} className="shrink-0"><IconCornerDownLeft />{adding ? "Adding…" : "Add"}</Button>

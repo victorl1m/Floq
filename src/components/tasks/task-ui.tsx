@@ -1,5 +1,7 @@
 import { IconAlarm, IconCalendarEvent, IconChevronDown, IconChevronUp, IconChevronsUp } from "@tabler/icons-react";
+import type { ReactNode } from "react";
 import { cn } from "cn";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PRIORITY_LABEL, STATUS_LABEL, formatDay, formatWhen, isOverdue, type ProjectTask, type TaskPriority, type TaskStatus } from "@/lib/project-tasks";
 
 /** Status colour: one dot per status, the same on the board, the list and the sheet. */
@@ -64,4 +66,21 @@ export function typingTarget(e: KeyboardEvent): boolean {
   if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return true;
   if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return true;
   return !!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
+}
+
+const EMPTY_VALUE = "__floq_empty__";
+/** shadcn Select with a flat option list. Radix forbids "" as an item value, so "" is mapped to a sentinel and back. */
+export function Pick({ id, value, onChange, options, className, size, label }: {
+  id?: string; value: string; onChange: (value: string) => void; options: { value: string; label: ReactNode }[];
+  className?: string; size?: "sm" | "default"; label?: string;
+}) {
+  const wrap = (v: string) => (v === "" ? EMPTY_VALUE : v);
+  return (
+    <Select value={wrap(value)} onValueChange={(v) => onChange(v === EMPTY_VALUE ? "" : v)}>
+      <SelectTrigger id={id} size={size} aria-label={label} className={className}><SelectValue /></SelectTrigger>
+      <SelectContent position="popper" className="max-h-72">
+        {options.map((o) => <SelectItem key={o.value} value={wrap(o.value)}>{o.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
 }
