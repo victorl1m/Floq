@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconChevronDown, IconDownload } from "@tabler/icons-react";
+import { IconChevronDown, IconDownload, IconRefresh } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
-import type { PluginInfo, PluginSecretMigration, PluginSettingValues, PluginStatus } from "@/lib/runtime/types";
+import type { PluginInfo, PluginSecretMigration, PluginSettingValues, PluginStatus, PluginUpdateNotice } from "@/lib/runtime/types";
 import { PluginBoundary, usePlugins } from "@/plugins/host";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { PluginSettingsForm } from "@/plugins/kit/plugin-settings-form";
@@ -54,9 +55,11 @@ function PluginConfig({ plugin, isAdmin }: { plugin: PluginInfo; isAdmin: boolea
     );
 }
 
-export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser }: {
+export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser, update, updating = false, onUpdate }: {
     plugin: PluginInfo; isAdmin: boolean; busy: boolean;
     onToggleInstall: (on: boolean) => void; onToggleUser: (on: boolean) => void;
+    /** A newer version of this plugin exists (admins only); the row then offers a one-click update. */
+    update?: PluginUpdateNotice; updating?: boolean; onUpdate?: () => void;
 }) {
     const [open, setOpen] = useState(false);
     const Icon = resolvePluginIcon(plugin.icon);
@@ -72,6 +75,7 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
                         <div className="flex flex-wrap items-center gap-2">
                             <span className="min-w-0 truncate text-sm font-medium">{plugin.name}</span>
                             {plugin.version && <Badge variant="outline" className="font-mono">v{plugin.version}</Badge>}
+                            {isAdmin && update && <Badge variant="default" data-slot="plugin-update-badge">Update available</Badge>}
                             <Badge variant={status.variant}>{status.label}</Badge>
                             {plugin.scope === "install" && <Badge variant="outline">Whole runtime</Badge>}
                             {plugin.source === "installed" && <Badge variant="outline">Installed</Badge>}
@@ -82,6 +86,16 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
                     </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-4 sm:justify-end">
+                    {isAdmin && update && onUpdate && (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button variant="outline" size="icon-sm" loading={updating} disabled={updating || busy} aria-label={`Update to ${update.availableVersion}`} data-slot="plugin-update" onClick={onUpdate}>
+                                    {!updating && <IconRefresh aria-hidden />}
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>{`Update to ${update.availableVersion}`}</TooltipContent>
+                        </Tooltip>
+                    )}
                     {isAdmin && !invalid && (
                         <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground sm:min-w-[7.5rem]">
                             {plugin.scope === "install" ? "Enabled" : "Available"}
@@ -114,6 +128,35 @@ export default function PluginsSection() {
     const [busyId, setBusyId] = useState<string | null>(null);
     const [browsing, setBrowsing] = useState(false);
     const [migrations, setMigrations] = useState<PluginSecretMigration[]>([]);
+    const [updates, setUpdates] = useState<Record<string, PluginUpdateNotice>>({});
+    const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+    // A failed check (offline source, older runtime) just shows no update icons.
+    const loadUpdates = useCallback(async () => {
+        if (!client || !isAdmin) { setUpdates({}); return; }
+        try { setUpdates(Object.fromEntries((await client.pluginUpdates()).map((u) => [u.id, u]))); } catch { setUpdates({}); }
+    }, [client, isAdmin]);
+    useEffect(() => { void loadUpdates(); }, [loadUpdates]);
+
+    /** Updates in place. A repository install is inspected first (the admin already trusts that repository) and its sha256 passed on. */
+    async function applyUpdate(plugin: PluginInfo, notice: PluginUpdateNotice) {
+        if (!client) return;
+        setUpdatingId(plugin.id);
+        try {
+            let version = notice.availableVersion;
+            if (notice.repo) {
+                const preview = await client.inspectPluginRepo(`https://github.com/${notice.repo}`);
+                version = preview.version;
+                await client.updatePlugin(plugin.id, preview.sha256);
+            } else await client.updatePlugin(plugin.id);
+            toast.success(`${plugin.name} updated to v${version}`);
+            await Promise.all([refresh(), loadUpdates()]);
+        } catch (e) {
+            toast.error(`Could not update ${plugin.name}`, { description: errorMessage(e) });
+        } finally {
+            setUpdatingId(null);
+        }
+    }
 
     useEffect(() => { void refresh(); }, [refresh]);
     useEffect(() => {
@@ -164,6 +207,7 @@ export default function PluginsSection() {
                         key={plugin.id} plugin={plugin} isAdmin={isAdmin} busy={busyId === plugin.id}
                         onToggleInstall={(on) => void toggle(plugin, on, "install")}
                         onToggleUser={(on) => void toggle(plugin, on, "user")}
+                        update={updates[plugin.id]} updating={updatingId === plugin.id} onUpdate={() => void applyUpdate(plugin, updates[plugin.id])}
                     />
                 ))}
             </SettingsGroup>

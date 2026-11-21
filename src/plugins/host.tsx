@@ -35,6 +35,8 @@ export function PluginsProvider({ children, loaders = UI_PLUGINS }: { children: 
   const [loaded, setLoaded] = useState<Record<string, UiPluginDefinition | undefined>>({});
   const [loading, setLoading] = useState(false);
   const attempted = useRef(new Set<string>());
+  /** Remote UI bundle sha256 loaded or loading per plugin id: a new sha256 after an update reloads the bundle. */
+  const remoteSha = useRef(new Map<string, string>());
   const signedIn = Boolean(client && user);
 
   // `ctx.toast` from any plugin shows on every screen.
@@ -62,7 +64,7 @@ export function PluginsProvider({ children, loaders = UI_PLUGINS }: { children: 
     try { setAll(await client.listPlugins()); } catch { setAll([]); } finally { setLoading(false); }
   }, [client]);
 
-  useEffect(() => { attempted.current.clear(); setLoaded({}); if (signedIn) void refresh(); else setAll([]); }, [signedIn, refresh]);
+  useEffect(() => { attempted.current.clear(); remoteSha.current.clear(); setLoaded({}); if (signedIn) void refresh(); else setAll([]); }, [signedIn, refresh]);
 
   useEffect(() => {
     const ids = idsToLoad(all, Object.fromEntries([...attempted.current].map((id) => [id, true])), loaders);
@@ -73,13 +75,14 @@ export function PluginsProvider({ children, loaders = UI_PLUGINS }: { children: 
     // Installed plugins ship their UI as a bundle served by the runtime: verified against the listed sha256, then imported from a Blob.
     if (!client) return;
     for (const p of all) {
-      if (!p.ui || !isActive(p) || loaders[p.id] || attempted.current.has(p.id)) continue;
-      attempted.current.add(p.id);
+      if (!p.ui || !isActive(p) || loaders[p.id] || remoteSha.current.get(p.id) === p.ui.sha256) continue;
+      const sha = p.ui.sha256;
+      remoteSha.current.set(p.id, sha);
       void (async () => {
         await import("./shared-runtime");
         const script = await client.pluginUiScript(p.id);
-        const def = await loadRemoteUi(script.text, p.ui!.sha256, script.sha256);
-        setLoaded((prev) => ({ ...prev, [p.id]: def }));
+        const def = await loadRemoteUi(script.text, sha, script.sha256);
+        if (remoteSha.current.get(p.id) === sha) setLoaded((prev) => ({ ...prev, [p.id]: def }));
       })().catch((error) => console.warn("Plugin UI failed to load", p.id, error instanceof Error ? error.message : error));
     }
   }, [all, loaders, client]);
@@ -119,7 +122,7 @@ export function PluginViewHost({ viewId }: { viewId: string | null }) {
   useEffect(() => { if (!active && known && !loading) navigate("home"); }, [active, known, loading, navigate]);
   if (!active) return <div className="absolute inset-0 flex p-6"><PluginBoundaryEmpty onOpenSettings={openSettings} loading={loading} /></div>;
   const { Component } = active;
-  return <div className="absolute inset-0" data-plugin-view={viewId ?? undefined}><PluginBoundary pluginId={active.pluginId}><Component plugin={active.plugin} view={active.decl} /></PluginBoundary></div>;
+  return <div className="absolute inset-0" data-plugin-view={viewId ?? undefined}><PluginBoundary key={active.plugin.ui?.sha256 ?? "builtin"} pluginId={active.pluginId}><Component plugin={active.plugin} view={active.decl} /></PluginBoundary></div>;
 }
 
 function PluginBoundaryEmpty({ onOpenSettings, loading }: { onOpenSettings: () => void; loading: boolean }) {
