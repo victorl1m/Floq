@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  defaultScheduleForm, describeSchedule, dropPosition, formToSchedule, fromLocalInput, groupByStatus, scheduleToForm, taskOrigin,
+  defaultScheduleForm, describeSchedule, dropPosition, formToSchedule, fromLocalInput, groupByStatus, relativeWhen, scheduleToForm, taskOrigin,
   toLocalInput, validateAutomationForm, validateScheduleForm, validateTaskTitle, type ProjectTask, type RecurringSchedule,
 } from "../src/lib/project-tasks.ts";
 
@@ -78,4 +78,14 @@ test("grouping, drop position, origin", () => {
   assert.equal(dropPosition([{ position: 1 }], 0), 0);
   assert.deepEqual(taskOrigin("agent:x"), { kind: "agent", sessionId: "x" });
   assert.deepEqual(taskOrigin("automation:y"), { kind: "automation", automationId: "y" });
+});
+
+test("relative time for list rows", () => {
+  const now = NOW.getTime();
+  assert.equal(relativeWhen(new Date(now + 30_000).toISOString(), now), "in under a minute");
+  assert.equal(relativeWhen(new Date(now + 5 * 60_000).toISOString(), now), "in 5 min");
+  assert.equal(relativeWhen(new Date(now + 3 * 3_600_000).toISOString(), now), "in 3 hours");
+  assert.equal(relativeWhen(new Date(now + 86_400_000).toISOString(), now), "tomorrow");
+  assert.equal(relativeWhen(new Date(now - 2 * 86_400_000).toISOString(), now), "2 days ago");
+  assert.equal(relativeWhen("nope", now), "");
 });

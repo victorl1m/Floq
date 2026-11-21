@@ -95,6 +95,20 @@ export function runOnCopy(runAt: string | null, now = Date.now(), timeZone?: str
 }
 
 export function ordinalDay(day: number): string { return String(day); }
+
+/** Short relative time for list rows: "in 5 min", "in 3 hours", "tomorrow", "in 4 days", "2 days ago". */
+export function relativeWhen(iso: string, now = Date.now()): string {
+  const diff = Date.parse(iso) - now;
+  if (!Number.isFinite(diff)) return "";
+  const abs = Math.abs(diff);
+  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  if (abs < 60_000) return diff >= 0 ? "in under a minute" : "just now";
+  if (abs < 3_600_000) return rtf.format(Math.round(diff / 60_000), "minute").replace("minutes", "min").replace("minute", "min");
+  if (abs < 86_400_000) return rtf.format(Math.round(diff / 3_600_000), "hour");
+  if (abs < 30 * 86_400_000) return rtf.format(Math.round(diff / 86_400_000), "day");
+  if (abs < 365 * 86_400_000) return rtf.format(Math.round(diff / (30 * 86_400_000)), "month");
+  return rtf.format(Math.round(diff / (365 * 86_400_000)), "year");
+}
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const WEEKDAY_NAMES = WEEKDAYS;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
