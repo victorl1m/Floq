@@ -168,6 +168,23 @@ test("update: only to a newer version, with rollback when the new version cannot
   assert.ok(existsSync(join(packageDir(t.pluginDir, "echo2", good.sha256), "runtime.mjs")));
 });
 
+test("update keeps data, settings and the webhook token, and runs migrations added by the new version", async () => {
+  const t = await setup();
+  await t.install(); await t.call("admin", "POST", "/v1/plugins/echo2/enable"); await t.call("member", "PUT", "/v1/plugins/echo2/user", { enabled: true });
+  await t.host.handle({ userId: "member", method: "PUT", pathname: "/v1/plugins/echo2/settings", query: new URLSearchParams(), readBody: async () => ({ settings: {} }), requireAdmin: async () => undefined });
+  await t.db.query("INSERT INTO plugin_echo2.things (user_id, label) VALUES ('member', 'kept')");
+  await t.db.query("UPDATE floq_plugins SET webhook_token_hash = $1 WHERE id = 'echo2'", ["a".repeat(64)]);
+  const next = build({ version: "1.3.0", runtime: RUNTIME("1.3.0").replace("migrations: [", 'migrations: [{ id: "002_more", sql: "CREATE TABLE {{p}}extras (user_id TEXT NOT NULL, note TEXT NOT NULL)" }, ') });
+  t.publish(next);
+  await t.call("admin", "POST", "/v1/plugins/echo2/update");
+  assert.deepEqual((await t.db.query("SELECT migration_id FROM floq_plugin_migrations WHERE plugin_id='echo2' ORDER BY migration_id")).rows.map((r: any) => r.migration_id).sort(), ["001_t", "002_more"]);
+  await t.db.query("INSERT INTO plugin_echo2.extras (user_id, note) VALUES ('member', 'new table works')");
+  assert.deepEqual((await t.db.query("SELECT label FROM plugin_echo2.things")).rows, [{ label: "kept" }]);
+  assert.equal((await t.db.query("SELECT 1 FROM floq_plugin_user_settings WHERE plugin_id='echo2'")).rows.length, 1);
+  assert.deepEqual((await t.db.query("SELECT version, webhook_token_hash FROM floq_plugins WHERE id='echo2'")).rows[0], { version: "1.3.0", webhook_token_hash: "a".repeat(64) });
+  assert.equal(t.host.statusOf("echo2"), "enabled");
+});
+
 test("uninstall: built-ins cannot be uninstalled; the package, cache and registry entry go, the data stays until 'delete data'", async () => {
   const t = await setup();
   await assert.rejects(t.call("admin", "DELETE", "/v1/plugins/builtin-one?confirm=builtin-one"), (e: any) => e.status === 409 && e.code === "builtin");
