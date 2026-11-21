@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { Switch } from '@/components/ui/switch';
+import { SettingRow, SettingsGroup } from './ui';
 
 interface DesktopPreferences { keepRunningInBackground: boolean; islandEnabled: boolean; launchAtLogin: boolean }
 export default function DesktopSection() {
@@ -11,5 +13,5 @@ export default function DesktopSection() {
     if (!prefs || busy) return; setBusy(true); setError(undefined);
     try { const next = await invoke<DesktopPreferences>('set_desktop_preference', { preference: key, enabled: checked }); setPrefs(next); window.dispatchEvent(new CustomEvent('floq:desktop-preferences', { detail: next })); } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
-  return <section className="space-y-5"><h2 className="text-lg font-semibold">Desktop</h2>{error && <p role="alert">{error}</p>}{!prefs && !error && <p>Loading desktop preferences…</p>}{prefs && ([['keepRunningInBackground','Keep Floq running when closed'],['launchAtLogin','Start with Windows']] as const).map(([key,label]) => <label key={key} className="flex items-center justify-between gap-4 rounded-xl border p-4"><span>{label}</span><input type="checkbox" checked={prefs[key]} disabled={busy} onChange={e => void change(key,e.target.checked)} /></label>)}</section>;
+  return <section className="space-y-5"><h2 className="text-lg font-semibold">Desktop</h2>{error && <p role="alert">{error}</p>}{!prefs && !error && <p>Loading desktop preferences…</p>}{prefs && <SettingsGroup>{([['keepRunningInBackground','Keep Floq running when closed'],['launchAtLogin','Start with Windows']] as const).map(([key,label]) => <SettingRow key={key} label={label} htmlFor={`desktop-${key}`}><Switch id={`desktop-${key}`} checked={prefs[key]} disabled={busy} onCheckedChange={v => void change(key,v)} /></SettingRow>)}</SettingsGroup>}</section>;
 }
