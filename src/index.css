@@ -1247,7 +1247,7 @@
 }
 .page-heading { font-size: clamp(1.75rem, 2.5vw, 2rem); letter-spacing: -0.045em; line-height: 1.1; }
 .workspace-frame table { border-collapse: separate; border-spacing: 0; }
-.workspace-frame thead { background: color-mix(in oklab, var(--muted) 62%, transparent); }
+.workspace-frame thead { background: transparent; } /* headers sit on the card material; the row border separates them */
 .workspace-frame thead th { color: var(--muted-foreground); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.025em; }
 .workspace-frame tbody tr { transition: background-color 120ms ease; }
 .workspace-frame tbody tr:hover { background: color-mix(in oklab, var(--accent) 48%, transparent); }
