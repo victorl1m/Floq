@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
-import { agentToken, FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
+import { agentToken, FrameDecoder, encodeFrame, isChallengeUrl, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
 import { chromiumArgs, clientEnvFlags, findXvfb, readClientEnv, sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
@@ -982,4 +982,9 @@ test("client env: sanitized, turned into the measured flags, TZ passed to Chromi
   assert.match(d.chromiumLog(), /--accept-lang=pt-BR,pt,en-US/);
   assert.match(d.chromiumLog(), /--screen-info=\{2560x1440\}/);
   await d.stop();
+});
+
+test("isChallengeUrl: only the public CAPTCHA hosts, https only", () => {
+  for (const u of ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/x/0xAAA/light/fbE/new/normal/auto/", "https://www.google.com/recaptcha/api2/anchor?k=1", "https://www.recaptcha.net/recaptcha/enterprise/anchor", "https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html", "https://hcaptcha.com/x"]) assert.equal(isChallengeUrl(u), true, u);
+  for (const u of ["https://www.google.com/search?q=recaptcha", "https://evilhcaptcha.com/", "https://hcaptcha.com.evil.test/", "http://challenges.cloudflare.com/", "https://cloudflare.com/", "about:blank", "", "not a url", "https://www.google.com/recaptchafake"]) assert.equal(isChallengeUrl(u), false, u);
 });

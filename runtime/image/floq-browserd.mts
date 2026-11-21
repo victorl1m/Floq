@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  AGENT_ID, CdpMux, sanitizeClientEnv, type ClientEnv, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
+  AGENT_ID, CdpMux, isChallengeUrl, sanitizeClientEnv, type ClientEnv, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
 import { EgressMux, PeerChecker, attachMuxToStream, socketSink, startSocksListener } from "./floq-egress.mjs";
@@ -111,9 +111,17 @@ export function clientEnvFlags(ce: ClientEnv | null, headful: boolean): string[]
   return f;
 }
 
+/**
+ * ====== navigator.webdriver: DECISION PENDING (do not fill in without the product decision) ======
+ * Today `navigator.webdriver` is true (Blink's AutomationControlled feature, on with CDP pipe automation). Making it false would be
+ * `--disable-blink-features=AutomationControlled` (measured to work, docs: browser-captcha-research.md §2.2 / §4 item 4) and reverses the
+ * "no stealth" stance of docs/design/agent-browser.md / browser-user-egress.md §6. This is the ONE place that flag would go.
+ */
+export const WEBDRIVER_DECISION_FLAGS: readonly string[] = [];
+
 export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number; /** default true: headful needs an X display (DISPLAY in the env) */ headful?: boolean; clientEnv?: ClientEnv | null }): string[] {
   return [
-    ...(opts.headful === false ? ["--headless=new"] : headfulFlags()), ...clientEnvFlags(opts.clientEnv ?? null, opts.headful !== false), "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+    ...(opts.headful === false ? ["--headless=new"] : headfulFlags()), ...clientEnvFlags(opts.clientEnv ?? null, opts.headful !== false), ...WEBDRIVER_DECISION_FLAGS, "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
     "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.egressPort ? egressFlags(opts.egressPort) : []), ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];
@@ -339,7 +347,7 @@ async function main() {
     const cookies = saved.cookies.map((c) => { const { size, ...rest } = c as Record<string, unknown>; void size; return rest; });
     try { await mux.command("Storage.setCookies", { cookies }, undefined, 5000); log("browser.cookies_restored", { count: cookies.length }); } catch (e) { log("browser.cookies_restore_failed", { message: (e as Error).message }); }
   }
-  const saveTimer = setInterval(() => { void saveState().catch(() => {}); }, 15000); saveTimer.unref();
+  const saveTimer = setInterval(() => { void saveState().catch(() => {}); }, 5000); // a Chromium crash loses at most this much of the session saveTimer.unref();
   const pages = () => [...mux.targets.values()].filter((t) => t.type === "page");
   let lastTabs = "";
   const emitTabs = () => {
@@ -439,7 +447,10 @@ async function main() {
         void mux.command("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {}).then(() => { resumedPages.add(info.targetId); if (popup) setTimeout(adoptPopups, 150).unref(); });
       };
       try {
-        const intercepted = info.type === "page" || info.type === "iframe" || info.type === "worker" || info.type === "service_worker" || info.type === "shared_worker";
+        // A known challenge frame is only resumed: no Page.enable, no Fetch.enable, no auto-attach hook (see isChallengeUrl).
+        const challenge = info.type !== "page" && isChallengeUrl(info.url);
+        if (challenge) log("browser.challenge_frame_untouched", { type: info.type, host: requestHost(info.url) });
+        const intercepted = !challenge && (info.type === "page" || info.type === "iframe" || info.type === "worker" || info.type === "service_worker" || info.type === "shared_worker");
         if (intercepted) {
           if (info.type !== "service_worker" && info.type !== "shared_worker") await mux.command("Page.enable", {}, sessionId, 5000).catch(() => {});
           if (blockPrivate) {
@@ -584,6 +595,10 @@ async function main() {
     cursorProbe.set(targetId, st);
     const now = Date.now();
     if (st.busy || now - st.at < 80) return;
+    // A challenge frame is up (Turnstile / reCAPTCHA / hCaptcha): no script runs in the page while the user moves toward it. The cursor stays as it was.
+    if ([...mux.targets.values()].some((t) => t.type !== "page" && isChallengeUrl(t.url))) return;
+    const cur = mux.targets.get(targetId)?.url;
+    if (cur && isChallengeUrl(cur)) return;
     st.at = now; st.busy = true;
     const expr = `(()=>{const e=document.elementFromPoint(${Math.round(x)},${Math.round(y)});if(!e)return "default";let c=getComputedStyle(e).cursor;if(c==="auto"){const t=e.tagName;c=(t==="TEXTAREA"||(t==="INPUT"&&!/^(button|submit|checkbox|radio|reset|file|image|range|color)$/.test(e.type))||e.isContentEditable)?"text":"default"}return c.split(",").pop().trim()})()`;
     void mux.command("Runtime.evaluate", { expression: expr, returnByValue: true }, sid, 2000).then((r) => {

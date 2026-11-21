@@ -355,6 +355,23 @@ type Pending =
   | { kind: "client"; client: MuxClient; id: number; method: string; sessionId?: string; params: Record<string, unknown> }
   | { kind: "daemon"; method: string; params: Record<string, unknown>; resolve: (r: CdpMsg) => void };
 
+/**
+ * Public CAPTCHA / bot-check frames. The daemon does not pause, intercept or probe them: a person solves these, and CDP side effects on the
+ * challenge frame (a frame held at start, Fetch interception, script evaluated in the page while the pointer moves) are signals the check can see.
+ * They are public hosts, so the private-network guard (T6) loses nothing; with egress on the desktop guard is the real boundary.
+ */
+export function isChallengeUrl(raw: string): boolean {
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "https:") return false;
+  const h = u.hostname.toLowerCase();
+  if (h === "challenges.cloudflare.com") return true;
+  if (h === "hcaptcha.com" || h.endsWith(".hcaptcha.com")) return true;
+  if (h === "recaptcha.net" || h === "www.recaptcha.net") return true;
+  if (h === "www.google.com" || h === "google.com") return u.pathname === "/recaptcha" || u.pathname.startsWith("/recaptcha/");
+  return false;
+}
+
 export type TargetInfo = { targetId: string; type: string; title: string; url: string; attached?: boolean; openerId?: string; browserContextId?: string };
 
 const BLOCKED_METHODS = new Set(["Browser.close", "Browser.crash", "Browser.crashGpuProcess", "Browser.setPermission"]);
