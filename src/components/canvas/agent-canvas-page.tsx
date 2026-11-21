@@ -1088,9 +1088,10 @@ function AgentCanvas() {
     if (target.closest("input, textarea, select, [contenteditable=true], .xterm, [role=dialog], [data-radix-popper-content-wrapper]")) return;
     if (event.key === "Escape") { setLinkMode(null); setSelectedEdgeId(null); selectNodes(new Set()); return; }
     if (event.key === "Delete" || event.key === "Backspace") {
-      const agentIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
+      const agentIds = nodesRef.current.filter((node) => node.selected && !isBrowserId(node.id)).map((node) => node.id);
       const noteIds = notes.nodes.filter((node) => node.selected).map((node) => node.data.note.id);
-      const anyNodeSelected = agentIds.length > 0 || noteIds.length > 0;
+      const browserIds = browser.nodes.filter((node) => node.selected).map((node) => node.id);
+      const anyNodeSelected = agentIds.length > 0 || noteIds.length > 0 || browserIds.length > 0;
       // A selected node (e.g. box-selected after clicking a wire) wins over a stale edge selection.
       if (selectedEdgeId && !anyNodeSelected) {
         event.preventDefault();
@@ -1108,7 +1109,8 @@ function AgentCanvas() {
       if (anyNodeSelected) {
         event.preventDefault();
         for (const id of noteIds) notes.remove(id);
-        void deleteAgents(agentIds);
+        for (const id of browserIds) closeBrowser(id);
+        if (agentIds.length) void deleteAgents(agentIds);
       }
       return;
     }
