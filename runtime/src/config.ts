@@ -1,6 +1,18 @@
 import { parseEmbeddingsMode } from "./embeddings.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+/**
+ * The runtime's release version: runtime/package.json, kept equal to the app version on every release (a test enforces it).
+ * Read from the file next to src/ and dist/, so it is right in Docker (only runtime/ is in the build context) and from a checkout.
+ */
+export function packageVersion(): string {
+  try {
+    const v = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown }).version;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch { /* fall through */ }
+  return "0.0.0";
+}
 
 const DEFAULTS = {
   host: "0.0.0.0",
@@ -228,7 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const adminEmail = env.FLOQ_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
 
   return {
-    version: env.FLOQ_RUNTIME_VERSION?.trim() || "0.2.0",
+    version: env.FLOQ_RUNTIME_VERSION?.trim() || packageVersion(),
     host: env.FLOQ_HOST?.trim() || DEFAULTS.host,
     port: readInt(env.FLOQ_PORT, DEFAULTS.port, 1, 65535),
     databaseUrl: required(env, "DATABASE_URL"),
