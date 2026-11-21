@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// floq-browserd: one headless Chromium per user, INSIDE that user's sandbox (docs/design/agent-browser.md §A.2).
-//   runtime <-- stdin/stdout JSON lines --> floq-browserd --CDP over fds 3/4--> chrome --headless=new
+// floq-browserd: one Chromium per user, INSIDE that user's sandbox (docs/design/agent-browser.md §A.2). Headful on a per-user Xvfb display
+// (no HeadlessChrome in the UA / client hints, a real screen and pointer); plain --headless=new only when Xvfb is missing or cannot start.
+//   runtime <-- stdin/stdout JSON lines --> floq-browserd --CDP over fds 3/4--> chrome (Xvfb :N, or --headless=new)
 //                                           floq-browserd --ws://127.0.0.1:<ephemeral>/devtools/browser (bearer token)--> agents' @playwright/mcp
 // Chromium itself opens no TCP port. Logs are JSON lines on stderr; stdout carries only protocol messages.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -89,12 +90,48 @@ export function egressFlags(port: number): string[] {
 /** Egress state shared by the launch code: the listener port (when egress is on) and the current Chromium root pid for the peer check. */
 const egressRuntime: { port: number | null; rootPid?: number } = { port: null };
 
-export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number }): string[] {
+/** Display of the current run: the Xvfb server number's DISPLAY value, or null = headless fallback. */
+const displayRuntime: { display: string | null; stop?: () => void } = { display: null };
+
+export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number; /** default true: headful needs an X display (DISPLAY in the env) */ headful?: boolean }): string[] {
   return [
-    "--headless=new", "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+    ...(opts.headful === false ? ["--headless=new"] : headfulFlags()), "--remote-debugging-pipe", "--user-data-dir=" + opts.profile, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--password-store=basic", "--use-mock-keychain", "--disable-dev-shm-usage", "--window-size=1280,800",
     "--js-flags=--max-old-space-size=1024", "--mute-audio", ...(opts.egressPort ? egressFlags(opts.egressPort) : []), ...(opts.sandbox ? [] : ["--no-sandbox"]), "about:blank",
   ];
+}
+
+/** Flags that only make sense with a real (virtual) display. */
+export function headfulFlags(): string[] {
+  return ["--ozone-platform=x11", "--window-position=0,0", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-infobars"];
+}
+
+/** Path of an Xvfb binary on PATH (or FLOQ_BROWSER_XVFB), else null. FLOQ_BROWSER_HEADLESS=1 forces the headless fallback. */
+export function findXvfb(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
+  if (env.FLOQ_BROWSER_HEADLESS === "1") return null;
+  if (env.FLOQ_BROWSER_XVFB) return exists(env.FLOQ_BROWSER_XVFB) ? env.FLOQ_BROWSER_XVFB : null;
+  for (const dir of (env.PATH ?? "/usr/local/bin:/usr/bin:/bin").split(":")) if (dir && exists(join(dir, "Xvfb"))) return join(dir, "Xvfb");
+  return null;
+}
+
+type Display = { display: string; stop: () => void; child: ChildProcess };
+/** Start Xvfb on a free display number (-displayfd), TCP off. Resolves null when it does not come up within 8 s: the caller falls back to headless. */
+function startXvfb(bin: string, width: number, height: number): Promise<Display | null> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try { child = spawn(bin, ["-displayfd", "3", "-screen", "0", width + "x" + height + "x24", "-nolisten", "tcp", "-noreset"], { stdio: ["ignore", "ignore", "pipe", "pipe"] }); }
+    catch (e) { log("browser.xvfb_spawn_failed", { message: (e as Error).message }); return resolve(null); }
+    let done = false, err = "";
+    const finish = (d: Display | null) => { if (done) return; done = true; clearTimeout(timer); if (!d) { try { child.kill("SIGKILL"); } catch { /* gone */ } } resolve(d); };
+    const timer = setTimeout(() => { log("browser.xvfb_timeout", { stderr: err.slice(-300) }); finish(null); }, 8000);
+    child.on("error", (e) => { log("browser.xvfb_spawn_failed", { message: e.message }); finish(null); });
+    child.on("exit", (code) => { if (!done) log("browser.xvfb_exit", { code, stderr: err.slice(-300) }); finish(null); });
+    child.stderr?.on("data", (c: Buffer) => { err = (err + c.toString("utf8")).slice(-1024); });
+    (child.stdio[3] as NodeJS.ReadableStream | null)?.on("data", (c: Buffer) => {
+      const n = /^(\d+)/.exec(c.toString("utf8"));
+      if (n) finish({ display: ":" + n[1], child, stop: () => { try { child.kill("SIGTERM"); } catch { /* gone */ } } });
+    });
+  });
 }
 
 /** Why a user namespace has no capabilities here: the host AppArmor restricts unconfined processes (Ubuntu >= 23.10/24.04). Empty when it is not the cause. */
@@ -131,7 +168,7 @@ export function sandboxFailureReason(code: number | null, stderrTail: string): s
 type Running = { child: ChildProcess; stderrTail: () => string };
 
 function launchChromium(exe: string, sandbox: boolean): Running {
-  const args = chromiumArgs({ sandbox, profile: PROFILE, ...(egressRuntime.port ? { egressPort: egressRuntime.port } : {}) });
+  const args = chromiumArgs({ sandbox, profile: PROFILE, headful: displayRuntime.display !== null, ...(egressRuntime.port ? { egressPort: egressRuntime.port } : {}) });
   const limitMb = Number(process.env.FLOQ_BROWSER_MEM_MB);
   // Optional address-space cap (FLOQ_BROWSER_MEM_MB). Off unless the runtime passes it: RLIMIT_AS is hard on Chromium's large reservations.
   const [file, argv] = limitMb > 0 && spawnSync("sh", ["-c", "command -v prlimit"], { stdio: ["ignore", "ignore", "ignore", "ignore"] }).status === 0
@@ -139,7 +176,7 @@ function launchChromium(exe: string, sandbox: boolean): Running {
     : [exe, args] as const;
   const child = spawn(file, argv, {
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", HOME },
+    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", HOME, ...(displayRuntime.display ? { DISPLAY: displayRuntime.display } : {}) },
   });
   egressRuntime.rootPid = child.pid;
   let tail = "";
@@ -214,8 +251,8 @@ async function main() {
     const close = () => { try { void mux?.command("Browser.close", {}, undefined, 2000).catch(() => {}); } catch { /* not started yet */ } };
     if (chromeRun) void Promise.race([saveState().catch(() => {}), new Promise((r) => setTimeout(r, 1500))]).then(close); else close();
     setTimeout(() => { try { chromeRun?.child.kill("SIGTERM"); } catch { /* gone */ } }, 3500).unref();
-    setTimeout(() => { try { chromeRun?.child.kill("SIGKILL"); } catch { /* gone */ } out({ type: "exit" }); process.exit(code); }, 5000).unref();
-    chromeRun?.child.once("exit", () => { out({ type: "exit" }); process.exit(code); });
+    setTimeout(() => { try { chromeRun?.child.kill("SIGKILL"); } catch { /* gone */ } displayRuntime.stop?.(); out({ type: "exit" }); process.exit(code); }, 5000).unref();
+    chromeRun?.child.once("exit", () => { displayRuntime.stop?.(); out({ type: "exit" }); process.exit(code); });
     if (!chromeRun) { out({ type: "exit" }); process.exit(code); }
   };
   let chromeRun: Running | undefined;
@@ -232,8 +269,22 @@ async function main() {
     egressRuntime.port = port;
     log("egress.listening", { port });
   }
-  const started = await startChromium(exe, () => { log("browser.chromium_exit"); if (!stopping) { stopping = true; out({ type: "exit" }); process.exit(1); } });
+  const onChromiumExit = () => { log("browser.chromium_exit"); if (!stopping) { stopping = true; displayRuntime.stop?.(); out({ type: "exit" }); process.exit(1); } };
+  // Headful on a private Xvfb; headless=new when Xvfb is missing, cannot start, or Chromium refuses to start on it.
+  let xvfb: Display | null = null;
+  const xvfbBin = findXvfb();
+  let started: Awaited<ReturnType<typeof startChromium>> | undefined;
+  if (xvfbBin) {
+    xvfb = await startXvfb(xvfbBin, 1920, 1080);
+    if (xvfb) {
+      displayRuntime.display = xvfb.display; displayRuntime.stop = xvfb.stop;
+      try { started = await startChromium(exe, onChromiumExit); }
+      catch (e) { log("browser.headful_failed", { level: "warn", message: (e as Error).message }); xvfb.stop(); xvfb = null; displayRuntime.display = null; displayRuntime.stop = undefined; }
+    }
+  } else log("browser.xvfb_missing", { level: "warn", note: "running --headless=new (UA says HeadlessChrome; some challenges will refuse it)" });
+  started ??= await startChromium(exe, onChromiumExit);
   chromeRun = started.run;
+  if (xvfb) xvfb.child.once("exit", () => { log("browser.xvfb_gone"); chromeRun?.child.kill("SIGTERM"); });
   const mux = started.mux;
 
   try {
@@ -684,7 +735,7 @@ async function main() {
   process.on("SIGTERM", () => shutdown(0));
   process.on("SIGINT", () => shutdown(0));
 
-  out({ type: "ready", port, token, pid: process.pid, chromium: chromiumVersion, sandbox: started.sandbox ? "on" : "off", ...(started.sandbox ? {} : { sandboxReason: started.reason ?? "forced" }) });
+  out({ type: "ready", port, token, pid: process.pid, chromium: chromiumVersion, display: displayRuntime.display ? "xvfb" : "headless", sandbox: started.sandbox ? "on" : "off", ...(started.sandbox ? {} : { sandboxReason: started.reason ?? "forced" }) });
   emitTabs();
 }
 

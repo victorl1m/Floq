@@ -63,12 +63,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code@2.1.328 @openai/codex@0.167.0 opencode-ai@1.19.5 \
     && npm cache clean --force
-# Agent browser, layer 1: only the shared libraries the full chrome binary links against (ldd; adds libcups2, libcairo2, libpango to the shell's set) + fontconfig + fonts. No X server, no GTK.
+# Agent browser, layer 1: only the shared libraries the full chrome binary links against (ldd; adds libcups2, libcairo2, libpango to the shell's set) + fontconfig + fonts.
+# xvfb: floq-browserd runs Chromium HEADFUL on a private virtual display (no HeadlessChrome UA); without it the daemon falls back to --headless=new. No GTK.
 # fonts-noto-cjk is ~91 MB: swap for fonts-wqy-zenhei (~17 MB) if size matters more than CJK quality.
 RUN if [ "$FLOQ_BROWSER" = 1 ]; then apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libdbus-1-3 \
         libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libxkbcommon0 libgbm1 libasound2 libcups2 libcairo2 libpango-1.0-0 \
-        fontconfig fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
+        fontconfig fonts-liberation fonts-noto-color-emoji fonts-noto-cjk xvfb xauth \
     && rm -rf /var/lib/apt/lists/*; fi
 # gocryptfs from the pinned upstream static release, NOT Debian's 2.3 package. Debian bookworm builds 2.3 against a
 # newer golang.org/x/sys whose Setreuid/Setregid affect every thread, which breaks gocryptfs's per-request uid switch

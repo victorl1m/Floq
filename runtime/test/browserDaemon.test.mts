@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
 import { agentToken, FrameDecoder, encodeFrame, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
-import { sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
+import { chromiumArgs, findXvfb, sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
 const DAEMON = fileURLToPath(new URL("../dist/image/floq-browserd.mjs", import.meta.url));
@@ -936,4 +936,32 @@ test("userNsHint names AppArmor only when the restriction is on", () => {
   assert.match(userNsHint(mk("1\n")), /apparmor_restrict_unprivileged_userns=1.*unconfined.*floq-runtime/);
   assert.equal(userNsHint(mk("0\n")), "");
   assert.equal(userNsHint(() => { throw new Error("no file"); }), "");
+});
+
+// -------------------------------------------------------------- headful on Xvfb, headless fallback
+
+const FAKE_XVFB = fileURLToPath(new URL("./fixtures/fakeXvfb.mjs", import.meta.url));
+
+test("chromiumArgs: headful drops --headless, headless=false keeps it; findXvfb honours the override and the forced fallback", () => {
+  assert.equal(chromiumArgs({ sandbox: true, profile: "/p" }).some((a) => a.startsWith("--headless")), false);
+  assert.ok(chromiumArgs({ sandbox: true, profile: "/p", headful: false }).includes("--headless=new"));
+  assert.equal(findXvfb({ PATH: "/a:/b" }, (p) => p === "/b/Xvfb"), "/b/Xvfb");
+  assert.equal(findXvfb({ PATH: "/a:/b" }, () => false), null);
+  assert.equal(findXvfb({ PATH: "/b", FLOQ_BROWSER_HEADLESS: "1" }, () => true), null);
+  assert.equal(findXvfb({ FLOQ_BROWSER_XVFB: "/x/Xvfb" }, (p) => p === "/x/Xvfb"), "/x/Xvfb");
+});
+
+test("daemon: with Xvfb Chromium runs headful on its DISPLAY; without it (or when Xvfb fails) it falls back to --headless=new", async (t) => {
+  const on = await startDaemon(t, { env: { FLOQ_BROWSER_XVFB: FAKE_XVFB } });
+  assert.equal(on.ready.display, "xvfb");
+  const logOn = on.chromiumLog();
+  assert.doesNotMatch(logOn, /--headless/);
+  assert.match(logOn, /--ozone-platform=x11/);
+  await on.stop();
+  for (const env of [{ FLOQ_BROWSER_XVFB: "/nonexistent/Xvfb" }, { FLOQ_BROWSER_XVFB: FAKE_XVFB, FAKE_XVFB_FAILS: "1" }, { FLOQ_BROWSER_XVFB: FAKE_XVFB, FLOQ_BROWSER_HEADLESS: "1" }]) {
+    const off = await startDaemon(t, { env });
+    assert.equal(off.ready.display, "headless", JSON.stringify(env));
+    assert.match(off.chromiumLog(), /--headless=new/);
+    await off.stop();
+  }
 });
