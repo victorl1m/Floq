@@ -8,8 +8,8 @@
 
 export const DAY_MS = 24 * 3600 * 1000;
 
-export type Category = "worktree" | "branch" | "scratchpad" | "attachment" | "tmp";
-export const CATEGORIES: readonly Category[] = ["worktree", "branch", "scratchpad", "attachment", "tmp"];
+export type Category = "worktree" | "branch" | "scratchpad" | "attachment" | "tmp" | "build";
+export const CATEGORIES: readonly Category[] = ["worktree", "branch", "scratchpad", "attachment", "tmp", "build"];
 
 export interface StorageSenseConfig {
   /** Days of inactivity before an ended agent's clean, merged worktree is removed. */
@@ -18,6 +18,8 @@ export interface StorageSenseConfig {
   branchDays: number;
   /** Days before the scratchpad / task output of an ended session is removed. */
   scratchpadDays: number;
+  /** Days a build-output folder (marked with a CACHEDIR.TAG, e.g. Rust target/) may sit unused before it is removed; it is rebuilt on the next build. */
+  buildDays: number;
   /** Days before an upload under .floq/attachments is removed. */
   attachmentDays: number;
   /** Days before other stale entries directly under the persistent /tmp are removed. */
@@ -26,7 +28,7 @@ export interface StorageSenseConfig {
   lowSpacePercent: number;
 }
 
-export const DEFAULT_CONFIG: StorageSenseConfig = { worktreeDays: 30, branchDays: 30, scratchpadDays: 7, attachmentDays: 60, tmpDays: 14, lowSpacePercent: 10 };
+export const DEFAULT_CONFIG: StorageSenseConfig = { worktreeDays: 30, branchDays: 30, scratchpadDays: 7, buildDays: 14, attachmentDays: 60, tmpDays: 14, lowSpacePercent: 10 };
 
 export type ReasonCode =
   | "eligible"
@@ -86,7 +88,7 @@ export interface BranchCandidate {
 }
 
 export interface FsCandidate {
-  category: "scratchpad" | "attachment" | "tmp";
+  category: "scratchpad" | "attachment" | "tmp" | "build";
   /** Home-relative path. */
   path: string;
   isSymlink: boolean;
@@ -96,6 +98,10 @@ export interface FsCandidate {
   newestMs: number | null;
   hasLock: boolean;
   bytes: number;
+  /** mtime of the entry itself (always known, even when the walk was cut short). */
+  topMs?: number;
+  /** Build folders only: holds a valid CACHEDIR.TAG (the standard "safe to delete, can be regenerated" marker). */
+  cacheTag?: boolean;
   /** Scratchpads only: the owning session. */
   session?: { state: "live" | "ended" | "missing"; lastActiveMs: number | null };
 }
@@ -107,6 +113,7 @@ const ALLOWED_FS: Record<FsCandidate["category"], RegExp> = {
   scratchpad: new RegExp(`^\\.floq/tmp/claude-\\d+/[^/]+/${UUID}$`, "i"),
   attachment: new RegExp(`^\\.floq/attachments/${UUID}$`, "i"),
   tmp: /^\.floq\/tmp\/(?!claude-\d+$)[^/.][^/]*$/,
+  build: /^(\.floq\/projects|workspace)\/[^/]+(\/[^/.][^/]*){1,3}$/,
 };
 const FLOQ_BRANCH = new RegExp(`^floq/(${UUID})$`, "i");
 const WORKTREE_PATH = new RegExp(`^\\.floq/worktrees/${UUID}$`, "i");
@@ -128,7 +135,7 @@ function remove<T extends Candidate>(item: T, label: string, detail: string, byt
 }
 
 function threshold(config: StorageSenseConfig, category: Category): number {
-  const value = { worktree: config.worktreeDays, branch: config.branchDays, scratchpad: config.scratchpadDays, attachment: config.attachmentDays, tmp: config.tmpDays }[category];
+  const value = { worktree: config.worktreeDays, branch: config.branchDays, scratchpad: config.scratchpadDays, build: config.buildDays, attachment: config.attachmentDays, tmp: config.tmpDays }[category];
   return Number.isFinite(value) && value > 0 ? value * DAY_MS : 0;
 }
 
@@ -165,11 +172,14 @@ export function decideFs(c: FsCandidate, config: StorageSenseConfig, now: number
   if (c.isSymlink) return keep(c, c.path, "symlink", "Symbolic links are never followed or removed");
   if (!c.sameDevice) return keep(c, c.path, "other_device", "On another filesystem", false, c.bytes);
   if (c.session?.state === "live") return keep(c, c.path, "agent_live", "Its session is running or sleeping", false, c.bytes);
-  if (c.newestMs === null) return keep(c, c.path, "walk_incomplete", "Too large to verify in one pass", false, c.bytes);
+  if (c.category === "build" && !c.cacheTag) return keep(c, c.path, "protected_path", "No CACHEDIR.TAG marker", false, c.bytes);
+  // A scratchpad of an ended or deleted session too large to walk is still judged by when its session (or the folder) was last used;
+  // a build folder is judged by its top-level times (the scanner reads them to depth 2), since it is regenerated anyway.
+  if (c.newestMs === null && !((c.category === "scratchpad" && c.session !== undefined) || c.category === "build")) return keep(c, c.path, "walk_incomplete", "Too large to verify in one pass", false, c.bytes);
   if (c.hasLock) return keep(c, c.path, "lock_file", "Contains a lock or pid file", false, c.bytes);
-  const idleSince = Math.max(c.newestMs, c.session?.lastActiveMs ?? 0);
+  const idleSince = Math.max(c.newestMs ?? c.topMs ?? now, c.session?.lastActiveMs ?? 0);
   if (now - idleSince < limit) return keep(c, c.path, "too_recent", `Used ${days(now - idleSince)} days ago (threshold ${days(limit)})`, false, c.bytes);
-  return remove(c, c.path, c.session ? "Scratch data of an ended session" : "Unused", c.bytes);
+  return remove(c, c.path, c.category === "build" ? "Build output (rebuilt on the next build)" : c.session ? "Scratch data of an ended session" : "Unused", c.bytes);
 }
 
 export function decide(c: Candidate, config: StorageSenseConfig, now: number): Decision {

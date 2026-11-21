@@ -93,3 +93,18 @@ test("planCleanup maps every candidate and summarize only speaks for real runs",
   assert.equal(summarize({ ...report, dryRun: true }), null);
   assert.equal(summarize({ ...report, counts: { removed: 0, kept: 5, failed: 0, attention: 0 } }), null);
 });
+
+test("build output: only CACHEDIR.TAG folders in projects/workspaces, judged by their top-level times; big ended scratchpads are judged by session age", async () => {
+  const { decideFs, DEFAULT_CONFIG, DAY_MS } = await import("../dist/storageSense/plan.js");
+  const now = 100 * DAY_MS;
+  const base = { isSymlink: false, isDirectory: true, sameDevice: true, newestMs: null, hasLock: false, bytes: 9e9 };
+  const old = { ...base, category: "build", path: ".floq/projects/p1/src-tauri/target", cacheTag: true, topMs: now - 20 * DAY_MS };
+  assert.equal(decideFs(old, DEFAULT_CONFIG, now).action, "remove");
+  assert.equal(decideFs({ ...old, topMs: now - 2 * DAY_MS }, DEFAULT_CONFIG, now).action, "keep");
+  assert.equal(decideFs({ ...old, cacheTag: false }, DEFAULT_CONFIG, now).action, "keep");
+  assert.equal(decideFs({ ...old, path: "Artifacts/x/target" }, DEFAULT_CONFIG, now).action, "keep");
+  const pad = { ...base, category: "scratchpad", path: ".floq/tmp/claude-20000/p/0b3da341-0000-4000-8000-000000000000", topMs: now - 30 * DAY_MS };
+  assert.equal(decideFs({ ...pad, session: { state: "ended", lastActiveMs: now - 30 * DAY_MS } }, DEFAULT_CONFIG, now).action, "remove");
+  assert.equal(decideFs({ ...pad, session: { state: "live", lastActiveMs: now } }, DEFAULT_CONFIG, now).action, "keep");
+  assert.equal(decideFs({ ...pad, category: "tmp", path: ".floq/tmp/x" }, DEFAULT_CONFIG, now).action, "keep"); // other categories still need a full walk
+});

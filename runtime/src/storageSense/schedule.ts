@@ -10,13 +10,14 @@ function days(v: unknown, dflt: number, max = 3650): number {
 
 /** Saved plugin settings -> an effective, clamped config. Unset or invalid values fall back to the defaults; 0 turns a category off. */
 export function effectiveConfig(settings: Record<string, unknown>): { mode: Mode; config: StorageSenseConfig } {
-  const mode: Mode = settings.mode === "off" || settings.mode === "clean" || settings.mode === "report" ? settings.mode : "report";
+  const mode: Mode = settings.mode === "off" || settings.mode === "clean" || settings.mode === "report" ? settings.mode : settings.mode === undefined ? "clean" : "report"; // unset = clean (every category has strict keep rules); a garbled value only reports
   return {
     mode,
     config: {
       worktreeDays: days(settings.worktreeDays, DEFAULT_CONFIG.worktreeDays),
       branchDays: days(settings.branchDays, DEFAULT_CONFIG.branchDays),
       scratchpadDays: days(settings.scratchpadDays, DEFAULT_CONFIG.scratchpadDays),
+      buildDays: days(settings.buildDays, DEFAULT_CONFIG.buildDays),
       attachmentDays: days(settings.attachmentDays, DEFAULT_CONFIG.attachmentDays),
       tmpDays: days(settings.tmpDays, DEFAULT_CONFIG.tmpDays),
       lowSpacePercent: days(settings.lowSpacePercent, DEFAULT_CONFIG.lowSpacePercent, 90),

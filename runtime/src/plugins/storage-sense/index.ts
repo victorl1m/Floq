@@ -15,10 +15,11 @@ export const storageSenseManifest = {
   icon: "IconTrash",
   scope: "user",
   settings: [
-    { key: "mode", type: "select", label: "Mode", description: "Report only (default): finds what could be removed and tells you, deletes nothing. Clean: removes it.", options: [{ value: "report", label: "Report only" }, { value: "clean", label: "Clean automatically" }, { value: "off", label: "Off" }] },
+    { key: "mode", type: "select", label: "Mode", description: "Clean (default): removes what is safe to remove. Report only: lists it and deletes nothing.", options: [{ value: "clean", label: "Clean automatically" }, { value: "report", label: "Report only" }, { value: "off", label: "Off" }] },
     { key: "worktreeDays", type: "number", label: "Worktrees idle for (days)", description: "Of ended agents, only when clean and merged into the base branch. Default 30, 0 = never." },
     { key: "branchDays", type: "number", label: "Orphan branches idle for (days)", description: "floq/<agent> branches with no agent or worktree, only when merged. Default 30, 0 = never." },
     { key: "scratchpadDays", type: "number", label: "Agent scratchpads of ended sessions (days)", description: "Default 7, 0 = never." },
+    { key: "buildDays", type: "number", label: "Build output unused for (days)", description: "Folders marked with a CACHEDIR.TAG, such as Rust target/, in projects and workspaces. They are rebuilt on the next build. Default 14, 0 = never." },
     { key: "attachmentDays", type: "number", label: "Uploaded attachments (days)", description: "Default 60, 0 = never." },
     { key: "tmpDays", type: "number", label: "Other temp files (days)", description: "Entries in your persistent /tmp. Default 14, 0 = never." },
     { key: "notify", type: "boolean", label: "Notify me after cleanups", description: "Send a notification when a run removes something or keeps something that needs your attention. Default off; the footer button always shows the last report." },

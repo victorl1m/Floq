@@ -1,4 +1,4 @@
-import { lstat, readdir, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { openHomeDir, removeHomeTree } from "../shard.js";
 import type { FsCandidate } from "./plan.js";
@@ -53,6 +53,20 @@ export interface ScanContext {
   attachmentsEnabled: boolean;
   tmpEnabled: boolean;
   scratchpadsEnabled: boolean;
+  buildEnabled?: boolean;
+}
+
+const CACHEDIR_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55";
+/** Newest mtime of a folder and its entries two levels down (cargo touches target/<profile>/.fingerprint on every build). */
+async function shallowNewest(path: string): Promise<number> {
+  let newest = 0;
+  const walk = async (dir: string, depth: number) => {
+    let names: string[] = [];
+    try { const st = await lstat(dir); newest = Math.max(newest, st.mtimeMs); if (!st.isDirectory() || depth >= 2) return; names = await readdir(dir); } catch { return; }
+    for (const n of names.slice(0, 500)) await walk(join(dir, n), depth + 1);
+  };
+  await walk(path, 0);
+  return newest;
 }
 
 async function children(home: string, rel: string): Promise<{ names: string[]; device: number; dir: string } | null> {
@@ -68,7 +82,9 @@ async function children(home: string, rel: string): Promise<{ names: string[]; d
 
 async function candidate(category: FsCandidate["category"], home: string, rel: string, device: number, deadline: number, session?: FsCandidate["session"]): Promise<FsCandidate> {
   const w = await inspectEntry(join(home, rel), device, deadline);
-  return { category, path: rel, isSymlink: w.isSymlink, isDirectory: w.isDirectory, sameDevice: w.sameDevice, newestMs: w.newestMs, hasLock: w.hasLock, bytes: w.bytes, session };
+  let topMs: number | undefined;
+  try { topMs = (await lstat(join(home, rel))).mtimeMs; } catch { /* gone */ }
+  return { category, path: rel, isSymlink: w.isSymlink, isDirectory: w.isDirectory, sameDevice: w.sameDevice, newestMs: w.newestMs, hasLock: w.hasLock, bytes: w.bytes, session, topMs };
 }
 
 /** Everything under the persistent /tmp, attachments and agent scratchpads that could be cleaned, as plain facts. */
@@ -101,6 +117,37 @@ export async function scanFs(ctx: ScanContext): Promise<FsCandidate[]> {
         }
       } else if (ctx.tmpEnabled && !name.startsWith(".")) {
         out.push(await candidate("tmp", ctx.home, `.floq/tmp/${name}`, tmp.device, ctx.deadline));
+      }
+    }
+  }
+  if (ctx.buildEnabled) {
+    // Build folders marked with a CACHEDIR.TAG (Rust target/, and other tools that follow the convention), up to 3 levels into each
+    // project checkout and workspace. Only the folder holding the tag is a candidate.
+    for (const base of [".floq/projects", "workspace"]) {
+      const roots = await children(ctx.home, base);
+      for (const project of roots?.names ?? []) {
+        const queue: { rel: string; depth: number }[] = [{ rel: `${base}/${project}`, depth: 0 }];
+        while (queue.length && Date.now() <= ctx.deadline) {
+          const { rel, depth } = queue.shift()!;
+          const dir = await children(ctx.home, rel);
+          if (!dir) continue;
+          if (depth > 0 && dir.names.includes("CACHEDIR.TAG")) {
+            let tagged = false;
+            try { tagged = (await readFile(join(ctx.home, rel, "CACHEDIR.TAG"), "utf8")).startsWith(CACHEDIR_SIGNATURE); } catch { /* unreadable */ }
+            if (tagged) {
+              const c = await candidate("build", ctx.home, rel, roots!.device, Math.min(ctx.deadline, Date.now() + 2_000));
+              c.cacheTag = true;
+              c.newestMs = c.newestMs ?? null;
+              c.topMs = await shallowNewest(join(ctx.home, rel));
+              out.push(c);
+              continue;
+            }
+          }
+          if (depth >= 3) continue;
+          for (const name of dir.names) if (!name.startsWith(".") && name !== "node_modules") {
+            try { if ((await lstat(join(ctx.home, rel, name))).isDirectory()) queue.push({ rel: `${rel}/${name}`, depth: depth + 1 }); } catch { /* gone */ }
+          }
+        }
       }
     }
   }

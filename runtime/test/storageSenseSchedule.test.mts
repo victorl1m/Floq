@@ -7,8 +7,8 @@ import { HOUR_MS, dueTrigger, effectiveConfig } from "../src/storageSense/schedu
 
 test("the manifest is valid", () => { assert.equal(parseManifest(storageSenseManifest).id, "storage-sense"); });
 
-test("effectiveConfig: defaults, clamping and 0 = off; unknown mode is report-only", () => {
-  assert.deepEqual(effectiveConfig({}), { mode: "report", config: DEFAULT_CONFIG });
+test("effectiveConfig: defaults, clamping and 0 = off; unknown mode is report-only, unset mode cleans", () => {
+  assert.deepEqual(effectiveConfig({}), { mode: "clean", config: DEFAULT_CONFIG });
   const r = effectiveConfig({ mode: "clean", worktreeDays: -5, branchDays: "x", scratchpadDays: 0, attachmentDays: 99999, lowSpacePercent: 500 });
   assert.equal(r.mode, "clean");
   assert.equal(r.config.worktreeDays, 0);

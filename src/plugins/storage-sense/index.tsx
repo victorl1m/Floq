@@ -7,7 +7,7 @@ interface Entry { category: string; label: string; action: "removed" | "would-re
 interface Report { at: string; dryRun: boolean; trigger: string; durationMs: number; partial: boolean; freedBytes: number; counts: { removed: number; kept: number; failed: number; attention: number }; entries: Entry[] }
 export interface StorageSenseState { mode: "off" | "report" | "clean"; awake: boolean; freePercent: number | null; lastRunAt: number | null; report: Report | null }
 
-const CATEGORY: Record<string, string> = { worktree: "Worktrees", branch: "Branches", scratchpad: "Scratchpads", attachment: "Attachments", tmp: "Temp files" };
+const CATEGORY: Record<string, string> = { worktree: "Worktrees", branch: "Branches", scratchpad: "Scratchpads", build: "Build output", attachment: "Attachments", tmp: "Temp files" };
 const MODE: Record<StorageSenseState["mode"], string> = { off: "Off", report: "Report only", clean: "Cleaning automatically" };
 
 export function size(n?: number): string {

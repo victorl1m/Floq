@@ -182,7 +182,7 @@ export class StorageSense {
 
   private async files(userId: string, home: string, config: StorageSenseConfig, options: RunOptions, sessions: SessionRow[], now: number, deadline: number, record: (d: Decision, o: "removed" | "failed" | null, extra?: string) => void, timeUp: () => boolean): Promise<void> {
     const sessionMap = new Map(sessions.map((s) => [s.id.toLowerCase(), { live: LIVE.has(s.state), lastActiveMs: s.lastActiveMs }]));
-    const candidates = await scanFs({ home, sessions: sessionMap, deadline, attachmentsEnabled: config.attachmentDays > 0, tmpEnabled: config.tmpDays > 0, scratchpadsEnabled: config.scratchpadDays > 0 });
+    const candidates = await scanFs({ home, sessions: sessionMap, deadline, attachmentsEnabled: config.attachmentDays > 0, tmpEnabled: config.tmpDays > 0, scratchpadsEnabled: config.scratchpadDays > 0, buildEnabled: config.buildDays > 0 });
     for (const c of candidates) {
       if (timeUp()) return;
       const decision = decideFs(c, config, now);
@@ -199,7 +199,7 @@ export class StorageSense {
 }
 
 async function scanOne(home: string, c: { category: string; path: string }, sessions: Map<string, { live: boolean; lastActiveMs: number }>, deadline: number) {
-  const all = await scanFs({ home, sessions, deadline, attachmentsEnabled: c.category === "attachment", tmpEnabled: c.category === "tmp", scratchpadsEnabled: c.category === "scratchpad" });
+  const all = await scanFs({ home, sessions, deadline, attachmentsEnabled: c.category === "attachment", tmpEnabled: c.category === "tmp", scratchpadsEnabled: c.category === "scratchpad", buildEnabled: c.category === "build" });
   return all.filter((x) => x.path === c.path);
 }
 
