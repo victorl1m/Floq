@@ -3,7 +3,7 @@ import { IconUserMinus } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { errorMessage, useClient, useRuntime } from "@/lib/runtime/store";
 import { ROLE_LABEL } from "@/lib/organizations";
@@ -58,10 +58,13 @@ export function MembersTable({ organization }: { organization: Organization }) {
                                 </TableCell>
                                 <TableCell>
                                     {roleEditable ? (
-                                        <NativeSelect size="sm" aria-label={`Role for ${member.name || member.email}`} value={member.role} disabled={busyId === member.id} onChange={(e) => void changeRole(member, e.target.value as "admin" | "member")}>
-                                            <option value="admin">Admin</option>
-                                            <option value="member">Member</option>
-                                        </NativeSelect>
+                                        <Select value={member.role} disabled={busyId === member.id} onValueChange={(v) => void changeRole(member, v as "admin" | "member")}>
+                                            <SelectTrigger size="sm" aria-label={`Role for ${member.name || member.email}`}><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="admin">Admin</SelectItem>
+                                                <SelectItem value="member">Member</SelectItem>
+                                            </SelectContent>
+                                        </Select>
                                     ) : (
                                         <Badge variant={member.role === "owner" ? "default" : "outline"}>{ROLE_LABEL[member.role]}</Badge>
                                     )}

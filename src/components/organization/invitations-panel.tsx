@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner } from "@/components/ui/app-dialog";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { errorMessage, useClient } from "@/lib/runtime/store";
 import { ROLE_LABEL, formatExpiry } from "@/lib/organizations";
 import type { IssuedOrganizationInvitation, Organization, OrganizationInvitation } from "@/lib/runtime/types";
@@ -95,10 +95,13 @@ export function InvitationsPanel({ organization }: { organization: Organization 
                 </div>
                 <div className="flex flex-col gap-1.5">
                     <label htmlFor={ids.role} className="text-sm font-medium">Role</label>
-                    <NativeSelect id={ids.role} value={role} onChange={(e) => setRole(e.target.value as "admin" | "member")}>
-                        <option value="member">Member</option>
-                        {isOwner && <option value="admin">Admin</option>}
-                    </NativeSelect>
+                    <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
+                        <SelectTrigger id={ids.role}><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="member">Member</SelectItem>
+                            {isOwner && <SelectItem value="admin">Admin</SelectItem>}
+                        </SelectContent>
+                    </Select>
                 </div>
                 <Button type="submit" loading={sending} disabled={!email.trim()}><IconMailPlus aria-hidden="true" />Invite</Button>
             </form>

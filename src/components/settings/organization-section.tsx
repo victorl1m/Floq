@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { IconLogout, IconMailOpened, IconPlus, IconTrash } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { NativeSelect } from "@/components/ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/organization/confirm-dialog";
 import { InvitationsPanel } from "@/components/organization/invitations-panel";
 import { MembersTable } from "@/components/organization/members-table";
@@ -10,6 +10,8 @@ import { OrganizationIdentity } from "./organization-identity";
 import { canManageMembers, organizationUi, ROLE_LABEL, ROLE_SUMMARY, useOrganizationUi } from "@/lib/organizations";
 import { useClient, useRuntime } from "@/lib/runtime/store";
 import { SettingRow, SettingsGroup, SettingsPage } from "./ui";
+
+const NONE = "__none__";
 
 export default function OrganizationSection() {
     const client = useClient();
@@ -70,10 +72,13 @@ export default function OrganizationSection() {
                         {isOwner ? (
                             <>
                                 <SettingRow label="Transfer ownership" description="Owners cannot leave without handing the organization over. You become an admin." stack>
-                                    <NativeSelect aria-label="New owner" value={transferTo} disabled={otherMembers.length === 0} onChange={(e) => setTransferTo(e.target.value)}>
-                                        <option value="">{otherMembers.length ? "Choose a member…" : "No other members"}</option>
-                                        {otherMembers.map((member) => <option key={member.id} value={member.id}>{member.name || member.email}</option>)}
-                                    </NativeSelect>
+                                    <Select value={transferTo || NONE} disabled={otherMembers.length === 0} onValueChange={(v) => setTransferTo(v === NONE ? "" : v)}>
+                                        <SelectTrigger aria-label="New owner"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={NONE}>{otherMembers.length ? "Choose a member…" : "No other members"}</SelectItem>
+                                            {otherMembers.map((member) => <SelectItem key={member.id} value={member.id}>{member.name || member.email}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
                                     <Button variant="outline" disabled={!transferTo} onClick={() => setTransferOpen(true)}>Transfer</Button>
                                 </SettingRow>
                                 <SettingRow label="Delete organization" description="Permanently deletes the organization, its members list and its task boards. This cannot be undone.">
