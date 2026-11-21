@@ -69,11 +69,22 @@ export default function FileDialog({ client, sessionId, path, label, source = "w
     setError(null);
     // Images load through the signed download link (an <img> cannot carry auth headers); everything else is read as text.
     if (docKind) return; // documents load themselves in DocumentPreview
-    const request = isImage
+    let objectUrl: string | null = null;
+    // The runtime never serves SVG as image/svg+xml (it is active content), so an <img> refuses the link. Fetch the bytes and show them
+    // as an SVG blob: inside <img> an SVG cannot run scripts or load anything.
+    const request = isImage && /\.svg$/i.test(path)
+      ? linkUrl().then((url) => fetch(url)).then(async (response) => {
+          if (!response.ok) throw new Error(`The image could not be loaded (${response.status}).`);
+          const blob = new Blob([await response.arrayBuffer()], { type: "image/svg+xml" });
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(blob);
+          setImageUrl(objectUrl);
+        })
+      : isImage
       ? linkUrl().then((url) => { if (!cancelled) setImageUrl(url); })
       : (source === "artifacts" ? client.readArtifact(sessionId, path) : client.readFile(sessionId, path)).then((result) => { if (!cancelled) setFile(result); });
     request.catch((cause) => { if (!cancelled) setError(errorMessage(cause)); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [client, sessionId, path, version, isImage, docKind, linkUrl, source]);
 
   useEffect(() => {
