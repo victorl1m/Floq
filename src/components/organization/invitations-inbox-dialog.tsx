@@ -64,7 +64,7 @@ export function InvitationsInboxDialog({ open, onOpenChange }: { open: boolean; 
                     <ul className="flex flex-col gap-2" aria-label="Pending invitations">
                         {incoming.map((invite) => (
                             <li key={invite.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
-                                <OrganizationAvatar name={invite.organization.name} />
+                                <OrganizationAvatar name={invite.organization.name} seed={invite.organization.id} />
                                 <div className="min-w-0 flex-1">
                                     <p className="truncate text-sm font-medium">{invite.organization.name}</p>
                                     <p className="truncate text-xs text-muted-foreground">

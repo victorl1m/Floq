@@ -15,7 +15,7 @@ function Probe() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
       <div className="flex items-center gap-2" data-testid="switcher-probe">
-        {active && <OrganizationAvatar name={organizationLabel(active)} imageUrl={active.imageUrl} className="size-9 rounded-[10px]" />}
+        {active && <OrganizationAvatar name={organizationLabel(active)} seed={active.id} imageUrl={active.imageUrl} className="size-9 rounded-[10px]" />}
         <span data-testid="active-name">{active ? organizationLabel(active) : ""}</span>
         {organizations.map((o) => <button key={o.id} onClick={() => selectOrganization(o.id)}>switch {o.id}</button>)}
       </div>

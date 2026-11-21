@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "cn";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { organizationIconBackground, organizationInitials } from "@/lib/organizations";
+import { orgIconSvg, orgMonogram } from "@/lib/org-icon";
 import { useRuntime } from "@/lib/runtime/store";
 import type { RuntimeClient } from "@/lib/runtime/client";
 
@@ -37,9 +37,14 @@ function useImageSrc(imageUrl: string | null | undefined, preview?: string | nul
     return preview ?? src;
 }
 
-/** Rounded-square avatar: the organization image when it has one, else a generated icon (initials on a colour picked from the name). Decorative; the name is always rendered next to it. */
-export function OrganizationAvatar({ name, imageUrl, preview, className }: { name: string; imageUrl?: string | null; preview?: string | null; className?: string }) {
+/**
+ * Rounded-square avatar: the organization image when it has one, else a generated "signboard" icon (colour, motif and turn picked
+ * from `seed`, the organization id, so a rename keeps it; the name only gives the monogram). `compact` draws one letter instead of
+ * up to two (small rows). Decorative; the name is always rendered next to it.
+ */
+export function OrganizationAvatar({ name, seed, imageUrl, preview, compact, className }: { name: string; seed?: string | null; imageUrl?: string | null; preview?: string | null; compact?: boolean; className?: string }) {
     const src = useImageSrc(imageUrl, preview);
+    const svg = useMemo(() => orgIconSvg(seed ?? name, { monogram: orgMonogram(name, compact ? 1 : 2) }), [seed, name, compact]);
     return (
         <Avatar
             aria-hidden="true"
@@ -48,12 +53,8 @@ export function OrganizationAvatar({ name, imageUrl, preview, className }: { nam
             className={cn("size-8 rounded-lg after:hidden ring-1 ring-foreground/10", className)}
         >
             {src ? <AvatarImage src={src} alt="" draggable={false} className="rounded-[inherit]" /> : null}
-            <AvatarFallback
-                delayMs={0}
-                className="rounded-[inherit] text-xs font-semibold text-white dark:text-background"
-                style={{ backgroundImage: organizationIconBackground(name) }}
-            >
-                {organizationInitials(name)}
+            <AvatarFallback delayMs={0} className="rounded-[inherit] overflow-hidden bg-transparent">
+                <span className="block size-full" dangerouslySetInnerHTML={{ __html: svg }} />
             </AvatarFallback>
         </Avatar>
     );

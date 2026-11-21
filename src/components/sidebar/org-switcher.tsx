@@ -36,7 +36,7 @@ export default function OrgSwitcher() {
                             data-testid="org-switcher"
                             className="h-14 rounded-[12px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
                         >
-                            <OrganizationAvatar name={active ? organizationLabel(active) : "?"} imageUrl={active?.imageUrl} className="size-9 rounded-[10px]" />
+                            <OrganizationAvatar name={active ? organizationLabel(active) : "?"} seed={active?.id} imageUrl={active?.imageUrl} className="size-9 rounded-[10px]" />
                             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
                                 <span className="truncate text-sm font-semibold">{name}</span>
                                 <span className="truncate text-xs text-muted-foreground">{subline}</span>
@@ -49,7 +49,7 @@ export default function OrgSwitcher() {
                         {organizationsLoading && <DropdownMenuItem disabled>Loading organizations…</DropdownMenuItem>}
                         {!organizationsLoading && organizationsError && <DropdownMenuItem onSelect={() => void refreshOrganizations()}><IconRefresh />Retry loading organizations</DropdownMenuItem>}
                         {!organizationsLoading && !organizationsError && organizations.length > 0 && <DropdownMenuRadioGroup value={activeOrganizationId ?? ""} onValueChange={selectOrganization}>
-                            {sortOrganizations(organizations).map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organizationLabel(organization)} className="min-w-0"><OrganizationAvatar name={organizationLabel(organization)} imageUrl={organization.imageUrl} className="size-5 rounded-md text-[0.6rem]" /><span className="truncate">{organizationLabel(organization)}</span></DropdownMenuRadioItem>)}
+                            {sortOrganizations(organizations).map((organization) => <DropdownMenuRadioItem key={organization.id} value={organization.id} textValue={organizationLabel(organization)} className="min-w-0"><OrganizationAvatar name={organizationLabel(organization)} seed={organization.id} compact imageUrl={organization.imageUrl} className="size-5 rounded-md" /><span className="truncate">{organizationLabel(organization)}</span></DropdownMenuRadioItem>)}
                         </DropdownMenuRadioGroup>}
                         {!organizationsLoading && !organizationsError && organizations.length === 0 && <DropdownMenuItem disabled>No organizations yet</DropdownMenuItem>}
                         <DropdownMenuSeparator />

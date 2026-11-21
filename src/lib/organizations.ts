@@ -41,36 +41,6 @@ export function isValidSlug(slug: string): boolean {
     return SLUG_PATTERN.test(slug) && !slug.includes("--");
 }
 
-export function organizationInitials(name: string): string {
-    const parts = name.split(/[\s@._-]+/).filter(Boolean);
-    return ((parts[0]?.[0] ?? "?") + (parts.length > 1 ? (parts[1][0] ?? "") : "")).toUpperCase();
-}
-
-/** Generated-icon palette: [from, to] CSS colours built only from theme tokens (memory-type hues + primary). Light theme: white text; dark theme (lighter inks): background-coloured text. */
-export const ORGANIZATION_PALETTE: ReadonlyArray<readonly [string, string]> = [
-    ["var(--mem-fact-ink)", "var(--mem-fact)"],
-    ["var(--mem-decision-ink)", "var(--mem-decision)"],
-    ["var(--mem-procedure-ink)", "var(--mem-procedure)"],
-    ["var(--mem-episode-ink)", "var(--mem-episode)"],
-    ["var(--primary-text)", "var(--primary-hover)"],
-];
-
-/** Stable palette index for a name (FNV-1a over the trimmed, lower-cased name): same name, same colour, every render. */
-export function organizationPaletteIndex(name: string): number {
-    let hash = 0x811c9dc5;
-    for (const ch of name.trim().toLowerCase()) {
-        hash ^= ch.codePointAt(0)!;
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash % ORGANIZATION_PALETTE.length;
-}
-
-/** CSS background (a subtle diagonal gradient) of the generated icon for an organization name. */
-export function organizationIconBackground(name: string): string {
-    const [from, to] = ORGANIZATION_PALETTE[organizationPaletteIndex(name)];
-    return `linear-gradient(135deg, ${from}, ${to})`;
-}
-
 export function formatExpiry(iso: string, now = Date.now()): string {
     const ms = Date.parse(iso) - now;
     if (!Number.isFinite(ms)) return "";

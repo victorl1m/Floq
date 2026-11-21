@@ -146,7 +146,7 @@ export function OrganizationIdentity({ org }: { org: Organization }) {
                     onDrop={onDrop}
                     className="flex items-center gap-4 rounded-xl data-[dragging=true]:ring-2 data-[dragging=true]:ring-primary"
                 >
-                    <OrganizationAvatar name={organizationLabel(org)} imageUrl={org.imageUrl} preview={preview} className="size-16 rounded-2xl text-lg" />
+                    <OrganizationAvatar name={organizationLabel(org)} seed={org.id} imageUrl={org.imageUrl} preview={preview} className="size-16 rounded-2xl" />
                     <div className="flex min-w-0 flex-col gap-1">
                         <p className="truncate text-sm font-semibold">{organizationLabel(org)}</p>
                         <p className="text-xs text-muted-foreground">{canEdit ? "Choose, drop or paste an image. It is cropped to a square." : "Only owners and admins can change the image."}</p>
