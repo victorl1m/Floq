@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import WebSocket from "ws";
-import { agentToken, FrameDecoder, encodeFrame, isChallengeUrl, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
+import { ControlLock, USER_CONTROL_MESSAGE, isReadOnlyCdp, agentToken, FrameDecoder, encodeFrame, isChallengeUrl, isPrivateAddress, normalizeNavUrl, shouldBlockHost, tokenMatches, validateControl } from "../dist/image/floq-browserd-core.mjs";
 import { chromiumArgs, clientEnvFlags, findXvfb, readClientEnv, sandboxAttempts, sandboxFailureReason, sandboxPolicy, shortcutCommand, userNsHint } from "../dist/image/floq-browserd.mjs";
 import { formatBrowserStatus } from "../dist/image/floq-args.mjs";
 
@@ -987,4 +987,96 @@ test("client env: sanitized, turned into the measured flags, TZ passed to Chromi
 test("isChallengeUrl: only the public CAPTCHA hosts, https only", () => {
   for (const u of ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/x/0xAAA/light/fbE/new/normal/auto/", "https://www.google.com/recaptcha/api2/anchor?k=1", "https://www.recaptcha.net/recaptcha/enterprise/anchor", "https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html", "https://hcaptcha.com/x"]) assert.equal(isChallengeUrl(u), true, u);
   for (const u of ["https://www.google.com/search?q=recaptcha", "https://evilhcaptcha.com/", "https://hcaptcha.com.evil.test/", "http://challenges.cloudflare.com/", "https://cloudflare.com/", "about:blank", "", "not a url", "https://www.google.com/recaptchafake"]) assert.equal(isChallengeUrl(u), false, u);
+});
+
+// -------------------------------------------------------------- navigator.webdriver hidden + human take-control lock
+
+test("chromiumArgs: AutomationControlled is disabled (headful and headless fallback) and --enable-automation is never passed", () => {
+  for (const headful of [true, false]) {
+    const a = chromiumArgs({ sandbox: true, profile: "/p", headful });
+    assert.ok(a.includes("--disable-blink-features=AutomationControlled"), "headful=" + headful);
+    assert.ok(!a.some((x) => x.startsWith("--enable-automation")));
+  }
+});
+
+test("validateControl: control.set takes a boolean and an optional target", () => {
+  assert.equal(validateControl({ type: "control.set", held: true }).ok, true);
+  assert.equal(validateControl({ type: "control.set", targetId: TID, held: false }).ok, true);
+  assert.equal(validateControl({ type: "control.set", held: "yes" }).ok, false);
+  assert.equal(validateControl({ type: "control.set", targetId: "../x", held: true }).ok, false);
+});
+
+test("ControlLock: take holds, input extends, toggle releases, 60 s of idle releases (injected clock)", async () => {
+  let now = 1000; const events: string[] = [];
+  const lock = new ControlLock((tid, held) => events.push(tid + ":" + held), 60_000, () => now);
+  assert.equal(lock.held("a"), false);
+  lock.take("a"); lock.take("a");
+  assert.deepEqual(events, ["a:true"], "one change event");
+  now += 59_000; assert.equal(lock.held("a"), true);
+  lock.take("a"); // user input at 59 s extends
+  now += 59_000; assert.equal(lock.held("a"), true, "extended by input");
+  now += 2_000; assert.equal(lock.held("a"), false, "released after 60 s without input");
+  assert.deepEqual(events, ["a:true", "a:false"]);
+  lock.take("b"); lock.release("b"); assert.equal(lock.held("b"), false);
+  assert.deepEqual(events.slice(2), ["b:true", "b:false"]);
+  lock.release("b"); assert.equal(events.length, 4, "releasing twice is silent");
+});
+
+test("ControlLock: a real timer releases an idle hold and announces it", async () => {
+  const events: string[] = [];
+  const lock = new ControlLock((tid, held) => events.push(tid + ":" + held), 40);
+  lock.take("a");
+  await new Promise((r) => setTimeout(r, 150));
+  assert.deepEqual(events, ["a:true", "a:false"]);
+});
+
+test("isReadOnlyCdp: observation passes, driving does not", () => {
+  for (const m of ["Page.captureScreenshot", "Accessibility.getFullAXTree", "DOMSnapshot.captureSnapshot", "Page.enable", "Runtime.enable", "DOM.getDocument"]) assert.equal(isReadOnlyCdp(m), true, m);
+  for (const m of ["Page.navigate", "Input.dispatchMouseEvent", "Input.insertText", "Runtime.evaluate", "Runtime.callFunctionOn", "Page.reload", "Emulation.setDeviceMetricsOverride"]) assert.equal(isReadOnlyCdp(m), false, m);
+});
+
+test("daemon: user input takes control, the linked agent is refused (read-only still works), toggle and idle release it", async (t) => {
+  const d = await startDaemon(t);
+  d.send({ type: "page.open", nodeId: "n1" });
+  const p1 = await d.waitFor((m) => m.type === "page" && m.nodeId === "n1");
+  const AGENT = "22222222-2222-2222-2222-222222222222";
+  d.send({ type: "agent.scope", agent: AGENT, nodeId: "n1" });
+  const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${AGENT}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, AGENT) } });
+  await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+  t.after(() => ws.close());
+  let id = 0; const pending = new Map<number, (m: any) => void>(); const events: any[] = [];
+  ws.on("message", (raw) => { const m = JSON.parse(String(raw)); if (m.id !== undefined) pending.get(m.id)?.(m); else events.push(m); });
+  const call = (method: string, params: any = {}, sessionId?: string) => new Promise<any>((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  await call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  for (let i = 0; i < 40 && !events.some((e) => e.method === "Target.attachedToTarget"); i++) await new Promise((r) => setTimeout(r, 50));
+  const sid = events.find((e) => e.method === "Target.attachedToTarget").params.sessionId;
+  const targetId = p1.targetId;
+
+  assert.equal((await call("Page.navigate", { url: "https://a.example/" }, sid)).error, undefined, "free: the agent drives");
+  // The user types in the node: control is taken by the daemon, announced, and the agent is refused.
+  d.send({ type: "input.text", targetId, text: "hi" });
+  assert.deepEqual(await d.waitFor((m) => m.type === "control" && m.held === true), { type: "control", targetId, held: true });
+  const r = await call("Page.navigate", { url: "https://b.example/" }, sid);
+  assert.equal(r.error?.message, USER_CONTROL_MESSAGE);
+  assert.match(r.error.message, /user is controlling this browser; wait and retry/);
+  assert.equal((await call("Input.dispatchMouseEvent", { type: "mousePressed", x: 1, y: 1 }, sid)).error?.message, USER_CONTROL_MESSAGE);
+  assert.equal((await call("Runtime.evaluate", { expression: "1" }, sid)).error?.message, USER_CONTROL_MESSAGE);
+  assert.equal((await call("Target.closeTarget", { targetId })).error?.message, USER_CONTROL_MESSAGE);
+  assert.notEqual((await call("Page.captureScreenshot", {}, sid)).error?.message, USER_CONTROL_MESSAGE, "screenshots still reach the page");
+  assert.equal((await call("Page.enable", {}, sid)).error, undefined, "plumbing still works");
+  assert.ok(!/b\.example/.test(d.chromiumLog()), "the refused navigation never reached Chromium");
+
+  // Toggle off releases.
+  d.send({ type: "control.set", targetId, held: false });
+  await d.waitFor((m) => m.type === "control" && m.held === false);
+  assert.equal((await call("Page.navigate", { url: "https://c.example/" }, sid)).error, undefined);
+  // The toggle can take control with no input at all; hover alone does not.
+  d.send({ type: "input.mouse", targetId, kind: "mouseMoved", x: 1, y: 1, button: "none", buttons: 0, clickCount: 0, modifiers: 0 });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal((await call("Page.navigate", { url: "https://d.example/" }, sid)).error, undefined, "bare hover is not control");
+  d.send({ type: "control.set", targetId, held: true });
+  await d.waitFor((m) => m.type === "control" && m.held === true && d.msgs.filter((x) => x.type === "control").length >= 3);
+  assert.equal((await call("Page.navigate", { url: "https://e.example/" }, sid)).error?.message, USER_CONTROL_MESSAGE);
+  d.send({ type: "shutdown" });
+  await d.waitFor((m) => m.type === "exit");
 });
