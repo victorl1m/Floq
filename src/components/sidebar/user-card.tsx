@@ -12,8 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { useIsAdmin } from "@/components/settings/use-admin";
 import { useRuntime } from "@/lib/runtime/store";
 import { OrganizationHost } from "@/components/organization/organization-host";
-import { OrganizationAvatar } from "@/components/organization/organization-avatar";
-import { organizationLabel, ROLE_LABEL, useOrganizationUi } from "@/lib/organizations";
+import { ROLE_LABEL, useOrganizationUi } from "@/lib/organizations";
 
 function initials(label: string): string {
     const parts = label.split(/[\s@._-]+/).filter(Boolean);
@@ -74,12 +73,6 @@ export default function UserCard() {
                                 <Badge variant="outline" className="w-fit">{roleLabel}</Badge>
                             </div>
                         </div>
-                        {activeOrganization && (
-                            <div className="flex items-center gap-2 px-2 pb-2.5 text-xs text-muted-foreground" data-testid="account-menu-org">
-                                <OrganizationAvatar name={organizationLabel(activeOrganization)} imageUrl={activeOrganization.imageUrl} className="size-5 rounded-md text-[0.6rem]" />
-                                <span className="truncate">{organizationLabel(activeOrganization)}</span>
-                            </div>
-                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => openSettings("account")}>
                             <IconUser />

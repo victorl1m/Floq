@@ -18,7 +18,7 @@ test('Browser section holds the agent browser and egress controls', async ({ pag
 test('LLM Providers section holds the usage fallback chain', async ({ page }) => {
   await page.goto('/e2e/harness/settings.html?section=accounts');
   await expect(page.getByText('Keep agents working')).toBeVisible();
-  await expect(page.getByText('Lower Claude model')).toBeVisible();
+  await expect(page.getByText('Smaller Claude model')).toBeVisible();
   await page.waitForTimeout(400);
   await page.screenshot({ path: '.tmp/shots/settings-llm-providers.png' });
   await page.getByRole('switch', { name: 'Keep agents working' }).click();

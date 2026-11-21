@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const open = async (page: Page, query = '') => {
   await page.goto(`/e2e/harness/fallback.html${query}`);
-  await expect(page.getByText('When Claude hits a usage limit')).toBeVisible();
+  await expect(page.getByText('Usage limits')).toBeVisible();
 };
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: Array<{ name: string; args: Record<string, unknown> | unknown[] }> }).__calls);
 const switchOf = (page: Page, name: string) => page.getByRole('switch', { name: new RegExp(name) });
@@ -10,12 +10,12 @@ const switchOf = (page: Page, name: string) => page.getByRole('switch', { name: 
 test('T-13 defaults: master on, model downgrade on, account and Codex off, swap-back on', async ({ page }) => {
   await open(page);
   await expect(switchOf(page, 'Keep agents working')).toBeChecked();
-  await expect(switchOf(page, 'Lower Claude model')).toBeChecked();
+  await expect(switchOf(page, 'Smaller Claude model')).toBeChecked();
   await expect(switchOf(page, 'Another Claude account')).not.toBeChecked();
   await expect(switchOf(page, 'Codex')).not.toBeChecked();
-  await expect(switchOf(page, 'Switch back automatically')).toBeChecked();
+  await expect(switchOf(page, 'Switch back after the reset')).toBeChecked();
   const items = page.getByRole('list', { name: 'Fallback order' }).getByRole('listitem');
-  await expect(items.nth(0)).toContainText('Lower Claude model');
+  await expect(items.nth(0)).toContainText('Smaller Claude model');
 });
 
 test('T-13 reorder with the keyboard-accessible buttons persists the new order through the patch', async ({ page }) => {
@@ -28,17 +28,17 @@ test('T-13 reorder with the keyboard-accessible buttons persists the new order t
   expect(steps).toEqual(['model', 'codex', 'account']);
   const items = page.getByRole('list', { name: 'Fallback order' }).getByRole('listitem');
   await expect(items.nth(1)).toContainText('Codex');
-  await expect(page.getByRole('button', { name: 'Move Lower Claude model up' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Move Smaller Claude model up' })).toBeDisabled();
 });
 
 test('T-13 toggling a step and the master switch patch the setting; steps lock when the master is off', async ({ page }) => {
   await open(page);
-  await switchOf(page, 'Lower Claude model').click();
+  await switchOf(page, 'Smaller Claude model').click();
   await switchOf(page, 'Keep agents working').click();
   const patches = (await calls(page)).filter((c) => c.name === 'patch').map((c) => (c.args as { usageFallback: { enabled: boolean; steps: Array<{ kind: string; enabled: boolean }> } }).usageFallback);
   expect(patches[0]!.steps[0]!.enabled).toBe(false);
   expect(patches[1]!.enabled).toBe(false);
-  await expect(switchOf(page, 'Lower Claude model')).toBeDisabled();
+  await expect(page.getByText('Smaller Claude model')).toBeHidden(); // steps are hidden while the fallback is off
 });
 
 for (const kind of ['model', 'paused']) {
@@ -87,8 +87,8 @@ test('T-13 accounts: Add account opens the sign-in dialog', async ({ page }) => 
 
 test('T-13 unavailable steps say why they are skipped (no second account, Codex not connected) and show nothing when available', async ({ page }) => {
   await open(page, '?single=1&codex=off');
-  await expect(page.getByTestId('usage-fallback-account-unavailable')).toContainText('No second account yet');
-  await expect(page.getByTestId('usage-fallback-codex-unavailable')).toContainText('Codex is not connected');
+  await expect(page.getByTestId('usage-fallback-account-unavailable')).toContainText('No second account connected');
+  await expect(page.getByTestId('usage-fallback-codex-unavailable')).toContainText('Codex not connected');
   await open(page);
   await expect(page.getByTestId('usage-fallback-account-unavailable')).toHaveCount(0);
   await expect(page.getByTestId('usage-fallback-codex-unavailable')).toHaveCount(0);
