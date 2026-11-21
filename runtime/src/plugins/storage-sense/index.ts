@@ -2,7 +2,8 @@ import { definePlugin } from "../sdk.js";
 import { summarize, trimEntries, type StorageSenseReport } from "../../storageSense/plan.js";
 import { dueTrigger, effectiveConfig } from "../../storageSense/schedule.js";
 
-const FIFTEEN_MIN = 15 * 60_000;
+const CHECK_MS = 5 * 60_000;
+const FIRST_CHECK_MS = 20_000; // first automatic run soon after the runtime starts, not after a full interval
 const MANUAL_BUDGET_MS = 60_000;
 
 export const storageSenseManifest = {
@@ -29,8 +30,11 @@ export const storageSenseManifest = {
   contributes: { routes: true },
 };
 
+const timers = new Set<ReturnType<typeof setTimeout>>();
+
 export default definePlugin({
   manifest: storageSenseManifest,
+  stop() { for (const t of timers) clearTimeout(t); timers.clear(); },
   start(ctx) {
     const store = async (userId: string, report: StorageSenseReport): Promise<void> => {
       await ctx.kv.set(userId, "lastRunAt", Date.parse(report.at));
@@ -67,7 +71,8 @@ export default definePlugin({
     });
 
     // Daily per awake shard, plus the low-space trigger. Never wakes a sleeping home. One user at a time; runs never overlap.
-    ctx.schedule(FIFTEEN_MIN, async () => {
+    // Checked every few minutes (a shard that wakes up is picked up quickly) and once shortly after start.
+    const sweep = async (): Promise<void> => {
       const awake = new Set(ctx.storageSense.awakeUserIds());
       for (const userId of await ctx.enabledUserIds()) {
         if (!awake.has(userId)) continue;
@@ -83,6 +88,10 @@ export default definePlugin({
         }
         await new Promise<void>((r) => setImmediate(r));
       }
-    });
+    };
+    ctx.schedule(CHECK_MS, sweep);
+    const first = setTimeout(() => { timers.delete(first); void sweep().catch((e) => ctx.log.warn("storage sense first check failed", { error: String(e).slice(0, 120) })); }, FIRST_CHECK_MS);
+    first.unref?.();
+    timers.add(first);
   },
 });
