@@ -1,6 +1,6 @@
 import type { BrowserData, BrowserEgress, BrowserImportPreview, BrowserImportResult, BrowserStatus } from "./browser-types";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { collectBrowserEnv } from "./browser-env";
+import { collectBrowserEnv } from "./browser-env.ts"; // explicit extension: client.ts is also loaded by node --test unit tests
 import type {
   PluginRepoPreview,
   PluginUpdateNotice,
