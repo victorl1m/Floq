@@ -65,10 +65,11 @@ export function StorageSensePanel({ pluginId, onState }: { pluginId: string; onS
             {state.lastRunAt && <> · last run {new Date(state.lastRunAt).toLocaleString()}</>}
             {!state.awake && <> · your workspace is asleep; cleanup runs while it is awake</>}
           </p>
-          {!report ? <PluginState state="empty" title="No report yet" description="Press Preview to see what Storage Sense would remove. Nothing is deleted by a preview." />
+          {!report && state.lastRunAt ? <PluginState state="empty" title={`Last run ${new Date(state.lastRunAt).toLocaleString()}: nothing to remove`} description="Storage Sense ran and found nothing to clean up." />
+            : !report ? <PluginState state="empty" title="No report yet" description="Press Preview to see what Storage Sense would remove. Nothing is deleted by a preview." />
             : <div className="space-y-4">
               <p className="text-sm">
-                {report.dryRun ? "Preview" : "Run"} ({report.trigger}): {report.dryRun ? "could remove" : "removed"} <b>{report.counts.removed}</b>{report.freedBytes ? <> ({size(report.freedBytes)})</> : null}, kept {report.counts.kept}
+                {report.dryRun ? "Preview" : "Run"} ({report.trigger}): {report.counts.removed === 0 && report.counts.kept === 0 && report.counts.failed === 0 ? <>nothing to remove</> : <>{report.dryRun ? "could remove" : "removed"} <b>{report.counts.removed}</b>{report.freedBytes ? <> ({size(report.freedBytes)})</> : null}, kept {report.counts.kept}</>}
                 {report.counts.failed ? <>, {report.counts.failed} failed</> : null}{report.partial ? " · stopped at its time limit, continues next run" : ""}
               </p>
               {groups.map((g) => (
