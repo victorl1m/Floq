@@ -2,7 +2,7 @@
 // Contract: docs/design/agent-browser.md §A.5 / §A.8. Many nodes per canvas, one page each; geometry is stored locally per project.
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Handle, NodeResizer, Position, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { IconUpload, IconArrowLeft, IconArrowRight, IconGripHorizontal, IconPlus, IconRefresh, IconShieldCheck, IconWorld, IconX } from "@tabler/icons-react";
+import { IconUpload, IconArrowLeft, IconArrowRight, IconHandStop, IconGripHorizontal, IconPlus, IconRefresh, IconShieldCheck, IconWorld, IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { CanvasCtx } from "@/components/canvas/canvas-context";
 import { BrowserImportDialog } from "@/components/canvas/browser-import-dialog";
@@ -55,7 +55,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   const { client, openSettings, close, linkedAgents, newBrowser } = useContext(BrowserCtx);
   const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
   const stream = useBrowserStream(client, true, nodeId);
-  const { state, frame, targetId, nav: info, activity, cursor, send, reconnect, dialog, clipboard, download, egress } = stream;
+  const { state, frame, targetId, nav: info, activity, control, cursor, send, reconnect, dialog, clipboard, download, egress } = stream;
   // Ctrl/Cmd+C in the page: the daemon reports the selected text and it lands on the user's own clipboard.
   useEffect(() => { if (clipboard) void navigator.clipboard?.writeText(clipboard.text).catch(() => {}); }, [clipboard]);
   const linked = linkedAgents(id);
@@ -261,7 +261,10 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 onFocus={(e) => { setUrlFocused(true); e.currentTarget.select(); }} onBlur={() => setUrlFocused(false)}
                 onChange={(e) => setUrlText(e.target.value)}
                 onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); go(); } else if (e.key === "Escape") { setUrlText(info?.url ?? ""); e.currentTarget.blur(); } }} />
-              {agentBusy && <span data-testid="browser-agent-pulse" className="flex shrink-0 items-center gap-1 pr-1 text-[10px] font-medium text-primary"><span className="size-1.5 animate-pulse rounded-full bg-primary" />Agent is using this page</span>}
+              <button type="button" aria-label="Take control" aria-pressed={control} title={control ? "Release control to the agent" : "Take control: agents cannot drive this page while you do"} data-testid="browser-take-control"
+                className={"flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium " + (control ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
+                onClick={() => send({ type: "control.set", held: !control })}><IconHandStop size={14} />{control ? "You have control" : "Take control"}</button>
+              {agentBusy && !control && <span data-testid="browser-agent-pulse" className="flex shrink-0 items-center gap-1 pr-1 text-[10px] font-medium text-primary"><span className="size-1.5 animate-pulse rounded-full bg-primary" />Agent is using this page</span>}
             </div>
             {download && (
               <div role="status" data-testid="browser-download" className="flex shrink-0 items-center gap-1.5 border-b border-border/60 bg-muted/50 px-2.5 py-1 text-[11px] text-muted-foreground">

@@ -16,6 +16,8 @@ export interface BrowserStreamState {
   nav: BrowserNav | null;
   /** Last agent activity on this page (epoch ms), 0 when none. */
   activity: number;
+  /** The user holds the page (take-control lock, owned by the daemon): agents are refused. */
+  control: boolean;
   /** CSS cursor under the pointer in the page. */
   cursor: string;
   agents: number;
@@ -29,7 +31,7 @@ export interface BrowserStreamState {
   /** Where the browser's traffic leaves from; null until the runtime says (older runtimes never do: "via server"). */
   egress: BrowserEgress | null;
 }
-const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, cursor: "default", agents: 0, error: null, dialog: null, clipboard: null, download: null, egress: null };
+const INITIAL: BrowserStreamState = { state: "connecting", frame: null, targetId: null, nav: null, activity: 0, control: false, cursor: "default", agents: 0, error: null, dialog: null, clipboard: null, download: null, egress: null };
 
 const CURSORS = new Set(["default", "pointer", "text", "vertical-text", "grab", "grabbing", "crosshair", "move", "wait", "progress", "help", "not-allowed", "no-drop", "copy", "alias", "context-menu", "cell", "zoom-in", "zoom-out", "all-scroll", "col-resize", "row-resize", "n-resize", "e-resize", "s-resize", "w-resize", "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize"]);
 /** Unknown cursor names fall back to `default` (never feed page-controlled text into CSS). */
@@ -52,11 +54,12 @@ export function reduceBrowser(prev: BrowserStreamState, msg: BrowserServerMessag
     case "dialogClosed": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, dialog: null };
     case "clipboard": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, clipboard: { text: msg.text, seq: (prev.clipboard?.seq ?? 0) + 1 } };
     case "download": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, download: { name: msg.name || prev.download?.name || "file", state: msg.state } };
-    case "page": return { ...prev, dialog: null, targetId: msg.targetId, frame: prev.frame?.targetId === msg.targetId ? prev.frame : null, nav: prev.nav?.targetId === msg.targetId ? prev.nav : null };
+    case "page": return { ...prev, dialog: null, control: prev.targetId === msg.targetId ? prev.control : false, targetId: msg.targetId, frame: prev.frame?.targetId === msg.targetId ? prev.frame : null, nav: prev.nav?.targetId === msg.targetId ? prev.nav : null };
     case "frame": { if (prev.targetId && msg.targetId !== prev.targetId) return prev; const { type: _t, ...frame } = msg; return { ...prev, frame }; }
     case "nav": { if (prev.targetId && msg.targetId !== prev.targetId) return prev; const { type: _t, ...nav } = msg; return { ...prev, nav }; }
     case "cursor": return { ...prev, cursor: normalizeCursor(msg.cursor) };
     case "agentActivity": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, activity: msg.at };
+    case "control": return prev.targetId && msg.targetId !== prev.targetId ? prev : { ...prev, control: msg.held };
     case "clients": return { ...prev, agents: msg.agents };
     case "egress": { const { type: _t, ...egress } = msg; return { ...prev, egress }; }
     case "error": return { ...prev, error: msg.code };
