@@ -11,6 +11,8 @@ import type { PluginStorageSense, AttentionPending, AttentionResolved, WebhookHa
 
 export const FETCH_TIMEOUT_MS = 15_000;
 export const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+/** `ctx.fetchUserUrl` only: self-hosted services (WAHA media) answer with larger files than public APIs. */
+export const USER_FETCH_MAX_BYTES = 24 * 1024 * 1024;
 
 export interface RouteEntry { method: PluginRouteMethod; segments: string[]; handler: PluginRouteHandler }
 
@@ -97,7 +99,7 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
     }
     return scrubSecrets(text, variants);
   };
-  async function limitedFetch(u: URL, init: PluginFetchInit): Promise<PluginFetchResponse> {
+  async function limitedFetch(u: URL, init: PluginFetchInit, maxBytes = FETCH_MAX_BYTES): Promise<PluginFetchResponse> {
     const res = await doFetch(u, { method: init.method, headers: init.headers, body: init.body as BodyInit | undefined, redirect: "error", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -107,7 +109,7 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
         const { done, value } = await reader.read();
         if (done) break;
         size += value.length;
-        if (size > FETCH_MAX_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("plugin fetch: response exceeds the 5 MiB limit"); }
+        if (size > maxBytes) { await reader.cancel().catch(() => undefined); throw new Error(`plugin fetch: response exceeds the ${maxBytes / 1024 / 1024} MiB limit`); }
         chunks.push(value);
       }
     }
@@ -265,7 +267,7 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
       const saved = await ctx.settings.get(userId);
       const origins = keys.flatMap((k) => { try { return typeof saved[k] === "string" ? [new URL(saved[k] as string).origin] : []; } catch { return []; } });
       if (!origins.includes(u.origin)) throw new Error("plugin fetch: address is not one the owner configured in the plugin settings");
-      return limitedFetch(u, init);
+      return limitedFetch(u, init, USER_FETCH_MAX_BYTES);
     },
     db: {
       query: dbQuery,

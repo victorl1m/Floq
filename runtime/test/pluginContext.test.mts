@@ -1,7 +1,7 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { PluginHost } from "../dist/plugins/host.js";
-import { FETCH_MAX_BYTES, hostAllowed, matchRoute, compilePattern } from "../dist/plugins/context.js";
+import { FETCH_MAX_BYTES, USER_FETCH_MAX_BYTES, hostAllowed, matchRoute, compilePattern } from "../dist/plugins/context.js";
 import { fakePool, closeAll } from "./fixtures/plugins/pgPool.mts";
 import { makeEcho } from "./fixtures/plugins/echo/index.mts";
 
@@ -52,6 +52,20 @@ test("fetch: refuses redirects, passes a timeout signal, and caps the body at 5 
   assert.ok(seen.signal instanceof AbortSignal);
   const small = await setup({ fetchImpl: async () => new Response(new Uint8Array(FETCH_MAX_BYTES)) });
   assert.equal((await small.ctx.fetch("https://api.echo.test/ok")).bytes.length, FETCH_MAX_BYTES);
+});
+
+test("fetchUserUrl allows 24 MiB responses and refuses more; ctx.fetch stays at 5 MiB", async () => {
+  const f = await fakePool(); await f.addUser("admin");
+  let size = USER_FETCH_MAX_BYTES;
+  const { plugin, probe } = makeEcho(undefined, { id: "bigurl", scope: "install", contributes: { routes: true, migrations: false }, settings: [{ key: "baseUrl", type: "url", label: "Base" }] });
+  const host = new PluginHost(f.pool as never, { plugins: [plugin], encryptionKey: Buffer.alloc(32, 9), fetchImpl: (async () => new Response(new Uint8Array(size))) as never, sink: () => undefined });
+  await host.load(); await host.enable("bigurl", "admin");
+  await host.handle({ userId: "admin", method: "PUT", pathname: "/v1/plugins/bigurl/settings", query: new URLSearchParams(), readBody: async () => ({ settings: { baseUrl: "http://waha.local:3000" } }), requireAdmin: async () => undefined });
+  assert.equal((await probe.ctx.fetchUserUrl("admin", "http://waha.local:3000/f")).bytes.length, USER_FETCH_MAX_BYTES);
+  size = USER_FETCH_MAX_BYTES + 1;
+  await assert.rejects(probe.ctx.fetchUserUrl("admin", "http://waha.local:3000/f"), /24 MiB/);
+  size = FETCH_MAX_BYTES + 1;
+  await assert.rejects(probe.ctx.fetch("https://api.echo.test/f"), /5 MiB/);
 });
 
 test("log: tagged with the plugin id and secret values never appear", async () => {

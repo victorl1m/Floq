@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PluginHost } from "../dist/plugins/host.js";
+import { PluginHost, PLUGIN_API_MAX_BYTES } from "../dist/plugins/host.js";
+import { HttpError } from "../dist/errors.js";
 import { PluginInstaller } from "../dist/plugins/installer.js";
 import { CatalogClient, PACKAGE_PATH_PREFIX } from "../dist/plugins/catalog.js";
 import { loadInstalledPackages, packageDir } from "../dist/plugins/installed.js";
@@ -183,6 +184,22 @@ test("update keeps data, settings and the webhook token, and runs migrations add
   assert.equal((await t.db.query("SELECT 1 FROM floq_plugin_user_settings WHERE plugin_id='echo2'")).rows.length, 1);
   assert.deepEqual((await t.db.query("SELECT version, webhook_token_hash FROM floq_plugins WHERE id='echo2'")).rows[0], { version: "1.3.0", webhook_token_hash: "a".repeat(64) });
   assert.equal(t.host.statusOf("echo2"), "enabled");
+});
+
+test("plugin api routes accept bodies up to PLUGIN_API_MAX_BYTES (1 MiB ok, 9 MiB is 413)", async () => {
+  const t = await setup([build({ version: "1.0.0", runtime: 'export default { start(ctx) { ctx.routes.post("/up", ({ body }) => ({ n: JSON.stringify(body).length })); } };' })]);
+  await t.install(); await t.call("admin", "POST", "/v1/plugins/echo2/enable"); await t.call("member", "PUT", "/v1/plugins/echo2/user", { enabled: true });
+  assert.equal(PLUGIN_API_MAX_BYTES, 8 * 1024 * 1024);
+  const post = (size: number, path = "/v1/plugins/echo2/api/up") => {
+    const text = JSON.stringify({ data: "x".repeat(size) });
+    return t.host.handle({
+      userId: "member", method: "POST", pathname: path, query: new URLSearchParams(), requireAdmin: async () => undefined,
+      // same contract as server.ts readJson: the limit is applied as given, 413 payload_too_large above it
+      readBody: async (limit = 64 * 1024) => { if (text.length > limit) throw new HttpError(413, "payload_too_large", "Request body too large"); return JSON.parse(text); },
+    }) as Promise<any>;
+  };
+  assert.equal((await post(1024 * 1024)).body.n, 1024 * 1024 + 11);
+  await assert.rejects(post(9 * 1024 * 1024), (e: any) => e.status === 413 && e.code === "payload_too_large");
 });
 
 test("uninstall: built-ins cannot be uninstalled; the package, cache and registry entry go, the data stays until 'delete data'", async () => {

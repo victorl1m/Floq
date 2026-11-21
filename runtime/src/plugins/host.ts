@@ -18,6 +18,8 @@ export const MAX_START_ATTEMPTS = 3;
 /** Written into every skill copy a plugin installs, so removal never touches a skill the user already had under the same name. */
 export const PLUGIN_MARKER = ".floq-plugin";
 export const WEBHOOK_MAX_BYTES = 256 * 1024;
+/** Body cap of `/v1/plugins/<id>/api/*` (plugin UI uploads); the core default is 64 KiB. */
+export const PLUGIN_API_MAX_BYTES = 8 * 1024 * 1024;
 export const WEBHOOK_RATE_MAX = 60;
 export const WEBHOOK_RATE_WINDOW_MS = 60_000;
 const sha256Hex = (v: string) => createHash("sha256").update(v).digest("hex");
@@ -864,7 +866,7 @@ export class PluginHost {
       await this.requireActiveFor(e, i.userId);
       const hit = matchRoute(e.built.routes, method, "/" + rest.slice(2).join("/"));
       if (!hit) throw notFound("Route not found");
-      const body = method === "POST" || method === "PUT" ? await i.readBody() : undefined;
+      const body = method === "POST" || method === "PUT" ? await i.readBody(PLUGIN_API_MAX_BYTES) : undefined;
       const result = await this.runHandler(e, () => hit.entry.handler({ userId: i.userId, params: hit.params, query: Object.fromEntries(i.query), body }));
       return { status: 200, body: result };
     }
