@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { IconAlertTriangle, IconTrash } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ErrorBanner } from "@/components/ui/app-dialog";
 import { RuntimeError } from "@/lib/runtime/client";
 import { sessionsForWorkspace } from "@/lib/runtime/projects";
@@ -99,7 +100,7 @@ export default function WorktreeDeleteDialog({ target, onClose }: { target: Work
             status.unsavedCommits ? `${plural(status.unsavedCommits, "commit")} that exist only on this branch will be lost` : null,
           ].filter(Boolean).join(", and ")}.
         </p>
-        <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" checked={understood} onChange={(event) => setUnderstood(event.target.checked)} /><span>I understand and want to discard this work.</span></label>
+        <label className="flex items-start gap-2"><Checkbox className="mt-0.5" checked={understood} onCheckedChange={(v) => setUnderstood(v === true)} /><span>I understand and want to discard this work.</span></label>
       </div>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <AlertDialogFooter>
