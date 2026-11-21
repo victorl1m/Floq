@@ -50,6 +50,8 @@ export type Control =
   | { type: "dialog.reply"; targetId?: string; accept: boolean; text?: string }
   | { type: "nav.back" | "nav.forward" | "nav.reload" | "nav.stop"; targetId?: string }
   | { type: "viewport"; targetId: string; width: number; height: number; dpr: number }
+  /** The user takes control of the page (held) or hands it back. The daemon is the single source of truth (ControlLock). */
+  | { type: "control.set"; targetId?: string; held: boolean }
   /** One page per Browser node: idempotent open (adopts an unclaimed user tab first), close, and agent scoping by link. */
   | { type: "page.open"; nodeId: string; url?: string }
   | { type: "page.close"; nodeId: string }
@@ -153,6 +155,10 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
       return { ok: true, msg: { type: "input.key", ...(targetId ? { targetId } : {}), kind, key, code, text, modifiers } };
     }
     case "input.text": { const targetId = optTarget(); return targetId !== false && textOk(m.text) ? { ok: true, msg: { type: "input.text", ...(targetId ? { targetId } : {}), text: m.text } } : bad(); }
+    case "control.set": {
+      const targetId = optTarget();
+      return targetId === false || typeof m.held !== "boolean" ? bad() : { ok: true, msg: { type: "control.set", ...(targetId ? { targetId } : {}), held: m.held } };
+    }
     case "dialog.reply": {
       const targetId = optTarget();
       if (targetId === false || typeof m.accept !== "boolean" || (m.text !== undefined && (typeof m.text !== "string" || m.text.length > 4096))) return bad();
@@ -374,6 +380,41 @@ export function isChallengeUrl(raw: string): boolean {
 
 export type TargetInfo = { targetId: string; type: string; title: string; url: string; attached?: boolean; openerId?: string; browserContextId?: string };
 
+/** Shown to an agent (as the CDP error, so it lands in its tool error) while the user drives the page. */
+export const USER_CONTROL_MESSAGE = "The user is controlling this browser; wait and retry";
+export const CONTROL_IDLE_MS = 60_000;
+/** CDP methods an agent may still use while the user holds the page: observation only (snapshots, screenshots) and plumbing. */
+const READONLY_CDP = new Set([
+  "Page.captureScreenshot", "Page.getFrameTree", "Page.getLayoutMetrics", "Page.getNavigationHistory", "Page.getResourceTree",
+  "DOM.getDocument", "DOM.describeNode", "DOM.resolveNode", "DOM.getBoxModel", "DOM.querySelector", "DOM.querySelectorAll", "DOM.getOuterHTML", "DOM.getContentQuads", "DOM.requestChildNodes", "DOM.getFrameOwner", "DOM.getNodeForLocation",
+  "Runtime.runIfWaitingForDebugger", "Runtime.releaseObject", "Runtime.releaseObjectGroup", "Runtime.getProperties",
+  "Page.setLifecycleEventsEnabled", "Page.addScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Emulation.setFocusEmulationEnabled",
+]);
+export function isReadOnlyCdp(method: string): boolean {
+  return READONLY_CDP.has(method) || method.startsWith("Accessibility.") || method.startsWith("DOMSnapshot.") || /\.(enable|disable)$/.test(method) || method.startsWith("Target.") ;
+}
+
+/** Who holds a page: the user (human take-control lock). Held by explicit take, or by any user input; released by the toggle or after idleMs without input. */
+export class ControlLock {
+  private until = new Map<string, number>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  constructor(private onChange: (targetId: string, held: boolean) => void, private idleMs = CONTROL_IDLE_MS, private now: () => number = Date.now) {}
+  held(targetId: string): boolean { const u = this.until.get(targetId); if (u === undefined) return false; if (this.now() >= u) { this.release(targetId); return false; } return true; }
+  /** Take or extend (every user input extends it). */
+  take(targetId: string): void {
+    const was = this.until.has(targetId);
+    this.until.set(targetId, this.now() + this.idleMs);
+    clearTimeout(this.timers.get(targetId));
+    const t = setTimeout(() => { if (this.until.has(targetId) && this.now() >= this.until.get(targetId)!) this.release(targetId); else if (this.until.has(targetId)) this.take(targetId); }, this.idleMs + 5);
+    t.unref?.(); this.timers.set(targetId, t);
+    if (!was) this.onChange(targetId, true);
+  }
+  release(targetId: string): void {
+    clearTimeout(this.timers.get(targetId)); this.timers.delete(targetId);
+    if (this.until.delete(targetId)) this.onChange(targetId, false);
+  }
+}
+
 const BLOCKED_METHODS = new Set(["Browser.close", "Browser.crash", "Browser.crashGpuProcess", "Browser.setPermission"]);
 
 /** Multiplexes the daemon and any number of agent clients over one CDP pipe.
@@ -401,6 +442,9 @@ export class CdpMux {
   reserved: string[] = [];
   /** client id -> the one targetId it is linked to (null = linked but the page is not up yet). Absent = unscoped. */
   private scopes = new Map<number, string | null>();
+
+  /** True while the user controls that page: the agent path refuses everything but read-only methods. Set by the daemon. */
+  userHeld: (targetId: string) => boolean = () => false;
 
   /** Whether `targetId` is part of this client's world: a scoped client sees only its page, an unscoped one sees every unclaimed page. */
   visible(clientId: number, targetId: string): boolean {
@@ -514,6 +558,7 @@ export class CdpMux {
     if (sessionId !== undefined) {
       if (this.owners.get(sessionId) !== client.id) return fail("Session with given id not found.");
       const tid = this.sessionTarget.get(sessionId);
+      if (tid && this.userHeld(tid) && !isReadOnlyCdp(method)) return fail(USER_CONTROL_MESSAGE);
       if (tid && !method.startsWith("Target.")) this.onActivity(tid);
       return this.forward(client, id, method, params, sessionId);
     }
@@ -551,6 +596,7 @@ export class CdpMux {
       case "Target.attachToTarget": case "Target.closeTarget": case "Target.activateTarget": case "Target.getTargetInfo": {
         const tid = typeof params.targetId === "string" ? params.targetId : undefined;
         if (tid && this.targets.has(tid) && !this.visible(client.id, tid)) return fail("No target with given id found");
+        if (tid && (method === "Target.closeTarget" || method === "Target.activateTarget") && this.userHeld(tid)) return fail(USER_CONTROL_MESSAGE);
         return this.forward(client, id, method, params, undefined);
       }
       default:

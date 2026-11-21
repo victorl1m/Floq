@@ -49,6 +49,8 @@ export type ClientMessage =
   | { type: "nav.back" } | { type: "nav.forward" } | { type: "nav.reload" } | { type: "nav.stop" }
   /** Answer the page's open alert/confirm/prompt. */
   | { type: "dialog.reply"; accept: boolean; text?: string }
+  /** The user takes control of the page (agents are refused) or hands it back. */
+  | { type: "control.set"; held: boolean }
   /** Follow the node's size (CSS px of the live view). Applied with Emulation.setDeviceMetricsOverride. */
   | { type: "viewport"; width: number; height: number; dpr: number }
   /** The user closed the node: its page is destroyed. */
@@ -143,6 +145,7 @@ export function validateClientMessage(input: unknown): ClientValidation {
     }
     case "nav.back": case "nav.forward": case "nav.reload": case "nav.stop":
       return { ok: true, msg: { type: m.type } };
+    case "control.set": return typeof m.held === "boolean" ? { ok: true, msg: { type: "control.set", held: m.held } } : bad();
     case "dialog.reply": {
       if (typeof m.accept !== "boolean" || (m.text !== undefined && (typeof m.text !== "string" || m.text.length > 4096))) return bad();
       return { ok: true, msg: { type: "dialog.reply", accept: m.accept, ...(typeof m.text === "string" ? { text: m.text } : {}) } };
@@ -167,6 +170,8 @@ export type ViewerMessage =
   | { type: "cursor"; cursor: string }
   | { type: "nav"; targetId: string; url: string; title: string; loading: boolean; canBack: boolean; canForward: boolean }
   | { type: "agentActivity"; targetId: string; at: number }
+  /** Daemon's take-control lock changed for this page. */
+  | { type: "control"; targetId: string; held: boolean }
   | { type: "dialog"; targetId: string; kind: "alert" | "confirm" | "prompt"; message: string; defaultPrompt: string }
   | { type: "dialogClosed"; targetId: string }
   | { type: "clipboard"; targetId: string; text: string }
@@ -213,6 +218,7 @@ export function toViewerMessage(raw: unknown): ViewerMessage | null {
       const targetId = target(raw.targetId), at = num(raw.at, 0, Number.MAX_SAFE_INTEGER);
       return targetId && at !== null ? { type: "agentActivity", targetId, at } : null;
     }
+    case "control": { const targetId = target(raw.targetId); return targetId ? { type: "control", targetId, held: raw.held === true } : null; }
     case "dialog": {
       const targetId = target(raw.targetId);
       if (!targetId) return null;

@@ -199,7 +199,7 @@ Order: R1 → D → T(runtime) can start in parallel with Rust; FE last. About 1
 
 **What it does not do:**
 - It does **not** make the headless browser look human. Cloudflare Turnstile/managed challenges, DataDome and similar score browser signals (headless traits, automation via CDP, TLS/HTTP2 fingerprint of the Chromium build, missing GPU, input timing) as well as IP. Those challenges **may still appear**. The user can solve them in the Browser node as today.
-- No stealth: we don't change the UA, `navigator.webdriver`, or fingerprints. That's a deliberate product decision, and nothing here should be read as evasion.
+- Limited stealth (decision of 2026-11-21, see §6c): the automation flag is hidden so people can complete logins and CAPTCHAs in the node; the UA and fingerprints are not touched. This replaces the earlier "no stealth" stance, and it comes with the take-control lock.
 - Timezone, locale and fonts stay the VPS's. Sites may notice an IP/timezone mismatch. (Optional follow-up: set the browser timezone/locale to the user's, as an explicit user preference for correct local times, not as camouflage.)
 - It costs the user's bandwidth and latency: each request makes an extra round trip VPS ⇄ user. Expect noticeably slower page loads when the user is far from the server or on a weak uplink.
 - It only works while the user's computer is on, online, and running Floq.
@@ -213,7 +213,19 @@ A person must be able to solve Turnstile / reCAPTCHA / hCaptcha in the node. Wha
 - **The user's machine.** The app puts `env=` (screen size, DPR, `Intl` timezone, `navigator.languages`, `(pointer:fine)`, `(hover:hover)`) on the browser stream URL. The runtime validates it (`sanitizeClientEnv`) and hands it to the next daemon start as `FLOQ_BROWSER_CLIENT_ENV` + `TZ`; the daemon applies `--lang` / `--accept-lang`, `--blink-settings` (hover / fine pointer), `--screen-info` (headless only) and `screenWidth/Height` in `Emulation.setDeviceMetricsOverride`. Plain facts about the user's machine, nothing invented. It does not take effect on a daemon that is already running (never restarted for this).
 - **Challenge frames are left alone.** For `challenges.cloudflare.com`, `www.google.com/recaptcha`, `recaptcha.net`, `*.hcaptcha.com` the daemon only resumes the paused frame: no `Page.enable`, `Fetch.enable` or auto-attach hook, and no `Runtime.evaluate` cursor probe while such a frame exists. (T6 loses nothing: public hosts, and with egress on the desktop guard is the boundary.)
 - **Stable session.** No route switch mid-load / mid-login (above); session cookies survive restarts.
-- **Not changed:** `navigator.webdriver` stays true. The single place a flag would go is `WEBDRIVER_DECISION_FLAGS` in `runtime/image/floq-browserd.mts`, pending a product decision (it reverses the "no stealth" stance of §6).
+- **Superseded by §6c:** `navigator.webdriver` is now false (this bullet said it stays true).
+
+## 6c. Automation flag hidden + human take-control lock (decision 2026-11-21)
+
+**Decision.** For user-driven logins the browser no longer advertises automation: `--disable-blink-features=AutomationControlled` is in `WEBDRIVER_DECISION_FLAGS` (`runtime/image/floq-browserd.mts`), for both the headful (Xvfb) and the `--headless=new` fallback launch. `--enable-automation` is never passed (test-covered). The UA and other fingerprints stay untouched. This replaces the "no stealth" stance of §6 and agent-browser.md.
+
+**Measured** (Chromium 158 from the image's Playwright cache, attached over CDP): chrome-headless-shell without the flag `navigator.webdriver === true`, with it `false`; full Chromium `--headless=new` reports `false` with or without it in that CDP-port setup (the daemon uses a CDP pipe). The UA still contains `HeadlessChrome` in the headless modes (the headful Xvfb launch does not).
+
+**Counterweight: the take-control lock.** While the user drives a page, agents cannot.
+- The daemon owns the state (`ControlLock` in `floq-browserd-core.mts`), one hold per node page. It is taken by the toolbar toggle (`control.set`) or automatically by any user input on that page (press/release, drag, wheel, key, text, navigation, dialog reply; a bare hover does not count), and released by the toggle or after 60 s with no user input. Closing the node releases it.
+- While held, the CDP mux refuses the agent path for that page with the error `The user is controlling this browser; wait and retry` (it reaches the agent as its tool error): navigation, input, `Runtime.evaluate`/`callFunctionOn`, reload, close/activate target and anything else not on the read-only list. Screenshots, accessibility/DOM snapshots, `*.enable`/`*.disable` and `Target.*` plumbing still work (`isReadOnlyCdp`).
+- The daemon announces changes (`control`) to the runtime, which relays them to the node. The Browser node toolbar shows a "Take control" toggle that reads "You have control" while held, and hides the "Agent is using this page" pulse.
+- Not covered: agent actions on other pages of the node's agents (a linked agent only has the one page), and control from a daemon that predates this change (restart the browser).
 
 ## 7. Effort and risks
 

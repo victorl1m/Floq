@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  AGENT_ID, CdpMux, isChallengeUrl, sanitizeClientEnv, type ClientEnv, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
+  AGENT_ID, CdpMux, ControlLock, isChallengeUrl, sanitizeClientEnv, type ClientEnv, claimedAgent, DEFAULT_VIEWPORT, FrameDecoder, MAX_AGENT_CLIENTS, MAX_LINE_BYTES, MAX_TABS, acceptUpgrade, checkUpgrade, encodeFrame, refuseUpgrade,
   requestHost, shouldBlockHost, validateControl, type CdpMsg, type Control, type MuxClient, type TargetInfo,
 } from "./floq-browserd-core.mjs";
 import { EgressMux, PeerChecker, attachMuxToStream, socketSink, startSocksListener } from "./floq-egress.mjs";
@@ -75,7 +75,7 @@ function defaultAlive(pid: number): boolean {
 
 /**
  * Chromium flags that send ALL network traffic through the egress SOCKS listener (docs/design/browser-user-egress.md §2.2).
- * Only egress routing is changed: no user agent, webdriver, timezone or fingerprint flag. Loopback keeps bypassing the proxy (Chromium default).
+ * Only egress routing is changed here: no user agent, timezone or fingerprint flag (the webdriver flag is WEBDRIVER_DECISION_FLAGS). Loopback keeps bypassing the proxy (Chromium default).
  */
 export function egressFlags(port: number): string[] {
   return [
@@ -112,12 +112,12 @@ export function clientEnvFlags(ce: ClientEnv | null, headful: boolean): string[]
 }
 
 /**
- * ====== navigator.webdriver: DECISION PENDING (do not fill in without the product decision) ======
- * Today `navigator.webdriver` is true (Blink's AutomationControlled feature, on with CDP pipe automation). Making it false would be
- * `--disable-blink-features=AutomationControlled` (measured to work, docs: browser-captcha-research.md §2.2 / §4 item 4) and reverses the
- * "no stealth" stance of docs/design/agent-browser.md / browser-user-egress.md §6. This is the ONE place that flag would go.
+ * ====== navigator.webdriver: DECIDED, hidden (docs/design/browser-user-egress.md §6.1) ======
+ * Blink's AutomationControlled feature is switched off so `navigator.webdriver` is false for user-driven logins. This replaces the earlier
+ * "no stealth" stance; the counterweight is the human take-control lock (ControlLock): agents cannot drive a page while the user does.
+ * Never add --enable-automation.
  */
-export const WEBDRIVER_DECISION_FLAGS: readonly string[] = [];
+export const WEBDRIVER_DECISION_FLAGS: readonly string[] = ["--disable-blink-features=AutomationControlled"];
 
 export function chromiumArgs(opts: { sandbox: boolean; profile: string; egressPort?: number; /** default true: headful needs an X display (DISPLAY in the env) */ headful?: boolean; clientEnv?: ClientEnv | null }): string[] {
   return [
@@ -584,7 +584,7 @@ async function main() {
   }
   function closePage(nodeId: string) {
     const tid = nodes.get(nodeId); if (!tid) return;
-    nodes.delete(nodeId); casting.delete(tid); delete lastUrls[nodeId];
+    lock.release(tid); nodes.delete(nodeId); casting.delete(tid); delete lastUrls[nodeId];
     for (const [agent, node] of agentScope) if (node === nodeId) agentScope.delete(agent);
     refreshScopes();
     mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
@@ -660,7 +660,19 @@ async function main() {
     if (sid) await mux.command("Page.stopScreencast", {}, sid).catch(() => {});
   }
 
+  // Human take-control lock: user input on a node's page holds it; agents on that page are refused until released (toggle or 60 s idle).
+  const lock = new ControlLock((targetId, held) => out({ type: "control", targetId, held }));
+  mux.userHeld = (tid) => lock.held(tid);
+  const isUserInput = (c: Control) => c.type === "input.key" || c.type === "input.text" || c.type === "input.wheel" || c.type === "nav.go" || c.type === "nav.back" || c.type === "nav.forward" || c.type === "nav.reload" || c.type === "nav.stop" || c.type === "dialog.reply"
+    || (c.type === "input.mouse" && (c.kind !== "mouseMoved" || c.buttons > 0));
+
   async function handle(c: Control) {
+    if (c.type === "control.set") {
+      const v = viewSession(c.targetId); if (!v) return noTarget();
+      if (c.held) lock.take(v.targetId); else lock.release(v.targetId);
+      return;
+    }
+    if (isUserInput(c)) { const v = viewSession((c as { targetId?: string }).targetId); if (v) lock.take(v.targetId); }
     switch (c.type) {
       case "hello": return;
       case "shutdown": return shutdown(0);
