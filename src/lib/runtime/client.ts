@@ -77,7 +77,7 @@ import type {
 } from "./types";
 import type { GitChanges, GitFileDiff } from "./git-review";
 import type { ArtifactListing, FileContent, FileListing } from "./workspace-files";
-import type { AdminUser, UpdateResult, UpdatesStatus, UpdateTarget, UserRole } from "./admin-types";
+import type { AdminUser, UpdateResult, UpdatesStatus, UpdateTarget, UserRole, WhatsappServerHealth, WhatsappServerStatus, WhatsappServerTest } from "./admin-types";
 
 function skillFileParams(skill: { scope: string; projectId?: string | null; provider: string; source: string; location: string }, path?: string): URLSearchParams {
   const params = new URLSearchParams({ scope: skill.scope, provider: skill.provider, source: skill.source, location: skill.location });
@@ -465,6 +465,10 @@ export class RuntimeClient {
   checkUpdates = (refresh = false) => this.call<UpdatesStatus>("GET", `/v1/admin/updates${refresh ? "?refresh=1" : ""}`, undefined, { timeoutMs: 90_000 });
   applyUpdate = (target: UpdateTarget, force = false) =>
     this.call<UpdateResult>("POST", "/v1/admin/updates/apply", { target, force }, { timeoutMs: 11 * 60_000 });
+  whatsappServer = () => this.call<WhatsappServerStatus>("GET", "/v1/admin/whatsapp-server");
+  setWhatsappAutoUpdate = (body: { enabled?: boolean; quietMinutes?: number }) => this.call<WhatsappServerStatus>("PUT", "/v1/admin/whatsapp-server/auto-update", body);
+  whatsappServerHealth = () => this.call<WhatsappServerHealth>("GET", "/v1/admin/whatsapp-server/health", undefined, { timeoutMs: 30_000 });
+  testWhatsappServer = (baseUrl: string, apiKey: string) => this.call<WhatsappServerTest>("POST", "/v1/admin/whatsapp-server/test", { baseUrl, apiKey }, { timeoutMs: 30_000 });
   async adminUsers(): Promise<AdminUser[]> {
     return (await this.call<{ users: AdminUser[] }>("GET", "/v1/admin/users")).users;
   }

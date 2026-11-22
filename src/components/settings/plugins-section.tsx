@@ -14,6 +14,7 @@ import { useIsAdmin } from "./use-admin";
 import PluginCatalogDialog from "./plugin-catalog-dialog";
 import { MigrationNotice, PluginCredentials } from "./plugin-credentials";
 import { SettingsGroup, SettingsPage } from "./ui";
+import { WhatsappServerCard } from "./whatsapp-server-card";
 
 const STATUS: Record<PluginStatus, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
     available: { label: "Off", variant: "outline" },
@@ -40,6 +41,7 @@ function PluginConfig({ plugin, isAdmin }: { plugin: PluginInfo; isAdmin: boolea
 
     return (
         <div className="space-y-5 border-t border-border p-4" data-slot="plugin-config">
+            {isAdmin && (plugin.id === "waha" || plugin.integration?.kind === "builtin-whatsapp") && <WhatsappServerCard />}
             <PluginCredentials plugin={plugin} isAdmin={isAdmin} api={client} onChanged={() => void refresh()} />
             {!readable ? <p className="text-sm text-muted-foreground">This plugin is configured by an administrator.</p>
                 : loadError ? <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{loadError}</p><Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button></div>

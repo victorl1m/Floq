@@ -680,6 +680,8 @@ export interface PluginInfo {
   secrets: { name: string; description?: string; required: boolean; present: boolean }[];
   settings: PluginSettingDecl[];
   contributes: PluginContributes;
+  /** Set by the runtime when the plugin can use a server it hosts itself. */
+  integration?: { kind: "builtin-whatsapp"; active: boolean };
 }
 export type PluginSettingValues = Record<string, string | number | boolean>;
 

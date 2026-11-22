@@ -80,6 +80,7 @@ const ROWS: { section: string; id: string; label: string; description: string; k
     { section: "about", id: "about-auto-update", label: "Update automatically", description: "Download new versions in the background.", keywords: "auto update upgrade" },
     { section: "advanced", id: "advanced-coauthor", label: "Floq co-author on commits", description: "Add a Floq co-author trailer to agent commits.", keywords: "git trailer attribution" },
     { section: "about", id: "about-updates", label: "Check for updates", description: "Compares installed versions with the latest releases.", keywords: "update upgrade version release" },
+    { section: "runtime", id: "runtime-whatsapp-auto-update", label: "Update the WhatsApp server automatically", description: "Checks once a day and updates when WhatsApp has been quiet.", keywords: "whatsapp waha server update upgrade auto" },
 ];
 
 export const SETTINGS_INDEX: SettingsEntry[] = (() => {
