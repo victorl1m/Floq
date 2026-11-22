@@ -19,6 +19,8 @@ export default defineConfig(() => ({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
+      // Code the built-in WhatsApp integration shares between the runtime and its UI (formatting, phone numbers, chat types).
+      "@whatsapp-shared": path.resolve(import.meta.dirname, "./runtime/src/plugins/whatsapp/shared"),
     },
   },
 

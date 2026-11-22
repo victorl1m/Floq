@@ -1,18 +1,14 @@
 // The WhatsApp (WAHA) plugin follows Floq's appearance settings: theme (class "dark"), material (data-material, data-native-material) and accent (--primary),
-// live and with no colours of its own. Rendered from the plugin's BUILT package inside the app's .workspace-frame, where the host styles every input and textarea.
-// Point WAHA_PLUGIN_DIR at the plugin checkout (after `npm run build` there). WAHA_SHOTS=dir writes waha-acrylic-*.png into that directory.
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// live and with no colours of its own. Rendered from the built-in WhatsApp UI (src/plugins/whatsapp) inside the app's .workspace-frame, where the host styles every input and textarea.
+// WAHA_SHOTS=dir writes waha-acrylic-*.png into that directory.
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS;
 const WIDE = { width: 1280, height: 800 }, NARROW = { width: 390, height: 780 };
 const CLEAR = 'rgba(0, 0, 0, 0)';
 
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 
 // What Settings > Appearance writes on <html>: a translucent material comes with data-native-material when the window itself is translucent.
 const MATERIALS = [
@@ -26,7 +22,6 @@ const q = (theme: string, material: string, extra = '') => ['frame=1', theme ===
 
 async function open(page: Page, query: string, size = WIDE) {
   await page.setViewportSize(size);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   await page.goto('/e2e/harness/waha.html?' + query);
   await expect(page.locator('.wa-root')).toBeVisible();
 }

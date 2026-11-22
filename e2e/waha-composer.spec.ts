@@ -1,23 +1,18 @@
-// The WAHA plugin composer (WhatsApp-Web-style message bar), driven in the real inbox from the plugin's BUILT package: mic/send morph, growth, Enter/IME,
+// The WAHA plugin composer (WhatsApp-Web-style message bar), driven in the real inbox from the built-in WhatsApp UI (src/plugins/whatsapp): mic/send morph, growth, Enter/IME,
 // emoji picker, attach menu + tray, paste, drop, size cap, voice notes (fake microphone), reply/edit bars, mentions, 360px width, light and dark.
-//   WAHA_PLUGIN_DIR=checkout  (after npm run build there)   WAHA_SHOTS=dir  (default: the Artifacts folder)
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// WAHA_SHOTS=dir  (default: the Artifacts folder)
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS ?? '/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f';
 
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 test.use({ permissions: ['microphone'], launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } });
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4z8CAFQ0nCQCCmQ/h/mNylAAAAABJRU5ErkJggg==', 'base64');
 
 async function open(page: Page, chat: string, theme: string, size = { width: 1100, height: 760 }) {
   await page.setViewportSize(size);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   await page.goto('/e2e/harness/waha-composer.html' + (theme === 'dark' ? '?theme=dark' : ''));
   await page.locator('.wa-row', { hasText: chat }).click();
   await expect(page.locator('.wa-composer')).toBeVisible();

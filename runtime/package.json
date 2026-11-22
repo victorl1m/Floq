@@ -29,11 +29,12 @@
   },
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json && tsc -p tsconfig.image.json && node scripts/copy-plugin-assets.mjs",
-    "test": "npm run build && node --import tsx --test test/*.test.mts",
+    "test": "npm run build && node --import tsx --test test/*.test.mts && npm run test:whatsapp",
     "prisma:deploy": "prisma migrate deploy",
     "start": "prisma migrate deploy && node dist/index.js",
     "dev": "prisma migrate deploy && tsx watch src/index.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.image.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.image.json --noEmit",
+    "test:whatsapp": "node --test --test-timeout=300000 test/whatsapp/*.test.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.0.0",
@@ -48,10 +49,14 @@
     "yazl": "^3.3.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.4.3",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.12",
     "@types/yazl": "^3.3.1",
+    "esbuild": "^0.28.2",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2"
   },

@@ -1,16 +1,12 @@
-// Screenshots and behaviour of the full WhatsApp (WAHA) inbox, rendered from the plugin's BUILT package through the installed-plugin path.
-// Point WAHA_PLUGIN_DIR at the plugin checkout (after `npm run build` there). WAHA_SHOTS=dir writes waha-full-*.png into that directory.
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// Screenshots and behaviour of the full WhatsApp (WAHA) inbox, rendered from the built-in WhatsApp UI (src/plugins/whatsapp) through the installed-plugin path.
+// WAHA_SHOTS=dir writes waha-full-*.png into that directory.
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS;
 const WIDE = { width: 1280, height: 800 }, NARROW = { width: 390, height: 780 };
 
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 test.use({ permissions: ['microphone'], launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } });
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4z8CAFQ0nCQCCmQ/h/mNylAAAAABJRU5ErkJggg==', 'base64');
@@ -35,7 +31,6 @@ async function menuOf(page: Page, text: string | RegExp) {
 
 async function open(page: Page, query = '', size = WIDE) {
   await page.setViewportSize(size);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   await page.goto('/e2e/harness/waha.html' + (query ? '?' + query : ''));
   await expect(page.locator('.wa-root, [data-slot="plugin-state"]').first()).toBeVisible();
 }

@@ -8,7 +8,8 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@whatsapp-shared/*": ["./runtime/src/plugins/whatsapp/shared/*"]
     },
 
     /* Bundler mode */

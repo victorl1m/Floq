@@ -1,6 +1,6 @@
-// Test harness for the WAHA plugin's labels, status, channels, call banner and presence components: the BUILT package, mounted like an installed plugin
+// Test harness for the WAHA plugin's labels, status, channels, call banner and presence components: the built-in WhatsApp UI (src/plugins/whatsapp)
 // (shared runtime global, Blob import) with fake routes. The inbox view renders the demo screen when the URL has demo=more.
-// Served at /__waha/pkg.json by e2e/waha-more.spec.ts.
+//
 //   ?theme=dark  dark theme   ?view=status|channels  left pane   ?picker=1  label dialog open   ?pane=chat  narrow: show the conversation
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -99,9 +99,9 @@ Object.assign(window, {
   __event(name: string, data: unknown) { dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data } as never); },
 });
 
-const pkg = (await (await fetch("/__waha/pkg.json")).json()) as { manifest: { id: string; name: string; version: string }; ui: string };
-const url = URL.createObjectURL(new Blob([pkg.ui], { type: "text/javascript" }));
-const def = ((await import(/* @vite-ignore */ url)) as { default: UiPluginDefinition }).default;
+// The integration's UI is part of the app now (src/plugins/whatsapp): imported like the app imports it, no package, no Blob.
+const pkg = { manifest: { id: "waha", name: "WhatsApp", version: "builtin" } };
+const def = (await import("@/plugins/whatsapp")).default as UiPluginDefinition;
 const Inbox = def.views!.inbox;
 const plugin = { id: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version } as unknown as PluginInfo;
 const runtime = { client, user: { id: "u1" }, navigate: () => undefined, openSettings: () => undefined } as unknown as React.ContextType<typeof RuntimeContext>;

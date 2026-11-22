@@ -1,11 +1,12 @@
-// Test harness: mounts the BUILT WhatsApp (WAHA) plugin bundle the way the app mounts an installed plugin (shared runtime global + Blob import),
-// against a fake of the plugin's routes (see ./waha-fake.ts). Playwright serves the package at /__waha/pkg.json (e2e/waha-inbox.spec.ts). Not part of the app bundle.
+// Test harness: mounts the built-in WhatsApp UI (src/plugins/whatsapp) the way the app mounts it,
+// against a fake of the plugin's routes (see ./waha-fake.ts). Not part of the app bundle.
 //   ?theme=dark            dark theme
 //   ?state=empty|loading|error|unconfigured|qr|stopped|failed
 //   ?engine=WEBJS|NOWEB|GOWS
 //   ?frame=1               mount inside the app's .workspace-frame (the host styles every input and textarea in there)
 //   ?material=solid|acrylic|mica|vibrancy   data-material on <html>;  ?native=acrylic|mica|vibrancy   data-native-material (translucent window) over a fake desktop backdrop
 //   ?accounts=2|3          several WhatsApp accounts attached (default: one); two more WAHA sessions can always be attached
+//   ?import=running|done|failed   history import state at the start (running waits at 34 of 120 chats until __fake.of(session).importTick(n));  ?willImport=0;  ?historyError=text
 //   ?bare=1                do not load the app stylesheet at all: proves the plugin's own stylesheet carries its layout
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -32,13 +33,13 @@ const framed = params.get("frame") === "1";
 if (params.get("bare") !== "1") await import("@/index.css");
 else document.body.style.margin = "0";
 
-const fake = createFake({ state: params.get("state") ?? "ok", engine: params.get("engine") ?? "WEBJS", accounts: Number(params.get("accounts") ?? 1), emit: (name, data) => dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data }) });
+const fake = createFake({ state: params.get("state") ?? "ok", engine: params.get("engine") ?? "WEBJS", accounts: Number(params.get("accounts") ?? 1), import: params.get("import") ?? undefined, willImport: params.get("willImport") !== "0", historyError: params.get("historyError") ?? undefined, emit: (name, data) => dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data }) });
 const client = { pluginFetch: (_id: string, path: string, init?: { method?: string; body?: unknown }) => fake.fetch(path, init) };
 Object.assign(window, { __calls: fake.calls, __incoming: fake.incoming, __fake: fake });
 
-const pkg = (await (await fetch("/__waha/pkg.json")).json()) as { manifest: { id: string; name: string; version: string }; ui: string };
-const url = URL.createObjectURL(new Blob([pkg.ui], { type: "text/javascript" }));
-const def = ((await import(/* @vite-ignore */ url)) as { default: UiPluginDefinition }).default;
+// The integration's UI is part of the app now (src/plugins/whatsapp): imported like the app imports it, no package, no Blob.
+const pkg = { manifest: { id: "waha", name: "WhatsApp", version: "builtin" } };
+const def = (await import("@/plugins/whatsapp")).default as UiPluginDefinition;
 const Inbox = def.views!.inbox;
 const plugin = { id: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version } as unknown as PluginInfo;
 const runtime = { client, user: { id: "u1" }, navigate: () => undefined, openSettings: () => undefined } as unknown as React.ContextType<typeof RuntimeContext>;

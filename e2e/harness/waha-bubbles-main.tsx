@@ -1,5 +1,5 @@
-// Test harness for the WAHA conversation log: loads the BUILT plugin package like an installed plugin and opens its ?demo=bubbles view,
-// which carries its own fake routes (every bubble kind, menu, dialogs, lightbox). Served at /__waha/pkg.json by e2e/waha-bubbles.spec.ts.
+// Test harness for the WAHA conversation log: loads the built-in WhatsApp UI (src/plugins/whatsapp) and opens its ?demo=bubbles view,
+// which carries its own fake routes (every bubble kind, menu, dialogs, lightbox).
 //   ?theme=dark   dark theme      &chat=group   group chat      &engine=NOWEB|GOWS      &contacts=0      &hasmore=1
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -16,9 +16,9 @@ const params = new URLSearchParams(location.search);
 if (params.get("theme") === "dark") document.documentElement.classList.add("dark");
 await import("@/index.css");
 
-const pkg = (await (await fetch("/__waha/pkg.json")).json()) as { manifest: { id: string; name: string; version: string }; ui: string };
-const url = URL.createObjectURL(new Blob([pkg.ui], { type: "text/javascript" }));
-const def = ((await import(/* @vite-ignore */ url)) as { default: UiPluginDefinition }).default;
+// The integration's UI is part of the app now (src/plugins/whatsapp): imported like the app imports it, no package, no Blob.
+const pkg = { manifest: { id: "waha", name: "WhatsApp", version: "builtin" } };
+const def = (await import("@/plugins/whatsapp")).default as UiPluginDefinition;
 const Inbox = def.views!.inbox;
 const plugin = { id: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version } as unknown as PluginInfo;
 const runtime = { client: { async pluginFetch() { throw new Error("the demo has its own routes"); } }, user: { id: "u1" }, navigate: () => undefined, openSettings: () => undefined } as unknown as React.ContextType<typeof RuntimeContext>;

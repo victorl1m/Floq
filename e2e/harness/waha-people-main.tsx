@@ -1,5 +1,5 @@
-// Test harness for the WAHA chat menu, info panel and new chat / group dialogs: mounts the BUILT package like an installed plugin and opens its ?demo=people stand-in inbox
-// against fake, stateful plugin routes (served pkg at /__waha/pkg.json by e2e/waha-people.spec.ts).
+// Test harness for the WAHA chat menu, info panel and new chat / group dialogs: mounts the built-in WhatsApp UI (src/plugins/whatsapp) and opens its ?demo=people stand-in inbox
+// against fake, stateful plugin routes
 //   ?theme=dark   dark theme      ?engine=GOWS   hides what that engine cannot do      ?admin=0   you are not an admin of the group     ?info=1   info panel open
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -116,9 +116,9 @@ const client = {
 };
 Object.assign(window, { __calls: calls, __chats: () => chats, __event: (name: string, data: unknown) => dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data }) });
 
-const pkg = (await (await fetch("/__waha/pkg.json")).json()) as { manifest: { id: string; name: string; version: string }; ui: string };
-const url = URL.createObjectURL(new Blob([pkg.ui], { type: "text/javascript" }));
-const def = ((await import(/* @vite-ignore */ url)) as { default: UiPluginDefinition }).default;
+// The integration's UI is part of the app now (src/plugins/whatsapp): imported like the app imports it, no package, no Blob.
+const pkg = { manifest: { id: "waha", name: "WhatsApp", version: "builtin" } };
+const def = (await import("@/plugins/whatsapp")).default as UiPluginDefinition;
 const Inbox = def.views!.inbox;
 const plugin = { id: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version } as unknown as PluginInfo;
 const runtime = { client, user: { id: "u1" }, navigate: () => undefined, openSettings: () => undefined } as unknown as React.ContextType<typeof RuntimeContext>;

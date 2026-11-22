@@ -1,7 +1,8 @@
 // A fake of the WAHA plugin's routes for the browser harness: enough state to click through the whole inbox. Mirrors the response shapes of
 // floq-plugin-waha/runtime (inbox.ts, messages.ts and the session / chats / contacts / groups / labels / status / channels / calls / presence modules).
 type Json = Record<string, unknown>;
-interface Opts { state: string; engine: string; emit: (name: string, data: unknown) => void; /** Attached accounts to start with (1-3). */ accounts?: number }
+interface Opts { state: string; engine: string; emit: (name: string, data: unknown) => void; /** Attached accounts to start with (1-3). */ accounts?: number;
+  /** History import at the start: "running" (34 of 120 chats, paused until importTick), "done", "failed"; default idle. */ import?: string; willImport?: boolean; historyError?: string }
 interface Call { path: string; method: string; body?: unknown; session?: string }
 /** One account of the fake: who it is, and which chats it starts with ("full" = the big demo inbox, "small" = a few plain chats, "none" = nothing yet). */
 interface Profile { session: string; name: string; phone: string; chats: "full" | "small" | "none"; calls: Call[] }
@@ -12,6 +13,16 @@ const ago = (ms: number) => new Date(now - ms).toISOString();
 const at = (days: number, h: number, m: number) => { const d = new Date(now - days * DAY); d.setHours(h, m, 0, 0); return d.toISOString(); };
 
 export const SELF = "553488880000@c.us", MARINA = "5511987654321@c.us", GROUP = "120363041234567890@g.us", LID = "193847561029384@lid", LONG = "5521999887766@c.us";
+// Synthetic address book for the contacts screen: saved names, business accounts and people who are only known by their own WhatsApp name.
+const SAVED = ["Adriana Lopes", "Alexandre Rocha", "Beatriz Menezes", "Bruno Cardoso", "Camila Duarte", "Carlos Eduardo Pimentel", "Daniela Freitas", "Diego Martins", "Eduarda Campos", "Felipe Andrade", "Gabriela Torres", "Gustavo Lima", "Heitor Barros", "Isabela Moraes", "João Vítor Teixeira", "Juliana Peixoto", "Kátia Nascimento", "Leandro Siqueira", "Mariana Vasconcelos", "Nicole Brandão"];
+const SHOPS = ["Estúdio Aurora Embalagens", "Gráfica Rápida Centro", "Loja Casa Linda"];
+const OTHERS = ["Rô", "Tiago ✌️", "~ Paula M.", "Vó Nena"];
+const phoneOf = (i: number) => "55119" + String(40000000 + i * 1371).slice(0, 8);
+const PHONEBOOK = [
+  ...SAVED.map((name, i) => ({ chatId: phoneOf(i + 10) + "@c.us", name, pushName: i % 3 ? name.split(" ")[0] : null, businessName: null, phone: phoneOf(i + 10), isMyContact: true, isBusiness: false, avatar: i % 4 === 0 ? i + 5 : null })),
+  ...SHOPS.map((name, i) => ({ chatId: phoneOf(i + 40) + "@c.us", name: i === 1 ? null : name, pushName: null, businessName: name, phone: phoneOf(i + 40), isMyContact: i !== 1, isBusiness: true, avatar: null })),
+  ...OTHERS.map((pushName, i) => ({ chatId: phoneOf(i + 60) + "@c.us", name: null, pushName, businessName: null, phone: phoneOf(i + 60), isMyContact: false, isBusiness: false, avatar: null })),
+];
 const RAFAEL = "5511911112222@c.us", BIA = "5511933334444@c.us";
 
 interface Msg extends Json { id: string; fromMe: boolean; sender: string; senderName: string; body: string; hasMedia: boolean; sentAt: string; type: string; ack: number; reactions: Json[]; replyTo?: Json | null; media?: Json | null }
@@ -53,7 +64,8 @@ function tone(seconds: number): string {
 }
 const PDF = btoa("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
 
-function createOne({ state, engine, emit }: Opts, profile: Profile) {
+function createOne(opts: Opts, profile: Profile) {
+  const { state, engine, emit } = opts;
   const marina = from(MARINA, "Marina Costa");
   const m1 = msg(false, "Oi! Chegaram as canecas personalizadas?", at(1, 16, 2), marina);
   const m2 = msg(true, "Chegaram sim, ficaram *lindas* 😍", at(1, 16, 5));
@@ -147,6 +159,24 @@ function createOne({ state, engine, emit }: Opts, profile: Profile) {
   const uploads = new Map<string, { mime: string; filename: string; data: string }>();
   const calls = profile.calls;
   const me = { name: profile.name, phone: profile.phone };
+  const willImport = opts.willImport !== false, historyError = opts.historyError ?? "";
+  let contactsSyncedAt: string | null = ago(2 * HOUR), contactsSyncing = false;
+  // The history import: nothing runs by itself. Starting it shows 34 of 120 chats; importTick(n) moves it on by n chats (to the end: done).
+  type Hist = { state: string; phase: string | null; chatsTotal: number; chatsDone: number; messages: number; contacts: number; startedAt: string | null; finishedAt: string | null; error: string | null; everRan: boolean; contactsSyncedAt: string | null; contactsSyncing: boolean; limits: { perChat: number; total: number } };
+  let hist: Hist = { state: "idle", phase: null, chatsTotal: 0, chatsDone: 0, messages: 0, contacts: 0, startedAt: null, finishedAt: null, error: null, everRan: false, contactsSyncedAt: null, contactsSyncing: false, limits: { perChat: 500, total: 50_000 } };
+  const publish = () => emit("history", { ...hist });
+  const running = (done: number) => { hist = { ...hist, state: "running", phase: "messages", chatsTotal: 120, chatsDone: done, messages: done * 41, contacts: 86, startedAt: hist.startedAt ?? new Date().toISOString(), finishedAt: null, error: null, everRan: true }; };
+  function startImport() { hist = { ...hist, startedAt: null }; running(34); publish(); }
+  function importTick(n = 1) {
+    if (hist.state !== "running") return;
+    const done = Math.min(120, hist.chatsDone + n);
+    if (done >= 120) { hist = { ...hist, state: "done", phase: null, chatsDone: 120, messages: 4920, finishedAt: new Date().toISOString() }; publish(); emit("chats", {}); }
+    else { running(done); publish(); }
+  }
+  const startAs = profile.session === "default" ? opts.import : undefined;
+  if (startAs === "running") running(34);
+  else if (startAs === "done") hist = { ...hist, state: "done", chatsTotal: 120, chatsDone: 120, messages: 4920, contacts: 86, everRan: true, startedAt: ago(DAY), finishedAt: ago(DAY - 5 * MIN) };
+  else if (startAs === "failed") hist = { ...hist, state: "failed", phase: null, chatsTotal: 120, chatsDone: 41, error: "WAHA stopped answering while the chats were being read.", everRan: true, startedAt: ago(HOUR), finishedAt: ago(50 * MIN) };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const fail = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
   let session = state === "qr" ? "SCAN_QR_CODE" : state === "stopped" ? "STOPPED" : state === "failed" ? "FAILED" : "WORKING";
@@ -167,7 +197,7 @@ function createOne({ state, engine, emit }: Opts, profile: Profile) {
     const ok = { ok: true };
     switch (path) {
       case "/status": return state === "unconfigured" ? { configured: false, missingSettings: ["baseUrl"], missingSecrets: ["WAHA_API_KEY"], session: "default" } : { configured: true, missingSettings: [], missingSecrets: [], session: "default", engine, features, me: me.name ? me : null };
-      case "/session": return { status: session, engine, me: session === "WORKING" ? me.name ? me : null : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" ? ["message.ack", "message.reaction"] : [] } };
+      case "/session": return { status: session, engine, history: { willImport: !historyError && willImport, error: historyError || null }, me: session === "WORKING" ? me.name ? me : null : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" ? ["message.ack", "message.reaction"] : [] } };
       case "/session/qr": if (session !== "SCAN_QR_CODE") throw fail(409, "not_scanning", "Not waiting for a scan."); return { value: "2@Zl3fakeQRvalueForTheHarness1234567890abcdefghijklmnopqrstuvwxyz,AbCdEfGh1234567890==,ZyXwVu9876543210==,QwErTy==" };
       case "/session/pair-code": await sleep(200); return { code: "K7QM-2XWP" };
       case "/session/start": case "/session/restart": session = "SCAN_QR_CODE"; emit("session", { status: session }); return { status: session };
@@ -252,7 +282,19 @@ function createOne({ state, engine, emit }: Opts, profile: Profile) {
       case "/chat/delete": state_.get(body.chatId)!.hidden = true; return ok;
       case "/chat/clear": log(body.chatId).length = 0; return ok;
       // ---- contacts and groups ----
-      case "/contacts": { const q = (query.get("q") ?? "").toLowerCase(); return { contacts: base.filter((c) => c.kind === "user" && c.name && (!q || c.name.toLowerCase().includes(q) || (c.phone ?? "").includes(q))).map((c) => ({ chatId: c.chatId, name: c.name, phone: c.phone, isMyContact: true, avatar: c.avatar ?? null })) }; }
+      case "/contacts": {
+        const q = (query.get("q") ?? "").toLowerCase();
+        const hit = (c: { name: string | null; pushName?: string | null; phone: string | null }) => !q || (c.name ?? "").toLowerCase().includes(q) || (c.pushName ?? "").toLowerCase().includes(q) || (c.phone ?? "").includes(q);
+        const mine = base.filter((c) => c.kind === "user" && c.name && hit(c)).map((c) => ({ chatId: c.chatId, name: c.name, pushName: null, businessName: null, phone: c.phone, isMyContact: true, isBusiness: false, avatar: c.avatar ?? null }));
+        // The contacts screen asks for pages (offset): it gets the synced address book, saved names first. The pickers keep the plain list.
+        const all = query.has("offset") && profile.chats === "full" ? [...mine, ...PHONEBOOK.filter(hit)] : mine;
+        const off = Number(query.get("offset") ?? 0), lim = Number(query.get("limit") ?? 80);
+        return { contacts: query.has("offset") ? all.slice(off, off + lim) : all, total: all.length, syncedAt: contactsSyncedAt, syncing: contactsSyncing };
+      }
+      case "/history": return { ...hist };
+      case "/history/start": startImport(); return { ...hist };
+      case "/history/cancel": if (hist.state === "running") { hist = { ...hist, state: "cancelled", phase: null, finishedAt: new Date().toISOString() }; publish(); } return { ...hist };
+      case "/contacts/sync": { if (!contactsSyncing) { contactsSyncing = true; setTimeout(() => { contactsSyncing = false; contactsSyncedAt = new Date().toISOString(); emit("contacts", {}); }, 500); } return ok; }
       case "/contacts/check": { const digits = String(body.phone ?? "").replace(/\D/g, ""); await sleep(200); if (digits.endsWith("0000")) return { exists: false, chatId: null, phone: digits }; return { exists: true, chatId: digits + "@c.us", phone: digits }; }
       case "/contact": { const c = base.find((x) => x.chatId === query.get("chatId")); return { chatId: c?.chatId ?? query.get("chatId"), name: c?.name ?? "", pushName: c?.name?.split(" ")[0] ?? "", phone: c?.phone ?? null, about: c?.name ? "Disponível 🌿" : "", blocked: false, isBusiness: false, isSelf: c?.isSelf === true, avatar: c?.avatar ?? null, aliases: c?.isSelf ? 3 : 1, commonGroups: [] }; }
       case "/contact/block": case "/contact/refresh-picture": case "/contact/save": return ok;
@@ -295,7 +337,8 @@ function createOne({ state, engine, emit }: Opts, profile: Profile) {
       const s = state_.get(chatId); if (s) s.unread++;
       emit("message", { chatId, fromMe: false });
     },
-    emit,
+    emit, importTick,
+    history: () => ({ state: hist.state, chatsDone: hist.chatsDone, chatsTotal: hist.chatsTotal }),
     setSession(status: string) { session = status; emit("session", { status }); },
     call(video = false) { emit("call", { id: "call-1", chatId: MARINA, name: "Marina Costa", video, status: "ringing" }); },
     presence(chatId: string, state: string) { emit("presence", { chatId, state, lastSeen: null }); },
@@ -320,7 +363,7 @@ export function createFake(opts: Opts) {
     { name: "suporte", status: "WORKING", engine: "NOWEB", account: { name: "Suporte Zoe", phone: "5531977776666" } },
     { name: "testes", status: "STOPPED", engine: "WEBJS", account: null as { name: string; phone: string } | null },
   ];
-  const view = () => list.map((e, i) => ({ session: e.session, label: e.label, name: e.inbox.me.name, phone: e.inbox.me.phone || null, primary: i === 0, status: e.inbox.status(), engine: opts.engine, unread: opts.state === "ok" || i > 0 ? e.inbox.unread() : 0 }));
+  const view = () => list.map((e, i) => ({ session: e.session, label: e.label, name: e.inbox.me.name, phone: e.inbox.me.phone || null, primary: i === 0, status: e.inbox.status(), engine: opts.engine, unread: opts.state === "ok" || i > 0 ? e.inbox.unread() : 0, history: e.inbox.history() }));
   const changed = () => opts.emit("accounts", {});
 
   async function fetch(pathAndQuery: string, init?: { method?: string; body?: unknown }): Promise<unknown> {

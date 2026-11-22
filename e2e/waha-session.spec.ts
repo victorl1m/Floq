@@ -1,20 +1,15 @@
-// The WAHA plugin connection screen (QR + pairing code login), reconnect bar and account menu, mounted from the plugin's BUILT package.
+// The WAHA plugin connection screen (QR + pairing code login), reconnect bar and account menu, mounted from the built-in WhatsApp UI (src/plugins/whatsapp).
 // Screenshots go to the Artifacts folder: waha-full-session-<theme>-<state>.png.
-//   WAHA_PLUGIN_DIR=checkout  (after npm run build there)   WAHA_SHOTS=dir
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// WAHA_SHOTS=dir
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS ?? '/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f';
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 
 const WIDE = { width: 1100, height: 760 }, NARROW = { width: 380, height: 760 };
 async function open(page: Page, theme: string, query: Record<string, string>, size = WIDE) {
   await page.setViewportSize(size);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   const q = new URLSearchParams({ demo: 'session', ...query, ...(theme === 'dark' ? { theme: 'dark' } : {}) });
   await page.goto('/e2e/harness/waha-session.html?' + q);
 }

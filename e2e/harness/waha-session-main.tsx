@@ -1,4 +1,4 @@
-// Test harness for the WAHA connection screen, reconnect bar and account menu: loads the BUILT package like waha-composer-main.tsx and renders its
+// Test harness for the WAHA connection screen, reconnect bar and account menu: loads the built-in WhatsApp UI like waha-composer-main.tsx and renders its
 // "?demo=session" view against fake session routes. window.__set(status) changes the fake WAHA and pushes the live "session" event.
 //   ?theme=dark   ?view=screen|inbox   ?status=WORKING|SCAN_QR_CODE|...   ?engine=WEBJS|NOWEB|GOWS   ?webhook=missing|env|ok
 import React from "react";
@@ -69,9 +69,9 @@ const client = {
 };
 Object.assign(window, { __calls: calls, __set: set, __state: state });
 
-const pkg = (await (await fetch("/__waha/pkg.json")).json()) as { manifest: { id: string; name: string; version: string }; ui: string };
-const url = URL.createObjectURL(new Blob([pkg.ui], { type: "text/javascript" }));
-const def = ((await import(/* @vite-ignore */ url)) as { default: UiPluginDefinition }).default;
+// The integration's UI is part of the app now (src/plugins/whatsapp): imported like the app imports it, no package, no Blob.
+const pkg = { manifest: { id: "waha", name: "WhatsApp", version: "builtin" } };
+const def = (await import("@/plugins/whatsapp")).default as UiPluginDefinition;
 const Inbox = def.views!.inbox;
 const plugin = { id: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version } as unknown as PluginInfo;
 const runtime = { client, user: { id: "u1" }, navigate: () => undefined, openSettings: () => undefined } as unknown as React.ContextType<typeof RuntimeContext>;

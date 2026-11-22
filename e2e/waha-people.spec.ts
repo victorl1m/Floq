@@ -1,15 +1,11 @@
-// The WAHA plugin's chat menu, contact/group info panel and new chat / new group dialogs, driven from the plugin's BUILT package in its ?demo=people stand-in inbox:
+// The WAHA plugin's chat menu, contact/group info panel and new chat / new group dialogs, driven from the built-in WhatsApp UI (src/plugins/whatsapp) in its ?demo=people stand-in inbox:
 // third column and overlay layouts, every action's request, engine gating, light and dark, wide (1100x760) and narrow (380x760).
-//   WAHA_PLUGIN_DIR=checkout  (after npm run build there)   WAHA_SHOTS=dir  (default: the Artifacts folder)
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// WAHA_SHOTS=dir  (default: the Artifacts folder)
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS ?? '/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f';
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
 
 const WIDE = { width: 1100, height: 760 }, NARROW = { width: 380, height: 760 };
@@ -17,7 +13,6 @@ type Call = { path: string; method: string; body?: any };
 
 async function open(page: Page, theme: string, o: { size?: { width: number; height: number }; chat?: string; query?: string } = {}) {
   await page.setViewportSize(o.size ?? WIDE);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   await page.goto('/e2e/harness/waha-people.html?demo=people' + (theme === 'dark' ? '&theme=dark' : '') + (o.query ? '&' + o.query : ''));
   await expect(page.locator('.wa-row').first()).toBeVisible();
   if (o.chat) await page.locator('.wa-row', { hasText: o.chat }).click();

@@ -6,6 +6,8 @@ import path from 'node:path';
 
 /** Plugin UI code (src/plugins/<id>/**) may import only these; everything else must go through the kit. */
 const ALLOWED = new Set(['react', 'react/jsx-runtime', '@tabler/icons-react', '@/plugins/kit', '@/plugins/sdk']);
+/** The built-in WhatsApp integration shares pure code (formatting, phone numbers, chat types) with its runtime half: only that folder may import it. */
+const SHARED = { whatsapp: '@whatsapp-shared/' };
 const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)(['"`])([^'"`]+)\1/g;
 
 /** Returns the violations in one source file as `file: "specifier"` strings. `ownDir` is the plugin's folder. */
@@ -15,6 +17,9 @@ export function violations(source, file, ownDir) {
   for (const m of stripped.matchAll(SPECIFIER)) {
     const spec = m[2];
     if (ALLOWED.has(spec)) continue;
+    if (/\s/.test(spec)) continue; // text such as "Quoted message from " + name + ": ", not a module specifier
+    const shared = SHARED[path.basename(ownDir)];
+    if (shared && spec.startsWith(shared) && /^[a-z-]+$/.test(spec.slice(shared.length))) continue;
     if (spec.startsWith('.')) {
       const target = path.resolve(path.dirname(file), spec);
       if (target === ownDir || target.startsWith(ownDir + path.sep)) continue;

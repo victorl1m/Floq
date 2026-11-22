@@ -1,22 +1,17 @@
 // WAHA plugin 3.1: several WhatsApp accounts in one inbox. The account switcher in the list header, "Add account" (link a new WhatsApp by QR, or
 // attach a session that already runs in WAHA), per-account actions, "Remove from Floq", and that every request names the account it is for.
-// Mounted from the plugin's BUILT package against the fake of its routes (harness/waha-fake.ts, ?accounts=N).
-// Screenshots go to the Artifacts folder: waha-accounts-<theme>-<name>.png.   WAHA_PLUGIN_DIR=checkout (after npm run build there)   WAHA_SHOTS=dir
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+// Mounted from the built-in WhatsApp UI (src/plugins/whatsapp) against the fake of its routes (harness/waha-fake.ts, ?accounts=N).
+// Screenshots go to the Artifacts folder: waha-accounts-<theme>-<name>.png. WAHA_SHOTS=dir
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
-const pluginDir = process.env.WAHA_PLUGIN_DIR ?? path.resolve(process.env.HOME ?? '.', 'work/floq-plugin-waha');
-const dist = path.join(pluginDir, 'dist');
-const pkgFile = existsSync(dist) ? readdirSync(dist).find((f) => /^waha-.*\.floqpkg\.json$/.test(f)) : undefined;
 const shots = process.env.WAHA_SHOTS ?? '/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f';
-test.skip(!pkgFile, 'no built WAHA plugin package: set WAHA_PLUGIN_DIR and run npm run build there');
 
 interface Call { path: string; method: string; body?: Record<string, unknown>; session?: string }
 const WIDE = { width: 1180, height: 760 }, NARROW = { width: 390, height: 760 };
 async function open(page: Page, theme: string, query: Record<string, string> = {}, size = WIDE) {
   await page.setViewportSize(size);
-  await page.route('**/__waha/pkg.json', (route) => route.fulfill({ contentType: 'application/json', body: readFileSync(path.join(dist, pkgFile!), 'utf8') }));
   await page.addInitScript(() => { try { localStorage.removeItem('floq.waha.account'); } catch { /* no storage */ } });
   await page.goto('/e2e/harness/waha.html?' + new URLSearchParams({ accounts: '3', ...query, ...(theme === 'dark' ? { theme: 'dark' } : {}) }));
   await expect(page.locator('.wa-root')).toBeVisible();
