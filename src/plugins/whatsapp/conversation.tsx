@@ -3,6 +3,7 @@ import { Button, Tooltip, TooltipContent, TooltipTrigger, resolvePluginIcon } fr
 import { chatPhoneDigits, chatTitle, subtitle, type Chat, type Message, type Quote } from "@whatsapp-shared/chat";
 import { Avatar } from "./avatar";
 import { Composer, type Attachment, type ComposerHandle } from "./composer";
+import { useAckRefresh } from "./ack-refresh";
 import { useWa } from "./context";
 import { IconAlert, IconArrowLeft, IconLock, IconSearch, Spinner } from "./icons";
 import { IconPlus } from "./icons-composer";
@@ -43,6 +44,7 @@ interface Props {
 /** Header, message log (or its loading / error / empty state) and composer for one chat, plus the dialogs and panels that belong to it. */
 export function Conversation({ chat, messages, hasMore, error, now, draft, sending, focusToken, reply, editing, handlers: h, onInfo, menu, presence }: Props) {
   const { features } = useWa();
+  useAckRefresh(chat.chatId, messages);
   const name = chatTitle(chat), sub = subtitle(chat);
   const composer = useRef<ComposerHandle>(null);
   const log = useRef<{ jumpTo(id: string): boolean }>(null);

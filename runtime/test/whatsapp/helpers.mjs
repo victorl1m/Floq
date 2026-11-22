@@ -29,8 +29,11 @@ export async function harness(plugin, migrations, opts = {}) {
   if (opts.seed && !opts.seedBefore) await db.exec(opts.seed);
   const routes = {}, internal = {}, events = [], toasts = [], requests = [], approvals = [], kv = new Map(Object.entries(opts.kv ?? {}));
   if (opts.phone) kv.set("phone", opts.phone);
-  let webhook;
+  let webhook, hmac = opts.hmac;
   const ticks = [];
+  const secretWrites = [];
+  // opts.notify: a Floq with ctx.notify (island notifications with actions). Left out: an older Floq (toasts).
+  const notes = [], cleared = [];
   const respond = (r) => {
     const status = r?.status ?? (r ? 200 : 404), bytes = r?.bytes ?? Buffer.from(JSON.stringify(r?.json ?? {}));
     return { ok: status >= 200 && status < 300, status, headers: r?.headers ?? { "content-type": r?.bytes ? "application/octet-stream" : "application/json" }, bytes, text: () => Buffer.from(bytes).toString("utf8"), json: () => JSON.parse(Buffer.from(bytes).toString("utf8")) };
@@ -41,7 +44,8 @@ export async function harness(plugin, migrations, opts = {}) {
     installOwner: async () => opts.owner ?? "u1",
     settings: { get: async () => ({ baseUrl: "https://waha.example.com", ...(opts.settings ?? {}) }) },
     kv: { get: async (_u, k) => kv.get(k), set: async (_u, k, v) => { kv.set(k, v); } },
-    secrets: { getInstall: async (name) => (name === "WAHA_API_KEY" ? "key" : opts.hmac) },
+    // opts.webhookUrl: a new Floq (ctx.webhooks.url and ctx.secrets.setInstall exist; null = the host does not know its public address yet). Left out: an old Floq.
+    secrets: { getInstall: async (name) => (name === "WAHA_API_KEY" ? "key" : hmac), ...(opts.webhookUrl !== undefined ? { setInstall: async (name, v) => { if (name === "WAHA_WEBHOOK_HMAC") hmac = v; secretWrites.push(name); } } : {}) },
     fetchUserUrl: async (_u, url, init = {}) => {
       const u = new URL(url), method = init.method ?? "GET";
       const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
@@ -61,13 +65,14 @@ export async function harness(plugin, migrations, opts = {}) {
     approvals: { request: async (a) => { approvals.push(a); return opts.approval ?? "approved"; } },
     routes: { get: (p, h) => (routes["GET " + p] = h), post: (p, h) => (routes["POST " + p] = h), put: (p, h) => (routes["PUT " + p] = h), delete: (p, h) => (routes["DELETE " + p] = h) },
     internalRoutes: { call: (p, h) => (internal[p] = h) },
-    webhooks: { on: (_n, h) => { webhook = h; } },
+    webhooks: { on: (_n, h) => { webhook = h; }, ...(opts.webhookUrl !== undefined ? { url: async () => opts.webhookUrl } : {}) },
     schedule: (_ms, fn) => { ticks.push(fn); return () => undefined; },
+    ...(opts.notify ? { notify: async (userId, note) => { if (opts.notify === "fail") throw new Error("rate limited"); notes.push({ userId, ...note }); return { id: "n" + notes.length }; }, notifications: { clear: async (userId, tag) => { cleared.push(tag); } } } : {}),
   };
   plugin.start(ctx);
   let seq = 0;
   const h = {
-    plugin, db, ctx, routes, internal, events, toasts, requests, approvals, kv,
+    plugin, db, ctx, secretWrites, notes, cleared, get hmac() { return hmac; }, set hmac(v) { hmac = v; }, routes, internal, events, toasts, requests, approvals, kv,
     get: (path, query = {}, userId = "u1") => routes["GET " + path]({ userId, query, params: {}, body: undefined }),
     post: (path, body = {}, userId = "u1") => routes["POST " + path]({ userId, query: {}, params: {}, body }),
     call: (path, body = {}, userId = "u1") => internal[path]({ userId, query: {}, params: {}, body }),

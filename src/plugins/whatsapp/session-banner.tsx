@@ -11,7 +11,9 @@ import { IconCheck, IconRefresh, IconX, Spinner } from "./icons";
 import { IconContact } from "./icons-composer";
 import { progressText, useHistory } from "./history";
 import { IconBin, IconEdit, IconShield, IconUserPlus } from "./icons-people";
-import { IconAlertCircle, IconCamera, IconDownload, IconLogout, IconPlugOff, IconServerOff, IconSliders, IconStop } from "./icons-session";
+import { IconAlertCircle, IconCamera, IconDownload, IconLogout, IconPlugOff, IconServerOff, IconStop } from "./icons-session";
+import { WEBHOOK_CSS, WebhookDialog, WebhookMenuItem, healthOf } from "./webhook-health";
+import { NotifyMenuItem } from "./notify";
 import { useSessionInfo, type SessionStatus } from "./session-screen";
 import { SESSION_CSS } from "./styles-session";
 
@@ -21,8 +23,7 @@ const STATUS_TEXT: Record<SessionStatus, string> = {
 };
 const explain = (e: unknown) => (errorCode(e) === "unsupported" ? "This WAHA engine does not support that." : errorText(e));
 
-type Dialog = "logout" | "webhook" | "events" | "shot" | null;
-const mono = { fontFamily: "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace", fontSize: 12, padding: "2px 6px", borderRadius: 6, background: "color-mix(in srgb, currentColor 10%, transparent)" } as const;
+type Dialog = "logout" | "webhook" | "shot" | null;
 
 /**
  * Avatar button with the connection dot and the account menu: every attached account (click to switch), "Add account", and the actions of the
@@ -52,19 +53,12 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
     try { await api("/accounts/update", { method: "POST", body: { session: current.session, primary: true } }); toast.success(`${name} is now the default account`, { description: "The AI uses it when it is not told which account to use." }); await accounts?.refresh(); }
     catch (e) { toast.error("Could not change the default account", { description: explain(e) }); }
   }
-  const missing = info?.webhook?.missingEvents ?? [];
-  const envHooks = !!info && info.webhook === null && status === "WORKING";
+  const webhook = healthOf(info);
 
   async function act(path: string, title: string, done?: string) {
     setBusy(true);
     try { await api(path, { method: "POST" }); if (done) toast.success(done); await refresh(); }
     catch (e) { toast.error(title, { description: explain(e) }); }
-    finally { setBusy(false); setDialog(null); }
-  }
-  async function fixEvents() {
-    setBusy(true);
-    try { const r = await api<{ added: string[] }>("/session/webhook-events", { method: "POST" }); toast.success(r.added.length ? `Added ${r.added.length} webhook events` : "Webhook events are already complete"); await refresh(); }
-    catch (e) { toast.error("Could not fix the webhook events", { description: errorCode(e) === "no_webhook" ? "The webhook of this session is set in WAHA itself. Enable the events there." : explain(e) }); }
     finally { setBusy(false); setDialog(null); }
   }
   async function screenshot() {
@@ -75,7 +69,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
 
   return (
     <>
-      <style>{SESSION_CSS}</style>
+      <style>{SESSION_CSS + WEBHOOK_CSS}</style>
       <DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -130,8 +124,8 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
           <DropdownMenuItem disabled={busy} onSelect={() => void act("/session/restart", "Could not restart", "Restarting WhatsApp")}><IconRefresh />Restart</DropdownMenuItem>
           {status !== "STOPPED" && status !== "MISSING" && <DropdownMenuItem disabled={busy} onSelect={() => void act("/session/stop", "Could not stop")}><IconStop />Stop</DropdownMenuItem>}
           {features.screenshot && status === "WORKING" && <DropdownMenuItem onSelect={() => void screenshot()}><IconCamera />Screenshot</DropdownMenuItem>}
-          {missing.length > 0 && <DropdownMenuItem onSelect={() => setDialog("webhook")}><IconSliders />Fix webhook events</DropdownMenuItem>}
-          {envHooks && <DropdownMenuItem onSelect={() => setDialog("events")}><IconSliders />Webhook events</DropdownMenuItem>}
+          <WebhookMenuItem health={webhook} onOpen={() => setDialog("webhook")} />
+          <NotifyMenuItem api={api} />
           {current && <DropdownMenuItem onSelect={() => setRenaming(current)}><IconEdit />Rename</DropdownMenuItem>}
           {current && !current.primary && <DropdownMenuItem onSelect={() => void makeDefault()}><IconShield />Make default for the AI</DropdownMenuItem>}
           <DropdownMenuSeparator />
@@ -156,34 +150,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={dialog === "webhook"} onOpenChange={(o) => !o && !busy && setDialog(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Fix webhook events</AlertDialogTitle>
-            <AlertDialogDescription>
-              The WAHA webhook of this session does not send {missing.length} events Floq uses (for example {missing.slice(0, 3).join(", ")}). Floq adds them and keeps everything else as it is.
-              WAHA restarts the session to apply this, so WhatsApp reconnects for a few seconds. Messages are not lost.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={busy} onClick={(e) => { e.preventDefault(); void fixEvents(); }}>Add events and reconnect</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={dialog === "events"} onOpenChange={(o) => !o && setDialog(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Webhook events</AlertDialogTitle>
-            <AlertDialogDescription>
-              The webhook of this WAHA is set in its environment, so Floq cannot read or change it. Make sure it sends these events (or use *):
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 220, overflowY: "auto" }}>{info?.wantedEvents?.map((e) => <code key={e} style={mono}>{e}</code>)}</div>
-          <AlertDialogFooter><AlertDialogAction>Close</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <WebhookDialog open={dialog === "webhook"} onOpenChange={(o) => setDialog(o ? "webhook" : null)} health={webhook} wantedEvents={info?.wantedEvents} refresh={refresh} />
 
       <AlertDialog open={dialog === "shot"} onOpenChange={(o) => !o && setDialog(null)}>
         <AlertDialogContent>

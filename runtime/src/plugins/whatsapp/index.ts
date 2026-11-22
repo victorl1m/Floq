@@ -13,6 +13,7 @@ import { displayDigits } from "./ids.js";
 import { featuresOf } from "./shared/features.js";
 import { registerExtras } from "./extras.js";
 import { createHistory, type History } from "./history.js";
+import { webhookService } from "./webhook.js";
 
 /** Below the agent CLI's ~300 s request timeout. */
 export const SEND_APPROVAL_WAIT_MS = 280_000;
@@ -236,7 +237,7 @@ export default definePlugin({
       return {
         configured: true, session: c.session, accounts: await accountList(userId), basePathPrefix: new URL(c.base).pathname.replace(/\/+$/, "") !== "",
         version: { status: version.status, detail: (version as { detail?: string }).detail, version: o(version.data).version ?? null, engine: o(version.data).engine ?? null, tier: o(version.data).tier ?? null },
-        sessionRead: { status: one.status, detail: (one as { detail?: string }).detail, sessionStatus: s.status ?? null, engine: o(s.engine).engine ?? null, hasMe: !!s.me, meKeys: keys(s.me), webhooks: hooks },
+        sessionRead: { status: one.status, detail: (one as { detail?: string }).detail, sessionStatus: s.status ?? null, engine: o(s.engine).engine ?? null, hasMe: !!s.me, meKeys: keys(s.me), webhooks: hooks, webhook: await webhookService(core).healthOf(userId, one.data ? s : null) },
         sessions: { status: all.status, detail: (all as { detail?: string }).detail, list: Array.isArray(all.data) ? all.data.slice(0, 30).map((x) => ({ name: o(x).name ?? null, status: o(x).status ?? null, hasMe: !!o(x).me })) : null },
         lids: lids && { status: lids.status, detail: (lids as { detail?: string }).detail, shape: keys(lids.data), firstKeys: Array.isArray(lids.data) ? keys(lids.data[0]) : [] },
         checkExistsOwn: exists && { status: exists.status, detail: (exists as { detail?: string }).detail, keys: keys(exists.data), numberExists: o(exists.data).numberExists ?? null, chatIdKind: typeof o(exists.data).chatId === "string" ? String(o(exists.data).chatId).split("@")[1] : null, sameAsSaved: typeof o(exists.data).chatId === "string" ? o(exists.data).chatId === own : null },

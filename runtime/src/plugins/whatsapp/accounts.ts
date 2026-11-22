@@ -4,6 +4,7 @@ import type { Deps } from "./extras.js";
 import { WahaError } from "./client.js";
 import { SESSION_NAME, SESSION_TABLES, scopeOf, type Account } from "./core.js";
 import { accountOf, engineOf, hasWebhook, statusOf, webhookFor, webhooksOf } from "./session.js";
+import { webhookService } from "./webhook.js";
 
 type Obj = Record<string, unknown>;
 /** What happened to the webhook of a session that was attached or created: it already posts to Floq, Floq added it, or it has to be set by hand. */
@@ -32,6 +33,9 @@ export function registerAccounts({ core, identity, store, history }: Deps): void
   }
   /** Gives a session Floq's webhook when another attached session shows what it is. Changing a session's config makes WAHA restart it. */
   async function ensureWebhook(userId: string, owner: string, name: string, all: Obj[]): Promise<WebhookResult> {
+    // Floq knows its own address: the session gets (or keeps) its webhook directly. Older Floq: copy it from another attached session, below.
+    const direct = await webhookService(core).ensure(scopeOf(owner, name), { force: true });
+    if (direct.state !== "unknown") return direct.state === "ok" ? (direct.changed ? "added" : "ok") : "manual";
     const attached = new Set((await core.accounts(owner)).map((a) => a.session));
     const hook = webhookFor(ctx.pluginId, all.filter((x) => x.name !== name && attached.has(String(x.name))), await ctx.secrets.getInstall("WAHA_WEBHOOK_HMAC"));
     const s = all.find((x) => x.name === name) ?? {};
@@ -112,7 +116,7 @@ export function registerAccounts({ core, identity, store, history }: Deps): void
     } else {
       for (let i = 1; !name; i++) { const n = i === 1 ? "default" : `floq-${i}`; if (!taken.has(n)) name = n; }
     }
-    const hook = webhookFor(ctx.pluginId, all.list.filter((x) => list.some((a) => a.session === x.name)), await ctx.secrets.getInstall("WAHA_WEBHOOK_HMAC"));
+    const hook = (await webhookService(core).entry(owner)) ?? webhookFor(ctx.pluginId, all.list.filter((x) => list.some((a) => a.session === x.name)), await ctx.secrets.getInstall("WAHA_WEBHOOK_HMAC"));
     const plain = hook ? { config: { webhooks: [hook] } } : {};
     let refused = "";
     await core.guard(async () => {

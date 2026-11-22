@@ -58,6 +58,13 @@ export const manifest = {
       "required": false
     },
     {
+      "key": "webhookBase",
+      "type": "url",
+      "label": "Address WAHA uses to reach Floq",
+      "description": "Only when WAHA cannot reach Floq at its public address (for example WAHA runs on a docker network): the address WAHA should post webhooks to, for example http://floq:3000. Leave empty to use Floq's public address.",
+      "required": false
+    },
+    {
       "key": "messageMe",
       "type": "boolean",
       "label": "Let the AI message me freely",

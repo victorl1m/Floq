@@ -19,3 +19,5 @@ export const IconCheckCircle = (p: P) => <Svg {...p}><circle cx="12" cy="12" r="
 export const IconQr = (p: P) => <Svg {...p}><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><path d="M14 14h2.500v2.500H14zM19 14v.1M14 19.500v.1M17 19.500h3M19 17v.1" /></Svg>;
 export const IconAlertCircle = (p: P) => <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7.500v5.500M12 16.300v.1" /></Svg>;
 export const IconDownload = (p: P) => <Svg {...p}><path d="M12 4v11M7.500 10.500 12 15l4.500-4.500M5 19.500h14" /></Svg>;
+export const IconBell = (p: P) => <Svg {...p}><path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2h-15l1.500-2Z" /><path d="M10 20.500a2.200 2.200 0 0 0 4 0" /></Svg>;
+export const IconBellOff = (p: P) => <Svg {...p}><path d="M8 6.200A6 6 0 0 1 18 11v4M6.300 9A6 6 0 0 0 6 11v5.500l-1.500 2h13" /><path d="M10 20.500a2.200 2.200 0 0 0 4 0" /><path d="m3 3 18 18" /></Svg>;

@@ -34,7 +34,7 @@
     "start": "prisma migrate deploy && node dist/index.js",
     "dev": "prisma migrate deploy && tsx watch src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.image.json --noEmit",
-    "test:whatsapp": "node --test --test-timeout=300000 test/whatsapp/*.test.mjs"
+    "test:whatsapp": "node --test --test-concurrency=2 --test-timeout=300000 test/whatsapp/*.test.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.0.0",

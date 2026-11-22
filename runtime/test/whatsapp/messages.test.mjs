@@ -89,7 +89,10 @@ test("acks only go up, blue ticks reach the UI; an error ack marks the message f
   await h.event("message.ack", { id: "true_99@lid_" + stanza, fromMe: true, ackName: "DEVICE" });
   assert.equal((await h.messages(A))[0].ack, 3, "a late DEVICE ack does not downgrade READ; a bare-stanza match works across addresses");
   await h.event("message.ack", { id: sent.id, fromMe: true, ack: -1 });
-  assert.equal((await h.messages(A))[0].ack, -1);
+  assert.equal((await h.messages(A))[0].ack, 3, "an error ack never takes a message back from read: it only marks one that was not delivered");
+  const failed = await h.post("/send", { chatId: A, text: "again" });
+  await h.event("message.ack", { id: failed.id, fromMe: true, ack: -1 });
+  assert.equal((await h.messages(A)).find((m) => m.id === failed.id).ack, -1);
   await h.event("message.ack", { id: "true_x@c.us_UNKNOWN", ack: 2 });
 });
 

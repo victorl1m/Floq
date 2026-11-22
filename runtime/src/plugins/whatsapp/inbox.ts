@@ -5,6 +5,7 @@ import type { Store } from "./messages.js";
 import { digitsOf, isGroup, normId, pnOf, stanzaOf } from "./ids.js";
 import { linkFromSend, sentIdOf, type MediaMeta, type MessageExtra, type MessageType, type ReplyRef } from "./parse.js";
 import { WahaError } from "./client.js";
+import { notifierOf } from "./notify.js";
 
 /** WAHA statuses after which the other address of a merged chat is tried: the id was not accepted, nothing was sent. */
 const RETRY_OTHER_ID = new Set([400, 404, 422, 500]);
@@ -130,6 +131,7 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     await core.owner(userId);
     const chatId = core.chatId(b(body).chatId);
     await store.markRead(userId, chatId);
+    notifierOf(core, identity).read(userId, await identity.canonical(userId, chatId));
     // Blue ticks for the other side, like opening the chat on the phone. Best effort.
     const [target] = await store.route(userId, chatId);
     core.bg(core.tryWaha(userId, "POST", "/api/sendSeen", { body: { chatId: target } }));

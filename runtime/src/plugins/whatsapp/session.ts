@@ -4,6 +4,7 @@ import { WahaError } from "./client.js";
 import { SESSION_NAME } from "./core.js";
 import { displayDigits } from "./ids.js";
 import { phoneDigits } from "./shared/phone.js";
+import { webhookService, type WebhookHealth } from "./webhook.js";
 
 /** Webhook events this plugin listens to. */
 export const WANTED_EVENTS = ["message.any", "message.ack", "message.ack.group", "message.reaction", "message.edited", "message.revoked", "session.status", "presence.update", "poll.vote", "chat.archive", "call.received", "call.accepted", "call.rejected", "label.upsert", "label.deleted", "label.chat.added", "label.chat.deleted", "group.v2.join", "group.v2.leave", "group.v2.update", "group.v2.participants"];
@@ -60,6 +61,7 @@ export function registerSession(deps: Deps): void {
     return Array.isArray(r) ? r.filter((x): x is Obj => !!x && typeof x === "object" && typeof (x as Obj).name === "string") : null;
   }
   const NAME = SESSION_NAME;
+  const wh = webhookService(core);
   /** The account now uses another WAHA session: its place in the list stays, what was learned about the old session's account does not carry over. */
   async function switched(userId: string, name: string) {
     const { owner, session } = core.split(userId), list = await core.accounts(owner);
@@ -95,7 +97,7 @@ export function registerSession(deps: Deps): void {
     const { s } = first;
     let status = first.status, engine = "";
     let hist: { willImport: boolean; error: string | null } = { willImport: false, error: null };
-    let webhook: { configured: boolean; events: string[]; missingEvents: string[] } | null = null;
+    let webhook: ({ configured: boolean; events: string[]; missingEvents: string[] } & Partial<WebhookHealth>) | null = null;
     if (s) {
       const e = String((s.engine as Obj | undefined)?.engine ?? "").toUpperCase();
       engine = e === "WEBJS" || e === "NOWEB" || e === "GOWS" ? e : "";
@@ -108,13 +110,17 @@ export function registerSession(deps: Deps): void {
       hist = { willImport: p.willImport, error: p.error };
       await history.noteStatus(userId, status);
     }
+    // Is Floq's own webhook in WAHA, with its current address and every event? (state: ok | missing | missing-events | stale | unknown)
+    const health = await wh.healthOf(userId, s);
+    if (health.state !== "unknown" || webhook) webhook = { ...health, configured: webhook?.configured ?? false, events: webhook?.events ?? [], missingEvents: health.state === "unknown" ? webhook?.missingEvents ?? [] : health.missingEvents };
     const me = await identity.me(userId);
-    return { status: SESSION_STATUSES.includes(status as never) || ["MISSING", "UNREACHABLE", "UNAUTHORIZED"].includes(status) ? status : "STOPPED", engine, me: me ? { name: me.name, phone: displayDigits(me.id.split("@")[0]) } : null, webhook, wantedEvents: WANTED_EVENTS, history: hist };
+    return { status: SESSION_STATUSES.includes(status as never) || ["MISSING", "UNREACHABLE", "UNAUTHORIZED"].includes(status) ? status : "STOPPED", engine, me: me ? { name: me.name, phone: displayDigits(me.id.split("@")[0]) } : null, webhook, wantedEvents: WANTED_EVENTS, history: hist, webhookHealth: health };
   });
 
   // Extends the events of the existing webhook entry; WAHA replaces the whole config and restarts the session, so everything else is sent back unchanged.
   R.post("/session/webhook-events", async ({ userId }) => {
     await core.owner(userId);
+    if (wh.available()) { const h = await wh.ensure(userId, { force: true }); if (h.state !== "unknown") return { ok: h.state === "ok", added: h.added, state: h.state }; }
     return core.guard(async () => {
       const s = await core.waha<Obj>(userId, "GET", "/api/sessions/{session}");
       const config = s && s.config && typeof s.config === "object" ? (s.config as Obj) : null;
@@ -141,7 +147,7 @@ export function registerSession(deps: Deps): void {
       let err: WahaError | null;
       if (status === "MISSING") {
         const { owner } = core.split(userId), others = new Set((await core.accounts(owner)).map((a) => a.session));
-        const hook = webhookFor(ctx.pluginId, ((await list(userId)) ?? []).filter((x) => others.has(String(x.name))), await ctx.secrets.getInstall("WAHA_WEBHOOK_HMAC"));
+        const hook = (await wh.entry(owner)) ?? webhookFor(ctx.pluginId, ((await list(userId)) ?? []).filter((x) => others.has(String(x.name))), await ctx.secrets.getInstall("WAHA_WEBHOOK_HMAC"));
         // Created with the history store on, so the chats are there after the scan. A WAHA that refuses that config gets the session without it.
         err = await post("/api/sessions", { name: c.session, start: true, config: { ...(hook ? { webhooks: [hook] } : {}), ...history.storeConfig() } });
         if (err && (err.status === 400 || err.status === 422)) {
@@ -151,6 +157,8 @@ export function registerSession(deps: Deps): void {
         if (err && (err.status === 404 || err.status === 405)) err = (await legacy()) && err;
         else if (err && (err.status === 409 || err.status === 422 || err.status === 400)) err = (await post("/api/sessions/{session}/start")) && err; // it exists after all
       } else {
+        // A stopped session takes a new webhook without restarting anything that works.
+        if (status === "STOPPED" || status === "FAILED") await wh.ensure(userId, { force: true }).catch(() => undefined);
         err = await post("/api/sessions/{session}/start");
         if (err && (err.status === 404 || err.status === 405)) err = (await legacy()) && err;
       }

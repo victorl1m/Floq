@@ -1,9 +1,11 @@
 // The message store: rows from webhooks and from WAHA's own history, folded per canonical chat; the chat list and the conversation the UI and agents read.
 import type { Core, WebhookEvent } from "./core.js";
+import { notifierOf } from "./notify.js";
 import type { Identity } from "./identity.js";
 import { digitsOf, displayDigits, isGroup, isUser, kindOf, lidOf, normId, pnOf, stanzaOf } from "./ids.js";
 import { MESSAGE_EVENTS, parseMessage, rec, type MediaMeta, type MessageExtra, type Parsed } from "./parse.js";
 import { formatPhone } from "./shared/phone.js";
+import { ackOf, applyAck } from "./acks.js";
 
 /** WAHA's chat list is re-read at most this often. */
 export const CHATS_SYNC_EVERY_MS = 60_000;
@@ -33,7 +35,6 @@ export interface Store {
   setState(userId: string, chatId: string, patch: Record<string, unknown>): Promise<void>;
 }
 
-const ACK_NAMES: Record<string, number> = { ERROR: -1, PENDING: 0, SERVER: 1, DEVICE: 2, READ: 3, PLAYED: 4 };
 const iso = (v: unknown) => new Date(v as string).toISOString();
 
 export function createStore(core: Core, identity: Identity): Store {
@@ -388,20 +389,20 @@ export function createStore(core: Core, identity: Identity): Store {
     const st = (await q(`SELECT muted_until, archived FROM {{p}}chat_state WHERE user_id = $1 AND session = $S AND chat_id = $2`, [userId, chatId])).rows[0];
     if (st?.muted_until && new Date(st.muted_until as string).getTime() > Date.now()) return;
     let who = m.senderName || (m.senderPhone ? formatPhone(displayDigits(m.senderPhone)) : "");
-    if (!who || isGroup(chatId)) {
-      // A saved name beats the push name; in a group the sender is named, with the group after it.
-      const known = async (id: string) => { const k = (await q(`SELECT name, push_name FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = ANY($2::text[]) ORDER BY (name <> '') DESC LIMIT 1`, [userId, await identity.aliases(userId, id)])).rows[0]; return String(k?.name || k?.push_name || ""); };
-      who = who || (await known(isGroup(chatId) ? m.sender : chatId));
-      if (isGroup(chatId)) { const g = await known(chatId); if (g) who = who ? `${who} in ${g}` : g; }
-    }
+    // A saved name beats the push name; in a group the sender is named, with the group after it.
+    const known = async (id: string) => { const k = (await q(`SELECT name, push_name FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = ANY($2::text[]) ORDER BY (name <> '') DESC LIMIT 1`, [userId, await identity.aliases(userId, id)])).rows[0]; return String(k?.name || k?.push_name || ""); };
+    const group = isGroup(chatId) ? await known(chatId) : "";
+    if (!who) who = await known(isGroup(chatId) ? m.sender : chatId);
+    // Floq's island (sender, preview, reply, mark read, open chat) where the host has it; the plain toast on an older Floq.
+    if ((await notifierOf(core, identity).message(userId, { chatId, m, who, group })) !== "unsupported") return;
+    if (group) who = who ? `${who} in ${group}` : group;
     ctx.toast(userId, { title: `WhatsApp: ${who || "new message"}`, description: m.body.slice(0, 120) || (m.hasMedia ? "Sent a file" : m.type === "location" ? "Sent a location" : m.type === "vcard" ? "Sent a contact" : m.type === "poll" ? "Sent a poll" : "") });
   });
   for (const ackEvent of ["message.ack", "message.ack.group"]) core.on(ackEvent, async (userId, e) => {
     const p = e.payload, stanza = stanzaOf(p.id);
-    const ack = Number.isFinite(Number(p.ack)) ? Math.trunc(Number(p.ack)) : ACK_NAMES[String(p.ackName ?? "").toUpperCase()];
+    const ack = ackOf(p);
     if (!stanza || ack === undefined) return;
-    const r = await q(`UPDATE {{p}}messages SET ack = CASE WHEN $3 < 0 THEN $3 ELSE GREATEST(ack, $3) END WHERE user_id = $1 AND session = $S AND stanza = $2 AND from_me AND ack <> $3 RETURNING id`, [userId, stanza, Math.max(-1, Math.min(4, ack))]);
-    if (r.rows.length) await touched(userId, stanza, "ack");
+    if (await applyAck(core, userId, stanza, ack)) await touched(userId, stanza, "ack");
   });
   core.on("message.reaction", async (userId, e) => {
     const p = e.payload, r = rec(p.reaction), stanza = stanzaOf(r.messageId);

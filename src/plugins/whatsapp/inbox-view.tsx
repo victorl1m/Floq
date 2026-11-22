@@ -24,6 +24,7 @@ import { IconArrowLeft } from "./icons";
 import { subtitle } from "@whatsapp-shared/chat";
 import { kindOfFile, mentionsIn, type Attachment } from "./composer";
 import { WaContext, accountName, errorCode, errorStatus, errorText, scopedApi, type Account, type Api, type Wa } from "./context";
+import { useNotifyFocus, useOpenFromHost } from "./notify";
 import { AccountsContext, AddAccountDialog, accountHue, useAccountList, type Accounts } from "./accounts";
 import { IconUserPlus } from "./icons-people";
 import type { CSSProperties } from "react";
@@ -91,6 +92,13 @@ export default function InboxView({ plugin, view }: PluginViewProps) {
   const { list, error, active, switchTo, refresh } = useAccountList(plugin.id, base, configured);
   const accounts = useMemo<Accounts>(() => ({ list: list ?? [], active, switchTo, refresh, add: () => setAdding(true) }), [list, active, switchTo, refresh]);
   const api = useMemo(() => scopedApi(base, active), [base, active]);
+  // "Open chat" of a notification: switch to its account, then open the chat there.
+  const [wanted, setWanted] = useState<{ chat: string; session: string; n: number } | null>(null);
+  useOpenFromHost(plugin.id, view.id, (params) => {
+    if (!params.chat) return;
+    if (params.session && params.session !== active && (list ?? []).some((a) => a.session === params.session)) switchTo(params.session);
+    setWanted((old) => ({ chat: params.chat, session: params.session ?? "", n: (old?.n ?? 0) + 1 }));
+  });
 
   if (phase.kind === "loading" || (configured && list === null && !error)) return <PluginPage title="WhatsApp"><PluginState state="loading" label="WhatsApp" /></PluginPage>;
   if (phase.kind === "error") return <PluginPage title="WhatsApp"><PluginState state="error" title="Could not load WhatsApp" description={phase.message} onRetry={() => void loadStatus()} /></PluginPage>;
@@ -102,7 +110,7 @@ export default function InboxView({ plugin, view }: PluginViewProps) {
   const added = async (session: string) => { await refresh(); switchTo(session); };
   return (
     <AccountsContext.Provider value={accounts}>
-      {active ? <AccountInbox key={active} plugin={plugin} view={view} api={api} session={active} status={phase.status} account={list.find((a) => a.session === active) ?? null} many={list.length > 1} /> : (
+      {active ? <AccountInbox key={active} plugin={plugin} view={view} api={api} session={active} wanted={wanted && (!wanted.session || wanted.session === active) ? wanted : null} status={phase.status} account={list.find((a) => a.session === active) ?? null} many={list.length > 1} /> : (
         <div className="wa-root">
           <style>{CSS + SESSION_CSS}</style>
           <div className="wa-noacct">
@@ -121,7 +129,7 @@ export default function InboxView({ plugin, view }: PluginViewProps) {
 }
 
 /** The inbox of one account: chat list, conversation and its side panels. Everything sent here is the user's own click, from this account. */
-function AccountInbox({ plugin, api, session, status: first, account, many }: PluginViewProps & { api: Api; session: string; status: Status; account: Account | null; many: boolean }) {
+function AccountInbox({ plugin, api, session, status: first, account, many, wanted }: PluginViewProps & { api: Api; session: string; status: Status; account: Account | null; many: boolean; wanted?: { chat: string; n: number } | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: "ready", status: first });
   const [chats, setChats] = useState<Chat[] | null>(null);
   const [archived, setArchived] = useState<Chat[]>([]);
@@ -251,6 +259,8 @@ function AccountInbox({ plugin, api, session, status: first, account, many }: Pl
     setSelected(chatId); setPane("chat"); setInfo(false);
   }, []);
   const closeChat = useCallback(() => { setSelected(""); setPane("list"); setInfo(false); }, []);
+  useEffect(() => { if (wanted?.chat) openChat(wanted.chat); }, [wanted?.chat, wanted?.n, openChat]);
+  useNotifyFocus(api, selected);
 
   const status = phase.kind === "ready" ? phase.status : null;
   const engine: Engine = status?.engine ?? "";
