@@ -28,7 +28,13 @@ const AVATAR_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2
 /** Only an inline image ever reaches an <img> of the island: no remote URL, no SVG. */
 export const safeAvatar = (avatar: string | null | undefined): string | null => (typeof avatar === 'string' && avatar.length <= 48_000 && AVATAR_RE.test(avatar) ? avatar : null);
 /** Up to two initials of a name, for the avatar fallback. */
-export const initials = (name: string): string => { const parts = name.trim().split(/\s+/).filter(p => /[\p{L}\p{N}]/u.test(p)); return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?'; };
+/** Up to two initials of a name, for the avatar fallback. A bare phone number gets "#". */
+export const initials = (name: string): string => {
+  if (!/\p{L}/u.test(name)) return /\d/.test(name) ? '#' : '?';
+  const first = (part: string) => /[\p{L}\p{N}]/u.exec(part)?.[0] ?? '';
+  const parts = name.trim().split(/\s+/).filter(p => /\p{L}/u.test(p));
+  return (first(parts[0]) + (parts.length > 1 ? first(parts[parts.length - 1]) : '')).toUpperCase();
+};
 /** New unread notifications not already dismissed from the island, newest first, capped. */
 export function notificationAttention(notifications: AppNotification[], dismissed: ReadonlySet<string>): Extract<AttentionItem, {kind: 'notification'}>[] {
   return notifications

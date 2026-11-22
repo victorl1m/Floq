@@ -29,7 +29,7 @@ test('a message shows the sender, the account and a preview; the pill carries th
   await expect(card.locator('.island-avatar img')).toBeVisible();
   await expect(card.getByRole('textbox', { name: 'Reply to Marina Duarte' })).toHaveAttribute('placeholder', 'Reply to Marina');
   await expect(card.getByRole('button', { name: 'Mark read' })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Open chat' })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Open chat', exact: true })).toBeVisible();
   // Nothing is cut off: the card fits its window.
   const box = await card.boundingBox(); const shell = await page.locator('.island').boundingBox();
   expect(box!.y + box!.height).toBeLessThanOrEqual(shell!.y + shell!.height + 1);
@@ -70,6 +70,7 @@ test('inline reply: focus holds the card, Enter sends the text, the island confi
   await emit(page, snapshot([], 3));
   await expect(page.locator('.island-result-label')).toHaveText('Sent');
   await expect(page.locator('.island-result-sub')).toHaveText('To Marina Duarte');
+  await page.waitForTimeout(900); // the result animation settles
   await page.screenshot({ path: `${SHOTS}/waha-island-reply-sent.png` });
   await expect(page.locator('.island')).toHaveCount(0, { timeout: 6000 });
   // exactly one send
@@ -101,7 +102,7 @@ test('mark read runs the plugin action; open chat and the card itself open the c
 
   await boot(page, { items: [message('m2')] });
   await open(page);
-  await page.getByRole('button', { name: 'Open chat' }).click();
+  await page.getByRole('button', { name: 'Open chat', exact: true }).click();
   expect(await intents(page)).toContainEqual({ type: 'notification', id: 'm2', action: 'open' });
   await expect(page.locator('.island-message')).toHaveCount(0);
 
