@@ -122,11 +122,11 @@ test("update is manual and only from the same repository: newer only, reviewed s
 test("updates check (for the toast on app open): admin only, read-only, lists repository plugins with a newer release and skips unreachable ones", async () => {
   const t = await setup(); const p1 = pkg("1.0.0"); t.publish("someone", "my-plugin", p1);
   await t.call("admin", "POST", "/v1/plugins/install-url", { url: URL1, sha256: p1.sha256, confirm: "mine" });
-  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [] });
+  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [], deprecated: [] });
   await assert.rejects(t.call("member", "GET", "/v1/plugins/updates"), (e: any) => e.status === 403);
   t.publish("someone", "my-plugin", pkg("1.2.0"));
-  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [{ id: "mine", name: "Mine", installedVersion: "1.0.0", availableVersion: "1.2.0", repo: "someone/my-plugin" }] });
+  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [{ id: "mine", name: "Mine", installedVersion: "1.0.0", availableVersion: "1.2.0", repo: "someone/my-plugin" }], deprecated: [] });
   assert.equal((await t.db.query("SELECT version FROM floq_plugin_packages")).rows[0].version, "1.0.0"); // nothing was installed
   t.files.clear();
-  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [] });
+  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body, { updates: [], deprecated: [] });
 });
