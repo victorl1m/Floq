@@ -45,7 +45,7 @@ function health() {
     case "events": return { ...base, state: "missing-events", reason: "The webhook does not send 3 events Floq uses.", address: ADDRESS };
     case "stale": return { ...base, state: "stale", missingEvents: [], reason: "The webhook points to an old address or token.", address: ADDRESS };
     case "fail": return { ...base, state: "missing", reason: "WAHA has no webhook to Floq for this session.", address: ADDRESS, ...(state.repaired ? { lastError: "WAHA answered 500." } : {}) };
-    case "address": return { ...base, state: "unknown", missingEvents: [], reason: "Floq does not know its public address yet. Set “Address WAHA uses to reach Floq” in the plugin settings." };
+    case "address": return { ...base, state: "unknown", missingEvents: [], reason: "Floq does not know its public address yet. Set “Address WAHA uses to reach Floq” in Settings > Integrations > WhatsApp." };
     default: return { ...base, state: "unknown", missingEvents: [], reason: "Needs a newer Floq: it cannot tell plugins their webhook address yet." };
   }
 }

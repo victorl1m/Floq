@@ -28,7 +28,7 @@ export const RETRIES = { policy: "exponential", delaySeconds: 2, attempts: 8 };
 export const COOLDOWN_MS = 5 * 60_000;
 export const CHECK_EVERY_MS = 10 * 60_000;
 const NEEDS_FLOQ = "Needs a newer Floq: it cannot tell plugins their webhook address yet.";
-const NO_ADDRESS = "Floq does not know its public address yet. Set “Address WAHA uses to reach Floq” in the plugin settings.";
+const NO_ADDRESS = "Floq does not know its public address yet. Set “Address WAHA uses to reach Floq” in Settings > Integrations > WhatsApp.";
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** True for a webhook entry that posts to this plugin's hook, whatever the origin or token. */

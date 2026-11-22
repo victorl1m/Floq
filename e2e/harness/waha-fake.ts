@@ -189,6 +189,11 @@ function createOne(opts: Opts, profile: Profile) {
   const group = { chatId: GROUP, subject: "Equipe Zoe · Produção", description: "Pedidos, produção e expedição. Só assuntos do dia a dia.", owner: RAFAEL, createdAt: at(400, 10, 0), size: 5, iAmAdmin: true, announce: false, restrict: false, avatar: 2,
     participants: [{ id: "me", name: "You", phone: "5534988880000", role: "admin", isMe: true }, { id: RAFAEL, name: "Rafael Souza", phone: "5511911112222", role: "superadmin", isMe: false }, { id: BIA, name: "Bia Nogueira", phone: "5511933334444", role: "admin", isMe: false }, { id: "5511955556666@c.us", name: "", phone: "5511955556666", role: "member", isMe: false }, { id: "5511977778888@c.us", name: "", phone: "5511977778888", role: "member", isMe: false }] };
 
+  // Island notifications of this account (account menu switch) and Floq's webhook in WAHA (repaired by one call).
+  let notifyOn = true, hookFixed = false;
+  const hookHealth = () => (state === "webhook" && !hookFixed
+    ? { state: "missing-events", missingEvents: ["message.ack", "message.reaction"], reason: "The webhook does not send 2 events Floq uses.", lastEnsuredAt: null, address: "https://floq.example.com/v1/plugins/waha/hooks/events/…" }
+    : { state: "ok", missingEvents: [], lastEnsuredAt: null, address: "https://floq.example.com/v1/plugins/waha/hooks/events/…" });
   async function fetch(pathAndQuery: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
     const [path, qs] = pathAndQuery.split("?"), query = new URLSearchParams(qs ?? ""), method = init?.method ?? "GET";
     const body = (init?.body ?? {}) as Record<string, any>;
@@ -197,7 +202,7 @@ function createOne(opts: Opts, profile: Profile) {
     const ok = { ok: true };
     switch (path) {
       case "/status": return state === "unconfigured" ? { configured: false, missingSettings: ["baseUrl"], missingSecrets: ["WAHA_API_KEY"], session: "default" } : { configured: true, missingSettings: [], missingSecrets: [], session: "default", engine, features, me: me.name ? me : null };
-      case "/session": return { status: session, engine, history: { willImport: !historyError && willImport, error: historyError || null }, me: session === "WORKING" ? me.name ? me : null : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" ? ["message.ack", "message.reaction"] : [] } };
+      case "/session": return { status: session, engine, history: { willImport: !historyError && willImport, error: historyError || null }, me: session === "WORKING" ? me.name ? me : null : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" && !hookFixed ? ["message.ack", "message.reaction"] : [] }, webhookHealth: hookHealth() };
       case "/session/qr": if (session !== "SCAN_QR_CODE") throw fail(409, "not_scanning", "Not waiting for a scan."); return { value: "2@Zl3fakeQRvalueForTheHarness1234567890abcdefghijklmnopqrstuvwxyz,AbCdEfGh1234567890==,ZyXwVu9876543210==,QwErTy==" };
       case "/session/pair-code": await sleep(200); return { code: "K7QM-2XWP" };
       case "/session/start": case "/session/restart": session = "SCAN_QR_CODE"; emit("session", { status: session }); return { status: session };
@@ -323,6 +328,10 @@ function createOne(opts: Opts, profile: Profile) {
       case "/call/reject": return ok;
       case "/presence": { const id = query.get("chatId"); return { chatId: id, state: id === MARINA ? "online" : "unknown", lastSeen: id === LONG ? ago(3 * HOUR) : null }; }
       case "/presence/me": return ok;
+      case "/session/webhook-repair": { const repaired = hookHealth().state !== "ok"; hookFixed = true; return { ...hookHealth(), repaired }; }
+      case "/notify/settings": if (method === "POST") notifyOn = body.enabled === true; return { supported: true, enabled: notifyOn };
+      case "/notify/focus": return ok;
+      case "/chats/acks/refresh": return { ok: true, checked: 0, updated: 0 };
     }
     throw fail(404, "not_found", "No such route: " + path);
   }
