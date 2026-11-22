@@ -19,7 +19,13 @@ export interface RouteEntry { method: PluginRouteMethod; segments: string[]; han
 export interface ContextDeps {
   pool: Pick<pg.Pool, "query" | "connect">;
   /** The plugin-only secret store. Plugin code never gets the vault. */
-  secrets: Pick<PluginSecrets, "resolve">;
+  secrets: Pick<PluginSecrets, "resolve" | "set">;
+  /** Backs `ctx.webhooks.url` (the host owns the token and the public base). */
+  webhookUrl?: (name: string) => Promise<string | null>;
+  /** A built-in service in use for this plugin (see `PluginIntegration` in host.ts): host-provided settings and install secrets, or null. */
+  integration?: () => Promise<{ settings: Record<string, unknown>; secrets: Record<string, string>; onFetch?: (method: string | undefined, url: string) => void } | null>;
+  /** Lazy: the server (and its Notifications) is created after plugins are loaded. Backs `ctx.notify`. */
+  notifications?: () => Pick<import("../notifications.js").Notifications, "createFromPlugin" | "clearPluginTag"> | undefined;
   /** Schema mode: schema name. Prefix mode: null and `tablePrefix` is used. */
   schema: string | null;
   tablePrefix: string;
@@ -225,6 +231,14 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
         if (!manifest.contributes.webhooks.includes(name)) throw new Error("webhook is not declared in the plugin manifest");
         webhooks.set(name, { handler, verify: options?.verify });
       },
+      async url(name) {
+        if (manifest.scope !== "install") throw new Error("webhooks.url is only available to install-scoped plugins");
+        if (!manifest.contributes.webhooks.includes(name)) throw new Error("webhook is not declared in the plugin manifest");
+        const url = (await deps.webhookUrl?.(name)) ?? null;
+        // The token in the path is a credential: anything the plugin returns or logs is scrubbed of it.
+        if (url) revealed.set("webhook-url\0" + name, url.slice(url.lastIndexOf("/") + 1));
+        return url;
+      },
     },
     httpError: (status: number, code: string, message: string) => new HttpError(status, code, String(message).slice(0, 300)),
     async installOwner() {
@@ -232,9 +246,18 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
       return ((await deps.pool.query("SELECT config_owner FROM floq_plugins WHERE id = $1", [id])).rows[0]?.config_owner as string | null | undefined) ?? null;
     },
     secrets: {
+      async setInstall(name, value) {
+        if (manifest.scope !== "install") throw new Error("setInstall is only available to install-scoped plugins");
+        if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
+        await deps.secrets.set(id, INSTALL_OWNER, name, value, "plugin:" + id);
+        revealed.set(name + "\0" + INSTALL_OWNER, value);
+      },
       async getInstall(name) {
         if (manifest.scope !== "install") throw new Error("getInstall is only available to install-scoped plugins; use get(userId, name)");
         if (!declared.has(name)) throw new Error(`secret ${JSON.stringify(String(name).slice(0, 64))} is not declared in the plugin manifest`);
+        // A built-in service in use: the host owns the key. It is scrubbed from everything the plugin returns or logs, like a stored one.
+        const provided = (await deps.integration?.())?.secrets[name];
+        if (provided !== undefined) { revealed.set(name + "\0" + INSTALL_OWNER, provided); return provided; }
         const value = await deps.secrets.resolve(id, INSTALL_OWNER, name);
         if (value !== undefined) revealed.set(name + "\0" + INSTALL_OWNER, value);
         return value;
@@ -267,6 +290,7 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
       const saved = await ctx.settings.get(userId);
       const origins = keys.flatMap((k) => { try { return typeof saved[k] === "string" ? [new URL(saved[k] as string).origin] : []; } catch { return []; } });
       if (!origins.includes(u.origin)) throw new Error("plugin fetch: address is not one the owner configured in the plugin settings");
+      try { (await deps.integration?.())?.onFetch?.(init.method, url); } catch { /* activity tracking never fails a request */ }
       return limitedFetch(u, init, USER_FETCH_MAX_BYTES);
     },
     db: {
@@ -279,7 +303,8 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
           ? (await deps.pool.query("SELECT config AS v FROM floq_plugins WHERE id = $1", [id])).rows[0]
           : (await deps.pool.query("SELECT settings AS v FROM floq_plugin_user_settings WHERE plugin_id = $1 AND user_id = $2", [id, userId])).rows[0];
         const { __kv: _kv, ...rest } = (row?.v ?? {}) as Record<string, unknown>;
-        return rest;
+        if (manifest.scope !== "install") return rest;
+        return { ...rest, ...((await deps.integration?.())?.settings ?? {}) };
       },
     },
     kv: {
@@ -321,6 +346,20 @@ export function buildContext(manifest: PluginManifest, deps: ContextDeps): Built
       publish(userId, name, data) {
         if (!deps.events) throw new Error("events are not available");
         deps.events.publish(userId, id, name, scrub(data));
+      },
+    },
+    async notify(userId, note) {
+      const notifications = deps.notifications?.();
+      if (!notifications) throw new Error("notifications are not available");
+      const n = await notifications.createFromPlugin(userId, { plugin: { id, name: manifest.name, icon: manifest.icon ?? null, views: manifest.contributes.views.map((v) => v.id) }, note: scrub(note) as Record<string, unknown> });
+      return { id: n.id };
+    },
+    notifications: {
+      async clear(userId, tag) {
+        const notifications = deps.notifications?.();
+        if (!notifications) throw new Error("notifications are not available");
+        if (typeof tag !== "string" || !tag || tag.length > 200) throw new Error("invalid tag");
+        await notifications.clearPluginTag(userId, id, tag);
       },
     },
     toast(userId, toast) {

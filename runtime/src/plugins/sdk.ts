@@ -136,6 +136,48 @@ export interface PluginWebhooks {
    * returning false answers 401. There is no calling user: use `ctx.secrets.getInstall`.
    */
   on(name: string, handler: WebhookHandler, options?: { verify?: (req: WebhookRequest) => boolean | Promise<boolean> }): void;
+  /**
+   * Install-scoped plugins only: the full public URL of a declared webhook, `<public base>/v1/plugins/<id>/hooks/<name>/<token>`, so the plugin
+   * can register it with the outside service itself. The token is a host-managed one (created on first use, valid next to the one an admin
+   * rotates by hand; an admin rotation replaces both). Null when the runtime has no address the outside can reach (BETTER_AUTH_URL is a
+   * loopback address and FLOQ_PUBLIC_URL is not set). The URL is a credential: never log it or return it from a route.
+   */
+  url(name: string): Promise<string | null>;
+}
+
+export interface PluginNotifyAction {
+  /** Sent back to the plugin's action route. Letters, digits, - and _; at most 32 characters. */
+  id: string;
+  /** Button text, at most 40 characters. */
+  label: string;
+  /** Present: the action takes one line of text typed by the user (an inline reply). */
+  input?: { placeholder?: string };
+}
+export interface PluginNotifyInput {
+  /** "message": a person wrote (avatar, name, preview, inline reply). Default "message". */
+  kind?: "message";
+  /** Sender or headline, at most 120 characters. */
+  title: string;
+  /** Preview text, at most 2000 characters. */
+  body?: string;
+  /** Small line above the title next to the plugin name (account, group), at most 120 characters. */
+  subtitle?: string;
+  /** `data:image/(png|jpeg|webp|gif);base64,...` of at most 32 KiB. Anything else is dropped (initials are shown). */
+  avatar?: string;
+  /** A new notification with the same tag replaces the previous one of this plugin and user (one per chat). At most 200 characters. */
+  tag?: string;
+  /** At most 4. */
+  actions?: PluginNotifyAction[];
+  /** The plugin's own POST route (`ctx.routes.post`) that receives `{ notificationId, actionId, input, data }` as the user. Required with actions. */
+  actionRoute?: string;
+  /** Opaque JSON (at most 2 KiB) handed back to the action route. Never sent to the app. */
+  data?: unknown;
+  /** Where "open" goes: one of the plugin's own views plus string params the view receives (`usePluginOpen` in the UI SDK). */
+  target?: { view: string; params?: Record<string, string> };
+}
+export interface PluginNotifications {
+  /** Removes this plugin's notifications of that user with this tag (the chat was read elsewhere). */
+  clear(userId: string, tag: string): Promise<void>;
 }
 
 export interface PluginEvents {
@@ -191,6 +233,8 @@ export interface PluginContext {
   internalRoutes: PluginInternalRoutes;
   webhooks: PluginWebhooks;
   secrets: {
+    /** Install-scoped plugins only: stores a declared install secret in the plugin secret store (a key the plugin generates itself, e.g. a webhook HMAC key). Audited as `plugin:<id>`. */
+    setInstall(name: string, value: string): Promise<void>;
     /** User-scoped plugins only: the calling user's own secret from the plugin secret store (never the vault). Declared names only; throws for install scope. */
     get(userId: string, name: string): Promise<string | undefined>;
     /** Install-scoped plugins only: the installation's secret from the plugin secret store (never the vault). Throws for user-scoped plugins. */
@@ -200,6 +244,13 @@ export interface PluginContext {
   /** Like `fetch`, but reaches only the origin of a saved `url` setting (self-hosted services). Needs a `url` setting in the manifest. */
   fetchUserUrl(userId: string, url: string, init?: PluginFetchInit): Promise<PluginFetchResponse>;
   db: PluginDb;
+  /**
+   * A notification for that user from this plugin: Notification Center (category "message") and the island, with the plugin's own actions.
+   * An action only ever calls `actionRoute` of this same plugin, as the user who clicked, through the host. Text is cleaned like any
+   * notification. Rate-limited per user and plugin (120 a minute; throws HttpError 429).
+   */
+  notify(userId: string, note: PluginNotifyInput): Promise<{ id: string }>;
+  notifications: PluginNotifications;
   /** Shows a toast in that user's open apps (a `toast` event the host renders). Title up to 120 chars, description up to 300. */
   toast(userId: string, toast: { title: string; description?: string }): void;
   settings: {

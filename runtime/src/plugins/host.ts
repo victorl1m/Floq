@@ -6,6 +6,7 @@ import { HttpError, badRequest, conflict, notFound } from "../errors.js";
 import { log } from "../logger.js";
 import { VAULT_NAME } from "../mcpConfig.js";
 import { INSTALL_OWNER, PluginSecrets } from "./secrets.js";
+import { decryptSecret, deriveKey, encryptSecret } from "../crypto.js";
 import { migrateVaultSecrets, type VaultReferences } from "./secretMigration.js";
 import { PluginEvents } from "./events.js";
 import { TaskSourceRegistry } from "./taskSources.js";
@@ -91,7 +92,49 @@ export interface PluginHostOptions {
   /** Minimum time between lazy credential-migration attempts for one user (default 60 s). Tests pass 0. */
   lazyMigrationIntervalMs?: number;
   sink?: ContextDeps["sink"];
+  /**
+   * Where the outside reaches this runtime (FLOQ_PUBLIC_URL, else BETTER_AUTH_URL), for `ctx.webhooks.url`. Unset, invalid, or a loopback
+   * address that was not set explicitly: plugins get null.
+   */
+  publicUrl?: string | null;
+  /** Services the runtime hosts itself for a plugin, by plugin id (the built-in WhatsApp server for `waha`). */
+  integrations?: Record<string, PluginIntegration>;
 }
+
+/**
+ * A service that ships with the runtime for one install-scoped plugin. While the admin saved no address of their own (`urlSetting` empty),
+ * the host answers `ctx.settings.get` and `ctx.secrets.getInstall` with the built-in address and key and gives webhooks an address on the
+ * internal network, so the plugin needs no manual setup and no code of its own for this. A saved address switches all of it off: the
+ * built-in key is never handed out next to another address. `builtin` is null when the service is not deployed.
+ */
+export interface PluginIntegration {
+  kind: string;
+  urlSetting: string;
+  secretName: string;
+  builtin: { url: string; secret: string; webhookBase: string | null } | null;
+  /** Every verified webhook of the plugin (parsed body), for activity tracking. Must not throw. */
+  onWebhook?(body: unknown): void;
+  /** Every `ctx.fetchUserUrl` call of the plugin. Must not throw. */
+  onFetch?(method: string | undefined, url: string): void;
+}
+
+/** The built-in service is in use while the saved address is empty or is the built-in address itself. */
+export function integrationActive(saved: unknown, builtinUrl: string): boolean {
+  if (typeof saved !== "string" || !saved.trim()) return true;
+  try { const u = new URL(saved.trim()); return (u.origin + u.pathname).replace(/\/+$/, "") === builtinUrl; } catch { return false; }
+}
+
+/** The base of public webhook URLs: an explicit FLOQ_PUBLIC_URL as given, else the auth URL unless it is a loopback address (nothing outside reaches it). */
+export function publicBaseFrom(explicit: string | undefined | null, authUrl: string | undefined | null): string | null {
+  const parse = (v: string | undefined | null) => { try { const u = new URL(String(v ?? "").trim()); return u.protocol === "https:" || u.protocol === "http:" ? u : null; } catch { return null; } };
+  const base = (u: URL) => (u.origin + u.pathname).replace(/\/+$/, "");
+  const e = parse(explicit);
+  if (e) return base(e);
+  const a = parse(authUrl);
+  if (!a || /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$/i.test(a.hostname) || a.hostname.toLowerCase().endsWith(".localhost")) return null;
+  return base(a);
+}
+const webhookTokenAad = (pluginId: string) => "plugin-webhook-token:v1:" + pluginId;
 
 interface Entry {
   def: PluginDefinition;
@@ -127,6 +170,8 @@ export interface PublicPlugin {
   ui: { sha256: string } | null;
   secrets: { name: string; description?: string; required: boolean; present: boolean }[];
   settings: PluginSettingDecl[];
+  /** Present for a plugin the runtime can host a service for (`PluginIntegration`), in every mode. `active`: the built-in service is in use. */
+  integration?: { kind: string; active: boolean };
   contributes: Pick<PluginManifest["contributes"], "views" | "taskSources" | "rightSidebarTabs" | "settingsPanel">;
 }
 
@@ -203,6 +248,49 @@ export class PluginHost {
   setStorageSense(api: NonNullable<typeof this.storageSense>): void { this.storageSense = api; }
 
   private attention?: ReturnType<NonNullable<ContextDeps["attention"]>>;
+  private notifications?: ReturnType<NonNullable<ContextDeps["notifications"]>>;
+  /** Called by the server once it has built Notifications (backs `ctx.notify`). */
+  setNotifications(notifications: NonNullable<typeof this.notifications>): void { this.notifications = notifications; }
+
+  /**
+   * `ctx.webhooks.url`: the host-managed install token (created on first use; stored as a hash for the check and encrypted for this
+   * call) on the runtime's public base. Null when there is no public base.
+   */
+  private async webhookUrl(e: Entry, name: string): Promise<string | null> {
+    // A built-in service calls back on the internal network; anything else needs the public address.
+    const base = (await this.activeIntegration(e))?.builtin.webhookBase ?? this.opts.publicUrl ?? null;
+    if (!base) return null;
+    const key = deriveKey(this.opts.encryptionKey, "floq-plugin-webhook-token:v1");
+    const read = async () => ((await this.pool.query("SELECT webhook_auto_enc FROM floq_plugins WHERE id = $1", [e.id])).rows[0]?.webhook_auto_enc as string | null | undefined) ?? null;
+    let enc = await read();
+    let token: string | null = null;
+    if (enc) { try { token = decryptSecret(key, enc, webhookTokenAad(e.id)); } catch { token = null; } }
+    if (!token) {
+      const fresh = randomBytes(32).toString("base64url");
+      // First writer wins: two calls racing here end up with the same token.
+      await this.pool.query(
+        "UPDATE floq_plugins SET webhook_auto_hash = $2, webhook_auto_enc = $3, updated_at = now() WHERE id = $1 AND (webhook_auto_enc IS NULL OR webhook_auto_enc = $4)",
+        [e.id, sha256Hex(fresh), encryptSecret(key, fresh, webhookTokenAad(e.id)), enc ?? ""]);
+      enc = await read();
+      if (!enc) return null;
+      token = decryptSecret(key, enc, webhookTokenAad(e.id));
+    }
+    return `${base}/v1/plugins/${e.id}/hooks/${name}/${token}`;
+  }
+
+  /**
+   * A click on an action of a plugin notification: runs the plugin's own POST route (the one it named in `ctx.notify`) as that user,
+   * with the same checks as any call from the plugin's UI. The route and data come from the stored notification, never from the request.
+   */
+  async handleNotifyAction(i: { userId: string; pluginId: string; route: string; body: { notificationId: string; actionId: string; input: string | null; data: unknown } }): Promise<unknown> {
+    const e = this.entries.get(i.pluginId);
+    if (!e?.manifest || e.status !== "enabled" || !e.built) throw new HttpError(404, "plugin_disabled", "Plugin is not available");
+    await this.requireActiveFor(e, i.userId);
+    const hit = matchRoute(e.built.routes, "POST", i.route);
+    if (!hit) throw notFound("Route not found");
+    return this.runHandler(e, () => hit.entry.handler({ userId: i.userId, params: hit.params, query: {}, body: i.body }));
+  }
+
   /** Called by the server once it has built Approvals and Decisions (backs `ctx.attention`). */
   setAttention(attention: NonNullable<typeof this.attention>): void { this.attention = attention; }
 
@@ -487,7 +575,7 @@ export class PluginHost {
   }
 
   private contextDeps(e: Entry): ContextDeps {
-    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals, attention: () => this.attention, storageSense: () => this.storageSense, enabledUserIds: async () => ((await this.pool.query("SELECT user_id FROM floq_plugin_user_settings WHERE plugin_id = $1 AND enabled", [e.id])).rows as { user_id: string }[]).map((r) => r.user_id) };
+    return { pool: this.pool, secrets: this.secrets, schema: this.storage === "schema" ? pluginSchema(e.id) : null, tablePrefix: pluginTablePrefix(e.id), fetchImpl: this.opts.fetchImpl, sink: this.opts.sink, taskSources: this.taskSources, events: this.events, approvals: () => this.approvals, attention: () => this.attention, notifications: () => this.notifications, webhookUrl: (name) => this.webhookUrl(e, name), integration: async () => { const i = await this.activeIntegration(e); return i ? { settings: { [i.urlSetting]: i.builtin.url }, secrets: { [i.secretName]: i.builtin.secret }, onFetch: i.onFetch } : null; }, storageSense: () => this.storageSense, enabledUserIds: async () => ((await this.pool.query("SELECT user_id FROM floq_plugin_user_settings WHERE plugin_id = $1 AND enabled", [e.id])).rows as { user_id: string }[]).map((r) => r.user_id) };
   }
 
   /** Pending migrations and their ledger rows commit or roll back together. */
@@ -546,6 +634,8 @@ export class PluginHost {
       const m = e.manifest;
       if (!m) { out.push({ id: e.id, name: e.id, version: "", description: "", scope: "user", status: "invalid", enabled: false, userEnabled: false, error: e.error, source: e.source, ui: null, secrets: [], settings: [], contributes: { views: [], taskSources: [], rightSidebarTabs: [], settingsPanel: false } }); continue; }
       const on = e.status === "enabled";
+      const integ = this.integrationOf(e);
+      const integActive = integ ? Boolean(await this.activeIntegration(e)) : false;
       const present = new Set<string>();
       if (m.secrets.length) {
         const r = await this.pool.query("SELECT name FROM plugin_secrets WHERE plugin_id = $1 AND owner_id = $2 AND name = ANY($3)", [e.id, m.scope === "install" ? INSTALL_OWNER : userId, m.secrets.map((s) => s.name)]);
@@ -556,8 +646,10 @@ export class PluginHost {
         // An owner-only plugin is off for everyone but the administrator who set it up: its nav, tabs and sources never show for others.
         source: e.source, ui: e.ui ? { sha256: e.ui.sha256 } : null,
         enabled: on, userEnabled: on && (m.scope === "install" ? m.access !== "owner" || state.get(e.id)?.config_owner === userId : userOn.has(e.id)), error: e.error,
-        secrets: m.secrets.map((s) => ({ name: s.name, description: s.description, required: s.required ?? false, present: present.has(s.name) })),
-        settings: m.settings,
+        // With a built-in service the host provides the key: nothing is required, and it counts as present while the service is in use.
+        secrets: m.secrets.map((s) => ({ name: s.name, description: s.description, required: integ?.builtin && s.name === integ.secretName ? false : s.required ?? false, present: present.has(s.name) || (integActive && s.name === integ!.secretName) })),
+        settings: this.declsFor(e),
+        ...(integ ? { integration: { kind: integ.kind, active: integActive } } : {}),
         contributes: { views: m.contributes.views, taskSources: m.contributes.taskSources, rightSidebarTabs: m.contributes.rightSidebarTabs, settingsPanel: m.contributes.settingsPanel },
       });
     }
@@ -566,6 +658,40 @@ export class PluginHost {
 
   private async one(id: string, userId: string): Promise<PublicPlugin> {
     return (await this.list(userId)).find((p) => p.id === id)!;
+  }
+
+  // ---- built-in services ----
+
+  private integrationOf(e: Entry): PluginIntegration | null {
+    const i = this.opts.integrations?.[e.id];
+    return i && e.manifest?.scope === "install" ? i : null;
+  }
+
+  private async activeIntegration(e: Entry): Promise<(PluginIntegration & { builtin: NonNullable<PluginIntegration["builtin"]> }) | null> {
+    const i = this.integrationOf(e);
+    if (!i?.builtin) return null;
+    return integrationActive((await this.readSettings(e, ""))[i.urlSetting], i.builtin.url) ? (i as PluginIntegration & { builtin: NonNullable<PluginIntegration["builtin"]> }) : null;
+  }
+
+  /** The manifest's settings as the app and the validator see them: with a built-in service the address may stay empty. */
+  private declsFor(e: Entry): PluginSettingDecl[] {
+    const i = this.integrationOf(e);
+    if (!i?.builtin) return e.manifest!.settings;
+    return e.manifest!.settings.map((d) => (d.key === i.urlSetting ? { ...d, required: false, description: "Leave empty to use the server built into this Floq runtime. " + (d.description ?? "") } : d));
+  }
+
+  /** For the runtime itself (status, updates): how a plugin with a built-in service is wired. The external key is read only when asked for. */
+  async serviceOf(id: string): Promise<{ installed: boolean; enabled: boolean; mode: "builtin" | "external" | "none"; external: { url: string; secret(): Promise<string | undefined> } | null }> {
+    const e = this.entries.get(id);
+    const i = e?.manifest ? this.integrationOf(e) : null;
+    if (!e?.manifest || !i) return { installed: Boolean(e?.manifest), enabled: false, mode: "none", external: null };
+    const enabled = e.status === "enabled";
+    if (await this.activeIntegration(e)) return { installed: true, enabled, mode: "builtin", external: null };
+    const saved = (await this.readSettings(e, ""))[i.urlSetting];
+    let url: string | null = null;
+    try { if (typeof saved === "string" && saved.trim()) { const u = new URL(saved.trim()); if (u.protocol === "http:" || u.protocol === "https:") url = (u.origin + u.pathname).replace(/\/+$/, ""); } } catch { url = null; }
+    if (!url) return { installed: true, enabled, mode: "none", external: null };
+    return { installed: true, enabled, mode: "external", external: { url, secret: () => this.secrets.resolve(e.id, INSTALL_OWNER, i.secretName) } };
   }
 
   // ---- settings ----
@@ -614,14 +740,14 @@ export class PluginHost {
     return out;
   }
 
-  /** Admin: creates or replaces the install token. Only its hash is stored; the token is shown once. */
+  /** Admin: creates or replaces the install token. Only its hash is stored; the token is shown once. The host-managed token (`ctx.webhooks.url`) is dropped too, so a leaked URL of either kind stops working; the plugin gets a new one on its next call. */
   async rotateWebhookToken(id: string): Promise<{ token: string; hooks: string[] }> {
     const e = this.valid(id);
     if (!e.manifest!.contributes.webhooks.length) throw badRequest("This plugin has no webhooks", "no_webhooks");
     const token = randomBytes(32).toString("base64url");
     await this.pool.query(
       `INSERT INTO floq_plugins (id, version, webhook_token_hash) VALUES ($1,$2,$3)
-       ON CONFLICT (id) DO UPDATE SET webhook_token_hash = EXCLUDED.webhook_token_hash, updated_at = now()`, [id, e.manifest!.version, sha256Hex(token)]);
+       ON CONFLICT (id) DO UPDATE SET webhook_token_hash = EXCLUDED.webhook_token_hash, webhook_auto_hash = NULL, webhook_auto_enc = NULL, updated_at = now()`, [id, e.manifest!.version, sha256Hex(token)]);
     return { token, hooks: e.manifest!.contributes.webhooks };
   }
 
@@ -638,17 +764,22 @@ export class PluginHost {
     if (hit.count > WEBHOOK_RATE_MAX) throw new HttpError(429, "rate_limited", "Too many requests");
     const nope = () => new HttpError(404, "not_found", "Not found");
     const e = this.entries.get(i.pluginId);
-    const stored = e?.manifest ? ((await this.pool.query("SELECT webhook_token_hash FROM floq_plugins WHERE id = $1", [i.pluginId])).rows[0]?.webhook_token_hash as string | null | undefined) : undefined;
-    const a = Buffer.from(sha256Hex(i.token)), b = Buffer.from(stored ?? "0".repeat(64));
-    const tokenOk = a.length === b.length && timingSafeEqual(a, b) && Boolean(stored);
+    const row = e?.manifest ? ((await this.pool.query("SELECT webhook_token_hash, webhook_auto_hash FROM floq_plugins WHERE id = $1", [i.pluginId])).rows[0] as { webhook_token_hash?: string | null; webhook_auto_hash?: string | null } | undefined) : undefined;
+    // Two tokens can be valid: the one an admin rotated by hand and the host-managed one behind ctx.webhooks.url. Both are always compared.
+    const a = Buffer.from(sha256Hex(i.token));
+    const same = (stored: string | null | undefined) => { const b = Buffer.from(stored ?? "0".repeat(64)); return a.length === b.length && timingSafeEqual(a, b) && Boolean(stored); };
+    const manualOk = same(row?.webhook_token_hash), autoOk = same(row?.webhook_auto_hash);
+    const tokenOk = manualOk || autoOk;
     const hook = e?.built?.webhooks.get(i.name);
     if (!e || e.status !== "enabled" || !hook || !tokenOk) throw nope();
     const rawBody = await i.readRaw();
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(i.headers)) if (typeof v === "string") headers[k.toLowerCase()] = v; else if (Array.isArray(v)) headers[k.toLowerCase()] = v.join(", ");
     const req = { rawBody, headers, query: Object.fromEntries(i.query), json: () => JSON.parse(rawBody.toString("utf8")) as unknown };
+    const integ = this.integrationOf(e);
     return this.runHandler(e, async () => {
       if (hook.verify && !(await hook.verify(req))) throw new HttpError(401, "invalid_signature", "Signature check failed");
+      if (integ?.onWebhook) { try { integ.onWebhook(req.json()); } catch { /* not JSON: not activity */ } }
       return hook.handler(req);
     });
   }
@@ -829,7 +960,7 @@ export class PluginHost {
       // Install-scope config is admin configuration (URLs, secret names): admins only, for reading as well as writing.
       if (e.manifest!.scope === "install") await i.requireAdmin();
       if (method === "GET") return { status: 200, body: { settings: await this.readSettings(e, i.userId) } };
-      const values = validateSettings(e.manifest!.settings, ((await i.readBody()) as { settings?: unknown })?.settings);
+      const values = validateSettings(this.declsFor(e), ((await i.readBody()) as { settings?: unknown })?.settings);
       await this.writeSettings(e, i.userId, values);
       return { status: 200, body: { settings: values } };
     }

@@ -41,8 +41,9 @@ import { ProjectTasks } from "./projectTasks.js";
 import { Automations } from "./automations.js";
 import { TaskScheduler } from "./taskScheduler.js";
 import { StorageSense } from "./storageSense/service.js";
-import { PluginHost } from "./plugins/host.js";
+import { PluginHost, publicBaseFrom } from "./plugins/host.js";
 import { BUILTIN_PLUGINS } from "./plugins/index.js";
+import { BuiltinWhatsapp, WHATSAPP_PLUGIN_ID, builtinWhatsappFromEnv, engineDocker, whatsappIntegration } from "./whatsappServer.js";
 import { removeOwnedPluginSkill } from "./plugins/skillOwnership.js";
 import { CatalogClient } from "./plugins/catalog.js";
 import { loadInstalledPackages, pluginDirFromEnv } from "./plugins/installed.js";
@@ -173,7 +174,19 @@ const gitReview = new GitReview(manager, shards);
 const workspaceFiles = new WorkspaceFiles(manager, shards);
 const artifacts = new Artifacts(manager, shards);
 const tasks = new TasksService(prisma);
-const plugins = new PluginHost(pool, { plugins: BUILTIN_PLUGINS, encryptionKey: config.encryptionKey });
+// The built-in WhatsApp server (compose profile `whatsapp`): the WhatsApp plugin gets its address and key from the host, no manual setup.
+const whatsappConfig = builtinWhatsappFromEnv(process.env);
+if (whatsappConfig.problem) log.warn("whatsapp.builtin_not_used", { reason: whatsappConfig.problem });
+const whatsapp: BuiltinWhatsapp = new BuiltinWhatsapp({
+  cfg: whatsappConfig, pool, docker: engineDocker(),
+  plugin: () => plugins.serviceOf(WHATSAPP_PLUGIN_ID),
+  // Update results go to every administrator.
+  notify: async (n) => {
+    const admins = (await pool.query("SELECT user_id FROM collaboration.user_roles WHERE role = 'admin'")).rows as { user_id: string }[];
+    for (const a of admins) await notifications.create(a.user_id, { title: n.title, body: n.body, level: n.level, category: "system" }).catch(() => undefined);
+  },
+});
+const plugins: PluginHost = new PluginHost(pool, { plugins: BUILTIN_PLUGINS, encryptionKey: config.encryptionKey, publicUrl: publicBaseFrom(config.publicUrl, config.authUrl), integrations: { [WHATSAPP_PLUGIN_ID]: whatsappIntegration(whatsappConfig, () => whatsapp.noteActivity()) } });
 // Installed packages (Settings > Plugins > Browse plugins) load next to the built-ins; a broken one is listed as invalid and boot goes on.
 const pluginDir = pluginDirFromEnv();
 await loadInstalledPackages(pool, plugins, pluginDir, sha256Hex).then((r) => log.info("plugins.installed_loaded", r)).catch((error) => log.error("plugins.installed_load_failed", { error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
@@ -217,11 +230,12 @@ shards.onMountRecovered = async (userId) => {
 };
 const projectTasks = new ProjectTasks(pool);
 const automations = new Automations(pool, projectTasks);
-const server = createRuntimeServer({ projectTasks, automations, notifications, config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, browser, browserLinks });
+const server = createRuntimeServer({ projectTasks, automations, notifications, config, setupToken, manager, auth, settings, github, vault, orchestrator, links: agentLinks, notes: canvasNotes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, shards, plugins, whatsapp, browser, browserLinks });
 
 // The one synchronous CLI version check happens here, before clients connect; afterwards it only refreshes in the background.
 warmProviderVersions(config);
 await server.listen();
+whatsapp.start();
 log.info("runtime.listening", {
   host: config.host,
   port: config.port,
@@ -249,6 +263,7 @@ async function stop(signal: string): Promise<void> {
   log.info("runtime.stopping", { signal });
   credentials.stop();
   taskScheduler.stop();
+  whatsapp.stop();
   await plugins.stopAll();
   await browser.shutdown();
   browser.egress?.close();

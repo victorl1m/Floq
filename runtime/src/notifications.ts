@@ -10,10 +10,19 @@ export const NOTIFICATION_ACTION_KINDS = ['url', 'canvas', 'agent', 'settings'] 
 export type NotificationLevel = (typeof NOTIFICATION_LEVELS)[number];
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 export type NotificationAction = { kind: (typeof NOTIFICATION_ACTION_KINDS)[number]; target: string; label: string };
+/** What a plugin attached (`ctx.notify`). `route` and `data` stay on the server: see `pluginPrivate`. */
+export type NotificationPlugin = {
+  id: string; name: string; icon: string | null; kind: 'message'; subtitle: string | null; avatar: string | null; tag: string | null;
+  actions: { id: string; label: string; input?: { placeholder: string } }[];
+  target: { view: string; params: Record<string, string> } | null;
+};
+export type NotificationPluginPrivate = { route: string | null; data: unknown };
 export type Notification = {
   id: string; userId: string; projectId: string | null; sessionId: string | null; sessionName: string | null;
   level: NotificationLevel; category: NotificationCategory; title: string; body: string | null;
   action: NotificationAction | null; createdAt: string; readAt: string | null;
+  /** Only on notifications a plugin created. */
+  plugin?: NotificationPlugin;
 };
 export type NotificationFrame =
   | { type: 'notification'; notification: Notification }
@@ -23,6 +32,57 @@ export type NotificationInput = {
   title: unknown; body?: unknown; level?: unknown; category?: unknown; action?: unknown;
   projectId?: string | null; sessionId?: string | null; sessionName?: string | null;
 };
+/** Host-side only (never from an agent or a request body): the plugin part, already bound to the calling plugin's id and name. */
+export type PluginNotificationInput = { plugin: { id: string; name: string; icon?: string | null; views: string[] }; note: Record<string, unknown> };
+export const PLUGIN_AVATAR_MAX_BYTES = 32 * 1024;
+const PLUGIN_RATE_MAX = 120;
+const AVATAR_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+/** Validates what a plugin passed to `ctx.notify`. Bad optional parts are dropped or refused (400); nothing here trusts the plugin's text. */
+export function cleanPluginNote(input: PluginNotificationInput): { plugin: NotificationPlugin; priv: NotificationPluginPrivate } {
+  const n = input.note;
+  if (n.kind !== undefined && n.kind !== 'message') throw badRequest('invalid notification kind');
+  const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? cleanDecisionText(v.slice(0, 4000), max) || null : null);
+  const avatar = typeof n.avatar === 'string' && n.avatar.length <= Math.ceil(PLUGIN_AVATAR_MAX_BYTES * 4 / 3) + 64 && AVATAR_RE.test(n.avatar) ? n.avatar : null;
+  const actions: NotificationPlugin['actions'] = [];
+  if (n.actions !== undefined) {
+    if (!Array.isArray(n.actions) || n.actions.length > 4) throw badRequest('invalid actions');
+    for (const raw of n.actions as Record<string, unknown>[]) {
+      if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(raw.id) || actions.some((a) => a.id === raw.id)) throw badRequest('invalid action id');
+      const label = text(raw.label, LABEL_MAX);
+      if (!label) throw badRequest('invalid action label');
+      const input = raw.input && typeof raw.input === 'object' ? { placeholder: text((raw.input as Record<string, unknown>).placeholder, 80) ?? '' } : undefined;
+      actions.push({ id: raw.id, label, ...(input ? { input } : {}) });
+    }
+  }
+  let route: string | null = null;
+  if (actions.length) {
+    if (typeof n.actionRoute !== 'string' || !/^\/[A-Za-z0-9_\-./]{1,200}$/.test(n.actionRoute) || n.actionRoute.split('/').some((s) => s === '..' || s === '.')) throw badRequest('actionRoute is required with actions');
+    route = n.actionRoute;
+  }
+  let data: unknown = null;
+  if (n.data !== undefined && n.data !== null) {
+    let json: string;
+    try { json = JSON.stringify(n.data); } catch { throw badRequest('invalid data'); }
+    if (json === undefined || json.length > 2048) throw badRequest('data too large');
+    data = JSON.parse(json);
+  }
+  let target: NotificationPlugin['target'] = null;
+  if (n.target !== undefined && n.target !== null) {
+    const t = n.target as Record<string, unknown>;
+    if (typeof t !== 'object' || typeof t.view !== 'string' || !input.plugin.views.includes(t.view)) throw badRequest('target view is not one of the plugin\'s views');
+    const params: Record<string, string> = {};
+    const entries = t.params && typeof t.params === 'object' ? Object.entries(t.params as Record<string, unknown>) : [];
+    if (entries.length > 8) throw badRequest('too many target params');
+    for (const [k, v] of entries) { if (!/^[A-Za-z0-9_]{1,32}$/.test(k) || typeof v !== 'string' || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v)) throw badRequest('invalid target params'); params[k] = v; }
+    target = { view: t.view, params };
+  }
+  const tag = typeof n.tag === 'string' && n.tag && n.tag.length <= 200 ? n.tag : null;
+  return {
+    plugin: { id: input.plugin.id, name: cleanDecisionText(input.plugin.name, 60), icon: input.plugin.icon ?? null, kind: 'message', subtitle: text(n.subtitle, 120), avatar, tag, actions, target },
+    priv: { route, data },
+  };
+}
 export type NotificationListOptions = { unreadOnly?: boolean; projectId?: string; organizationId?: string | null; limit?: number; before?: string };
 
 /**
@@ -44,18 +104,26 @@ export function cleanNotificationBody(text: string, max: number): string {
   return safe.length > max ? safe.slice(0, Math.max(0, max - 1)).trimEnd() + '…' : safe;
 }
 
-type Row = { id: string; user_id: string; project_id: string | null; session_id: string | null; session_name: string | null; level: string; category: string; title: string; body: string | null; action: NotificationAction | string | null; created_at: Date | string; read_at: Date | string | null };
+type Extra = { plugin: NotificationPlugin; priv: NotificationPluginPrivate };
+type Row = { id: string; user_id: string; project_id: string | null; session_id: string | null; session_name: string | null; level: string; category: string; title: string; body: string | null; action: NotificationAction | string | null; created_at: Date | string; read_at: Date | string | null; extra?: Extra | string | null };
 const iso = (v: Date | string) => new Date(v).toISOString();
-const fromRow = (r: Row): Notification => ({
-  id: r.id, userId: r.user_id, projectId: r.project_id, sessionId: r.session_id, sessionName: r.session_name,
-  level: r.level as NotificationLevel, category: r.category as NotificationCategory, title: r.title, body: r.body,
-  action: typeof r.action === 'string' ? JSON.parse(r.action) as NotificationAction : r.action, createdAt: iso(r.created_at), readAt: r.read_at ? iso(r.read_at) : null,
-});
+const extraOf = (r: Row): Extra | null => (typeof r.extra === 'string' ? JSON.parse(r.extra) as Extra : r.extra ?? null);
+const fromRow = (r: Row): Notification => {
+  const extra = extraOf(r);
+  return {
+    id: r.id, userId: r.user_id, projectId: r.project_id, sessionId: r.session_id, sessionName: r.session_name,
+    level: r.level as NotificationLevel, category: r.category as NotificationCategory, title: r.title, body: r.body,
+    action: typeof r.action === 'string' ? JSON.parse(r.action) as NotificationAction : r.action, createdAt: iso(r.created_at), readAt: r.read_at ? iso(r.read_at) : null,
+    ...(extra?.plugin ? { plugin: extra.plugin } : {}),
+  };
+};
 
 export class Notifications {
   private mem: Notification[] = [];
   private subs = new Set<{ userId: string; fn: (frame: NotificationFrame) => void }>();
   private recent = new Map<string, number[]>();
+  /** Memory mode only: the server-side part of plugin notifications. */
+  private memPriv = new Map<string, NotificationPluginPrivate>();
   constructor(private options: { pool?: Pick<pg.Pool, 'query'>; now?: () => number } = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
   subscribe(userId: string, fn: (frame: NotificationFrame) => void) { const sub = { userId, fn }; this.subs.add(sub); return () => { this.subs.delete(sub); }; }
@@ -84,17 +152,52 @@ export class Notifications {
   }
 
   /** One-way: persists, pushes the frame and returns. There is no waiter and no resolve; subscribers and pruning never block it. */
-  async create(userId: string, input: NotificationInput): Promise<Notification> {
+  async create(userId: string, input: NotificationInput): Promise<Notification> { return this.insert(userId, input, null); }
+
+  /**
+   * `ctx.notify`: a notification with a plugin part. It has its own rate bucket (a busy inbox never starves agents' notifications) and
+   * replaces the plugin's previous notification with the same tag for this user.
+   */
+  async createFromPlugin(userId: string, input: PluginNotificationInput): Promise<Notification> {
+    const extra = cleanPluginNote(input);
+    this.validate({ title: input.note.title, body: input.note.body });
+    if (extra.plugin.tag) await this.clearPluginTag(userId, extra.plugin.id, extra.plugin.tag);
+    return this.insert(userId, { title: input.note.title, body: input.note.body, level: 'info', category: 'message' }, extra);
+  }
+
+  /** Removes one plugin's notifications with this tag for this user. */
+  async clearPluginTag(userId: string, pluginId: string, tag: string): Promise<{ removed: number }> {
+    let ids: string[];
+    if (this.options.pool) ids = ((await this.options.pool.query("DELETE FROM agent_notifications WHERE user_id=$1 AND extra->'plugin'->>'id'=$2 AND extra->'plugin'->>'tag'=$3 RETURNING id", [userId, pluginId, tag])).rows as { id: string }[]).map((r) => r.id);
+    else {
+      ids = this.mem.filter((n) => n.userId === userId && n.plugin?.id === pluginId && n.plugin.tag === tag).map((n) => n.id);
+      this.mem = this.mem.filter((n) => !ids.includes(n.id)); for (const id of ids) this.memPriv.delete(id);
+    }
+    if (ids.length) this.emit(userId, { type: 'notification-cleared', ids });
+    return { removed: ids.length };
+  }
+
+  /** The plugin, action list and server-side part of one of this user's plugin notifications (for the action endpoint), or null. */
+  async pluginTarget(userId: string, id: string): Promise<{ plugin: NotificationPlugin; priv: NotificationPluginPrivate } | null> {
+    if (typeof id !== 'string' || !id || id.length > 64) return null;
+    if (!this.options.pool) { const n = this.mem.find((x) => x.userId === userId && x.id === id); const priv = this.memPriv.get(id); return n?.plugin && priv ? { plugin: n.plugin, priv } : null; }
+    const row = (await this.options.pool.query('SELECT * FROM agent_notifications WHERE user_id=$1 AND id=$2', [userId, id])).rows[0] as Row | undefined;
+    const extra = row ? extraOf(row) : null;
+    return extra?.plugin ? { plugin: extra.plugin, priv: extra.priv ?? { route: null, data: null } } : null;
+  }
+
+  private async insert(userId: string, input: NotificationInput, extra: Extra | null): Promise<Notification> {
     const clean = this.validate(input);
     if (!clean.title) throw badRequest('title required');
     const now = this.now();
-    const recent = (this.recent.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-    if (recent.length >= RATE_MAX) throw new HttpError(429, 'rate_limited', 'Too many notifications');
-    recent.push(now); this.recent.set(userId, recent);
-    const n: Notification = { id: randomUUID(), userId, projectId: input.projectId ?? null, sessionId: input.sessionId ?? null, sessionName: input.sessionName ? cleanDecisionText(input.sessionName, 120) : null, ...clean, createdAt: new Date(now).toISOString(), readAt: null };
+    const bucket = extra ? userId + '|plugin:' + extra.plugin.id : userId;
+    const recent = (this.recent.get(bucket) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (recent.length >= (extra ? PLUGIN_RATE_MAX : RATE_MAX)) throw new HttpError(429, 'rate_limited', 'Too many notifications');
+    recent.push(now); this.recent.set(bucket, recent);
+    const n: Notification = { id: randomUUID(), userId, projectId: input.projectId ?? null, sessionId: input.sessionId ?? null, sessionName: input.sessionName ? cleanDecisionText(input.sessionName, 120) : null, ...clean, createdAt: new Date(now).toISOString(), readAt: null, ...(extra ? { plugin: extra.plugin } : {}) };
     const pool = this.options.pool;
-    if (pool) await pool.query('INSERT INTO agent_notifications (id,user_id,project_id,session_id,session_name,level,category,title,body,action,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)', [n.id, userId, n.projectId, n.sessionId, n.sessionName, n.level, n.category, n.title, n.body, n.action ? JSON.stringify(n.action) : null, n.createdAt]);
-    else this.mem.unshift(n);
+    if (pool) await pool.query('INSERT INTO agent_notifications (id,user_id,project_id,session_id,session_name,level,category,title,body,action,created_at,extra) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb)', [n.id, userId, n.projectId, n.sessionId, n.sessionName, n.level, n.category, n.title, n.body, n.action ? JSON.stringify(n.action) : null, n.createdAt, extra ? JSON.stringify(extra) : null]);
+    else { this.mem.unshift(n); if (extra) this.memPriv.set(n.id, extra.priv); }
     this.emit(userId, { type: 'notification', notification: n });
     void this.prune(userId).catch(() => undefined);
     return n;

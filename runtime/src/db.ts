@@ -304,6 +304,7 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(), read_at TIMESTAMPTZ
     );
     CREATE INDEX IF NOT EXISTS agent_notifications_user_idx ON agent_notifications (user_id, created_at DESC);
+    ALTER TABLE agent_notifications ADD COLUMN IF NOT EXISTS extra JSONB;
     CREATE TABLE IF NOT EXISTS vault_secrets (
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
@@ -469,6 +470,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       webhook_token_hash TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE floq_plugins ADD COLUMN IF NOT EXISTS webhook_auto_hash TEXT;
+    ALTER TABLE floq_plugins ADD COLUMN IF NOT EXISTS webhook_auto_enc TEXT;
     CREATE TABLE IF NOT EXISTS floq_plugin_user_settings (
       plugin_id TEXT NOT NULL,
       user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,

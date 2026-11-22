@@ -106,6 +106,8 @@ export interface Config {
   databaseUrl: string;
   authSecret: string;
   authUrl: string;
+  /** FLOQ_PUBLIC_URL: where outside services (webhooks) reach this runtime when that differs from BETTER_AUTH_URL. */
+  publicUrl: string | null;
   /** 32-byte key used to encrypt user credentials at rest. */
   encryptionKey: Buffer;
   allowSignup: boolean;
@@ -246,6 +248,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databaseUrl: required(env, "DATABASE_URL"),
     authSecret,
     authUrl,
+    publicUrl: env.FLOQ_PUBLIC_URL?.trim() || null,
     encryptionKey: parseEncryptionKey(required(env, "FLOQ_ENCRYPTION_KEY")),
     allowSignup: readBool(env.FLOQ_ALLOW_SIGNUP, false),
     bootstrapAdminEmail: adminEmail || null,

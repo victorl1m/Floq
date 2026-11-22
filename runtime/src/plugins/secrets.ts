@@ -104,7 +104,8 @@ export class PluginSecrets {
     await this.pool.query(
       `INSERT INTO plugin_secrets (plugin_id, owner_id, name, value_enc, updated_by) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (plugin_id, owner_id, name) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-      [pluginId, ownerId, name, enc, actor]);
+      // `updated_by` references a user: a write by the plugin itself (ctx.secrets.setInstall, actor "plugin:<id>") leaves it empty; the audit row names it.
+      [pluginId, ownerId, name, enc, actor?.startsWith("plugin:") ? null : actor]);
     await this.audit(pluginId, ownerId, name, "set", actor);
   }
 

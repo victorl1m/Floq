@@ -113,6 +113,8 @@ interface Deps {
   automations?: Automations;
   /** Optional so existing callers keep working; absent = the browser routes answer "unavailable". */
   plugins?: PluginHost;
+  /** The built-in WhatsApp server (compose service `waha`): status routes and the "whatsapp" update target. */
+  whatsapp?: import("./whatsappServer.js").BuiltinWhatsapp;
   browser?: BrowserService;
   /** Agent <-> Browser node wires. */
   browserLinks?: BrowserLinks;
@@ -124,7 +126,7 @@ function toolkitProvider(provider: string): "claude" | "codex" {
   throw badRequest("Skills and MCP servers are only managed for Claude and Codex; pass --provider claude or --provider codex");
 }
 
-export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, projectTasks: sharedProjectTasks, automations: sharedAutomations, shards, plugins, browser, browserLinks, notifications: sharedNotifications }: Deps) {
+export function createRuntimeServer({ config, setupToken: setupTokenDep, manager, auth, settings, github, vault, orchestrator, links, notes, wired, subagents, memories, pool, credentials, claudeOauth, usage, claudeConnectors, fallback, claudeAccounts, skills, gitReview, workspaceFiles, artifacts, tasks, projectTasks: sharedProjectTasks, automations: sharedAutomations, shards, plugins, whatsapp, browser, browserLinks, notifications: sharedNotifications }: Deps) {
   const projectTasks = sharedProjectTasks ?? new ProjectTasks(pool);
   const automations = sharedAutomations ?? new Automations(pool, projectTasks);
   const sessionCreates = new IdempotencyCache<Awaited<ReturnType<SessionManager["create"]>>>();
@@ -166,11 +168,12 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
   const decisionsReady = decisions.init();
   const notifications = sharedNotifications ?? new Notifications({ pool });
   plugins?.setAttention({ approvals, decisions });
+  plugins?.setNotifications(notifications);
   // Agent B's manager hook: whenever a session (re)starts and is ready, type what was queued for it while it was away.
   // Optional call: test harnesses build the server around partial fake managers.
   manager.onUserNotice?.((userId, n) => { void notifications.create(userId, { title: n.title, body: n.body, level: "warning", category: "agent", projectId: n.projectId, sessionId: n.sessionId, action: { kind: "canvas", target: n.sessionId, label: "Open agent" } }).catch((error) => log.warn("session.notice_failed", { error: String(error).slice(0, 120) })); });
   manager.onSessionReady?.((userId, sessionId) => { void orchestrator.deliverPending(userId, sessionId).catch((error) => log.warn("agent.outbox_ready_failed", { userId, sessionId, error: String(error).slice(0, 120) })); });
-  const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount);
+  const updates = new UpdateService(updatesConfigFromEnv(process.env, { version: config.version, providers: config.providers }), () => manager.activeCount, undefined, whatsapp);
 
   const setupToken = setupTokenDep ?? new SetupToken(pool);
   const clientIp = (req: IncomingMessage): string => clientIpFor(req);
@@ -943,6 +946,18 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       if (url.pathname === "/v1/me/role" && method === "GET") return send(res, 200, { role: await getRole(pool, config.bootstrapAdminEmail, userId) });
       await requireAdmin(pool, config.bootstrapAdminEmail, userId);
       if (url.pathname === "/v1/admin/updates" && method === "GET") return send(res, 200, await updates.check(url.searchParams.get("refresh") === "1"));
+      if (url.pathname.startsWith("/v1/admin/whatsapp-server")) {
+        if (!whatsapp) throw notFound();
+        if (url.pathname === "/v1/admin/whatsapp-server" && method === "GET") return send(res, 200, await whatsapp.status());
+        if (url.pathname === "/v1/admin/whatsapp-server/health" && method === "GET") return send(res, 200, await whatsapp.health());
+        if (url.pathname === "/v1/admin/whatsapp-server/test" && method === "POST") return send(res, 200, await whatsapp.test(await readJson<{ baseUrl?: unknown; apiKey?: unknown }>(req)));
+        if (url.pathname === "/v1/admin/whatsapp-server/auto-update" && method === "PUT") {
+          const body = await readJson<{ enabled?: unknown; quietMinutes?: unknown }>(req);
+          log.info("admin.whatsapp_auto_update", { actorId: userId, enabled: body.enabled, quietMinutes: body.quietMinutes });
+          return send(res, 200, await whatsapp.setAutoUpdate(body));
+        }
+        throw notFound();
+      }
       if (url.pathname === "/v1/admin/updates/apply" && method === "POST") return send(res, 200, await updates.apply(userId, await readJson<{ target?: unknown; force?: unknown }>(req)));
       if (url.pathname === "/v1/admin/users" && method === "GET") return send(res, 200, { users: await listUsers(pool) });
       const userRoleMatch = /^\/v1\/admin\/users\/([\w-]+)$/.exec(url.pathname);
@@ -1633,6 +1648,24 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       const before = url.searchParams.get("before") || undefined;
       if (before && Number.isNaN(Date.parse(before))) throw badRequest("before must be an ISO date");
       return send(res, 200, { notifications: await notifications.list(userId, { unreadOnly: url.searchParams.get("unreadOnly") === "true", projectId, before, limit, organizationId: await activeOrg() }) });
+    }
+    // An action button of a plugin notification (island, Notification Center). Everything but the action id and the typed text comes from
+    // the stored notification of this user, and the call lands on that plugin's own route as this user.
+    const notificationAction = /^\/v1\/notifications\/([\w-]{1,64})\/action$/.exec(url.pathname);
+    if (notificationAction && method === "POST") {
+      if (!plugins) throw notFound();
+      const body = await readJson<{ actionId?: unknown; input?: unknown }>(req);
+      const found = await notifications.pluginTarget(userId, notificationAction[1]);
+      const action = found?.plugin.actions.find((a) => a.id === body.actionId);
+      if (!found || !action || !found.priv.route) throw new HttpError(404, "action_not_found", "This notification or action no longer exists.");
+      let input: string | null = null;
+      if (action.input) {
+        if (typeof body.input !== "string" || !body.input.trim() || body.input.length > 4000) throw badRequest("input must be text up to 4000 characters");
+        input = body.input;
+      }
+      const result = await plugins.handleNotifyAction({ userId, pluginId: found.plugin.id, route: found.priv.route, body: { notificationId: notificationAction[1], actionId: action.id, input, data: found.priv.data } });
+      await notifications.markRead(userId, [notificationAction[1]]);
+      return send(res, 200, { ok: true, result });
     }
     if ((url.pathname === "/v1/notifications/read" || url.pathname === "/v1/notifications/clear") && method === "POST") {
       const body = await readJson<{ ids?: unknown }>(req);
