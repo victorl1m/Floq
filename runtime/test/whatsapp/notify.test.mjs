@@ -196,3 +196,24 @@ test("two accounts: each notification names its account and replies from it", as
   assert.equal(h.notes.length, 3);
   assert.equal(h.notes[2].data.session, "default");
 });
+
+test("what the integration sends is what the host accepts (the host's own validator, when the runtime is built)", async (t) => {
+  let host;
+  try { host = await import("../../dist/notifications.js"); } catch { t.skip("runtime not built (npm run build)"); return; }
+  const h = await start();
+  await h.sql("INSERT INTO contacts (user_id, session, chat_id, name) VALUES ('u1','default',$1,'Sunday football')", [G]);
+  await incoming(h, A);
+  await h.message({ from: G, participant: A, fromMe: false, body: "x".repeat(900), notifyName: "Rafael Nunes" });
+  await h.idle();
+  assert.equal(h.notes.length, 2);
+  for (const sent of h.notes) {
+    const { userId: _u, ...note } = sent;
+    const clean = host.cleanPluginNote({ plugin: { id: "waha", name: "WhatsApp", views: ["inbox"] }, note });
+    assert.deepEqual(clean.plugin.actions.map((a) => a.id), ["reply", "read"]);
+    assert.ok(clean.plugin.actions[0].input);
+    assert.equal(clean.priv.route, "/notify/action");
+    assert.deepEqual(clean.priv.data, note.data);
+    assert.deepEqual(clean.plugin.target, note.target);
+    assert.equal(clean.plugin.tag, note.tag);
+  }
+});
