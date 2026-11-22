@@ -88,6 +88,23 @@ for (const theme of ['light', 'dark']) {
         });
       }
 
+      test('no session with that name: lists the sessions of WAHA, attaches one, or creates a new one', async ({ page }) => {
+        await open(page, theme, { view: 'screen', status: 'MISSING' }, size);
+        await expect(page.getByRole('button', { name: /loja.*Zoe Shop.*Connected/ })).toBeVisible();
+        await expect(page.getByLabel(/create a new session/)).toHaveValue('default');
+        expect(await noOverflow(page)).toBe(true);
+        await shot(page, theme, tag('pick-session'));
+        await page.getByLabel(/create a new session/).fill('nova');
+        await page.getByRole('button', { name: 'Create and connect' }).click();
+        await expect(page.getByRole('heading', { name: 'Starting WhatsApp' })).toBeVisible();
+        expect((await calls(page, '/session/use')).map((c) => c.body)).toEqual([{ name: 'nova' }]);
+        expect((await calls(page, '/session/start')).length).toBe(1);
+        await page.evaluate(() => (window as unknown as { __set: (s: string) => void }).__set('MISSING'));
+        await page.getByRole('button', { name: /loja/ }).click();
+        await expect.poll(async () => (await calls(page, '/session/use')).length).toBe(2);
+        expect((await calls(page, '/session/start')).length).toBe(1);
+      });
+
       test('Connect WhatsApp creates the session, then the QR appears and the screen hands over when WORKING', async ({ page }) => {
         await open(page, theme, { view: 'screen', status: 'STOPPED' }, size);
         await page.getByRole('button', { name: 'Connect WhatsApp' }).click();

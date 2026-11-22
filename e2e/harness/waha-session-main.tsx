@@ -56,6 +56,8 @@ const client = {
       if (!/\d{8}/.test(b.phone ?? "")) throw fail(400, "invalid_phone", "Pick the country and type the number.");
       await sleep(150); return { code: "WXYZ-1234" };
     }
+    if (path === "/session/list") return { current: "default", known: true, sessions: [{ name: "loja", status: "WORKING", account: { name: "Zoe Shop", phone: "5511988880000" } }, { name: "suporte-antigo", status: "STOPPED", account: null }] };
+    if (path === "/session/use") { if (String((init?.body as { name?: string } | undefined)?.name) === "loja") set("WORKING"); return { ok: true }; }
     if (path === "/session/start" || path === "/session/restart") { await sleep(200); set("STARTING"); return { ok: true }; }
     if (path === "/session/stop") { set("STOPPED"); return { ok: true }; }
     if (path === "/session/logout") { set("SCAN_QR_CODE"); return { ok: true }; }
