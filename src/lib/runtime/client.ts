@@ -4,6 +4,7 @@ import { collectBrowserEnv } from "./browser-env.ts"; // explicit extension: cli
 import type {
   PluginRepoPreview,
   PluginUpdateNotice,
+  PluginDeprecation,
   AgentLink,
   BrowserLink,
   CanvasNote,
@@ -623,6 +624,11 @@ export class RuntimeClient {
     return (await this.call<{ updates: PluginUpdateNotice[] }>("GET", "/v1/plugins/updates", undefined, { timeoutMs: 60_000 })).updates;
   }
 
+  /** Installed plugins the catalog marks as deprecated (same request as the update check; an older runtime answers none). */
+  async pluginDeprecations(): Promise<PluginDeprecation[]> {
+    return (await this.call<{ deprecated?: PluginDeprecation[] }>("GET", "/v1/plugins/updates", undefined, { timeoutMs: 60_000 })).deprecated ?? [];
+  }
+
   async uninstallPlugin(id: string, confirm: string): Promise<void> {
     await this.call("DELETE", `/v1/plugins/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirm)}`);
   }
@@ -1145,6 +1151,8 @@ export class RuntimeClient {
     (await this.call<{ notifications: import("@/lib/notifications").AppNotification[] }>("GET", `/v1/notifications${query.limit ? `?limit=${query.limit}` : ""}`)).notifications;
   markNotificationsRead = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/read", { ids });
   clearNotifications = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/clear", { ids });
+  /** An action button of a plugin notification: the runtime runs that plugin's own route as this user. */
+  notificationAction = (id: string, actionId: string, input?: string) => this.call<{ ok: boolean; result?: unknown }>("POST", `/v1/notifications/${encodeURIComponent(id)}/action`, { actionId, ...(input !== undefined ? { input } : {}) });
 
   // --- agy swarm mirror (virtual agents); older runtimes answer 404 ---
   virtualAgents = async (projectId: string) =>

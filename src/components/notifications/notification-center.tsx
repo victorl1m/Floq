@@ -19,7 +19,8 @@ function NotificationRow({ n, projectName, onOpen }: { n: AppNotification; proje
   const { markRead, clear } = useNotifications();
   const { Icon, tone, label } = levelMeta[n.level];
   const unread = !n.readAt;
-  const from = [n.sessionName, projectName].filter(Boolean).join(" · ");
+  const from = [n.plugin ? [n.plugin.name, n.plugin.subtitle].filter(Boolean).join(" · ") : n.sessionName, projectName].filter(Boolean).join(" · ");
+  const openLabel = n.action?.label ?? (n.plugin?.target ? "Open" : null);
   return (
     <li data-testid="notification-row" data-level={n.level} data-unread={unread} className={cn("group relative flex gap-2.5 rounded-lg px-2 py-2 transition-colors hover:bg-muted/60", unread && "bg-muted/35")}>
       <Icon className={cn("mt-0.5 size-4 shrink-0", tone)} aria-label={label} />
@@ -32,8 +33,8 @@ function NotificationRow({ n, projectName, onOpen }: { n: AppNotification; proje
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="rounded-full border border-border/70 px-1.5 py-px text-[10px] font-medium tracking-wide text-muted-foreground uppercase">{n.category}</span>
           {from && <span className="min-w-0 truncate text-xs text-muted-foreground">{from}</span>}
-          {n.action && (
-            <Button size="xs" variant="outline" className="ml-auto" onClick={() => onOpen(n)}>{n.action.label}</Button>
+          {openLabel && (
+            <Button size="xs" variant="outline" className="ml-auto" onClick={() => onOpen(n)}>{openLabel}</Button>
           )}
         </div>
       </div>

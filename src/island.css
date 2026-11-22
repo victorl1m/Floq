@@ -117,5 +117,21 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .island::-webkit-scrollbar, .i
 .island-notification-body { color:#c7c7cc; font-size:12px; line-height:1.4; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 button.island-notification-action { background:var(--level); color:#0b0b0c; }
 .island-pill-level { flex:none; color:var(--level); }
+/* A message from a plugin (WhatsApp through ctx.notify): avatar, sender, preview, inline reply and the plugin's own actions. */
+.island-message { --level:#34d27b; }
+.island-avatar { display:grid; place-items:center; flex:none; width:38px; height:38px; border-radius:50%; overflow:hidden; background:#2a2a2c; color:#e5e5ea; font-size:13px; font-weight:600; letter-spacing:.02em; user-select:none; }
+.island-avatar img { width:100%; height:100%; object-fit:cover; display:block; }
+.island-avatar-small { width:20px; height:20px; font-size:9px; }
+.island-message .island-card-header { align-items:flex-start; }
+.island-message .island-notification-main:disabled { cursor:default; }
+.island-reply { display:flex; align-items:center; gap:8px; margin-top:12px; }
+.island-reply input { flex:1; min-width:0; height:36px; border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:0 14px; color:#fff; background:#1c1c1e; outline:none; }
+.island-reply input::placeholder { color:#8e8e93; }
+.island-reply input:focus-visible { border-color:#34d27b; box-shadow:0 0 0 1px #34d27b; }
+.island-reply input:disabled { opacity:.6; }
+.island-reply button { flex:none; }
+.island-actions.island-message-actions { margin-top:10px; justify-content:flex-start; flex-wrap:wrap; }
+.island-message-actions button { padding:7px 12px; }
+@media (forced-colors:active) { .island-avatar, .island-reply input { border:1px solid CanvasText; } }
 .island-pill-title { min-width:0; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
 .island-pill-more { color:#8e8e93; font-size:11px; }

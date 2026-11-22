@@ -6,7 +6,7 @@ import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/app
 import { useAttentionState } from '@/lib/attention';
 import { useNotifications } from '@/components/notifications/notifications-provider';
 import { useNotificationAction } from '@/components/notifications/use-notification-action';
-import { autoDismisses, notificationAttention, NOTIFICATION_AUTO_DISMISS_MS, capAttention, deferEmptySnapshot, EMPTY_DEFER_AFTER_ANSWER_MS, EMPTY_DEFER_MS, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { dismissAfterMs, MAX_REPLY_CHARS, notificationAttention, capAttention, deferEmptySnapshot, EMPTY_DEFER_AFTER_ANSWER_MS, EMPTY_DEFER_MS, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
@@ -22,6 +22,8 @@ export function useIslandBridge() {
   /** Dismissed from the island (by the user, or auto): they leave the island but auto-dismissed ones stay unread in the Notification Center. */
   const [dismissedNotifications, setDismissedNotifications] = useState<ReadonlySet<string>>(new Set());
   const dismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** Notifications the user is answering in the island (its reply field got focus): no auto-dismiss any more. */
+  const heldNotifications = useRef(new Set<string>());
   const [ready, setReady] = useState(true);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState<string[]>([]);
@@ -50,8 +52,11 @@ export function useIslandBridge() {
   const dismissFromIsland = (id: string) => setDismissedNotifications(old => new Set(old).add(id));
   useEffect(() => {
     for (const item of queue) {
-      if (item.kind !== 'notification' || !autoDismisses(item.notification) || dismissTimers.current.has(item.id)) continue;
-      dismissTimers.current.set(item.id, setTimeout(() => dismissFromIsland(item.id), NOTIFICATION_AUTO_DISMISS_MS));
+      if (item.kind !== 'notification' || dismissTimers.current.has(item.id) || heldNotifications.current.has(item.id)) continue;
+      const after = dismissAfterMs(item.notification);
+      if (after === null) continue;
+      const id = item.id;
+      dismissTimers.current.set(id, setTimeout(() => { if (!heldNotifications.current.has(id)) dismissFromIsland(id); }, after));
     }
   }, [notificationKey]);
   useEffect(() => () => dismissTimers.current.forEach(clearTimeout), []);
@@ -65,6 +70,7 @@ export function useIslandBridge() {
     if (intent.type === 'notification') {
       const item = latest.current.items.find(i => i.id === intent.id);
       if (!item || item.kind !== 'notification') return;
+      if (intent.action === 'hold') { heldNotifications.current.add(item.id); clearTimeout(dismissTimers.current.get(item.id)); return; }
       if (intent.action === 'open') notificationRefs.current.run(item.notification);
       notificationRefs.current.markRead([item.id]);
       dismissFromIsland(item.id);
@@ -72,6 +78,21 @@ export function useIslandBridge() {
     }
     if (!client || !connected || inflight.current.has(intent.id)) return;
     const item = latest.current.items.find(i => i.id === intent.id);
+    if (intent.type === 'notification-action') {
+      // A button of a plugin notification (reply, mark read): the runtime runs that plugin's own route as this user. Only actions the
+      // notification itself lists are sent, and text only where the action takes it.
+      const action = item?.kind === 'notification' ? item.notification.plugin?.actions.find(a => a.id === intent.actionId) : undefined;
+      if (!item || !action) return;
+      const input = action.input ? intent.input : undefined;
+      if (action.input && (typeof input !== 'string' || !input.trim() || input.length > MAX_REPLY_CHARS)) return;
+      heldNotifications.current.add(item.id); clearTimeout(dismissTimers.current.get(item.id));
+      emptyHoldMs.current = EMPTY_DEFER_AFTER_ANSWER_MS;
+      inflight.current.add(item.id); setBusy([...inflight.current]); setError(undefined);
+      void client.notificationAction(item.id, action.id, input).then(() => { notificationRefs.current.markRead([item.id]); dismissFromIsland(item.id); })
+        .catch(e => setError(/404/.test(String(e)) ? 'This notification is no longer available.' : String(e instanceof Error ? e.message : e)))
+        .finally(() => { inflight.current.delete(item.id); setBusy([...inflight.current]); });
+      return;
+    }
     if (!item || (intent.type === 'approval' && item.kind !== 'approval') || (intent.type !== 'approval' && item.kind !== 'decision')) return;
     if (intent.type === 'decision' && (item.kind !== 'decision' || item.decision.answerMode === 'terminal' || !validAnswers(item.decision.questions, intent.answers))) return;
     if (intent.type === 'terminal' && (item.kind !== 'decision' || item.decision.source !== 'native')) return;

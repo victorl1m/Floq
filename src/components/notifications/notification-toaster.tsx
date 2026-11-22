@@ -33,7 +33,7 @@ export function NotificationToaster({ suppressed = false }: { suppressed?: boole
         id: `notification-${n.id}`,
         description: n.body ?? undefined,
         duration: persists(n.level) ? Infinity : 5000,
-        action: n.action ? { label: n.action.label, onClick: () => { runRef.current(n); markRef.current([n.id]); } } : undefined,
+        action: n.action || n.plugin?.target ? { label: n.action?.label ?? "Open", onClick: () => { runRef.current(n); markRef.current([n.id]); } } : undefined,
       });
     }
   }, [items, loaded]);

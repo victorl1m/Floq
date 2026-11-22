@@ -3,7 +3,7 @@ import type { AppNotification } from './notifications';
 
 export type AttentionItem = { kind: 'approval'; id: string; createdAt: string; approval: ApprovalRequest } | { kind: 'decision'; id: string; createdAt: string; decision: DecisionView } | { kind: 'notification'; id: string; createdAt: string; notification: AppNotification };
 export interface IslandSnapshot { epoch: string; revision: number; connected: boolean; items: AttentionItem[]; busy: string[]; error?: string }
-export type IslandIntent = { type: 'ready' } | { type: 'approval'; id: string; decision: 'allow' | 'deny' } | { type: 'decision'; id: string; answers: DecisionAnswer[] } | { type: 'terminal'; id: string} | { type: 'notification'; id: string; action: 'dismiss' | 'open' };
+export type IslandIntent = { type: 'ready' } | { type: 'approval'; id: string; decision: 'allow' | 'deny' } | { type: 'decision'; id: string; answers: DecisionAnswer[] } | { type: 'terminal'; id: string} | { type: 'notification'; id: string; action: 'dismiss' | 'open' | 'hold' } | { type: 'notification-action'; id: string; actionId: string; input?: string };
 export interface DecisionAnswer { questionId: string; optionIds: string[]; text: string }
 const RANK: Record<string, number> = { approval: 0, notification: 2 };
 /** Approvals first, then decisions (oldest first), then notifications (newest first): a notification never outranks a request waiting on the user. */
@@ -20,6 +20,15 @@ export const MAX_NOTIFICATION_TITLE_CHARS = 120;
 export const MAX_NOTIFICATION_BODY_CHARS = 240;
 /** warning and error stay until dismissed (same rule as `persists` in notifications.ts). */
 export const autoDismisses = (n: Pick<AppNotification, 'level'>) => n.level === 'info' || n.level === 'success';
+/** A plugin message (someone wrote) stays longer than a plain info line; a "hold" intent (the reply field got focus) keeps it until answered or dismissed. */
+export const MESSAGE_AUTO_DISMISS_MS = 12000;
+export const MAX_REPLY_CHARS = 4000;
+export const dismissAfterMs = (n: Pick<AppNotification, 'level' | 'plugin'>): number | null => (n.plugin ? MESSAGE_AUTO_DISMISS_MS : autoDismisses(n) ? NOTIFICATION_AUTO_DISMISS_MS : null);
+const AVATAR_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+/** Only an inline image ever reaches an <img> of the island: no remote URL, no SVG. */
+export const safeAvatar = (avatar: string | null | undefined): string | null => (typeof avatar === 'string' && avatar.length <= 48_000 && AVATAR_RE.test(avatar) ? avatar : null);
+/** Up to two initials of a name, for the avatar fallback. */
+export const initials = (name: string): string => { const parts = name.trim().split(/\s+/).filter(p => /[\p{L}\p{N}]/u.test(p)); return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?'; };
 /** New unread notifications not already dismissed from the island, newest first, capped. */
 export function notificationAttention(notifications: AppNotification[], dismissed: ReadonlySet<string>): Extract<AttentionItem, {kind: 'notification'}>[] {
   return notifications
@@ -52,7 +61,11 @@ export function capText(text: string, max: number): string {
 export function capAttention<T extends { kind: string }>(items: T[]): T[] {
   return items.map((item) => {
     const notification = (item as unknown as { notification?: AppNotification }).notification;
-    if (item.kind === 'notification' && notification) return { ...item, notification: { ...notification, title: capText(notification.title, MAX_NOTIFICATION_TITLE_CHARS), body: notification.body && capText(notification.body, MAX_NOTIFICATION_BODY_CHARS) } };
+    if (item.kind === 'notification' && notification) {
+      const p = notification.plugin;
+      const plugin = p ? { plugin: { ...p, name: capText(p.name, 60), subtitle: p.subtitle && capText(p.subtitle, 80), avatar: safeAvatar(p.avatar), actions: p.actions.slice(0, 4).map(a => ({ ...a, label: capText(a.label, 40), ...(a.input ? { input: { placeholder: capText(a.input.placeholder ?? '', 80) } } : {}) })) } } : {};
+      return { ...item, notification: { ...notification, title: capText(notification.title, MAX_NOTIFICATION_TITLE_CHARS), body: notification.body && capText(notification.body, MAX_NOTIFICATION_BODY_CHARS), ...plugin } };
+    }
     const approval = (item as unknown as { approval?: ApprovalRequest }).approval;
     if (item.kind !== 'approval' || !approval) return item;
     return { ...item, approval: { ...approval, action: capText(approval.action, MAX_ACTION_CHARS), detail: capText(approval.detail, MAX_DETAIL_CHARS) } };

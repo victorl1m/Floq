@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import { useEffect, useRef, type ComponentType } from "react";
 import type { PluginInfo, PluginViewDecl, PluginTaskSourceDecl, PluginRightSidebarTabDecl } from "../lib/runtime/types";
 
 export type {
@@ -24,3 +24,34 @@ export interface UiPluginDefinition {
 }
 
 export const defineUiPlugin = (def: UiPluginDefinition): UiPluginDefinition => def;
+
+
+// ---- "open this view at X" (a notification's target, see runtime `ctx.notify({ target })`) ----
+type OpenParams = Record<string, string>;
+const pendingOpen = new Map<string, OpenParams>();
+const openListeners = new Map<string, Set<(params: OpenParams) => void>>();
+/** Host side: hands params to a plugin view. A mounted view gets them at once; otherwise they wait for its next mount. */
+export function deliverPluginOpen(pluginId: string, viewId: string, params: OpenParams): void {
+  const key = pluginId + "/" + viewId;
+  const set = openListeners.get(key);
+  if (set?.size) for (const fn of [...set]) fn(params);
+  else pendingOpen.set(key, params);
+}
+/**
+ * Plugin view side: `callback` gets the params of a notification target that opened this view (e.g. `{ chat, session }`), once per
+ * open, whether the view was already on screen or is mounting because of it. The callback may change between renders.
+ */
+export function usePluginOpen(pluginId: string, viewId: string, callback: (params: OpenParams) => void): void {
+  const latest = useRef(callback);
+  latest.current = callback;
+  useEffect(() => {
+    const key = pluginId + "/" + viewId;
+    const fn = (params: OpenParams) => latest.current(params);
+    let set = openListeners.get(key);
+    if (!set) openListeners.set(key, (set = new Set()));
+    set.add(fn);
+    const waiting = pendingOpen.get(key);
+    if (waiting) { pendingOpen.delete(key); fn(waiting); }
+    return () => { set!.delete(fn); };
+  }, [pluginId, viewId]);
+}

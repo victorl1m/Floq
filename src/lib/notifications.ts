@@ -2,6 +2,12 @@
 export type NotificationLevel = "info" | "success" | "warning" | "error";
 export type NotificationCategory = "release" | "build" | "agent" | "cost" | "security" | "message" | "system" | "custom";
 export type NotificationAction = { kind: "url" | "canvas" | "agent" | "settings"; target: string; label: string };
+/** The part a plugin attached (runtime `ctx.notify`): a message card with the plugin's own actions. */
+export type NotificationPlugin = {
+  id: string; name: string; icon: string | null; kind: "message"; subtitle: string | null; avatar: string | null; tag: string | null;
+  actions: { id: string; label: string; input?: { placeholder: string } }[];
+  target: { view: string; params: Record<string, string> } | null;
+};
 export type AppNotification = {
   id: string;
   userId: string;
@@ -15,6 +21,7 @@ export type AppNotification = {
   action: NotificationAction | null;
   createdAt: string;
   readAt: string | null;
+  plugin?: NotificationPlugin;
 };
 export type NotificationFrame =
   | { type: "notification"; notification: AppNotification }

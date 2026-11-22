@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { acceptSnapshot, validAnswers, type AttentionItem, type DecisionAnswer, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
-import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRight, IconCheck, IconLoader2, IconX } from '@tabler/icons-react';
+import { acceptSnapshot, validAnswers, initials, safeAvatar, MAX_REPLY_CHARS, type AttentionItem, type DecisionAnswer, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { IconShieldQuestion, IconMessageQuestion, IconChevronLeft, IconChevronRight, IconCheck, IconLoader2, IconX, IconSend2 } from '@tabler/icons-react';
 import { riskLevel, RISK_LABEL, actorLabel } from '@/lib/approval-format';
 import type { DecisionView } from '@/lib/runtime/types';
 import { levelMeta } from '@/components/notifications/level';
@@ -12,7 +12,7 @@ import { islandLog } from './island-log';
 
 const send = (intent: IslandIntent) => invoke('island_intent', { intent });
 /** What the user just answered: shown as a short colored result state instead of falling back to the stale "N waiting" pill. */
-type Outcome = { id: string; kind: 'accepted' | 'refused' | 'sent'; title: string };
+type Outcome = { id: string; kind: 'accepted' | 'refused' | 'sent'; title: string; label?: string };
 const OUTCOME_LABEL: Record<Outcome['kind'], string> = { accepted: 'Accepted', refused: 'Refused', sent: 'Sent' };
 /** The result is held this long (independent of hover), then fades out over OUTCOME_FADE_MS. Hold + fade must stay under EMPTY_DEFER_AFTER_ANSWER_MS so the OS window is still there. */
 const OUTCOME_HOLD_MS = 2600;
@@ -37,6 +37,37 @@ function NotificationCard({ notification, send: dispatch }: { notification: AppN
     </div>
   </div>;
 }
+function Avatar({ src, name, small }: { src: string | null; name: string; small?: boolean }) {
+  const safe = safeAvatar(src);
+  return <span className={'island-avatar' + (small ? ' island-avatar-small' : '')} aria-hidden="true">{safe ? <img src={safe} alt="" draggable={false}/> : initials(name)}</span>;
+}
+/** A message from a plugin (WhatsApp): who wrote, where, a preview, and the plugin's own actions. An action with `input` is an inline reply. */
+function MessageCard({ notification, disabled, busy, draft, setDraft, send: dispatch, act }: { notification: AppNotification; disabled: boolean; busy: boolean; draft: string; setDraft: (text: string) => void; send: (action: 'dismiss' | 'open' | 'hold') => void; act: (actionId: string, input?: string) => void }) {
+  const plugin = notification.plugin!;
+  const reply = plugin.actions.find(a => a.input);
+  const others = plugin.actions.filter(a => a !== reply);
+  const text = draft.trim();
+  const submit = () => { if (reply && text && !disabled) act(reply.id, text); };
+  return <div className="island-notification island-message" data-kind="message">
+    <div className="island-card-header">
+      <Avatar src={plugin.avatar} name={notification.title}/>
+      <button type="button" className="island-notification-main" disabled={!plugin.target} onClick={() => dispatch('open')} aria-label={`${plugin.name}: message from ${notification.title}${plugin.target ? '. Open chat in Floq' : ''}`}>
+        <span className="island-notification-kind">{plugin.name}{plugin.subtitle ? ` · ${plugin.subtitle}` : ''}</span>
+        <strong className="island-notification-title">{notification.title}</strong>
+        {notification.body && <span className="island-notification-body">{notification.body}</span>}
+      </button>
+      <div className="island-header-actions"><button type="button" className="island-circle" aria-label="Dismiss notification" onClick={() => dispatch('dismiss')}><IconX size={18}/></button></div>
+    </div>
+    {reply && <form className="island-reply" onSubmit={e => { e.preventDefault(); submit(); }}>
+      <input type="text" value={draft} maxLength={MAX_REPLY_CHARS} disabled={disabled} placeholder={reply.input?.placeholder || reply.label} aria-label={`${reply.label} to ${notification.title}`} autoComplete="off" spellCheck onFocus={() => dispatch('hold')} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.stopPropagation(); submit(); } }}/>
+      <button type="submit" className="primary island-circle" disabled={disabled || !text} aria-label={`Send ${reply.label.toLowerCase()}`}>{busy ? <IconLoader2 className="island-spinner" size={16}/> : <IconSend2 size={16}/>}</button>
+    </form>}
+    {(others.length > 0 || plugin.target) && <div className="island-actions island-message-actions">
+      {others.map(a => <button key={a.id} type="button" disabled={disabled} onClick={() => act(a.id)}>{a.label}</button>)}
+      {plugin.target && <button type="button" onClick={() => dispatch('open')}>Open chat</button>}
+    </div>}
+  </div>;
+}
 export default function IslandRoot({ initialSnapshot = null, initialExpanded = false, initialOutcome = null }: { initialSnapshot?: IslandSnapshot | null; initialExpanded?: boolean; initialOutcome?: Outcome | null } = {}) {
   const [snapshot, setSnapshot] = useState<IslandSnapshot | null>(initialSnapshot);
   const [displaySnapshot, setDisplaySnapshot] = useState<IslandSnapshot | null>(initialSnapshot?.items.length ? initialSnapshot : null);
@@ -53,6 +84,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const hovered = useRef(false);
   const [selected, setSelected] = useState<string>();
   const [drafts, setDrafts] = useState<Record<string, DecisionAnswer[]>>({});
+  const [replies, setReplies] = useState<Record<string, string>>({});
   const [localError, setLocalError] = useState<string>();
   const [, rerender] = useState(0);
   const body = useRef<HTMLDivElement>(null);
@@ -155,6 +187,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         // The API acknowledgement, not the native dispatch promise, completes this request.
         answeredIds.current.add(id);
         setDrafts(old => { const next = { ...old }; delete next[id]; return next; });
+        setReplies(old => { const next = { ...old }; delete next[id]; return next; });
         const remaining = (displayed.current?.items ?? []).filter(item => !answeredIds.current.has(item.id));
         clearTimeout(leaveTimer.current);
         setLeaving(false); setExpanded(true);
@@ -204,10 +237,13 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
       ? { id: intent.id, kind: intent.decision === 'allow' ? 'accepted' : 'refused', title: item?.kind === 'approval' ? item.approval.action : '' }
       : intent.type === 'decision'
         ? { id: intent.id, kind: 'sent', title: item?.kind === 'decision' ? item.decision.questions[0]?.header || item.decision.sessionName : '' }
-        : null;
+        : intent.type === 'notification-action'
+          ? { id: intent.id, kind: intent.input !== undefined ? 'sent' : 'accepted', title: item?.kind === 'notification' ? (intent.input !== undefined ? `To ${item.notification.title}` : item.notification.title) : '', label: intent.input !== undefined ? undefined : 'Done' }
+          : null;
     void send(intent).catch(e => { submitting.current = null; pendingOutcome.current = null; setSubmission(null); setLocalError(String(e)); });
   };
-  const actNotification = (id: string, action: 'dismiss' | 'open') => {
+  const actNotification = (id: string, action: 'dismiss' | 'open' | 'hold') => {
+    if (action === 'hold') { void send({ type: 'notification', id, action }).catch(() => undefined); return; }
     answeredIds.current.add(id); rerender(n => n + 1);
     void send({ type: 'notification', id, action }).catch(e => { answeredIds.current.delete(id); rerender(n => n + 1); setLocalError(String(e)); });
   };
@@ -223,15 +259,17 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
   const notePill = topNote ? { n: topNote, Icon: levelMeta[topNote.level].Icon } : undefined;
   const shownMotion = outcome ? 'idle' : motion;
   return <div className={'island island-' + shownMotion + ' ' + (shellLayout.expanded ? 'expanded' : 'collapsed') + (outcome ? ' island-outcome island-outcome-' + outcome.kind + (leaving ? ' island-leaving' : '') : '')} ref={body} style={{ height: shellLayout.height, '--island-width': `${shellLayout.width}px`, '--island-content-max-height': `${shellLayout.contentMaxHeight}px` } as CSSProperties} onMouseEnter={() => { islandLog('dom enter'); hovered.current = true; clearTimeout(leaveTimer.current); setExpanded(true); }} onMouseLeave={() => { islandLog('dom leave'); hovered.current = false; clearTimeout(leaveTimer.current); leaveTimer.current = setTimeout(() => { if (!pinnedRef.current && !outcomeRef.current) setExpanded(false); }, 300); }} onKeyDown={e => { if (e.key === 'Escape') { setPinned(false); setExpanded(false); } if (current?.kind === 'decision' && e.key === 'Enter' && e.ctrlKey && !disabled && current.decision.answerMode !== 'terminal' && validAnswers(current.decision.questions, answers)) { e.preventDefault(); act({type:'decision', id:current.id, answers}); } }} onFocusCapture={e => { if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) setPinned(true); }} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPinned(false); }}>
-    <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{OUTCOME_LABEL[outcome.kind]}</strong></> : notePill ? <><notePill.Icon className="island-pill-level" data-level={notePill.n.level} size={16}/><strong className="island-pill-title">{notePill.n.title}</strong>{items.length > 1 && <span className="island-pill-more">+{items.length - 1}</span>}</> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-typing" aria-hidden="true"><i/><i/><i/></span></>}</div>
+    <div aria-hidden={shellLayout.expanded} className={'island-header island-pill' + (outcome ? ' island-pill-' + outcome.kind : '')}>{outcome ? <><OutcomeMark kind={outcome.kind}/><strong>{outcome.label ?? OUTCOME_LABEL[outcome.kind]}</strong></> : notePill ? <>{notePill.n.plugin ? <Avatar small src={notePill.n.plugin.avatar} name={notePill.n.title}/> : <notePill.Icon className="island-pill-level" data-level={notePill.n.level} size={16}/>}<strong className="island-pill-title">{notePill.n.title}</strong>{items.length > 1 && <span className="island-pill-more">+{items.length - 1}</span>}</> : <><i className="island-dot"/><strong><span className="island-count">{items.length}</span> waiting</strong><span className="island-typing" aria-hidden="true"><i/><i/><i/></span></>}</div>
     {outcome ? <div className="island-content island-result" ref={content} role="status" aria-live="polite" aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <span className="island-result-mark"><OutcomeMark kind={outcome.kind}/></span>
-      <strong className="island-result-label">{OUTCOME_LABEL[outcome.kind]}</strong>
+      <strong className="island-result-label">{outcome.label ?? OUTCOME_LABEL[outcome.kind]}</strong>
       {outcome.title && <span className="island-result-sub">{outcome.title}</span>}
     </div> : current && (current.kind === 'notification' ? <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
-      <NotificationCard notification={current.notification} send={action => actNotification(current.id, action)}/>
+      {current.notification.plugin
+        ? <MessageCard notification={current.notification} disabled={disabled} busy={submission === 'busy'} draft={replies[current.id] ?? ''} setDraft={text => setReplies(old => ({ ...old, [current.id]: text }))} send={action => actNotification(current.id, action)} act={(actionId, input) => act({ type: 'notification-action', id: current.id, actionId, ...(input !== undefined ? { input } : {}) })}/>
+        : <NotificationCard notification={current.notification} send={action => actNotification(current.id, action)}/>}
       {items.length > 1 && <div className="island-cycle"><button disabled={cycleDisabled} onClick={() => cycle(-1)} aria-label="Previous request"><IconChevronLeft size={15}/></button><div className="island-queue" aria-label={`Item ${items.indexOf(current)+1} of ${items.length}`}>{items.map(item => <span key={item.id} className={item.id === current.id ? 'active' : ''}/>)}</div><button disabled={cycleDisabled} onClick={() => cycle(1)} aria-label="Next request"><IconChevronRight size={15}/></button></div>}
-      {localError && <p role="alert" className="island-error">{localError}</p>}
+      {(localError || (current.notification.plugin && snapshot?.error)) && <p role="alert" className="island-error">{localError || snapshot?.error}</p>}
     </div> : <div key={current.id} className={'island-content' + (cardEnter ? ' island-card-enter' : '')} onAnimationEnd={e => { if (e.animationName === 'island-request-enter') setCardEnter(false); }} ref={content} aria-hidden={!shellLayout.expanded} inert={!shellLayout.expanded}>
       <div className="island-card-header">
         <span className="island-badge">{current.kind === 'decision' ? <IconMessageQuestion size={20}/> : <IconShieldQuestion size={20}/>} {current.kind === 'approval' && current.approval.irreversible && <i/>}</span>
