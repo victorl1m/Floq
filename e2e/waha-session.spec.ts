@@ -13,11 +13,11 @@ async function open(page: Page, theme: string, query: Record<string, string>, si
   const q = new URLSearchParams({ demo: 'session', ...query, ...(theme === 'dark' ? { theme: 'dark' } : {}) });
   await page.goto('/e2e/harness/waha-session.html?' + q);
 }
-async function shot(page: Page, theme: string, name: string) {
+async function shot(page: Page, theme: string, name: string, prefix = 'waha-full-session') {
   mkdirSync(shots, { recursive: true });
   await page.mouse.move(0, 0);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(shots, `waha-full-session-${theme}-${name}.png`) });
+  await page.screenshot({ path: path.join(shots, `${prefix}-${theme}-${name}.png`) });
 }
 const noOverflow = (page: Page) => page.evaluate(() => { const r = document.querySelector('.wa-root')!; return r.scrollWidth <= r.clientWidth + 1; });
 const calls = (page: Page, p: string) => page.evaluate((x) => (window as unknown as { __calls: Array<{ path: string; body: unknown }> }).__calls.filter((c) => c.path === x), p);
@@ -156,7 +156,7 @@ for (const theme of ['light', 'dark']) {
         const menu = page.getByRole('menu');
         await expect(menu).toContainText('Zoe Personalizações');
         await expect(menu).toContainText('WEBJS');
-        for (const item of ['Restart', 'Stop', 'Screenshot', 'Fix webhook events', 'Log out']) await expect(page.getByRole('menuitem', { name: item })).toBeVisible();
+        for (const item of ['Restart', 'Stop', 'Screenshot', 'Repair webhook', 'Notifications: On', 'Log out']) await expect(page.getByRole('menuitem', { name: item })).toBeVisible();
         await shot(page, theme, tag('menu'));
         await page.getByRole('menuitem', { name: 'Log out' }).click();
         await expect(page.getByRole('alertdialog')).toContainText('unlinks the phone');
@@ -171,27 +171,93 @@ for (const theme of ['light', 'dark']) {
         await expect(page.getByRole('button', { name: 'Link again' })).toBeVisible();
       });
 
-      test('account menu: Fix webhook events asks first and sends one request', async ({ page }) => {
+      test('account menu: a missing webhook offers Repair; one request, then Webhook: OK', async ({ page }) => {
         await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'missing' }, size);
         await page.getByRole('button', { name: /WhatsApp account/ }).click();
-        await page.getByRole('menuitem', { name: 'Fix webhook events' }).click();
+        const item = page.getByRole('menuitem', { name: 'Repair webhook' });
+        await expect(item).toBeVisible();
+        await shot(page, theme, tag('webhook-menu-repair'), 'waha-webhook');
+        await item.click();
         const dlg = page.getByRole('alertdialog');
+        await expect(dlg).toContainText('WAHA has no webhook to Floq for this session');
         await expect(dlg).toContainText('reconnects for a few seconds');
-        await shot(page, theme, tag('webhook-confirm'));
-        await dlg.getByRole('button', { name: 'Add events and reconnect' }).click();
+        // the address is never shown with its token
+        await expect(dlg).not.toContainText('hooks/events/');
+        await shot(page, theme, tag('webhook-repair'), 'waha-webhook');
+        await dlg.getByRole('button', { name: 'Repair', exact: true }).click();
         await expect(dlg).toHaveCount(0);
-        expect((await calls(page, '/session/webhook-events')).length).toBe(1);
+        await expect(page.getByText('Webhook repaired')).toBeVisible();
+        expect((await calls(page, '/session/webhook-repair')).length).toBe(1);
+        expect((await calls(page, '/session/webhook-events')).length).toBe(0);
         await page.getByRole('button', { name: /WhatsApp account/ }).click();
-        await expect(page.getByRole('menuitem', { name: 'Fix webhook events' })).toHaveCount(0);
+        await expect(page.getByRole('menuitem', { name: 'Webhook: OK' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Repair webhook' })).toHaveCount(0);
+        await shot(page, theme, tag('webhook-menu-ok'), 'waha-webhook');
       });
 
-      test('account menu: environment webhook lists the events to enable; NOWEB hides Screenshot', async ({ page }) => {
-        await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'env', engine: 'NOWEB' }, size);
+      test('account menu: missing events and an old address are named; NOWEB hides Screenshot', async ({ page }) => {
+        await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'events', engine: 'NOWEB' }, size);
         await page.getByRole('button', { name: /WhatsApp account/ }).click();
         await expect(page.getByRole('menuitem', { name: 'Screenshot' })).toHaveCount(0);
-        await page.getByRole('menuitem', { name: 'Webhook events' }).click();
-        await expect(page.getByRole('alertdialog')).toContainText('message.any');
-        await shot(page, theme, tag('webhook-env'));
+        await page.getByRole('menuitem', { name: 'Repair webhook' }).click();
+        await expect(page.getByRole('alertdialog')).toContainText('does not send 3 events Floq uses (for example message.ack');
+        await shot(page, theme, tag('webhook-events'), 'waha-webhook');
+        await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'stale' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await page.getByRole('menuitem', { name: 'Repair webhook' }).click();
+        await expect(page.getByRole('alertdialog')).toContainText('old address or token');
+        await expect(page.getByRole('alertdialog')).toContainText('keeps your other webhooks');
+      });
+
+      test('account menu: without a public address the dialog says which setting to fill and lists the events', async ({ page }) => {
+        await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'address' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await page.getByRole('menuitem', { name: 'Repair webhook' }).click();
+        const dlg = page.getByRole('alertdialog');
+        await expect(dlg).toContainText('Address WAHA uses to reach Floq');
+        await expect(dlg).toContainText('message.any');
+        await shot(page, theme, tag('webhook-address'), 'waha-webhook');
+        await dlg.getByRole('button', { name: 'Repair', exact: true }).click();
+        await expect(page.getByText('Could not repair the webhook')).toBeVisible();
+        await expect(dlg).toBeVisible();
+      });
+
+      test('account menu: a repair WAHA refuses keeps the dialog and shows the last attempt', async ({ page }) => {
+        await open(page, theme, { view: 'inbox', status: 'WORKING', webhook: 'fail' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await page.getByRole('menuitem', { name: 'Repair webhook' }).click();
+        const dlg = page.getByRole('alertdialog');
+        await dlg.getByRole('button', { name: 'Repair', exact: true }).click();
+        await expect(dlg).toContainText('Last attempt: WAHA answered 500.');
+        expect((await calls(page, '/session/webhook-repair')).length).toBe(1);
+      });
+
+      test('account menu: a healthy webhook can be checked again without a restart', async ({ page }) => {
+        await open(page, theme, { view: 'inbox', status: 'WORKING' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await page.getByRole('menuitem', { name: 'Webhook: OK' }).click();
+        const dlg = page.getByRole('alertdialog');
+        await expect(dlg).toContainText('WAHA sends this account');
+        await dlg.getByRole('button', { name: 'Check again' }).click();
+        await expect(page.getByText('Webhook is already OK')).toBeVisible();
+        await expect(page.locator('.wa-dot')).toHaveAttribute('data-s', 'WORKING');
+      });
+
+      test('account menu: notifications of the account switch off and on; hidden on a Floq without them', async ({ page }) => {
+        await open(page, theme, { view: 'inbox', status: 'WORKING' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await page.getByRole('menuitem', { name: 'Notifications: On' }).click();
+        await expect(page.getByText('Notifications off for this account')).toBeVisible();
+        expect((await calls(page, '/notify/settings')).filter((c) => (c.body as { enabled?: boolean } | undefined)?.enabled === false).length).toBe(1);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await expect(page.getByRole('menuitem', { name: 'Notifications: Off' })).toBeVisible();
+        await shot(page, theme, tag('notify-off'), 'waha-island-menu');
+        await page.getByRole('menuitem', { name: 'Notifications: Off' }).click();
+        await expect(page.getByText('Notifications on for this account')).toBeVisible();
+        await open(page, theme, { view: 'inbox', status: 'WORKING', notify: 'none' }, size);
+        await page.getByRole('button', { name: /WhatsApp account/ }).click();
+        await expect(page.getByRole('menuitem', { name: 'Restart' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: /Notifications/ })).toHaveCount(0);
       });
 
       test('account menu: Stop and screenshot', async ({ page }) => {

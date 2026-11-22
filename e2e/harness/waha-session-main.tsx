@@ -1,6 +1,8 @@
 // Test harness for the WAHA connection screen, reconnect bar and account menu: loads the built-in WhatsApp UI like waha-composer-main.tsx and renders its
 // "?demo=session" view against fake session routes. window.__set(status) changes the fake WAHA and pushes the live "session" event.
-//   ?theme=dark   ?view=screen|inbox   ?status=WORKING|SCAN_QR_CODE|...   ?engine=WEBJS|NOWEB|GOWS   ?webhook=missing|env|ok
+//   ?theme=dark   ?view=screen|inbox   ?status=WORKING|SCAN_QR_CODE|...   ?engine=WEBJS|NOWEB|GOWS
+//   ?webhook=ok|missing|events|stale|address|old|fail   (Floq's webhook in WAHA: right, not there, some events missing, old token, Floq does not know its address, a Floq without ctx.webhooks.url, a repair WAHA refuses)
+//   ?notify=on|off|none   (island notifications of the account; none: a Floq without them)
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./font-shim";
@@ -28,9 +30,25 @@ const state = {
   status: params.get("status") ?? "SCAN_QR_CODE",
   engine: params.get("engine") ?? "WEBJS",
   me: { name: "Zoe Personalizações", phone: "5511987654321" } as { name: string; phone: string } | null,
-  missing: webhookMode === "missing" ? WANTED.slice(7) : [] as string[],
-  env: webhookMode === "env",
+  missing: webhookMode === "events" ? ["message.ack", "message.ack.group", "message.reaction"] : webhookMode === "missing" ? [...WANTED] : [] as string[],
+  webhook: webhookMode,
+  repaired: null as string | null,
+  notify: params.get("notify") ?? "on",
 };
+const ADDRESS = "https://floq.example.com/v1/plugins/waha/hooks/events/…";
+/** What the runtime reports as webhookHealth for the mode on screen. */
+function health() {
+  const base = { lastEnsuredAt: state.repaired, missingEvents: state.missing };
+  switch (state.webhook) {
+    case "ok": return { ...base, state: "ok", missingEvents: [], address: ADDRESS };
+    case "missing": return { ...base, state: "missing", reason: "WAHA has no webhook to Floq for this session.", address: ADDRESS };
+    case "events": return { ...base, state: "missing-events", reason: "The webhook does not send 3 events Floq uses.", address: ADDRESS };
+    case "stale": return { ...base, state: "stale", missingEvents: [], reason: "The webhook points to an old address or token.", address: ADDRESS };
+    case "fail": return { ...base, state: "missing", reason: "WAHA has no webhook to Floq for this session.", address: ADDRESS, ...(state.repaired ? { lastError: "WAHA answered 500." } : {}) };
+    case "address": return { ...base, state: "unknown", missingEvents: [], reason: "Floq does not know its public address yet. Set “Address WAHA uses to reach Floq” in the plugin settings." };
+    default: return { ...base, state: "unknown", missingEvents: [], reason: "Needs a newer Floq: it cannot tell plugins their webhook address yet." };
+  }
+}
 const calls: Array<{ path: string; method: string; body?: unknown }> = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const fail = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
@@ -46,7 +64,8 @@ const client = {
       const down = state.status === "UNREACHABLE" || state.status === "UNAUTHORIZED";
       return {
         status: state.status, engine: down ? "" : state.engine, me: state.status === "WORKING" ? state.me : null,
-        webhook: state.env || down ? null : { configured: true, events: WANTED.filter((e) => !state.missing.includes(e)), missingEvents: state.missing }, wantedEvents: WANTED,
+        webhook: down ? null : { configured: state.webhook !== "missing" && state.webhook !== "fail", events: WANTED.filter((e) => !state.missing.includes(e)), missingEvents: state.missing, ...health() }, wantedEvents: WANTED,
+        ...(down ? {} : { webhookHealth: health() }),
       };
     }
     if (path === "/session/qr") { if (state.status !== "SCAN_QR_CODE") throw fail(409, "not_scanning", "WhatsApp is not waiting for a scan right now."); qrN++; return { value: qrValue() }; }
@@ -62,7 +81,20 @@ const client = {
     if (path === "/session/start" || path === "/session/restart") { await sleep(200); set("STARTING"); return { ok: true }; }
     if (path === "/session/stop") { set("STOPPED"); return { ok: true }; }
     if (path === "/session/logout") { set("SCAN_QR_CODE"); return { ok: true }; }
-    if (path === "/session/webhook-events") { const added = state.missing; state.missing = []; return { ok: true, added }; }
+    if (path === "/session/webhook-repair") {
+      await sleep(150);
+      state.repaired = new Date().toISOString();
+      if (state.webhook === "fail" || state.webhook === "address" || state.webhook === "old") return { ...health(), repaired: false };
+      const repaired = state.webhook !== "ok";
+      state.webhook = "ok"; state.missing = [];
+      if (repaired) { set("STARTING"); setTimeout(() => set("WORKING"), 400); }
+      return { ...health(), repaired };
+    }
+    if (path === "/notify/settings") {
+      if (init?.method === "POST") state.notify = (init.body as { enabled?: boolean }).enabled ? "on" : "off";
+      return { supported: state.notify !== "none", enabled: state.notify !== "off" };
+    }
+    if (path === "/notify/focus" || path === "/chats/acks/refresh") return { ok: true };
     if (path === "/session/screenshot") { if (state.engine !== "WEBJS") throw fail(501, "unsupported", "This WAHA engine does not support that."); return { image: "data:image/png;base64," + PNG }; }
     throw new Error("No such route: " + path);
   },
