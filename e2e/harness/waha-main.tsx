@@ -5,6 +5,7 @@
 //   ?engine=WEBJS|NOWEB|GOWS
 //   ?frame=1               mount inside the app's .workspace-frame (the host styles every input and textarea in there)
 //   ?material=solid|acrylic|mica|vibrancy   data-material on <html>;  ?native=acrylic|mica|vibrancy   data-native-material (translucent window) over a fake desktop backdrop
+//   ?accounts=2|3          several WhatsApp accounts attached (default: one); two more WAHA sessions can always be attached
 //   ?bare=1                do not load the app stylesheet at all: proves the plugin's own stylesheet carries its layout
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -31,7 +32,7 @@ const framed = params.get("frame") === "1";
 if (params.get("bare") !== "1") await import("@/index.css");
 else document.body.style.margin = "0";
 
-const fake = createFake({ state: params.get("state") ?? "ok", engine: params.get("engine") ?? "WEBJS", emit: (name, data) => dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data }) });
+const fake = createFake({ state: params.get("state") ?? "ok", engine: params.get("engine") ?? "WEBJS", accounts: Number(params.get("accounts") ?? 1), emit: (name, data) => dispatchPluginFrame({ type: "plugin", pluginId: "waha", name, data }) });
 const client = { pluginFetch: (_id: string, path: string, init?: { method?: string; body?: unknown }) => fake.fetch(path, init) };
 Object.assign(window, { __calls: fake.calls, __incoming: fake.incoming, __fake: fake });
 

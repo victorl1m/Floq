@@ -57,7 +57,8 @@ const client = {
       await sleep(150); return { code: "WXYZ-1234" };
     }
     if (path === "/session/list") return { current: "default", known: true, sessions: [{ name: "loja", status: "WORKING", account: { name: "Zoe Shop", phone: "5511988880000" } }, { name: "suporte-antigo", status: "STOPPED", account: null }] };
-    if (path === "/session/use") { if (String((init?.body as { name?: string } | undefined)?.name) === "loja") set("WORKING"); return { ok: true }; }
+    // 3.1: "create and connect" is one call ({ name, start: true }); attaching a running session passes start: false.
+    if (path === "/session/use") { const b = init?.body as { name?: string; start?: boolean } | undefined; if (String(b?.name) === "loja") set("WORKING"); else if (b?.start) { await sleep(200); set("STARTING"); } return { ok: true }; }
     if (path === "/session/start" || path === "/session/restart") { await sleep(200); set("STARTING"); return { ok: true }; }
     if (path === "/session/stop") { set("STOPPED"); return { ok: true }; }
     if (path === "/session/logout") { set("SCAN_QR_CODE"); return { ok: true }; }

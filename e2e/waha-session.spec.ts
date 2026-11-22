@@ -97,12 +97,13 @@ for (const theme of ['light', 'dark']) {
         await page.getByLabel(/create a new session/).fill('nova');
         await page.getByRole('button', { name: 'Create and connect' }).click();
         await expect(page.getByRole('heading', { name: 'Starting WhatsApp' })).toBeVisible();
-        expect((await calls(page, '/session/use')).map((c) => c.body)).toEqual([{ name: 'nova' }]);
-        expect((await calls(page, '/session/start')).length).toBe(1);
+        expect((await calls(page, '/session/use')).map((c) => c.body)).toEqual([{ name: 'nova', start: true }]);
+        expect((await calls(page, '/session/start')).length).toBe(0);
         await page.evaluate(() => (window as unknown as { __set: (s: string) => void }).__set('MISSING'));
         await page.getByRole('button', { name: /loja/ }).click();
         await expect.poll(async () => (await calls(page, '/session/use')).length).toBe(2);
-        expect((await calls(page, '/session/start')).length).toBe(1);
+        expect((await calls(page, '/session/use'))[1].body).toEqual({ name: 'loja', start: false });
+        expect((await calls(page, '/session/start')).length).toBe(0);
       });
 
       test('Connect WhatsApp creates the session, then the QR appears and the screen hands over when WORKING', async ({ page }) => {

@@ -1,7 +1,10 @@
 // A fake of the WAHA plugin's routes for the browser harness: enough state to click through the whole inbox. Mirrors the response shapes of
 // floq-plugin-waha/runtime (inbox.ts, messages.ts and the session / chats / contacts / groups / labels / status / channels / calls / presence modules).
 type Json = Record<string, unknown>;
-interface Opts { state: string; engine: string; emit: (name: string, data: unknown) => void }
+interface Opts { state: string; engine: string; emit: (name: string, data: unknown) => void; /** Attached accounts to start with (1-3). */ accounts?: number }
+interface Call { path: string; method: string; body?: unknown; session?: string }
+/** One account of the fake: who it is, and which chats it starts with ("full" = the big demo inbox, "small" = a few plain chats, "none" = nothing yet). */
+interface Profile { session: string; name: string; phone: string; chats: "full" | "small" | "none"; calls: Call[] }
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const now = Date.now();
@@ -50,7 +53,7 @@ function tone(seconds: number): string {
 }
 const PDF = btoa("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
 
-export function createFake({ state, engine, emit }: Opts) {
+function createOne({ state, engine, emit }: Opts, profile: Profile) {
   const marina = from(MARINA, "Marina Costa");
   const m1 = msg(false, "Oi! Chegaram as canecas personalizadas?", at(1, 16, 2), marina);
   const m2 = msg(true, "Chegaram sim, ficaram *lindas* 😍", at(1, 16, 5));
@@ -118,6 +121,16 @@ export function createFake({ state, engine, emit }: Opts) {
     { chatId: "5561955554444@c.us", kind: "user", name: "Helena Prado", phone: "5561955554444", unread: 0, last: msg(false, "Obrigada pelo atendimento!", at(75, 18, 2)), archived: true },
     { chatId: "5571944443322@c.us", kind: "user", name: "Fornecedor Antigo", phone: "5571944443322", unread: 0, last: msg(false, "Tabela 2024 em anexo", at(120, 11, 0), { type: "document", media: media("application/pdf", "tabela.pdf") }), archived: true },
   ];
+  if (profile.chats !== "full") {
+    for (const id of Object.keys(messages)) delete messages[id];
+    base.length = 0;
+    if (profile.chats === "small") base.push(
+      { chatId: "5534991112233@c.us", kind: "user", name: "Clínica Bem Viver", phone: "5534991112233", unread: 2, last: msg(false, "Sua consulta está confirmada para quinta, 14h.", ago(12 * MIN)) },
+      { chatId: "120363048888888888@g.us", kind: "group", name: "Família", phone: null, unread: 1, last: msg(false, "Almoço de domingo aqui em casa!", ago(50 * MIN), { senderName: "Mãe" }) },
+      { chatId: "5534995556677@c.us", kind: "user", name: "João Pedro", phone: "5534995556677", unread: 0, last: msg(true, "Combinado, te ligo amanhã", at(1, 19, 30), { ack: 3 }) },
+      { chatId: "5511940028922@c.us", kind: "user", name: null, phone: "5511940028922", unread: 0, last: msg(false, "Seu código de retirada é 4471", at(3, 10, 5)) },
+    );
+  }
   const state_ = new Map(base.map((c) => [c.chatId, { unread: c.unread, archived: c.archived === true, pinned: c.pinned === true, muted: c.muted === true, markedUnread: false, hidden: false }]));
   const extra = new Map(base.filter((c) => c.last).map((c) => [c.chatId, [c.last!]]));
   const log = (id: string) => (messages[id] ??= extra.get(id) ?? []);
@@ -132,7 +145,8 @@ export function createFake({ state, engine, emit }: Opts) {
   };
   const chats = (archived: boolean) => base.filter((c) => !state_.get(c.chatId)!.hidden && state_.get(c.chatId)!.archived === archived).map(row).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastAt.localeCompare(a.lastAt));
   const uploads = new Map<string, { mime: string; filename: string; data: string }>();
-  const calls: Array<{ path: string; method: string; body?: unknown }> = [];
+  const calls = profile.calls;
+  const me = { name: profile.name, phone: profile.phone };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const fail = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
   let session = state === "qr" ? "SCAN_QR_CODE" : state === "stopped" ? "STOPPED" : state === "failed" ? "FAILED" : "WORKING";
@@ -148,12 +162,12 @@ export function createFake({ state, engine, emit }: Opts) {
   async function fetch(pathAndQuery: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
     const [path, qs] = pathAndQuery.split("?"), query = new URLSearchParams(qs ?? ""), method = init?.method ?? "GET";
     const body = (init?.body ?? {}) as Record<string, any>;
-    calls.push({ path: pathAndQuery, method, body: init?.body });
+    calls.push({ path: pathAndQuery, method, body: init?.body, session: profile.session });
     await sleep(10);
     const ok = { ok: true };
     switch (path) {
-      case "/status": return state === "unconfigured" ? { configured: false, missingSettings: ["baseUrl"], missingSecrets: ["WAHA_API_KEY"], session: "default" } : { configured: true, missingSettings: [], missingSecrets: [], session: "default", engine, features, me: { name: "Victor", phone: "5534988880000" } };
-      case "/session": return { status: session, engine, me: session === "WORKING" ? { name: "Victor", phone: "5534988880000" } : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" ? ["message.ack", "message.reaction"] : [] } };
+      case "/status": return state === "unconfigured" ? { configured: false, missingSettings: ["baseUrl"], missingSecrets: ["WAHA_API_KEY"], session: "default" } : { configured: true, missingSettings: [], missingSecrets: [], session: "default", engine, features, me: me.name ? me : null };
+      case "/session": return { status: session, engine, me: session === "WORKING" ? me.name ? me : null : null, webhook: { configured: true, events: ["message.any"], missingEvents: state === "webhook" ? ["message.ack", "message.reaction"] : [] } };
       case "/session/qr": if (session !== "SCAN_QR_CODE") throw fail(409, "not_scanning", "Not waiting for a scan."); return { value: "2@Zl3fakeQRvalueForTheHarness1234567890abcdefghijklmnopqrstuvwxyz,AbCdEfGh1234567890==,ZyXwVu9876543210==,QwErTy==" };
       case "/session/pair-code": await sleep(200); return { code: "K7QM-2XWP" };
       case "/session/start": case "/session/restart": session = "SCAN_QR_CODE"; emit("session", { status: session }); return { status: session };
@@ -164,7 +178,7 @@ export function createFake({ state, engine, emit }: Opts) {
         if (state === "loading") await new Promise(() => undefined);
         if (state === "error") throw new Error("WAHA did not answer. Check that your instance is running.");
         if (state === "empty") return { chats: [], archivedCount: 0, me: null };
-        return { chats: chats(query.get("archived") === "1"), archivedCount: chats(true).length, me: { name: "Victor", phone: "5534988880000" } };
+        return { chats: chats(query.get("archived") === "1"), archivedCount: chats(true).length, me: me.name ? me : null };
       }
       case "/messages": {
         const id = query.get("chatId") ?? "", q = (query.get("q") ?? "").toLowerCase(), before = query.get("before"), limit = Number(query.get("limit") ?? 50);
@@ -272,7 +286,9 @@ export function createFake({ state, engine, emit }: Opts) {
   }
 
   return {
-    fetch, calls,
+    fetch, calls, me,
+    status: () => session,
+    unread: () => chats(false).filter((c) => c.unread > 0 && !c.muted).length,
     /** Simulates an incoming message event from the plugin runtime. */
     incoming(chatId: string, body: string, sender = chatId, senderName = "", extra: Partial<Msg> = {}) {
       log(chatId).push(msg(false, body, new Date().toISOString(), { sender, senderName, ...extra }));
@@ -283,5 +299,88 @@ export function createFake({ state, engine, emit }: Opts) {
     setSession(status: string) { session = status; emit("session", { status }); },
     call(video = false) { emit("call", { id: "call-1", chatId: MARINA, name: "Marina Costa", video, status: "ringing" }); },
     presence(chatId: string, state: string) { emit("presence", { chatId, state, lastSeen: null }); },
+  };
+}
+
+/**
+ * The fake of the whole plugin: one inbox per attached account (routes are answered for the `session` they name, the first account when they name
+ * none), the accounts routes, and a fake WAHA with two more sessions that can be attached. Events carry their session like the runtime's.
+ */
+export function createFake(opts: Opts) {
+  const calls: Call[] = [];
+  const fail = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
+  interface Entry { session: string; label: string; inbox: ReturnType<typeof createOne> }
+  const make = (session: string, name: string, phone: string, chats: Profile["chats"], state = opts.state, label = ""): Entry =>
+    ({ session, label, inbox: createOne({ ...opts, state, emit: (n, d) => opts.emit(n, { ...(d as object), session }) }, { session, name, phone, chats, calls }) });
+  const list: Entry[] = [make("default", "Victor", "5534988880000", "full")];
+  if ((opts.accounts ?? 1) >= 2) list.push(make("lucy", "SolutionsLucy", "5534988110779", "small", "ok"));
+  if ((opts.accounts ?? 1) >= 3) list.push(make("loja", "Zoe Personalizações", "5511987654321", "small", "stopped", "Loja"));
+  // Sessions that exist in WAHA but are not accounts of the inbox yet.
+  const waha = [
+    { name: "suporte", status: "WORKING", engine: "NOWEB", account: { name: "Suporte Zoe", phone: "5531977776666" } },
+    { name: "testes", status: "STOPPED", engine: "WEBJS", account: null as { name: string; phone: string } | null },
+  ];
+  const view = () => list.map((e, i) => ({ session: e.session, label: e.label, name: e.inbox.me.name, phone: e.inbox.me.phone || null, primary: i === 0, status: e.inbox.status(), engine: opts.engine, unread: opts.state === "ok" || i > 0 ? e.inbox.unread() : 0 }));
+  const changed = () => opts.emit("accounts", {});
+
+  async function fetch(pathAndQuery: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
+    const [path, qs] = pathAndQuery.split("?"), query = new URLSearchParams(qs ?? ""), body = (init?.body ?? {}) as Record<string, any>;
+    const named = query.get("session") ?? (typeof body.session === "string" ? body.session : "");
+    query.delete("session");
+    const rest = path + (query.size ? "?" + query : "");
+    const entry = named ? list.find((e) => e.session === named) : list[0];
+    if (named && !entry) throw fail(404, "unknown_account", "That WhatsApp account is not attached to Floq.");
+    if (path.startsWith("/accounts")) {
+      calls.push({ path: rest, method: init?.method ?? "GET", body: init?.body, session: named });
+      await new Promise((r) => setTimeout(r, 10));
+      switch (path) {
+        case "/accounts": return { accounts: view(), primary: list[0]?.session ?? null };
+        case "/accounts/available": return { sessions: waha.filter((w) => !list.some((e) => e.session === w.name)) };
+        case "/accounts/attach": {
+          const w = waha.find((x) => x.name === body.name);
+          if (!w) throw fail(404, "unknown_session", `WAHA has no session called "${body.name}".`);
+          await new Promise((r) => setTimeout(r, 250));
+          list.push(make(w.name, w.account?.name ?? "", w.account?.phone ?? "", w.account ? "small" : "none", w.status === "WORKING" ? "ok" : "stopped"));
+          changed();
+          return { ok: true, session: w.name, status: w.status, webhook: "added" };
+        }
+        case "/accounts/create": {
+          if (String(body.label).includes("#fail")) throw fail(502, "waha_unavailable", "WAHA answered 422: Only one session is available in WAHA Core.");
+          await new Promise((r) => setTimeout(r, 250));
+          const session = `floq-${list.length + 1}`;
+          list.push(make(session, "", "", "none", "qr", String(body.label ?? "")));
+          changed();
+          return { ok: true, session, webhook: "added" };
+        }
+        case "/accounts/update": {
+          if (typeof body.label === "string") entry!.label = body.label;
+          if (body.primary === true) { list.splice(list.indexOf(entry!), 1); list.unshift(entry!); }
+          changed();
+          return { ok: true };
+        }
+        case "/accounts/remove": { list.splice(list.indexOf(entry!), 1); changed(); return { ok: true, discarded: body.discard === true, deletedData: body.deleteData === true || body.discard === true }; }
+      }
+      throw fail(404, "not_found", "No such route: " + path);
+    }
+    if (!entry) {
+      if (path === "/status") return { configured: opts.state !== "unconfigured", missingSettings: [], missingSecrets: [], session: "", accounts: 0 };
+      throw fail(409, "no_account", "No WhatsApp account is attached.");
+    }
+    const out = await entry.inbox.fetch(rest, init);
+    return path === "/status" ? { ...(out as object), session: entry.session, accounts: list.length } : out;
+  }
+  const first = () => list[0].inbox;
+  return {
+    fetch, calls,
+    incoming: (...a: Parameters<ReturnType<typeof createOne>["incoming"]>) => first().incoming(...a),
+    emit: opts.emit,
+    setSession: (status: string) => first().setSession(status),
+    call: (video = false) => first().call(video),
+    presence: (chatId: string, state: string) => first().presence(chatId, state),
+    /** One account's inbox, for events of that account: __fake.of("lucy").incoming(...). */
+    of: (session: string) => list.find((e) => e.session === session)!.inbox,
+    /** The phone of a session that waits for a scan is linked: it becomes a working account. */
+    link(session: string, name = "Ateliê Zoe", phone = "5534977778888") { const e = list.find((x) => x.session === session)!; e.inbox.me.name = name; e.inbox.me.phone = phone; e.inbox.setSession("WORKING"); changed(); },
+    sessions: () => list.map((e) => e.session),
   };
 }
