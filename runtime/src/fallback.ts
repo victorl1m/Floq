@@ -769,6 +769,9 @@ export class FallbackService {
     if (state.current.kind === "paused") {
       if (this.host.isLive(id, userId)) {
         await this.pool.query("UPDATE agent_sessions SET model = $3, fallback_state = NULL WHERE id = $1 AND user_id = $2", [id, userId, originModel]);
+        // A live CLI may be sitting in its own "continuing automatically at <time>" wait, which ignores a reset that came early: the typed
+        // notice cancels that wait (Esc first, see typeMessage) so the agent continues now. Fire and forget, like notifyParent.
+        void this.host.notifyParent(userId, id, "[Floq] Your usage limit reset. Continue the task you were working on.").catch(() => undefined);
         return;
       }
       // Wake first, clear after: a resume that fails keeps the state and tries again later, it never strands the agent.

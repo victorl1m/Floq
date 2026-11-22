@@ -57,7 +57,7 @@ import type { ShardService } from "./shards.js";
 import type { Vault } from "./vault.js";
 import type { RuntimeProfile } from "./settings.js";
 import { PROVIDER_IDS, type CreateSessionInput, type ProviderId, type RuntimeProject, type ProjectWorkspace, type SessionState, type SessionSummary } from "./types.js";
-import { serialPerTarget, typeMessage } from "./messageDelivery.js";
+import { screenOf, serialPerTarget, typeMessage } from "./messageDelivery.js";
 import { AgySwarmMirror } from "./agySwarmMirror.js";
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[\w.@:/~+-]+$/;
@@ -732,7 +732,7 @@ export class SessionManager {
   async typeNotice(userId: string, id: string, text: string): Promise<boolean> {
     const session = this.live.get(id);
     if (!session || session.userId !== userId || !session.isAlive || session.provider === "shell" || this.logins.has(id)) return false;
-    await serialPerTarget(id, () => typeMessage((d) => session.write(d), text, { bracketed: bracketedProvider(session.provider), trusted: true }));
+    await serialPerTarget(id, () => typeMessage((d) => session.write(d), text, { screen: screenOf(session), bracketed: bracketedProvider(session.provider), trusted: true }));
     return true;
   }
 
@@ -2001,7 +2001,7 @@ export class SessionManager {
     if (!session || session.userId !== userId || !session.isAlive) return false;
     const name = found.agent.name.replace(/[^\w.-]/g, "_").slice(0, 80);
     const body = "Please relay to @" + name + " via the swarm board: " + text.replace(/\s+/g, " ").trim().slice(0, 2000);
-    await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), body, { bracketed: bracketedProvider(session.provider), trusted: false }));
+    await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), body, { screen: screenOf(session), bracketed: bracketedProvider(session.provider), trusted: false }));
     return true;
   }
 
@@ -3277,7 +3277,7 @@ export class SessionManager {
     const text = buildWiredNotice(added, removed, block, updated);
     if (!text) return false;
     try {
-      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { bracketed: bracketedProvider(live.provider) }));
+      await serialPerTarget(sessionId, () => typeMessage((d) => live.write(d), text, { screen: screenOf(live), bracketed: bracketedProvider(live.provider) }));
       return true;
     } catch { return false; }
   }
@@ -3419,7 +3419,7 @@ export class SessionManager {
       if (notice !== undefined) {
         this.bootNotices?.delete(session.id);
         if (session.isAlive && session.provider !== "shell") {
-          await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), notice, { bracketed: bracketedProvider(session.provider), trusted: true }));
+          await serialPerTarget(session.id, () => typeMessage((d) => session.write(d), notice, { screen: screenOf(session), bracketed: bracketedProvider(session.provider), trusted: true }));
         }
       }
     } catch (error) {

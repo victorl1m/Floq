@@ -11,7 +11,7 @@ import type { AgentLinks } from "./links.js";
 import { CrossProjectGuard, buildProvenance, buildReplyHint } from "./crossProject.js";
 import { log } from "./logger.js";
 import { neutralizeApprovalMarker } from "./approvalText.js";
-import { AgentOutbox, MessageInbox, OUTBOX_APPROVAL_MAX_AGE_MS, OUTBOX_MESSAGE_MAX_AGE_MS, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, sha256Prefix, typeMessage } from "./messageDelivery.js";
+import { AgentOutbox, MessageInbox, OUTBOX_APPROVAL_MAX_AGE_MS, OUTBOX_MESSAGE_MAX_AGE_MS, bracketedPasteState, inboxPointer, needsInbox, serialPerTarget, screenOf, sha256Prefix, typeMessage } from "./messageDelivery.js";
 import type { ProviderId, SessionSummary } from "./types.js";
 import { parseRecruitSkills } from "./recruitSkills.js";
 import { descendantsOf } from "./subagents.js";
@@ -173,7 +173,7 @@ export class Orchestrator {
       for (const row of rows) {
         try {
           await this.outbox.attempt(row.id);
-          await typeMessage((d) => live.write(d), row.text, { bracketed: this.bracketed(live), trusted: row.kind === "approval" });
+          await typeMessage((d) => live.write(d), row.text, { screen: screenOf(live), bracketed: this.bracketed(live), trusted: row.kind === "approval" });
           await this.outbox.markDelivered(row.id);
           delivered.push(row.id);
         } catch (error) {

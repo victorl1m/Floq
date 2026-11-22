@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
 import { badRequest, notFound } from "./errors.js";
 import { neutralizeApprovalMarker } from "./approvalText.js";
+import { stripAnsiText } from "./limitText.js";
 
 /**
  * Delivery of agent-to-agent messages into a target TUI, and the recipient inbox that holds long bodies.
@@ -67,9 +68,40 @@ export function bracketedPasteState(output: string): boolean | undefined {
   return on > off;
 }
 
+/** Pause after the Esc that cancels the CLI's limit wait, before the message is typed. */
+export const CANCEL_WAIT_DELAY_MS = 600;
+
+/** The last `max` characters of a session's output buffer (chunks are newest last). */
+export function recentOutput(chunks: { data: string }[], max = 6_000): string {
+  let out = "";
+  for (let i = chunks.length - 1; i >= 0 && out.length < max; i--) out = chunks[i].data + out;
+  return out.slice(-max);
+}
+
+/**
+ * Claude Code is sitting in its own "Usage limit reached · continuing automatically at <time> · esc to cancel" wait: the banner is the
+ * last thing it drew. Text typed now only queues behind that wait until the clock time, even when the limit was already cleared (a usage
+ * reset), so the CLI needs an Esc first. Strict on purpose: an Esc during a running turn would interrupt it.
+ */
+export function waitingOnLimit(output: string): boolean {
+  const text = stripAnsiText(output).replace(/\s+/g, " ");
+  const i = text.toLowerCase().lastIndexOf("continuing automatically at");
+  if (i < 0) return false;
+  const rest = text.slice(i);
+  return /esc to cancel/i.test(rest) && rest.length < 160;
+}
+
+/** Recent output of a live Claude session for `TypeOptions.screen`; undefined for other providers or when the buffer cannot be read. */
+export function screenOf(session: { provider?: string; replaySince(since: number): { chunks: { data: string }[] } }): string | undefined {
+  if (session.provider !== "claude") return undefined;
+  try { return recentOutput(session.replaySince(0).chunks); } catch { return undefined; }
+}
+
 export interface TypeOptions {
   /** Wrap text above PLAIN_WRITE_MAX in bracketed paste markers. */
   bracketed: boolean;
+  /** Recent terminal output: when it shows the CLI's limit wait, an Esc is sent first so the message is acted on now (see waitingOnLimit). */
+  screen?: string;
   sleep?: (ms: number) => Promise<void>;
   /**
    * Only the runtime's own approval line (typed after the USER decided in the app) is trusted. Everything else has
@@ -97,6 +129,10 @@ export function serialPerTarget<T>(key: string, job: () => Promise<T>): Promise<
 export async function typeMessage(write: (data: string) => void, text: string, options: TypeOptions): Promise<void> {
   const sleep = options.sleep ?? wait;
   const safe = options.trusted ? sanitizeForTerminal(text) : neutralizeApprovalMarker(sanitizeForTerminal(text));
+  if (options.screen && waitingOnLimit(options.screen)) {
+    write("\u001b");
+    await sleep(CANCEL_WAIT_DELAY_MS);
+  }
   if (safe.length <= PLAIN_WRITE_MAX) {
     write(safe);
   } else {
