@@ -118,6 +118,12 @@ The runtime (`runtime/`) ships a Dockerfile and a Docker Compose file with the r
 
 Before building the image, sync the bundled orchestration skill (PowerShell, from `runtime/`): `powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/sync-floq-orchestrate-skill.ps1`.
 
+### WhatsApp (Settings > Integrations)
+
+WhatsApp is part of Floq: an inbox in the sidebar (several accounts, chats with their history, media, voice notes, reactions, groups, login by QR code) that agents can read, with free messages to your own number and your approval for anything sent to other people. An administrator sets it up in **Settings > Integrations > WhatsApp**. The card only offers the switch when a WhatsApp (WAHA) server exists: the one compose runs beside the runtime (next section), or a WAHA server of your own that you connect there with its address and API key (Floq tests them before saving). Without a server the card explains both ways. With one it shows the switch, the connection, the linked accounts, whether WhatsApp's events reach Floq (with a repair button), the settings (your own number, what the AI may send, history limits) and **Open WhatsApp**. Incoming messages also show on the island with an inline reply.
+
+WhatsApp used to be the catalog plugin `waha` (`victorl1m/floq-plugin-waha`). That plugin is deprecated: a runtime with the built-in integration adopts an installed copy by itself on its first start (chats, accounts, settings, API key and webhook address stay as they are, the installed package is removed), and Settings > Plugins no longer lists or offers it. Details: [`runtime/README.md`](runtime/README.md#whatsapp-integration).
+
 ### WhatsApp server (optional)
 
 Floq's WhatsApp integration talks to a [WAHA](https://github.com/devlikeapro/waha) server. The compose file can run one for you: set `COMPOSE_PROFILES=whatsapp` and `FLOQ_WHATSAPP_API_KEY` (`openssl rand -hex 32`), deploy, and scan the QR code in the app. Floq wires the address, the key and the webhook by itself, keeps the server on the newest stable release (Settings > Updates, automatic by default, with rollback) and keeps its sessions across updates and redeploys. It is WAHA Core (Apache-2.0), the official image in its own container: one WhatsApp account per server, media kept locally. You can point the integration at your own WAHA instead. WAHA is an unofficial WhatsApp client: numbers used for spam or bulk messages can be banned. Details: [`runtime/README.md`](runtime/README.md#built-in-whatsapp-server-optional).
