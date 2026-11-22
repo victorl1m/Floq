@@ -154,3 +154,26 @@ for (const theme of ['light', 'dark']) {
     });
   }
 }
+
+test('a hovered chat row shrinks its preview so the menu button never covers text', async ({ page }) => {
+  await open(page, q('dark', 'material=acrylic&native=acrylic'));
+  const wrap = page.locator('.wa-rowwrap', { hasText: 'Unknown contact' });
+  await wrap.hover();
+  const menu = wrap.locator('.wa-rowmenu');
+  await expect(menu).toBeVisible();
+  const [m, p] = await Promise.all([menu.boundingBox(), wrap.locator('.wa-line').last().locator('.wa-preview').boundingBox()]);
+  expect(p!.x + p!.width).toBeLessThanOrEqual(m!.x);
+  const pill = wrap.locator('.wa-pill');
+  if (await pill.count()) { const b = (await pill.boundingBox())!; expect(b.x + b.width).toBeLessThanOrEqual(m!.x); }
+});
+
+for (const theme of ['dark', 'light']) {
+  test(`empty conversation: welcome text sits on a solid card over the faint canvas dots (${theme})`, async ({ page }) => {
+    await open(page, q(theme, 'material=acrylic&native=acrylic'));
+    const hello = page.locator('.wa-hello');
+    await expect(hello).toBeVisible();
+    const bg = await hello.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+    if (shots) { mkdirSync(shots, { recursive: true }); await page.mouse.move(0, 0); await page.waitForTimeout(350); await page.screenshot({ path: path.join(shots, `waha-readable-empty-${theme}.png`) }); }
+  });
+}
