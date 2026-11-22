@@ -396,6 +396,7 @@ test("review 5: an unknown usage window is not 'reset': one short retry, then th
   const h = harness({ transcript: jl(limit(fiveHour, "seven_day_opus", "e1")) }); // usage returns null
   await h.svc.evaluate("a1", "u1");
   h.calls.length = 0;
+  h.advance(400 * 24 * 3600_000); // past the reported reset: this is the at-reset path
   const onReset = (n: number) => (h.svc as unknown as { onReset(id: string, userId: string, attempt: number): Promise<void> }).onReset("a1", "u1", n);
   await onReset(0);
   assert.deepEqual(h.calls, [], "first look: unknown, wait");
@@ -1044,5 +1045,36 @@ test("chain walk: the first reserve is also exhausted, the second is used; termi
   assert.deepEqual(a.st.switches, ["acct_c1c1c1c1"]);
   assert.ok(h.calls.some((c) => c.startsWith("restart")), "process restarted so the CLI's own wait is gone");
   assert.ok(h.notices.some((n) => n.includes("Continue the task")), "automatic continue turn queued");
+  h.svc.stop();
+});
+
+test("a limit cleared before its reset time (usage reset) resumes the agent at the next check, not at the reported reset", async () => {
+  const h = harness({ transcript: jl(limit(fiveHour, "seven_day_opus", "e1")), usedPercent: 100 });
+  await h.svc.evaluate("a1", "u1");
+  h.calls.length = 0;
+  const onReset = (n: number) => (h.svc as unknown as { onReset(id: string, userId: string, attempt: number): Promise<void> }).onReset("a1", "u1", n);
+  const reset = Date.parse(h.row.fallback_state!.resetsAt!);
+  const timers = (h.svc as unknown as { timers: Map<string, unknown> }).timers;
+  // Still full before the reset: nothing changes, and a check stays armed.
+  await onReset(0);
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.row.model, "sonnet");
+  assert.ok(timers.has("a1"), "keeps checking early");
+  assert.ok(Date.now() < reset, "the fixture's reset is still ahead");
+  // The user resets their usage: the next early check sees room and restores right away.
+  (h.svc as unknown as { usage: { claudeWindow: () => Promise<unknown> } }).usage.claudeWindow = async () => ({ usedPercent: 3, resetsAt: new Date(reset).toISOString() });
+  await onReset(0);
+  assert.equal(h.row.model, "opus");
+  h.svc.stop();
+});
+
+test("before the reset, an unknown usage window keeps checking without using up the retries", async () => {
+  const h = harness({ transcript: jl(limit(fiveHour, "seven_day_opus", "e1")) }); // usage returns null
+  await h.svc.evaluate("a1", "u1");
+  h.calls.length = 0;
+  const onReset = (n: number) => (h.svc as unknown as { onReset(id: string, userId: string, attempt: number): Promise<void> }).onReset("a1", "u1", n);
+  for (let i = 0; i < 5; i++) await onReset(0);
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.row.model, "sonnet");
   h.svc.stop();
 });

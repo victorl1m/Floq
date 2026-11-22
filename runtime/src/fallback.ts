@@ -198,6 +198,8 @@ const IDLE_POLL_MS = 30_000;
 const IDLE_QUIET_MS = 20_000;
 const IDLE_GIVE_UP_MS = 24 * 3_600_000;
 const UNKNOWN_RETRY_MS = 5 * 60_000;
+/** Before the reset time, look at the real usage this often: a limit cleared early (usage reset, plan change, extra usage) resumes agents within minutes, not at the reported reset. */
+const EARLY_CHECK_MS = 3 * 60_000;
 const ACCOUNT_RECHECK_MS = 30 * 60_000;
 
 /** What the service needs from the session manager (kept narrow so tests can fake it). */
@@ -656,7 +658,7 @@ export class FallbackService {
     const at = resetsAt ? Date.parse(resetsAt) : NaN;
     const jitter = (this.random() * 2 - 1) * RESET_JITTER_MS;
     const delay = Number.isFinite(at) ? Math.max(1_000, at - this.now() + RESET_GRACE_MS + jitter) : 15 * 60_000;
-    this.arm(id, userId, delay, 0);
+    this.arm(id, userId, Math.min(delay, EARLY_CHECK_MS), 0);
   }
 
   private arm(id: string, userId: string, delay: number, attempt: number): void {
@@ -680,6 +682,17 @@ export class FallbackService {
     // The account that was blocked decides the reset (it may not be the active one after an account switch).
     const slotWindows = state.scope.slot && this.accounts && state.scope.slot !== (await this.accounts.activeSlot(userId)) ? await this.accounts.usageOf(userId, state.scope.slot).catch(() => null) : null;
     const w = slotWindows ? slotWindows.find((x) => x.id === state.scope.window) ?? null : await this.usage?.claudeWindow(userId, state.scope.window).catch(() => null);
+    // Before the reported reset only real usage decides: still full or unknown -> look again in a few minutes (attempts are not used up);
+    // known and no longer full -> the limit was cleared early (usage reset, extra usage): resume now instead of sleeping until the clock says so.
+    const resetAt = state.resetsAt ? Date.parse(state.resetsAt) : NaN;
+    const untilReset = Number.isFinite(resetAt) ? resetAt + RESET_GRACE_MS - this.now() : NaN;
+    if (untilReset > 1_000) {
+      const blocked = !w || (w.usedPercent >= 100 && (!w.resetsAt || Date.parse(w.resetsAt) > this.now()));
+      if (blocked) { this.arm(id, userId, Math.min(EARLY_CHECK_MS, untilReset), attempt); return; }
+      log.info("fallback.early_reset", { sessionId: id, window: state.scope.window });
+      await this.restore(id, userId, { force: false });
+      return;
+    }
     // Known and still full: stay on the fallback and look again later.
     if (w && w.usedPercent >= 100 && (!w.resetsAt || Date.parse(w.resetsAt) > this.now())) {
       const next = RETRY_STILL_BLOCKED_MS[attempt];
