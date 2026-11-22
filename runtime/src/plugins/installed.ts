@@ -68,13 +68,24 @@ export const uiMeta = (ui: string | null, sha: (t: string) => string) => (ui ? {
  * Boot: registers every installed package with the host. A package whose code is missing, broken or does not match its manifest
  * becomes an `invalid` entry with the reason; the runtime and the other plugins carry on.
  */
-export async function loadInstalledPackages(pool: Pick<pg.Pool, "query">, host: PluginHost, pluginDir: string, sha: (t: string) => string): Promise<{ loaded: string[]; broken: string[] }> {
+export async function loadInstalledPackages(pool: Pick<pg.Pool, "query">, host: PluginHost, pluginDir: string, sha: (t: string) => string): Promise<{ loaded: string[]; broken: string[]; superseded?: string[] }> {
   const rows = (await pool.query("SELECT id, version, sha256, manifest, runtime, ui, skills FROM floq_plugin_packages ORDER BY id")).rows as Record<string, unknown>[];
-  const loaded: string[] = [], broken: string[] = [];
+  const loaded: string[] = [], broken: string[] = [], superseded: string[] = [];
   for (const r of rows) {
     const row = rowToPackage(r);
+    // A catalog plugin that became part of Floq (WhatsApp, id "waha"): the built-in takes over under the same id, so the plugin's schema,
+    // settings, credentials, webhook tokens, migration ledger and on/off state (all keyed by the id) are adopted in place. The package and its
+    // cached code are removed and never imported, so the deprecated plugin and the built-in can never both consume the same webhooks.
+    if (host.isBuiltin(row.id)) {
+      try {
+        await pool.query("DELETE FROM floq_plugin_packages WHERE id = $1", [row.id]);
+        removeCache(pluginDir, row.id);
+        superseded.push(row.id);
+        log.info("plugin.package_superseded", { plugin: row.id, version: row.version });
+      } catch (error) { log.warn("plugin.package_supersede_failed", { plugin: row.id, error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }); }
+      continue;
+    }
     try {
-      if (host.isBuiltin(row.id)) throw new PackageError("this id belongs to a built-in plugin");
       host.addInstalled(await loadDefinition(row, pluginDir), uiMeta(row.ui, sha));
       loaded.push(row.id);
     } catch (error) {
@@ -83,5 +94,5 @@ export async function loadInstalledPackages(pool: Pick<pg.Pool, "query">, host: 
       log.warn("plugin.package_load_failed", { plugin: row.id, error: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
     }
   }
-  return { loaded, broken };
+  return superseded.length ? { loaded, broken, superseded } : { loaded, broken };
 }
