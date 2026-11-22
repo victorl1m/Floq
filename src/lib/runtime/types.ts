@@ -732,12 +732,16 @@ export interface PluginRepoPreview {
   secrets: string[]; network: string[]; contributes: string[]; sha256: string; size: number; installedVersion: string | null; builtin: boolean;
 }
 export interface PluginUpdateNotice { id: string; name: string; installedVersion: string; availableVersion: string; repo: string | null }
+/** An installed catalog plugin its catalog marks as deprecated; `message` says what replaces it. */
+export interface PluginDeprecation { id: string; message: string }
 
 export interface PluginCatalogItem {
   id: string; name: string; version: string; apiVersion: number; description: string; icon?: string; scope: PluginScope;
   secrets: string[]; network: string[]; contributes: string[]; minFloq?: string;
   /** Optional grouping label from the catalog, and the `owner/repo` the package is released from (for the avatar). */
   category?: string; repo?: string;
+  /** The plugin is no longer developed (the text says what replaces it): not offered for new installs, badged where it is installed. */
+  deprecated?: string;
   /** Built into this runtime: listed, but cannot be installed or removed. */
   builtin: boolean;
   installedVersion: string | null;

@@ -1,4 +1,4 @@
-// Test harness: Settings > Plugins (?section=plugins) or Runtime (?section=runtime) with a stub client for the built-in WhatsApp server.
+// Test harness: Settings > Integrations (?section=integrations) or Runtime (?section=runtime) with a stub client for the built-in WhatsApp server.
 // ?theme=dark ; ?mode=builtin|external ; ?scenario=available|external|busy|login ; window.__calls records calls.
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -48,7 +48,9 @@ const client = {
   listPlugins: async () => plugins,
   pluginUpdates: async () => [],
   getPluginSecretMigrations: async () => [],
-  getPluginSettings: async () => ({ baseUrl: "" }),
+  getPluginSettings: async () => (mode === "external" ? { baseUrl: "https://waha.example.com" } : {}),
+  pluginDeprecations: async () => [],
+  pluginFetch: async (_id: string, path: string) => (path === "/session" ? { status: "WORKING", engine: "NOWEB", me: { name: "Ana", phone: "5511988887777" }, webhook: { configured: true, events: [], missingEvents: [] } } : path === "/accounts" ? { accounts: [], primary: null } : {}),
   getPluginSecrets: async () => [{ name: "WAHA_API_KEY", description: "Key of the WAHA server.", required: false, present: true, updatedAt: null, scope: "install", editable: true }],
   whatsappServer: async () => wa,
   whatsappServerHealth: async () => {
@@ -74,7 +76,7 @@ const client = {
 };
 
 function App() {
-  const value = { client, user: { id: "u1", role: "admin" }, sessions: [], settingsOpen: true, setSettingsOpen: () => {}, settingsSection: q.get("section") ?? "plugins", openSettings: () => {}, navigate: () => {} };
+  const value = { client, user: { id: "u1", role: "admin" }, sessions: [], settingsOpen: true, setSettingsOpen: () => {}, settingsSection: q.get("section") ?? "integrations", openSettings: () => {}, navigate: () => {} };
   return (
     <RuntimeContext.Provider value={value as never}>
       <TooltipProvider><PluginsProvider loaders={{}}><SettingsDialog /></PluginsProvider><Toaster /></TooltipProvider>

@@ -26,7 +26,7 @@ function stateText(s: WhatsappServerStatus["builtin"]): string {
 
 export const WHATSAPP_NOTICE = "WhatsApp is linked through WAHA, an unofficial client. WhatsApp may restrict or ban numbers that send spam or bulk messages. Use it for normal conversations.";
 
-/** Settings > Plugins > WhatsApp > Configure (administrators): the Floq-managed WAHA server this runtime runs for the plugin. */
+/** Settings > Integrations > WhatsApp (administrators): the Floq-managed WAHA server this runtime runs for the plugin. */
 export function WhatsappServerCard() {
     const { client } = useRuntime();
     const isAdmin = useIsAdmin();
@@ -64,7 +64,7 @@ export function WhatsappServerCard() {
             <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">Built-in WhatsApp server</span>
                 <Badge variant={inUse ? "secondary" : "outline"} data-slot="whatsapp-server-use">
-                    {inUse ? "In use" : "Not used: this plugin points at an external WAHA address"}
+                    {inUse ? "In use" : "Not used: WhatsApp points at an external WAHA address"}
                 </Badge>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -79,7 +79,7 @@ export function WhatsappServerCard() {
                     </Button>
                 </span>
             </div>
-            <p className="text-muted-foreground">To use an external WAHA instead, enter its address and API key below; leave the address empty to use the built-in server.</p>
+            <p className="text-muted-foreground">To use an external WAHA instead, choose "Use another server" above; disconnecting it returns to this built-in server.</p>
             <p className="text-muted-foreground">{WHATSAPP_NOTICE}</p>
             <p className="text-muted-foreground">
                 <a className="underline underline-offset-2 hover:text-foreground" href="https://github.com/devlikeapro/waha" target="_blank" rel="noreferrer">Powered by WAHA Core (Apache-2.0)</a>

@@ -20,6 +20,8 @@ export interface CatalogEntry {
   category?: string;
   /** `owner/repo` of the GitHub release the package comes from (derived from `package`, never trusted from the catalog). Used for the repo avatar. */
   repo?: string;
+  /** Optional, from the catalog: the plugin is no longer developed (the text says what replaces it). It is not offered for new installs. */
+  deprecated?: string;
 }
 
 /** `owner/repo` of a package release URL, or undefined. */
@@ -100,7 +102,8 @@ export function parseCatalog(bytes: Buffer): CatalogEntry[] {
     seen.add(id);
     out.push({ id, name: str(p.name, 80) || id, version, apiVersion: 1, description: str(p.description, 500), icon: str(p.icon, 64) || undefined, scope: p.scope === "install" ? "install" : "user",
       secrets: strs(p.secrets, 32, 64), network: strs(p.network, 32, 253), contributes: strs(p.contributes, 16, 32), minFloq: str(p.minFloq, 32) || undefined, package: pkg, sha256: sha,
-      category: str(p.category, 32).trim() || undefined, repo: repoOfPackage(pkg) });
+      category: str(p.category, 32).trim() || undefined, repo: repoOfPackage(pkg),
+      ...(p.deprecated === true ? { deprecated: "This plugin is deprecated." } : str(p.deprecated, 300).trim() ? { deprecated: str(p.deprecated, 300).trim() } : {}) });
   }
   return out;
 }

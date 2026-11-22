@@ -10,11 +10,18 @@ export type CatalogAction = "install" | "update" | "uninstall" | "purge";
 export interface RowState { status: "builtin" | "available" | "installed" | "update"; actions: CatalogAction[] }
 
 /** What an admin can do with a catalog entry. Built-ins can do nothing; "delete data" is for plugins that are not installed any more or are off (the server refuses it while running). */
-export function rowState(item: Pick<PluginCatalogItem, "builtin" | "installedVersion" | "updateAvailable">): RowState {
+export function rowState(item: Pick<PluginCatalogItem, "builtin" | "installedVersion" | "updateAvailable" | "deprecated">): RowState {
   if (item.builtin) return { status: "builtin", actions: [] };
-  if (item.installedVersion === null) return { status: "available", actions: ["install", "purge"] };
+  if (item.installedVersion === null) return { status: "available", actions: item.deprecated ? ["purge"] : ["install", "purge"] };
   return item.updateAvailable ? { status: "update", actions: ["update", "uninstall"] } : { status: "installed", actions: ["uninstall"] };
 }
+
+/**
+ * Whether the explorer lists an entry at all. A deprecated plugin is hidden from new installs (it stays listed, with a badge, where it is
+ * installed, so it can be removed), and so is one that became part of Floq as an integration (`integrationIds`: managed in Settings > Integrations).
+ */
+export const isOffered = (item: Pick<PluginCatalogItem, "id" | "installedVersion" | "deprecated">, integrationIds: readonly string[] = []): boolean =>
+  !integrationIds.includes(item.id) && !(item.deprecated && item.installedVersion === null);
 
 /** The typed confirmation: exact id, nothing else. */
 export const confirmMatches = (typed: string, id: string) => typed.trim() === id;

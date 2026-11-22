@@ -4,13 +4,14 @@ test.use({ viewport: { width: 1100, height: 900 } });
 const SHOTS = '/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f';
 const url = (section: string, extra = '') => `/e2e/harness/waha-builtin.html?section=${section}${extra}`;
 
+// The card lives inside Settings > Integrations > WhatsApp.
 async function openConfig(page: import('@playwright/test').Page) {
-  await page.locator('[data-plugin="waha"]').getByRole('button', { name: /Configure/ }).click();
+  await expect(page.locator('[data-slot="whatsapp-integration"]')).toBeVisible();
   await expect(page.locator('[data-slot="whatsapp-server-card"]')).toBeVisible();
 }
 
 test('status card: running, in use, health check', async ({ page }) => {
-  await page.goto(url('plugins'));
+  await page.goto(url('integrations'));
   await openConfig(page);
   const card = page.locator('[data-slot="whatsapp-server-card"]');
   await expect(card.getByText('Running 2026.10.1, NOWEB')).toBeVisible();
@@ -23,16 +24,16 @@ test('status card: running, in use, health check', async ({ page }) => {
 });
 
 test('status card: health failure is shown', async ({ page }) => {
-  await page.goto(url('plugins', '&health=fail'));
+  await page.goto(url('integrations', '&health=fail'));
   await openConfig(page);
   await page.getByRole('button', { name: 'Check health' }).click();
   await expect(page.getByText('Health check failed: Connection refused')).toBeVisible();
 });
 
 test('status card: plugin uses an external server', async ({ page }) => {
-  await page.goto(url('plugins', '&mode=external&theme=dark'));
+  await page.goto(url('integrations', '&mode=external&theme=dark'));
   await openConfig(page);
-  await expect(page.getByText('Not used: this plugin points at an external WAHA address')).toBeVisible();
+  await expect(page.getByText('Not used: WhatsApp points at an external WAHA address')).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/waha-builtin-external.png` });
 });
 

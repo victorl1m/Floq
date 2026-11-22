@@ -65,6 +65,7 @@ export class PluginInstaller {
     if ((await this.installedVersions()).has(id) || host.isInstalled(id)) throw conflict("This plugin is already installed.", "already_installed");
     try {
       const entry = await this.entry(id);
+      if (entry.deprecated) throw conflict(entry.deprecated, "deprecated");
       const pkg = parsePackage(await catalog.download(entry), entry, { builtinIds: host.builtinIds() });
       const row: PackageRow = fromPackage(pkg);
       await pool.query(
@@ -127,7 +128,7 @@ export class PluginInstaller {
    * Installed plugins with a newer version available: catalog installs from the catalog, repository installs from their repository's newest
    * release. Read-only (the app shows a toast; the admin updates by hand). A source that cannot be reached is skipped, never an error.
    */
-  async updates(): Promise<{ updates: { id: string; name: string; installedVersion: string; availableVersion: string; repo: string | null }[] }> {
+  async updates(): Promise<{ updates: { id: string; name: string; installedVersion: string; availableVersion: string; repo: string | null }[]; deprecated: { id: string; message: string }[] }> {
     const installed = await this.installedVersions();
     const sources = await this.sources();
     const names = new Map<string, string>();
@@ -147,7 +148,9 @@ export class PluginInstaller {
         }
       } catch { /* unreachable source: no notification */ }
     }
-    return { updates: out };
+    // Installed catalog plugins the catalog marks as deprecated (Settings > Plugins shows a badge).
+    const deprecated = entries.filter((e) => e.deprecated && installed.has(e.id) && !sources[e.id]).map((e) => ({ id: e.id, message: e.deprecated! }));
+    return { updates: out, deprecated };
   }
 
   /** `id -> owner/repo` for plugins installed from a repository address (the others came from the catalog). */

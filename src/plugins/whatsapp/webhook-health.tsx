@@ -24,7 +24,7 @@ export function explainWebhook(h: WebhookHealth): string {
     case "missing-events": return `The webhook in WAHA does not send ${n} ${n === 1 ? "event" : "events"} Floq uses (for example ${some}), so some updates, like delivery ticks, do not arrive.`;
     case "stale": return `${h.reason ?? "The webhook in WAHA is out of date."} Floq replaces it and keeps your other webhooks.`;
     default: return /Address WAHA uses/.test(h.reason ?? "")
-      ? "Floq does not know its public address yet, so it cannot set the webhook itself. Set “Address WAHA uses to reach Floq” in the plugin settings, then repair."
+      ? "Floq does not know its public address yet, so it cannot set the webhook itself. Set “Address WAHA uses to reach Floq” in Settings > Integrations > WhatsApp, then repair."
       : h.reason ?? "Floq cannot check the webhook of this session.";
   }
 }

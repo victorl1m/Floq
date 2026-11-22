@@ -243,6 +243,24 @@ test("the catalog lists built-in and installed state with an update flag", async
   assert.deepEqual([by("builtin-one").installedVersion, by("builtin-one").updateAvailable, by("builtin-one").builtin], [null, false, true]);
 });
 
+test("a deprecated catalog plugin cannot be installed anew; where it is installed it is listed as deprecated and can still be removed", async () => {
+  const t = await setup([build({ version: "1.0.0" }), build({ id: "old-one", version: "1.0.0" })]);
+  await t.install(); await t.install("old-one");
+  const notice = "Old One is now part of Floq: Settings > Integrations.";
+  t.publish(build({ id: "old-one", version: "1.0.0" }), { deprecated: notice });
+  t.publish(build({ id: "never-had", version: "1.0.0" }), { deprecated: true });
+  const before = await countRows(t.db);
+  await assert.rejects(t.install("never-had"), (e: any) => e.status === 409 && e.code === "deprecated" && e.message === "This plugin is deprecated.");
+  assert.equal(await countRows(t.db), before);
+  const c = (await t.call("admin", "GET", "/v1/plugins/catalog")).body.plugins;
+  assert.deepEqual(c.map((p: any) => [p.id, p.deprecated ?? null]), [["echo2", null], ["old-one", notice], ["never-had", "This plugin is deprecated."]]);
+  const u = (await t.call("admin", "GET", "/v1/plugins/updates")).body;
+  assert.deepEqual(u.deprecated, [{ id: "old-one", message: notice }]); // only what is installed here
+  assert.deepEqual(u.updates, []);
+  assert.deepEqual((await t.call("admin", "DELETE", "/v1/plugins/old-one?confirm=old-one")).body, { uninstalled: true });
+  assert.deepEqual((await t.call("admin", "GET", "/v1/plugins/updates")).body.deprecated, []);
+});
+
 test("the UI bundle is served only for an enabled, installed plugin, with its sha256", async () => {
   const ui = "export default { views: {} };";
   const t = await setup([build({ version: "1.0.0", ui, manifest: { contributes: { routes: true, migrations: true, views: [{ id: "main", label: "Echo" }] } } }), build({ id: "noui", version: "1.0.0" })]);

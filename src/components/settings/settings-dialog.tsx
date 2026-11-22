@@ -6,6 +6,7 @@ import {
     IconWorldWww,
     IconInfoCircle,
     IconPlug,
+    IconPlugConnected,
     IconCreditCard,
     IconPalette,
     IconGauge,
@@ -35,6 +36,7 @@ import GitSection from "./git-section";
 import RuntimeSection from "./runtime-section";
 import UsersSection from "./users-section";
 import PluginsSection from "./plugins-section";
+import IntegrationsSection from "./integrations-section";
 import DesktopSection from "./desktop-section";
 import { isTauri } from "@tauri-apps/api/core";
 import { useIsAdmin } from "./use-admin";
@@ -51,6 +53,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
             { id: "accounts", label: "LLM Providers", icon: IconCreditCard },
             { id: "appearance", label: "Appearance", icon: IconPalette },
             { id: "performance", label: "Performance", icon: IconGauge },
+            { id: "integrations", label: "Integrations", icon: IconPlugConnected },
             { id: "plugins", label: "Plugins", icon: IconPlug },
         ],
     },
@@ -159,6 +162,7 @@ export default function SettingsDialog() {
     else if (section === "runtime") content = <RuntimeSection />;
     else if (section === "users") content = <UsersSection />;
     else if (section === "plugins") content = <PluginsSection />;
+    else if (section === "integrations") content = <IntegrationsSection />;
     else if (section === "advanced" && settings) content = <AdvancedSection settings={settings} onChange={setSettings} />;
     else content = <AboutSection />;
 

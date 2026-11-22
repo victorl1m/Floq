@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginInfo, PluginSecretMigration, PluginSettingValues, PluginStatus, PluginUpdateNotice } from "@/lib/runtime/types";
+import { isIntegration } from "@/plugins/integrations";
 import { PluginBoundary, usePlugins } from "@/plugins/host";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { PluginSettingsForm } from "@/plugins/kit/plugin-settings-form";
@@ -14,7 +15,6 @@ import { useIsAdmin } from "./use-admin";
 import PluginCatalogDialog from "./plugin-catalog-dialog";
 import { MigrationNotice, PluginCredentials } from "./plugin-credentials";
 import { SettingsGroup, SettingsPage } from "./ui";
-import { WhatsappServerCard } from "./whatsapp-server-card";
 
 const STATUS: Record<PluginStatus, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
     available: { label: "Off", variant: "outline" },
@@ -41,7 +41,6 @@ function PluginConfig({ plugin, isAdmin }: { plugin: PluginInfo; isAdmin: boolea
 
     return (
         <div className="space-y-5 border-t border-border p-4" data-slot="plugin-config">
-            {isAdmin && (plugin.id === "waha" || plugin.integration?.kind === "builtin-whatsapp") && <WhatsappServerCard />}
             <PluginCredentials plugin={plugin} isAdmin={isAdmin} api={client} onChanged={() => void refresh()} />
             {!readable ? <p className="text-sm text-muted-foreground">This plugin is configured by an administrator.</p>
                 : loadError ? <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{loadError}</p><Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button></div>
@@ -57,11 +56,13 @@ function PluginConfig({ plugin, isAdmin }: { plugin: PluginInfo; isAdmin: boolea
     );
 }
 
-export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser, update, updating = false, onUpdate }: {
+export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser, update, updating = false, onUpdate, deprecated }: {
     plugin: PluginInfo; isAdmin: boolean; busy: boolean;
     onToggleInstall: (on: boolean) => void; onToggleUser: (on: boolean) => void;
     /** A newer version of this plugin exists (admins only); the row then offers a one-click update. */
     update?: PluginUpdateNotice; updating?: boolean; onUpdate?: () => void;
+    /** The catalog marks this installed plugin as deprecated: the text says what replaces it. */
+    deprecated?: string;
 }) {
     const [open, setOpen] = useState(false);
     const Icon = resolvePluginIcon(plugin.icon);
@@ -81,7 +82,9 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
                             <Badge variant={status.variant}>{status.label}</Badge>
                             {plugin.scope === "install" && <Badge variant="outline">Whole runtime</Badge>}
                             {plugin.source === "installed" && <Badge variant="outline">Installed</Badge>}
+                            {deprecated && <Badge variant="destructive" data-slot="plugin-deprecated">Deprecated</Badge>}
                         </div>
+                        {deprecated && <p role="note" className="max-w-prose text-xs leading-relaxed text-foreground">{deprecated}</p>}
                         {plugin.description && <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">{plugin.description}</p>}
                         {invalid && <p role="alert" className="text-xs text-destructive">{plugin.error ?? "Its manifest is invalid."}</p>}
                         {plugin.status === "failed" && <p className="text-xs text-destructive">It failed to start. An administrator can turn it on again to retry.</p>}
@@ -132,11 +135,15 @@ export default function PluginsSection() {
     const [migrations, setMigrations] = useState<PluginSecretMigration[]>([]);
     const [updates, setUpdates] = useState<Record<string, PluginUpdateNotice>>({});
     const [updatingId, setUpdatingId] = useState<string | null>(null);
+    const [deprecated, setDeprecated] = useState<Record<string, string>>({});
+    // Integrations (WhatsApp) are bundled plugins with their own page: Settings > Integrations.
+    const listed = all.filter((p) => !isIntegration(p));
 
     // A failed check (offline source, older runtime) just shows no update icons.
     const loadUpdates = useCallback(async () => {
         if (!client || !isAdmin) { setUpdates({}); return; }
         try { setUpdates(Object.fromEntries((await client.pluginUpdates()).map((u) => [u.id, u]))); } catch { setUpdates({}); }
+        try { setDeprecated(Object.fromEntries((await client.pluginDeprecations()).map((d) => [d.id, d.message]))); } catch { setDeprecated({}); }
     }, [client, isAdmin]);
     useEffect(() => { void loadUpdates(); }, [loadUpdates]);
 
@@ -189,7 +196,7 @@ export default function PluginsSection() {
     }
 
     return (
-        <SettingsPage title="Plugins" description="Plugins add screens, task sources and integrations to Floq. Each plugin keeps its own credentials, separate from Secrets.">
+        <SettingsPage title="Plugins" description="Plugins add screens and task sources to Floq. Each plugin keeps its own credentials, separate from Secrets. WhatsApp is built in: see Integrations.">
             <MigrationNotice items={migrations} onDismiss={() => void dismissMigrations()} />
             {isAdmin && (
                 <div className="flex justify-end">
@@ -197,19 +204,19 @@ export default function PluginsSection() {
                 </div>
             )}
             <SettingsGroup>
-                {loading && !all.length && <div role="status" className="flex min-h-[4.5rem] items-center p-4 text-sm text-muted-foreground">Loading plugins…</div>}
-                {!loading && !all.length && (
+                {loading && !listed.length && <div role="status" className="flex min-h-[4.5rem] items-center p-4 text-sm text-muted-foreground">Loading plugins…</div>}
+                {!loading && !listed.length && (
                     <div className="flex min-h-[4.5rem] flex-wrap items-center justify-between gap-3 p-4 text-sm text-muted-foreground">
                         <span>No plugins are installed on this runtime.</span>
                         {isAdmin && <Button variant="outline" size="sm" onClick={() => setBrowsing(true)}><IconDownload /> Browse plugins</Button>}
                     </div>
                 )}
-                {all.map((plugin) => (
+                {listed.map((plugin) => (
                     <PluginRow
                         key={plugin.id} plugin={plugin} isAdmin={isAdmin} busy={busyId === plugin.id}
                         onToggleInstall={(on) => void toggle(plugin, on, "install")}
                         onToggleUser={(on) => void toggle(plugin, on, "user")}
-                        update={updates[plugin.id]} updating={updatingId === plugin.id} onUpdate={() => void applyUpdate(plugin, updates[plugin.id])}
+                        deprecated={deprecated[plugin.id]} update={updates[plugin.id]} updating={updatingId === plugin.id} onUpdate={() => void applyUpdate(plugin, updates[plugin.id])}
                     />
                 ))}
             </SettingsGroup>

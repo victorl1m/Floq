@@ -15,13 +15,13 @@ const w = window as unknown as { __calls: Array<{ name: string; args: unknown }>
 w.__calls = []; w.__failNext = false;
 const base = { enabled: true, userEnabled: true, status: "enabled", scope: "user", source: "installed", contributes: { views: [], rightSidebarTabs: [], taskSources: [], routes: false, webhooks: [], mcpServers: [], skills: [] }, settings: [], secrets: [], ui: null };
 let plugins: any[] = [
-  { ...base, id: "waha", name: "WhatsApp (WAHA)", version: "1.0.0", description: "WhatsApp inbox and replies.", icon: "message", scope: "install" },
+  { ...base, id: "helpdesk", name: "Helpdesk", version: "1.0.0", description: "Tickets inbox and replies.", icon: "message", scope: "install" },
   { ...base, id: "movidesk", name: "Movidesk", version: "2.1.0", description: "Tickets as tasks.", source: "builtin" },
   { ...base, id: "gitrepo", name: "Repo plugin", version: "0.3.0", description: "Installed from a GitHub repository." },
   { ...base, id: "current", name: "Up to date", version: "1.0.0", description: "Nothing newer." },
 ];
 let updates: any[] = [
-  { id: "waha", name: "WhatsApp (WAHA)", installedVersion: "1.0.0", availableVersion: "1.1.0", repo: null },
+  { id: "helpdesk", name: "Helpdesk", installedVersion: "1.0.0", availableVersion: "1.1.0", repo: null },
   { id: "gitrepo", name: "Repo plugin", installedVersion: "0.3.0", availableVersion: "0.4.0", repo: "acme/repo-plugin" },
 ];
 const client = {

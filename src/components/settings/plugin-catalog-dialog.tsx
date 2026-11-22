@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { LoadingState } from "@/components/ui/spinner";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginCatalogItem, PluginRepoPreview } from "@/lib/runtime/types";
-import { ACTION_LABEL, FILTER_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, avatarUrl, categoryOf, confirmMatches, filterCatalog, matchesFilter, repoOf, type CatalogFilter, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
+import { ACTION_LABEL, FILTER_LABEL, REPO_TRUST_WARNING, TRUST_WARNING, avatarUrl, categoryOf, confirmMatches, filterCatalog, isOffered, matchesFilter, repoOf, type CatalogFilter, previewLines, rowState, summarize, type CatalogAction } from "@/plugins/install-ui";
+import { INTEGRATION_PLUGIN_IDS } from "@/plugins/integrations";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { usePlugins } from "@/plugins/host";
 import { cn } from "cn";
@@ -65,7 +66,8 @@ export function CatalogCard({ item, selected, enabled = false, onSelect }: { ite
                 <p className="line-clamp-2 min-h-8 text-xs leading-4 text-muted-foreground">{item.description || "No description."}</p>
                 <div className="mt-auto flex min-w-0 items-center gap-1.5 overflow-hidden">
                     <Badge variant="outline" className="max-w-24 shrink truncate">{categoryOf(item)}</Badge>
-                    {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"} className="shrink-0">{STATUS_BADGE[state.status]}</Badge>}
+                    {item.deprecated ? <Badge variant="destructive" className="shrink-0" data-slot="plugin-deprecated">Deprecated</Badge>
+                        : STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"} className="shrink-0">{STATUS_BADGE[state.status]}</Badge>}
                     {enabled && <Badge variant="secondary" className="shrink-0">On</Badge>}
                 </div>
             </button>
@@ -86,11 +88,13 @@ export function CatalogRow({ item, busy, onAction }: { item: PluginCatalogItem; 
                         <div className="flex flex-wrap items-center gap-1.5">
                             <Badge variant="outline" className="font-mono">v{item.version}</Badge>
                             {STATUS_BADGE[state.status] && <Badge variant={state.status === "update" ? "default" : "secondary"}>{STATUS_BADGE[state.status]}</Badge>}
+                            {item.deprecated && <Badge variant="destructive" data-slot="plugin-deprecated">Deprecated</Badge>}
                         </div>
                         {state.status === "update" && <p className="text-xs text-muted-foreground">you have v{item.installedVersion}</p>}
                     </div>
                 </div>
                 {repoOf(item) && <p className="break-all font-mono text-xs text-muted-foreground">{repoOf(item)}</p>}
+                {item.deprecated && <p role="note" className="rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs leading-relaxed text-foreground">{item.deprecated}</p>}
                 {item.description && <p className="text-sm leading-relaxed text-muted-foreground">{item.description}</p>}
                 <ul className="space-y-1 break-words text-xs text-muted-foreground">{summarize(item).map((line) => <li key={line}>{line}</li>)}</ul>
             </div>
@@ -178,7 +182,7 @@ export default function PluginCatalogDialog({ open, onOpenChange }: { open: bool
     const load = useCallback(async () => {
         if (!client) return;
         setError("");
-        try { setItems(await client.pluginCatalog()); } catch (e) { setItems(null); setError(errorMessage(e)); }
+        try { setItems((await client.pluginCatalog()).filter((i) => isOffered(i, INTEGRATION_PLUGIN_IDS))); } catch (e) { setItems(null); setError(errorMessage(e)); }
         try { setSources(await client.pluginSources()); } catch { setSources({}); }
     }, [client]);
     useEffect(() => { if (open) { setItems(null); setView("catalog"); setDetailOpen(false); void load(); } }, [open, load]);

@@ -32,6 +32,13 @@ test("the catalog keeps valid entries and drops malformed, duplicate or off-loca
   assert.throws(() => parseCatalog(Buffer.from(JSON.stringify({ format: 2, plugins: [] }))), /unsupported/);
 });
 
+test("a deprecated entry keeps its notice: text as given (capped), true becomes a generic sentence, anything else is not deprecated", () => {
+  const list = parseCatalog(catalog([entry({ deprecated: "  WhatsApp is now built into Floq: Settings > Integrations.  " }), entry({ id: "b2", deprecated: true }), entry({ id: "c3", deprecated: "x".repeat(900) }), entry({ id: "d4", deprecated: 5 }), entry({ id: "e5", deprecated: "   " }), entry({ id: "f6" })]));
+  assert.deepEqual(list.map((e) => e.deprecated?.length), [57, 26, 300, undefined, undefined, undefined]);
+  assert.equal(list[0].deprecated, "WhatsApp is now built into Floq: Settings > Integrations.");
+  assert.equal(list[1].deprecated, "This plugin is deprecated.");
+});
+
 const res = (body: string | Buffer, init: ResponseInit = {}) => new Response(body, init);
 
 test("the catalog is fetched from the fixed URL (or FLOQ_PLUGIN_CATALOG) with a timeout and no auto-redirects", async () => {
