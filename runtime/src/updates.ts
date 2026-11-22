@@ -4,7 +4,7 @@ import { badRequest, conflict, HttpError } from "./errors.js";
 import { log } from "./logger.js";
 import { dockerSelfUpdateAvailable, startDockerSelfUpdate, latestReleaseTag } from "./selfUpdate.js";
 
-export const UPDATE_TARGETS = ["runtime", "claude", "codex"] as const;
+export const UPDATE_TARGETS = ["runtime", "claude", "codex", "whatsapp"] as const;
 export type UpdateTarget = (typeof UPDATE_TARGETS)[number];
 
 export function isUpdateTarget(value: unknown): value is UpdateTarget {
@@ -18,6 +18,14 @@ export interface UpdateItem {
   updateAvailable: boolean;
   source: string;
   error?: string;
+  /** WhatsApp server only: false = an external WAHA, listed but updated where it is hosted. */
+  managed?: boolean;
+}
+
+/** The built-in WhatsApp server (whatsappServer.ts), as far as updates are concerned. */
+export interface WhatsappUpdates {
+  updateItem(): Promise<UpdateItem | null>;
+  applyUpdate(actorId: string, force: boolean): Promise<{ log: string }>;
 }
 
 export interface UpdatesConfig {
@@ -31,7 +39,7 @@ export interface UpdatesConfig {
   /** Docker self-update (socket mounted, see selfUpdate.ts). Injected for tests; defaults to checking the socket. */
   dockerSelfUpdate?: boolean;
 }
-const CLI_PACKAGES = { claude: "@anthropic-ai/claude-code", codex: "@openai/codex" } as const;
+const CLI_PACKAGES: Record<"claude" | "codex", string> = { claude: "@anthropic-ai/claude-code", codex: "@openai/codex" };
 const CACHE_MS = 10 * 60_000;
 const NET_TIMEOUT_MS = 8_000;
 const APPLY_TIMEOUT_MS = 10 * 60_000;
@@ -112,11 +120,15 @@ export class UpdateService {
     private readonly cfg: UpdatesConfig,
     private readonly liveSessions: () => number,
     private readonly requestRestart: () => void = () => void process.kill(process.pid, "SIGTERM"),
+    private readonly whatsapp?: WhatsappUpdates,
   ) {}
 
   async check(force = false) {
     if (!force && this.cache && Date.now() - this.cache.at < CACHE_MS) return this.snapshot();
-    const items = await Promise.all([this.checkRuntime(), this.checkCli("claude"), this.checkCli("codex")]);
+    const items: UpdateItem[] = await Promise.all([this.checkRuntime(), this.checkCli("claude"), this.checkCli("codex")]);
+    // Listed only when there is a WhatsApp server: the built-in one, or an external one the plugin points at.
+    const whatsapp = await this.whatsapp?.updateItem().catch(() => null);
+    if (whatsapp) items.push(whatsapp);
     this.cache = { at: Date.now(), items };
     return this.snapshot();
   }
@@ -184,6 +196,7 @@ export class UpdateService {
 
   /** Fixed argv steps for a validated target. */
   plan(target: UpdateTarget): { file: string; args: string[]; cwd?: string }[] {
+    if (target === "whatsapp") throw conflict("The WhatsApp server is updated through Docker, not by a command.", "not_managed");
     if (target !== "runtime") return [{ file: "npm", args: ["install", "-g", `${CLI_PACKAGES[target]}@latest`] }];
     if (this.cfg.runtimeCommand) return [{ file: this.cfg.runtimeCommand[0], args: this.cfg.runtimeCommand.slice(1) }];
     const root = this.gitRoot();
@@ -221,6 +234,16 @@ export class UpdateService {
       throw conflict(`${live} agent session(s) are running; restarting the runtime will stop them. Retry with force to continue.`, "sessions_active");
     }
     if (this.applying) throw conflict(`An update for ${this.applying} is already in progress`, "update_in_progress");
+    if (target === "whatsapp") {
+      // Only the waha container is replaced: the runtime and its agent sessions keep running.
+      if (!this.whatsapp) throw conflict("This runtime has no built-in WhatsApp server.", "not_managed");
+      this.applying = target;
+      log.info("admin.update_apply", { actorId, target, force: body.force === true });
+      try {
+        const r = await this.whatsapp.applyUpdate(actorId, body.force === true);
+        return { target, ok: true, restarting: false, log: r.log, activeSessions: live };
+      } finally { this.applying = null; this.cache = null; }
+    }
     if (target === "runtime" && !this.cfg.runtimeCommand && !this.gitRoot() && (this.cfg.dockerSelfUpdate ?? dockerSelfUpdateAvailable())) {
       return this.applyDocker(actorId, live, body.force === true);
     }

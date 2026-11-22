@@ -16,7 +16,7 @@ const API = "/v1.44";
 
 interface DockerRes { status: number; body: string }
 
-function docker(method: string, path: string, body?: unknown, opts: { tar?: NodeJS.ReadableStream; timeoutMs?: number } = {}): Promise<DockerRes> {
+export function dockerRequest(method: string, path: string, body?: unknown, opts: { tar?: NodeJS.ReadableStream; timeoutMs?: number } = {}): Promise<DockerRes> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
     if (opts.tar) headers["Content-Type"] = "application/x-tar";
@@ -34,8 +34,8 @@ function docker(method: string, path: string, body?: unknown, opts: { tar?: Node
   });
 }
 
-async function ok(method: string, path: string, body?: unknown, opts?: { tar?: NodeJS.ReadableStream; timeoutMs?: number }): Promise<string> {
-  const r = await docker(method, path, body, opts);
+export async function dockerOk(method: string, path: string, body?: unknown, opts?: { tar?: NodeJS.ReadableStream; timeoutMs?: number }): Promise<string> {
+  const r = await dockerRequest(method, path, body, opts);
   if (r.status >= 300) throw new Error(`Docker ${method} ${path.split("?")[0]} answered ${r.status}: ${r.body.slice(0, 300)}`);
   return r.body;
 }
@@ -59,18 +59,18 @@ interface Inspect {
 /** Started by the runtime: launch the helper and return; the helper stops this container when the new image is ready. */
 export async function startDockerSelfUpdate(repo: string, tag: string): Promise<string> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^v?\d+\.\d+\.\d+$/.test(tag)) throw new Error("invalid release");
-  const self = JSON.parse(await ok("GET", `/containers/${enc(hostname())}/json`)) as Inspect;
+  const self = JSON.parse(await dockerOk("GET", `/containers/${enc(hostname())}/json`)) as Inspect;
   const sock = self.Mounts?.find((m) => m.Destination === DOCKER_SOCK)?.Source;
   if (!sock) throw new Error(`the Docker socket is not mounted at ${DOCKER_SOCK}`);
   const name = `floq-updater-${Date.now()}`;
-  const created = JSON.parse(await ok("POST", `/containers/create?name=${name}`, {
+  const created = JSON.parse(await dockerOk("POST", `/containers/create?name=${name}`, {
     Image: self.Image,
     Entrypoint: [process.execPath, fileURLToPath(import.meta.url)],
     Cmd: [self.Id, repo, tag, self.Config.Image],
     Labels: { "app.floq.updater": "1" },
     HostConfig: { AutoRemove: true, Binds: [`${sock}:${DOCKER_SOCK}`], NetworkMode: "bridge" },
   })) as { Id: string };
-  await ok("POST", `/containers/${created.Id}/start`);
+  await dockerOk("POST", `/containers/${created.Id}/start`);
   return `Updating to ${tag}: building the new image, then the runtime restarts by itself (a few minutes).`;
 }
 
@@ -88,7 +88,7 @@ export async function latestReleaseTag(repo: string): Promise<string | null> {
 
 async function build(src: string, image: string): Promise<void> {
   const tar = spawn("tar", ["-C", src, "-c", "."], { stdio: ["ignore", "pipe", "inherit"] });
-  const out = await ok("POST", `/build?t=${enc(image)}&rm=1&forcerm=1`, undefined, { tar: tar.stdout, timeoutMs: 60 * 60_000 });
+  const out = await dockerOk("POST", `/build?t=${enc(image)}&rm=1&forcerm=1`, undefined, { tar: tar.stdout, timeoutMs: 60 * 60_000 });
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
     let msg: { error?: string; stream?: string };
@@ -99,31 +99,31 @@ async function build(src: string, image: string): Promise<void> {
 }
 
 async function recreate(oldId: string, image: string): Promise<void> {
-  const old = JSON.parse(await ok("GET", `/containers/${oldId}/json`)) as Inspect;
+  const old = JSON.parse(await dockerOk("GET", `/containers/${oldId}/json`)) as Inspect;
   const name = old.Name.replace(/^\//, "");
   const nets = Object.entries(old.NetworkSettings.Networks ?? {});
   const endpoint = (aliases?: string[] | null) => ({ Aliases: (aliases ?? []).filter((a) => !old.Id.startsWith(a)) });
   const config = { ...old.Config, Image: image, HostConfig: old.HostConfig, NetworkingConfig: { EndpointsConfig: nets.length ? { [nets[0][0]]: endpoint(nets[0][1].Aliases) } : {} } };
   delete config.Hostname; // the new container gets its own id as hostname, so its self-inspect finds itself
   const parked = `${name}-floq-old-${Date.now()}`;
-  await ok("POST", `/containers/${oldId}/stop?t=30`, undefined, { timeoutMs: 90_000 });
-  await ok("POST", `/containers/${oldId}/rename?name=${enc(parked)}`);
+  await dockerOk("POST", `/containers/${oldId}/stop?t=30`, undefined, { timeoutMs: 90_000 });
+  await dockerOk("POST", `/containers/${oldId}/rename?name=${enc(parked)}`);
   let newId: string | null = null;
   try {
-    newId = (JSON.parse(await ok("POST", `/containers/create?name=${enc(name)}`, config)) as { Id: string }).Id;
-    for (const [net, ep] of nets.slice(1)) await ok("POST", `/networks/${enc(net)}/connect`, { Container: newId, EndpointConfig: endpoint(ep.Aliases) });
-    await ok("POST", `/containers/${newId}/start`);
+    newId = (JSON.parse(await dockerOk("POST", `/containers/create?name=${enc(name)}`, config)) as { Id: string }).Id;
+    for (const [net, ep] of nets.slice(1)) await dockerOk("POST", `/networks/${enc(net)}/connect`, { Container: newId, EndpointConfig: endpoint(ep.Aliases) });
+    await dockerOk("POST", `/containers/${newId}/start`);
     await new Promise((r) => setTimeout(r, 15_000));
-    const state = (JSON.parse(await ok("GET", `/containers/${newId}/json`)) as { State: { Running: boolean } }).State;
+    const state = (JSON.parse(await dockerOk("GET", `/containers/${newId}/json`)) as { State: { Running: boolean } }).State;
     if (!state.Running) throw new Error("the new runtime container exited right after starting");
   } catch (error) {
     console.error("rolling back:", error instanceof Error ? error.message : error);
-    if (newId) await docker("DELETE", `/containers/${newId}?force=1`).catch(() => {});
-    await ok("POST", `/containers/${oldId}/rename?name=${enc(name)}`);
-    await ok("POST", `/containers/${oldId}/start`);
+    if (newId) await dockerRequest("DELETE", `/containers/${newId}?force=1`).catch(() => {});
+    await dockerOk("POST", `/containers/${oldId}/rename?name=${enc(name)}`);
+    await dockerOk("POST", `/containers/${oldId}/start`);
     throw error;
   }
-  await docker("DELETE", `/containers/${oldId}?force=1`).catch(() => {});
+  await dockerRequest("DELETE", `/containers/${oldId}?force=1`).catch(() => {});
 }
 
 /** Helper entry: node selfUpdate.js <containerId> <owner/repo> <tag> <imageName> */
