@@ -287,7 +287,7 @@ test("Settings > Updates: the built-in server is a managed target, an external W
   const builtin = await service().s.updateItem();
   assert.deepEqual(builtin, { target: "whatsapp", current: "2026.9.2", latest: "2026.10.1", updateAvailable: true, source: "github:devlikeapro/waha", managed: true });
   const waha = fakeWaha({ key: "theirs", version: "2026.8.1" });
-  const ext = service({ env: {}, waha, plugin: { installed: true, enabled: true, mode: "external", external: { url: "https://waha.example.com", secret: "theirs" } } });
+  const ext = service({ env: {}, waha, plugin: { installed: true, enabled: true, mode: "external", external: { url: "https://waha.example.com", secret: async () => "theirs" } } });
   assert.deepEqual(await ext.s.updateItem(), { target: "whatsapp", current: "2026.8.1", latest: "2026.10.1", updateAvailable: true, source: "github:devlikeapro/waha", managed: false });
   await assert.rejects(ext.s.applyUpdate("admin", true), { code: "not_managed" });
   assert.equal(await service({ env: {}, plugin: { installed: false, enabled: false, mode: "none", external: null } }).s.updateItem(), null);

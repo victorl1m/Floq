@@ -44,7 +44,7 @@ test('updates: row with update, confirm, auto-update switch and minutes save', a
   const sw = page.getByRole('switch', { name: 'Update the WhatsApp server automatically' });
   await expect(sw).toBeVisible();
   await expect(page.getByText('Checks once a day and updates when no message was sent or received for 30 minutes, never during a QR login.')).toBeVisible();
-  await expect(page.getByText(/Last automatic update/)).toBeVisible();
+  await expect(page.getByText(/Last update/)).toBeVisible();
   await sw.click();
   await expect(sw).toBeChecked();
   const mins = page.getByLabel('Quiet minutes before an automatic WhatsApp server update');

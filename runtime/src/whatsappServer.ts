@@ -256,7 +256,7 @@ const short = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice
 export type ServerState = "off" | "starting" | "unreachable" | "unauthorized" | "running";
 export interface Probe { state: ServerState; version: string | null; engine: string | null; tier: string | null; latencyMs: number | null; error?: string }
 /** How the WhatsApp plugin is wired, from the plugin host. `external` is set when it points at a WAHA the admin entered. */
-export interface PluginService { installed: boolean; enabled: boolean; mode: "builtin" | "external" | "none"; external: { url: string; secret: string | undefined } | null }
+export interface PluginService { installed: boolean; enabled: boolean; mode: "builtin" | "external" | "none"; external: { url: string; secret(): Promise<string | undefined> } | null }
 export interface LastUpdate { at: string; ok: boolean; from: string | null; to: string | null; rolledBack: boolean; message: string }
 interface Stored { tag: string | null; failedVersion: string | null; autoUpdate: { enabled: boolean; quietMinutes: number }; lastCheckAt: string | null; last: LastUpdate | null }
 const freshState = (): Stored => ({ tag: null, failedVersion: null, autoUpdate: { enabled: true, quietMinutes: DEFAULT_QUIET_MINUTES }, lastCheckAt: null, last: null });
@@ -391,7 +391,7 @@ export class BuiltinWhatsapp {
     const item: UpdateItem = { target: "whatsapp", current: null, latest: null, updateAvailable: false, source: `github:${WAHA_RELEASES_REPO}`, managed: false };
     const errors: string[] = [];
     const [probe, latest, c] = await Promise.all([
-      cfg.enabled ? this.probeBuiltin() : this.probe(plugin!.external!.url, plugin!.external!.secret ?? null),
+      cfg.enabled ? this.probeBuiltin() : plugin!.external!.secret().catch(() => undefined).then((key) => this.probe(plugin!.external!.url, key ?? null)),
       this.latest().catch((error) => { errors.push("Latest version unavailable: " + short(error)); return null; }),
       this.container(),
     ]);

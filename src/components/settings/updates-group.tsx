@@ -17,7 +17,7 @@ const LABELS: Record<UpdateTarget, string> = { runtime: "Floq Runtime", claude: 
 function formatResult(last: NonNullable<WhatsappServerStatus["autoUpdate"]["last"]>): string {
     const when = new Date(last.at).toLocaleString();
     const move = last.from && last.to ? ` ${last.from} to ${last.to}` : "";
-    return `Last automatic update (${when}):${move ? `${move}.` : ""} ${last.rolledBack ? "Rolled back. " : ""}${last.message}`.replace(/\s+/g, " ").trim();
+    return `Last update (${when}):${move ? `${move}.` : ""} ${last.rolledBack ? "Rolled back. " : ""}${last.message}`.replace(/\s+/g, " ").trim();
 }
 
 /** Administrator-only: check for and apply updates to the runtime and the bundled agent CLIs. */
