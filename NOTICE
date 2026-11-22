@@ -10,6 +10,14 @@ The image bundles the skill-creator skill from https://github.com/anthropics/ski
 Apache License, Version 2.0; its LICENSE.txt is kept in the skill's folder inside the image.
 Other skills fetched when the image is built (obra/superpowers, blader/humanizer) keep their own licenses.
 
+The optional built-in WhatsApp server (compose service "waha", profile "whatsapp" in
+runtime/docker-compose.yml) is WAHA Core by devlikeapro, https://github.com/devlikeapro/waha,
+licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+Floq does not modify, rebuild or redistribute it: Docker pulls the official image
+devlikeapro/waha (pinned tag) from Docker Hub, and its license and notices ship inside that
+image. WAHA and its name belong to their authors; Floq is not affiliated with WAHA or with
+WhatsApp. WAHA Plus is not used.
+
 caniuse-lite (CC-BY-4.0, https://github.com/browserslist/caniuse-lite) is a
 development-time dependency of the frontend build tooling (browserslist data). It is
 not bundled into the app bundle or the runtime image, so no attribution is

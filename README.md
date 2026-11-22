@@ -118,6 +118,10 @@ The runtime (`runtime/`) ships a Dockerfile and a Docker Compose file with the r
 
 Before building the image, sync the bundled orchestration skill (PowerShell, from `runtime/`): `powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/sync-floq-orchestrate-skill.ps1`.
 
+### WhatsApp server (optional)
+
+Floq's WhatsApp integration talks to a [WAHA](https://github.com/devlikeapro/waha) server. The compose file can run one for you: set `COMPOSE_PROFILES=whatsapp` and `FLOQ_WHATSAPP_API_KEY` (`openssl rand -hex 32`), deploy, and scan the QR code in the app. Floq wires the address, the key and the webhook by itself, keeps the server on the newest stable release (Settings > Updates, automatic by default, with rollback) and keeps its sessions across updates and redeploys. It is WAHA Core (Apache-2.0), the official image in its own container: one WhatsApp account per server, media kept locally. You can point the integration at your own WAHA instead. WAHA is an unofficial WhatsApp client: numbers used for spam or bulk messages can be banned. Details: [`runtime/README.md`](runtime/README.md#built-in-whatsapp-server-optional).
+
 Host requirements (`/dev/fuse`, AppArmor on Ubuntu 25.04+, the seccomp profile, `FLOQ_MOUNT_ROOT`), the HTTP API, sleep and resume, the vault and administration are documented in [`runtime/README.md`](runtime/README.md).
 
 Inside a Floq session, `floq setup --dry-run --agents` previews exporting the agent workflow to the repository's instruction files. Run `floq setup --agents` to write it to `CLAUDE.md` and `AGENTS.md`; without `--agents`, `AGENTS.md` is updated only when it already exists. The command targets the Git root, or the current directory for a project without Git, and prints that location. Existing content is preserved, and files with Floq guidance are left untouched. This export is optional: Floq already injects its workflow when sessions start or resume. Review the resulting diff before committing it.
@@ -214,4 +218,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please follow the [Code of Conduct](CODE
 
 ## ✦ License
 
-Released under the [MIT License](LICENSE). [`NOTICE`](NOTICE) carries the Apache-2.0 attribution for `runtime/seccomp-floq.json` (derived from Docker's default seccomp profile) and notes on third-party skills fetched when the runtime image is built, which keep their own licenses.
+Released under the [MIT License](LICENSE). [`NOTICE`](NOTICE) carries the Apache-2.0 attribution for `runtime/seccomp-floq.json` (derived from Docker's default seccomp profile) and notes on third-party skills fetched when the runtime image is built, which keep their own licenses. The optional WhatsApp server is [WAHA Core](https://github.com/devlikeapro/waha) (Apache-2.0), pulled as its official, unmodified image; it is a separate project, not affiliated with Floq or WhatsApp.
