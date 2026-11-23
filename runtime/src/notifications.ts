@@ -15,8 +15,32 @@ export type NotificationPlugin = {
   id: string; name: string; icon: string | null; kind: 'message'; subtitle: string | null; avatar: string | null; tag: string | null;
   actions: { id: string; label: string; input?: { placeholder: string } }[];
   target: { view: string; params: Record<string, string> } | null;
+  /** An audio attachment (a voice note): the island card shows a player. The bytes come from GET /v1/notifications/:id/audio. */
+  audio?: NotificationAudio;
 };
-export type NotificationPluginPrivate = { route: string | null; data: unknown };
+/** Seconds, and up to 64 bar heights from 0 to 1; either may be unknown (the player then reads them from the file). */
+export type NotificationAudio = { duration: number | null; waveform: number[] | null };
+export type NotificationPluginPrivate = { route: string | null; data: unknown; audioRoute?: string | null; audioPlayed?: boolean };
+/** The largest audio file a notification serves. */
+export const PLUGIN_AUDIO_MAX_BYTES = 32 * 1024 * 1024;
+export const PLUGIN_AUDIO_WAVEFORM_MAX = 64;
+const AUDIO_MIME_RE = /^(?:audio\/[a-z0-9][a-z0-9.+-]{0,40}|application\/ogg)(?:;\s*codecs="?[a-z0-9., -]{1,60}"?)?$/i;
+const ROUTE_RE = /^\/[A-Za-z0-9_\-./]{1,200}$/;
+const routeOk = (v: unknown): v is string => typeof v === 'string' && ROUTE_RE.test(v) && !v.split('/').some((s) => s === '..' || s === '.');
+
+/**
+ * What a plugin's audio route answered: `{ mime, data }` with the file as base64. Only audio leaves through the audio endpoint, whatever
+ * the plugin says: another type, an empty or an oversized file is refused.
+ */
+export function pluginAudioBytes(result: unknown): { mime: string; bytes: Buffer } {
+  const r = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+  const mime = typeof r.mime === 'string' ? r.mime.trim() : '';
+  if (!AUDIO_MIME_RE.test(mime)) throw new HttpError(415, 'not_audio', 'This attachment is not an audio file.');
+  if (typeof r.data !== 'string' || !r.data || r.data.length > Math.ceil(PLUGIN_AUDIO_MAX_BYTES * 4 / 3) + 4) throw new HttpError(r.data ? 413 : 502, r.data ? 'audio_too_large' : 'audio_unavailable', r.data ? 'This audio file is too large to play here.' : 'The audio could not be loaded.');
+  const bytes = Buffer.from(r.data, 'base64');
+  if (!bytes.length) throw new HttpError(502, 'audio_unavailable', 'The audio could not be loaded.');
+  return { mime, bytes };
+}
 export type Notification = {
   id: string; userId: string; projectId: string | null; sessionId: string | null; sessionName: string | null;
   level: NotificationLevel; category: NotificationCategory; title: string; body: string | null;
@@ -57,7 +81,7 @@ export function cleanPluginNote(input: PluginNotificationInput): { plugin: Notif
   }
   let route: string | null = null;
   if (actions.length) {
-    if (typeof n.actionRoute !== 'string' || !/^\/[A-Za-z0-9_\-./]{1,200}$/.test(n.actionRoute) || n.actionRoute.split('/').some((s) => s === '..' || s === '.')) throw badRequest('actionRoute is required with actions');
+    if (!routeOk(n.actionRoute)) throw badRequest('actionRoute is required with actions');
     route = n.actionRoute;
   }
   let data: unknown = null;
@@ -78,9 +102,19 @@ export function cleanPluginNote(input: PluginNotificationInput): { plugin: Notif
     target = { view: t.view, params };
   }
   const tag = typeof n.tag === 'string' && n.tag && n.tag.length <= 200 ? n.tag : null;
+  // An audio attachment: the plugin names its own POST route that hands over the file ({ mime, data: base64 }); the route stays on the server.
+  let audio: NotificationAudio | null = null, audioRoute: string | null = null, audioPlayed = false;
+  if (n.audio !== undefined && n.audio !== null) {
+    const a = n.audio as Record<string, unknown>;
+    if (typeof a !== 'object' || !routeOk(a.route)) throw badRequest('audio.route is required with audio');
+    const duration = typeof a.duration === 'number' && Number.isFinite(a.duration) && a.duration > 0 && a.duration <= 86400 ? Math.round(a.duration * 1000) / 1000 : null;
+    const waveform = Array.isArray(a.waveform) && a.waveform.length >= 8 && a.waveform.length <= PLUGIN_AUDIO_WAVEFORM_MAX && a.waveform.every((v) => typeof v === 'number' && Number.isFinite(v))
+      ? (a.waveform as number[]).map((v) => Math.round(Math.min(1, Math.max(0, v)) * 100) / 100) : null;
+    audio = { duration, waveform }; audioRoute = a.route; audioPlayed = a.played === true;
+  }
   return {
-    plugin: { id: input.plugin.id, name: cleanDecisionText(input.plugin.name, 60), icon: input.plugin.icon ?? null, kind: 'message', subtitle: text(n.subtitle, 120), avatar, tag, actions, target },
-    priv: { route, data },
+    plugin: { id: input.plugin.id, name: cleanDecisionText(input.plugin.name, 60), icon: input.plugin.icon ?? null, kind: 'message', subtitle: text(n.subtitle, 120), avatar, tag, actions, target, ...(audio ? { audio } : {}) },
+    priv: { route, data, ...(audio ? { audioRoute, audioPlayed } : {}) },
   };
 }
 export type NotificationListOptions = { unreadOnly?: boolean; projectId?: string; organizationId?: string | null; limit?: number; before?: string };

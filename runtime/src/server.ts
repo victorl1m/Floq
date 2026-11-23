@@ -54,7 +54,7 @@ import { getRole, listUsers, requireAdmin, requireRoleValue, setUserRole } from 
 import { PortRequests } from "./portRequests.js";
 import { Approvals } from "./approvals.js";
 import { Decisions } from "./decisions.js";
-import { Notifications } from "./notifications.js";
+import { Notifications, pluginAudioBytes } from "./notifications.js";
 import { ProjectFolders } from "./projectFolders.js";
 import { neutralizeDeep } from "./approvalText.js";
 import { visibleDebugLinks } from "./debugLinks.js";
@@ -1666,6 +1666,24 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       const result = await plugins.handleNotifyAction({ userId, pluginId: found.plugin.id, route: found.priv.route, body: { notificationId: notificationAction[1], actionId: action.id, input, data: found.priv.data } });
       await notifications.markRead(userId, [notificationAction[1]]);
       return send(res, 200, { ok: true, result });
+    }
+    // The audio attachment of a plugin notification (a voice note played from the island). Same rule as an action: the caller is the signed-in
+    // owner of the notification, and the plugin route and its data come from the stored notification, never from the request. No URL of this
+    // works without the session. "played" tells the plugin the user listened (it may tell the sender); it does not mark the notification read.
+    const notificationAudio = /^\/v1\/notifications\/([\w-]{1,64})\/audio(\/played)?$/.exec(url.pathname);
+    if (notificationAudio && (notificationAudio[2] ? method === "POST" : method === "GET")) {
+      if (!plugins) throw notFound();
+      const found = await notifications.pluginTarget(userId, notificationAudio[1]);
+      if (!found?.plugin.audio || !found.priv.audioRoute) throw new HttpError(404, "audio_not_found", "This notification or its audio no longer exists.");
+      const call = (audio: "fetch" | "played") => plugins.handleNotifyAction({ userId, pluginId: found.plugin.id, route: found.priv.audioRoute!, body: { notificationId: notificationAudio[1], audio, data: found.priv.data } });
+      if (notificationAudio[2]) {
+        if (found.priv.audioPlayed) await call("played");
+        return send(res, 200, { ok: true });
+      }
+      const file = pluginAudioBytes(await call("fetch"));
+      res.writeHead(200, { "Content-Type": file.mime, "Content-Length": file.bytes.length, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Disposition": "inline" });
+      res.end(file.bytes);
+      return;
     }
     if ((url.pathname === "/v1/notifications/read" || url.pathname === "/v1/notifications/clear") && method === "POST") {
       const body = await readJson<{ ids?: unknown }>(req);

@@ -217,3 +217,100 @@ test("what the integration sends is what the host accepts (the host's own valida
     assert.equal(clean.plugin.tag, note.tag);
   }
 });
+
+// ---- voice notes and audio played from the island ----
+const OGG = Buffer.from("OggS pretend opus voice note");
+const voice = (h, from, extra = {}) => h.message({ from, fromMe: false, body: "", hasMedia: true, notifyName: "Marina Duarte", media: { url: "http://localhost:3000/api/files/v1.oga", mimetype: "audio/ogg; codecs=opus" }, _data: { type: "ptt", duration: "7" }, ...extra });
+const files = (h) => h.requests.filter((r) => r.path.startsWith("/api/files/")).map((r) => r.path);
+const audioCall = (h, n, audio = "fetch") => h.post("/notify/audio", { notificationId: "n1", audio, data: n.data });
+
+test("a voice note becomes a notification with an audio attachment; text has none", async () => {
+  const h = await start({ waha: (_m, path) => (path === "/api/files/v1.oga" ? { bytes: OGG } : undefined) });
+  await voice(h, A);
+  await incoming(h, B, { notifyName: "Caio Prado" });
+  await h.idle();
+  const [n, text] = h.notes;
+  assert.deepEqual([n.title, n.body], ["Marina Duarte", "Voice message"]);
+  assert.deepEqual(n.audio, { route: "/notify/audio", played: true, duration: 7 });
+  assert.deepEqual(Object.keys(n.data).sort(), ["chatId", "msgId", "session"]);
+  assert.match(n.data.msgId, /_M1$/);
+  assert.equal(text.audio, undefined);
+  assert.deepEqual(text.data, { session: "default", chatId: B });
+  // an audio file (not a voice note) plays too; a failed download has nothing to play
+  await h.message({ from: A, fromMe: false, body: "", hasMedia: true, notifyName: "Marina Duarte", media: { url: "http://localhost:3000/api/files/song.mp3", mimetype: "audio/mpeg", filename: "song.mp3" }, _data: { type: "audio" } });
+  await h.message({ from: B, fromMe: false, body: "", hasMedia: true, notifyName: "Caio Prado", media: { url: null, mimetype: "audio/ogg", error: "failed" }, _data: { type: "ptt" } });
+  await h.idle();
+  assert.equal(h.notes[2].audio.route, "/notify/audio");
+  assert.equal(h.notes[2].audio.duration, undefined);
+  assert.equal(h.notes[3].audio, undefined);
+});
+
+test("notification audio: the copy cached on arrival is served without asking WAHA again", async () => {
+  const h = await start({ waha: (_m, path) => (path === "/api/files/v1.oga" ? { bytes: OGG } : undefined) });
+  await voice(h, A);
+  await h.idle();
+  assert.deepEqual(files(h), ["/api/files/v1.oga"]); // cached when the message arrived
+  const before = h.requests.length;
+  const r = await audioCall(h, h.notes[0]);
+  assert.equal(r.mime, "audio/ogg");
+  assert.deepEqual(Buffer.from(r.data, "base64"), OGG);
+  assert.equal(h.requests.length, before, "no WAHA call: WAHA may have deleted the file by now");
+});
+
+test("notification audio: not cached and gone from WAHA's downloads, it is downloaded again on demand (then cached)", async () => {
+  let gone = true;
+  const h = await start({ waha: (_m, path, req) => {
+    if (path === "/api/files/v1.oga") return undefined; // WAHA cleaned its downloads
+    if (/\/chats\/.+\/messages\//.test(path) && req.query.downloadMedia === "true") return gone ? undefined : { json: { media: { url: "http://localhost:3000/api/files/again.oga" } } };
+    if (path === "/api/files/again.oga") return { bytes: OGG };
+    return undefined;
+  } });
+  await voice(h, A);
+  await h.idle();
+  await assert.rejects(audioCall(h, h.notes[0]), (e) => e.status === 404 && e.code === "media_unavailable");
+  gone = false;
+  const r = await audioCall(h, h.notes[0]);
+  assert.deepEqual(Buffer.from(r.data, "base64"), OGG);
+  assert.ok(files(h).includes("/api/files/again.oga"));
+  const before = h.requests.length;
+  assert.deepEqual(Buffer.from((await audioCall(h, h.notes[0])).data, "base64"), OGG);
+  assert.equal(h.requests.length, before);
+});
+
+test("notification audio: a passing failure is tried again inside the same request (the first Play is enough)", async () => {
+  let busy = 0;
+  const h = await start({ waha: (_m, path) => {
+    if (path.startsWith("/api/files/") || /\/messages\//.test(path)) { if (busy > 0) { busy--; return { status: 500, json: { error: "busy" } }; } return path === "/api/files/v1.oga" ? { bytes: OGG } : undefined; }
+    return undefined;
+  } });
+  busy = 1; // the arrival-time caching fails
+  await voice(h, A);
+  await h.idle();
+  busy = 2; // ...and so does the first try of the player (file address and re-download)
+  const r = await audioCall(h, h.notes[0]);
+  assert.deepEqual(Buffer.from(r.data, "base64"), OGG);
+  assert.equal(busy, 0);
+  // WAHA down for good: the error comes back after the tries
+  busy = 99;
+  const fresh = await start({ waha: () => ({ status: 500, json: {} }) });
+  await voice(fresh, A);
+  await fresh.idle();
+  const t0 = Date.now();
+  await assert.rejects(audioCall(fresh, fresh.notes[0]), (e) => e.status === 503 && e.code === "media_busy");
+  assert.ok(Date.now() - t0 >= notify.AUDIO_RETRY_MS.reduce((a, b) => a + b, 0) - 50);
+});
+
+test("notification audio: played acknowledges that one message to WhatsApp; unknown requests and missing ids are refused", async () => {
+  const h = await start({ waha: (_m, path) => (path === "/api/files/v1.oga" ? { bytes: OGG } : undefined) });
+  await voice(h, A);
+  await h.idle();
+  const n = h.notes[0];
+  assert.deepEqual(await audioCall(h, n, "played"), { ok: true });
+  await h.idle();
+  const seen = h.requests.filter((r) => r.path === "/api/sendSeen");
+  assert.deepEqual(seen.map((r) => r.body), [{ chatId: A, messageIds: [n.data.msgId], session: "default" }]);
+  assert.equal((await h.chats()).find((c) => c.chatId === A).unread, 1, "listening does not mark the chat read in Floq");
+  await assert.rejects(audioCall(h, n, "delete"), (e) => e.status === 400);
+  await assert.rejects(h.post("/notify/audio", { audio: "fetch", data: { session: "default", chatId: A } }), (e) => e.status === 404);
+  await assert.rejects(h.post("/notify/audio", { audio: "fetch", data: { session: "default", chatId: A, msgId: "nope" } }), (e) => e.status === 404);
+});

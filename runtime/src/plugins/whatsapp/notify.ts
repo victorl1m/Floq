@@ -13,6 +13,12 @@ export const FOCUS_TTL_MS = 45_000;
 /** The host takes inline avatars up to 32 KiB of data URL; base64 adds a third. */
 export const AVATAR_MAX_BYTES = 22 * 1024;
 const ACTION_ROUTE = "/notify/action";
+const AUDIO_ROUTE = "/notify/audio";
+/** Waits before the 2nd, 3rd and 4th try of a voice note WhatsApp could not hand over yet: the first press of Play gets the file. */
+export const AUDIO_RETRY_MS = [350, 900, 2000];
+/** The host serves audio up to 32 MiB; a longer recording opens in the chat instead. */
+const AUDIO_MAX_BYTES = 30 * 1024 * 1024;
+const isAudio = (m: Parsed) => (m.type === "ptt" || m.type === "audio") && !!m.media && !m.media.error && !(m.media.size && m.media.size > AUDIO_MAX_BYTES);
 
 interface HostNotify {
   notify?: (userId: string, note: Record<string, unknown>) => Promise<{ id: string }>;
@@ -79,11 +85,13 @@ export function notifierOf(core: Core, identity: Identity): Notifier {
         if (a && a.bytes.length <= AVATAR_MAX_BYTES && /^image\/(png|jpeg|webp|gif)$/.test(a.mime)) avatar = `data:${a.mime};base64,${Buffer.from(a.bytes).toString("base64")}`;
       } catch { /* no picture: the island shows initials */ }
       const tag = tagOf(scope, chatId);
+      // A voice note or an audio file plays from the island: the card gets a player and the host fetches the file through AUDIO_ROUTE.
+      const audio = isAudio(m) && m.msgId ? { route: AUDIO_ROUTE, played: true, ...(m.media!.duration && m.media!.duration > 0 ? { duration: m.media!.duration } : {}) } : undefined;
       try {
         await host.notify!(owner, {
           kind: "message", title: who || group || "New message", body: previewOf(m), subtitle: [account, who ? group : ""].filter(Boolean).join(" · ") || undefined, avatar, tag,
           actions: [{ id: "reply", label: "Reply", input: { placeholder: isGroup(chatId) && group ? `Message ${group}`.slice(0, 80) : "Message" } }, { id: "read", label: "Mark read" }],
-          actionRoute: ACTION_ROUTE, data: { session, chatId }, target: { view: "inbox", params: { chat: chatId, session } },
+          actionRoute: ACTION_ROUTE, data: { session, chatId, ...(audio ? { msgId: m.msgId } : {}) }, ...(audio ? { audio } : {}), target: { view: "inbox", params: { chat: chatId, session } },
         });
         live.add(tag);
         return "sent";
@@ -120,6 +128,32 @@ export function registerNotify({ core, identity, store, inbox }: { core: Core; i
       return { ok: true };
     }
     throw ctx.httpError(400, "invalid_action", "Unknown action");
+  });
+  // The host calls this for the audio of a notification (the island's player): "fetch" hands over the file, "played" tells WhatsApp the user
+  // listened. The file is the cached copy when there is one (media is cached as it arrives); otherwise it is downloaded now, and a passing
+  // failure (WhatsApp still fetching it, WAHA busy) is tried again here so the first press of Play is enough.
+  R.post(AUDIO_ROUTE, async ({ userId, body }) => {
+    const o = core.obj(body), data = core.obj(o.data);
+    const scope = await core.scope(core.split(userId).owner, typeof data.session === "string" ? data.session : "");
+    const msgId = typeof data.msgId === "string" ? data.msgId : "";
+    if (!msgId) throw ctx.httpError(404, "no_media", "That message has no file.");
+    if (o.audio === "played") {
+      // Only this message is acknowledged (the blue microphone); the chat stays unread here until the user reads or answers it.
+      const chatId = core.chatId(data.chatId);
+      core.bg(store.route(scope, chatId).then(([target]) => core.tryWaha(scope, "POST", "/api/sendSeen", { body: { chatId: target, messageIds: [msgId] } })));
+      return { ok: true };
+    }
+    if (o.audio !== "fetch") throw ctx.httpError(400, "invalid_audio", "Unknown audio request");
+    for (let n = 0; ; n++) {
+      try {
+        const f = await store.mediaBytes(scope, msgId);
+        if (f.bytes.length > AUDIO_MAX_BYTES) throw ctx.httpError(413, "audio_too_large", "This audio is too large to play here. Open the chat to listen.");
+        return { mime: /^(audio\/|application\/ogg)/i.test(f.mime) ? f.mime : "audio/ogg", data: Buffer.from(f.bytes).toString("base64") };
+      } catch (e) {
+        if ((e as { status?: number } | null)?.status !== 503 || n >= AUDIO_RETRY_MS.length) throw e;
+        await new Promise((r) => setTimeout(r, AUDIO_RETRY_MS[n]));
+      }
+    }
   });
   /** Blue ticks for the other side, like opening the chat on the phone. Best effort. */
   const seen = (scope: string, chatId: string) => core.bg(store.route(scope, chatId).then(([target]) => core.tryWaha(scope, "POST", "/api/sendSeen", { body: { chatId: target } })));

@@ -282,7 +282,7 @@ export class PluginHost {
    * A click on an action of a plugin notification: runs the plugin's own POST route (the one it named in `ctx.notify`) as that user,
    * with the same checks as any call from the plugin's UI. The route and data come from the stored notification, never from the request.
    */
-  async handleNotifyAction(i: { userId: string; pluginId: string; route: string; body: { notificationId: string; actionId: string; input: string | null; data: unknown } }): Promise<unknown> {
+  async handleNotifyAction(i: { userId: string; pluginId: string; route: string; body: { notificationId: string; data: unknown } & ({ actionId: string; input: string | null } | { audio: "fetch" | "played" }) }): Promise<unknown> {
     const e = this.entries.get(i.pluginId);
     if (!e?.manifest || e.status !== "enabled" || !e.built) throw new HttpError(404, "plugin_disabled", "Plugin is not available");
     await this.requireActiveFor(e, i.userId);

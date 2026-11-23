@@ -153,7 +153,24 @@ export interface PluginNotifyAction {
   /** Present: the action takes one line of text typed by the user (an inline reply). */
   input?: { placeholder?: string };
 }
+/** An audio attachment of a notification (a voice note): the island card plays it without opening the plugin. */
+export interface PluginNotifyAudio {
+  /**
+   * The plugin's own POST route (`ctx.routes.post`). The host calls it as the notification's user with `{ notificationId, audio: "fetch", data }`
+   * and expects `{ mime, data }`: an audio MIME type and the file as base64 (at most 32 MiB). The file is served only to that signed-in user,
+   * through GET /v1/notifications/:id/audio; the route itself never leaves the server.
+   */
+  route: string;
+  /** Seconds, when known. */
+  duration?: number;
+  /** 8 to 64 bar heights from 0 to 1, when known (otherwise the player reads the peaks from the file). */
+  waveform?: number[];
+  /** True: the same route is also called with `{ notificationId, audio: "played", data }` the first time the user plays it. */
+  played?: boolean;
+}
 export interface PluginNotifyInput {
+  /** A voice note or audio file to play from the notification. */
+  audio?: PluginNotifyAudio;
   /** "message": a person wrote (avatar, name, preview, inline reply). Default "message". */
   kind?: "message";
   /** Sender or headline, at most 120 characters. */

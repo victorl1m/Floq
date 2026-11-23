@@ -10,15 +10,17 @@ import { fakePool, closeAll } from "./fixtures/plugins/pgPool.mts";
 import { echoManifest } from "./fixtures/plugins/echo/index.mts";
 
 test.after(closeAll);
+const OGG = Buffer.from("OggS\u0000\u0002 pretend opus voice note bytes \u0001\u0002\u0003", "latin1");
 const PNG = "data:image/png;base64," + Buffer.from("not really a png but small").toString("base64");
 
-function chatPlugin(probe: { ctx?: any; hooks: any[]; actions: any[] }, over: Record<string, unknown> = {}) {
+function chatPlugin(probe: { ctx?: any; hooks: any[]; actions: any[]; audio: any[]; audioAnswer?: () => unknown }, over: Record<string, unknown> = {}) {
   return definePlugin({
     manifest: echoManifest({ id: "chatty", name: "Chatty", icon: "IconMessage", access: "owner", secrets: [{ name: "HOOK_KEY", required: false }], contributes: { views: [{ id: "inbox", label: "Inbox" }], webhooks: ["events"], routes: true, migrations: false }, ...over }),
     start(ctx) {
       probe.ctx = ctx;
       ctx.webhooks.on("events", (req) => { probe.hooks.push(req.json()); return { ok: true }; });
       ctx.routes.post("/notify/action", (req) => { probe.actions.push(req); if ((req.body as any).actionId === "boom") throw ctx.httpError(409, "nope", "cannot do that"); return { done: (req.body as any).actionId }; });
+      ctx.routes.post("/notify/audio", (req) => { probe.audio.push(req); return probe.audioAnswer ? probe.audioAnswer() : { mime: "audio/ogg; codecs=opus", data: OGG.toString("base64") }; });
       ctx.routes.get("/leak-url", async () => ({ url: await ctx.webhooks.url("events") }));
     },
   });
@@ -26,7 +28,7 @@ function chatPlugin(probe: { ctx?: any; hooks: any[]; actions: any[] }, over: Re
 
 async function harness(t: any, opts: { publicUrl?: string | null; over?: Record<string, unknown> } = {}) {
   const f = await fakePool(); await f.addUser("admin"); await f.addUser("member");
-  const probe = { ctx: undefined as any, hooks: [] as any[], actions: [] as any[] };
+  const probe = { ctx: undefined as any, hooks: [] as any[], actions: [] as any[], audio: [] as any[], audioAnswer: undefined as undefined | (() => unknown) };
   const vault = new Vault(f.pool as never, { encryptionKey: Buffer.alloc(32, 5) } as never);
   const host = new PluginHost(f.pool as never, { plugins: [chatPlugin(probe, opts.over)], encryptionKey: Buffer.alloc(32, 9), sink: () => undefined, publicUrl: opts.publicUrl === undefined ? "https://floq.example.com" : opts.publicUrl });
   await host.load();
@@ -47,7 +49,7 @@ async function harness(t: any, opts: { publicUrl?: string | null; over?: Record<
   await v1("admin-token", "POST", "/v1/plugins/chatty/enable");
   // The list as the app gets it (the HTTP route also filters by organization, which this fixture has no tables for): JSON round trip included.
   const list = async (userId: string) => JSON.parse(JSON.stringify(await notifications.list(userId))) as any[];
-  return { ...f, host, v1, raw, probe, notifications, list, ctx: () => probe.ctx };
+  return { ...f, host, v1, raw, probe, notifications, list, port, ctx: () => probe.ctx };
 }
 
 test("publicBaseFrom: explicit wins, a loopback auth URL gives null, trailing slashes go", () => {
@@ -206,4 +208,82 @@ test("cleanPluginNote: text is cleaned, a bad avatar is dropped, actions and tar
   bad({ kind: "approval" });
   const plain = cleanPluginNote({ plugin, note: { title: "Hi" } });
   assert.deepEqual([plain.plugin.actions, plain.plugin.target, plain.priv.route], [[], null, null]);
+});
+
+// ---- audio attachments (a voice note played from the island) ----
+const audioNote = (over: Record<string, unknown> = {}) => note({ body: "Voice message", audio: { route: "/notify/audio", duration: 7.4321, waveform: [0, 0.5, 1, 2, -1, 0.333, 0.9, 0.1], played: true }, data: { session: "work", chatId: "1@c.us", msgId: "M1" }, ...over });
+const getAudio = (h: { port: number }, id: string, token?: string, extra = "") => fetch(`http://127.0.0.1:${h.port}/v1/notifications/${id}/audio${extra}`, { headers: token ? { Authorization: "Bearer " + token } : {} });
+
+test("ctx.notify with audio: the card gets duration and waveform; the audio route stays on the server", async (t) => {
+  const h = await harness(t);
+  const frames: any[] = []; h.notifications.subscribe("admin", (f) => frames.push(f));
+  await h.ctx().notify("admin", audioNote());
+  const n = (await h.list("admin"))[0];
+  assert.deepEqual(n.plugin.audio, { duration: 7.432, waveform: [0, 0.5, 1, 1, 0, 0.33, 0.9, 0.1] });
+  assert.ok(!JSON.stringify([n, frames]).includes("/notify/audio") && !JSON.stringify([n, frames]).includes("M1"));
+  // unknown duration and waveform are fine; a note without audio has no audio part
+  await h.ctx().notify("admin", audioNote({ tag: "chat:2", audio: { route: "/notify/audio", duration: -3, waveform: ["x"] } }));
+  assert.deepEqual((await h.list("admin")).find((x) => x.plugin.tag === "chat:2").plugin.audio, { duration: null, waveform: null });
+  await h.ctx().notify("admin", note({ tag: "chat:3" }));
+  assert.equal("audio" in (await h.list("admin")).find((x) => x.plugin.tag === "chat:3").plugin, false);
+  for (const audio of [{}, { route: "notify/audio" }, { route: "/a/../b" }, "x"]) await assert.rejects(h.ctx().notify("admin", audioNote({ audio })), /audio\.route/);
+});
+
+test("notification audio: only the signed-in owner gets the bytes, through the plugin's own route with the stored data", async (t) => {
+  const h = await harness(t);
+  const { id } = await h.ctx().notify("admin", audioNote());
+  const plain = await h.ctx().notify("admin", note({ tag: "chat:9" }));
+  // no session, someone else's session, unknown id, a notification without audio: nothing reaches the plugin
+  assert.equal((await getAudio(h, id)).status, 401);
+  assert.equal((await getAudio(h, id, "wrong-token")).status, 401);
+  assert.equal((await getAudio(h, id, undefined, "?token=admin-token")).status, 401);
+  assert.equal((await getAudio(h, id, "member-token")).status, 404);
+  assert.equal((await getAudio(h, "no-such-id", "admin-token")).status, 404);
+  assert.equal((await getAudio(h, plain.id, "admin-token")).status, 404);
+  assert.equal(h.probe.audio.length, 0);
+  const r = await getAudio(h, id, "admin-token", "?route=/leak-url&data=evil&userId=member");
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "audio/ogg; codecs=opus");
+  assert.equal(r.headers.get("cache-control"), "private, no-store");
+  assert.equal(r.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), OGG);
+  assert.equal(h.probe.audio.length, 1);
+  assert.equal(h.probe.audio[0].userId, "admin");
+  assert.deepEqual(h.probe.audio[0].body, { notificationId: id, audio: "fetch", data: { session: "work", chatId: "1@c.us", msgId: "M1" } });
+  // listening does not mark the notification read (the user may still answer it)
+  assert.equal((await h.list("admin")).find((x) => x.id === id).readAt, null);
+  // other methods on the audio address do nothing
+  assert.equal((await h.v1("admin-token", "POST", `/v1/notifications/${id}/audio`, {})).status, 404);
+});
+
+test("notification audio: only audio leaves; a plugin error comes back as is; a disabled plugin answers 404", async (t) => {
+  const h = await harness(t);
+  const { id } = await h.ctx().notify("admin", audioNote());
+  for (const [answer, status] of [[{ mime: "text/html", data: OGG.toString("base64") }, 415], [{ mime: "audio/ogg\r\nX-Evil: 1", data: "AAAA" }, 415], [{ mime: "audio/ogg" }, 502], [{ mime: "audio/ogg", data: "" }, 502], [null, 415]] as const) {
+    h.probe.audioAnswer = () => answer;
+    assert.equal((await getAudio(h, id, "admin-token")).status, status, JSON.stringify(answer));
+  }
+  h.probe.audioAnswer = () => { throw h.ctx().httpError(503, "media_busy", "Try again in a moment."); };
+  const busy = await getAudio(h, id, "admin-token");
+  assert.deepEqual([busy.status, (await busy.json()).error.code], [503, "media_busy"]);
+  h.probe.audioAnswer = () => ({ mime: "audio/mpeg", data: OGG.toString("base64") });
+  assert.equal((await getAudio(h, id, "admin-token")).headers.get("content-type"), "audio/mpeg");
+  await h.v1("admin-token", "POST", "/v1/plugins/chatty/disable");
+  assert.equal((await getAudio(h, id, "admin-token")).status, 404);
+});
+
+test("notification audio played: tells the plugin once asked for, as the owner, and leaves the notification unread", async (t) => {
+  const h = await harness(t);
+  const { id } = await h.ctx().notify("admin", audioNote());
+  const played = (token: string | null, nid: string) => h.v1(token, "POST", `/v1/notifications/${nid}/audio/played`, { data: { msgId: "evil" } });
+  assert.equal((await played(null, id)).status, 401);
+  assert.equal((await played("member-token", id)).status, 404);
+  assert.equal(h.probe.audio.length, 0);
+  assert.deepEqual((await played("admin-token", id)).json, { ok: true });
+  assert.deepEqual(h.probe.audio.map((a) => [a.userId, a.body]), [["admin", { notificationId: id, audio: "played", data: { session: "work", chatId: "1@c.us", msgId: "M1" } }]]);
+  assert.equal((await h.list("admin")).find((x) => x.id === id).readAt, null);
+  // a plugin that did not ask for it is not called
+  const quiet = await h.ctx().notify("admin", audioNote({ tag: "chat:q", audio: { route: "/notify/audio" } }));
+  assert.deepEqual((await played("admin-token", quiet.id)).json, { ok: true });
+  assert.equal(h.probe.audio.length, 1);
 });
