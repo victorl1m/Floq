@@ -139,3 +139,15 @@ button.island-notification-action { background:var(--level); color:#0b0b0c; }
 @media (forced-colors:active) { .island-avatar, .island-reply input { border:1px solid CanvasText; } }
 .island-pill-title { min-width:0; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
 .island-pill-more { color:#8e8e93; font-size:11px; }
+/* The audio of a notification (a voice note): the app's player in the island's colours. The play button is the accent, like the card's primary action. */
+.island-audio { margin-top:12px; padding:8px 12px 7px 8px; border-radius:20px; background:#1c1c1e; border:1px solid rgba(255,255,255,.08); color:#fff;
+  --fq-audio-accent:var(--island-accent); --fq-audio-fg:#fff; --fq-audio-rest:rgba(255,255,255,.26); --fq-audio-meta:#8e8e93; --fq-audio-play-bg:var(--island-accent); --fq-audio-play-fg:var(--island-accent-foreground); --fq-audio-play-hover:var(--island-accent); --fq-audio-icon:20px; --fq-audio-rate-bg:#2a2a2c; }
+.island-audio .fq-audio { column-gap:10px; }
+.island-audio .fq-audio-play:hover:not(:disabled) { filter:brightness(1.12); }
+.island-audio-error { margin:6px 4px 0 !important; color:#ff453a; font-size:11px; line-height:1.35; }
+.island-pill-playing { display:inline-flex; align-items:center; gap:2px; height:12px; flex:none; }
+.island-pill-playing i { width:2px; height:100%; border-radius:1px; background:var(--island-accent); transform-origin:center; animation:island-eq 900ms ease-in-out infinite; }
+.island-pill-playing i:nth-child(2) { animation-delay:-300ms; } .island-pill-playing i:nth-child(3) { animation-delay:-600ms; }
+@keyframes island-eq { 0%, 100% { transform:scaleY(.35); } 50% { transform:scaleY(1); } }
+@media (prefers-reduced-motion:reduce) { .island-pill-playing i { animation:none; transform:scaleY(.7); } }
+@media (forced-colors:active) { .island-audio { border:1px solid CanvasText; } }

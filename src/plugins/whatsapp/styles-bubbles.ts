@@ -128,22 +128,8 @@ export const BUBBLES_CSS = `
 .wa-doc-dl:focus-visible{outline:2px solid var(--wa-accent);outline-offset:2px}
 
 /* voice notes and audio */
-.wa-audio{display:flex;align-items:center;gap:8px;min-width:min(250px,62cqw);padding:1px 0}
+.wa-audio{display:flex;align-items:center;gap:8px;min-width:min(250px,62cqw);padding:1px 0;--fq-audio-accent:var(--wa-accent-text);--fq-audio-fg:var(--wa-text);--fq-audio-play-fg:var(--wa-icon);--fq-audio-meta:var(--wa-meta)}
 .wa-ptt{min-width:min(280px,66cqw)}
-.wa-aplay{flex:none;display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--wa-icon);cursor:pointer}
-.wa-aplay:hover{background:color-mix(in srgb,var(--wa-text) 8%,transparent)}
-.wa-aplay:focus-visible{outline:2px solid var(--wa-accent);outline-offset:-1px}
-.wa-aplay svg{width:26px;height:26px}
-.wa-abody{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
-.wa-bars{position:relative;display:flex;align-items:center;gap:2px;height:28px;cursor:pointer;touch-action:none;border-radius:4px}
-.wa-bars:focus-visible{outline:2px solid var(--wa-accent);outline-offset:2px}
-.wa-bars i{flex:1;min-width:2px;max-width:4px;border-radius:2px;background:color-mix(in srgb,var(--wa-text) 28%,transparent)}
-.wa-bars i[data-on]{background:var(--wa-accent-text)}
-.wa-knob{position:absolute;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:var(--wa-accent-text);pointer-events:none}
-.wa-ameta{display:flex;justify-content:space-between;gap:8px;min-width:0;font-size:11.5px;line-height:14px;color:var(--wa-meta);font-variant-numeric:tabular-nums}
-.wa-aname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wa-speed{flex:none;min-width:38px;height:26px;padding:0 6px;border:0;border-radius:13px;background:color-mix(in srgb,var(--wa-text) 12%,transparent);color:var(--wa-text);font-size:12px;font-weight:600;cursor:pointer}
-.wa-speed:focus-visible{outline:2px solid var(--wa-accent);outline-offset:1px}
 .wa-ptt .wa-avatar-sm{width:44px;height:44px}
 
 /* link preview, location, contact, poll */

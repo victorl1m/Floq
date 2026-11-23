@@ -1152,6 +1152,22 @@ export class RuntimeClient {
   markNotificationsRead = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/read", { ids });
   clearNotifications = (ids: string[] | "all") => this.call<unknown>("POST", "/v1/notifications/clear", { ids });
   /** An action button of a plugin notification: the runtime runs that plugin's own route as this user. */
+  /** The audio attachment of a plugin notification (a voice note). The endpoint needs the bearer token, which an <audio src> cannot send: fetch it as a Blob. */
+  async notificationAudio(id: string): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    let response: Response;
+    try { response = await fetch(`${this.baseUrl}/v1/notifications/${encodeURIComponent(id)}/audio`, { headers }); }
+    catch { throw new RuntimeError(0, "network", "Runtime unreachable"); }
+    if (!response.ok) {
+      if (response.status === 401 && this.token) this.onUnauthorized?.();
+      const payload = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+      throw new RuntimeError(response.status, payload?.error?.code ?? "http_" + response.status, payload?.error?.message ?? "Could not load the audio");
+    }
+    return response.blob();
+  }
+  /** The user started listening: the plugin may tell the sender (a played receipt). */
+  notificationAudioPlayed = (id: string) => this.call<{ ok: boolean }>("POST", `/v1/notifications/${encodeURIComponent(id)}/audio/played`, {});
   notificationAction = (id: string, actionId: string, input?: string) => this.call<{ ok: boolean; result?: unknown }>("POST", `/v1/notifications/${encodeURIComponent(id)}/action`, { actionId, ...(input !== undefined ? { input } : {}) });
 
   // --- agy swarm mirror (virtual agents); older runtimes answer 404 ---

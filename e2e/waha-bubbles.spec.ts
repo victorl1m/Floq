@@ -192,20 +192,93 @@ for (const theme of ['light', 'dark']) {
       await first.getByRole('button', { name: /^Play voice message/ }).click();
       await expect(first.getByRole('button', { name: /^Pause voice message/ })).toBeVisible({ timeout: 8000 });
       await page.waitForTimeout(1400);
-      await expect(first.locator('.wa-atime')).not.toHaveText('0:06');
-      await expect(first.locator('.wa-speed')).toBeVisible();
-      await first.locator('.wa-speed').click();
-      await expect(first.locator('.wa-speed')).toHaveText('1.5x');
+      await expect(first.locator('.fq-audio-time')).not.toHaveText('0:06');
+      await expect(first.locator('.fq-audio-rate')).toBeVisible();
+      await first.locator('.fq-audio-rate').click();
+      await expect(first.locator('.fq-audio-rate')).toHaveText('1.5x');
       await shot(page, theme, 'voice-playing');
       await second.scrollIntoViewIfNeeded();
       await second.getByRole('button', { name: /^Play voice message/ }).click();
       await expect(second.getByRole('button', { name: /^Pause voice message/ })).toBeVisible({ timeout: 8000 });
       await expect(first.getByRole('button', { name: /^Play voice message/ })).toBeVisible();
       // seek with the keyboard
-      await second.locator('.wa-bars').focus();
+      await second.locator('.fq-audio-track').focus();
       await page.keyboard.press('ArrowRight');
-      expect(Number(await second.locator('.wa-bars').getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(4);
+      expect(Number(await second.locator('.fq-audio-track').getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(4);
     });
+
+    test('voice note progress is smooth: it moves on (nearly) every frame and nothing in the message list re-renders', async ({ page }) => {
+      await open(page, theme);
+      await scrollTo(page, 'ptt', 0);
+      const first = msg(page, 'ptt', 0);
+      await first.getByRole('button', { name: /^Play voice message/ }).click();
+      await expect(first.getByRole('button', { name: /^Pause voice message/ })).toBeVisible({ timeout: 8000 });
+      await page.waitForTimeout(700); // the decoded waveform and the speed button are in: the player is at rest
+      await first.evaluate((el) => {
+        const w = window as any;
+        const knob = el.querySelector('.fq-audio-knob') as HTMLElement, on = el.querySelector('.fq-audio-bars-on') as HTMLElement;
+        w.__fqAudioRenders = 0; w.__frames = []; w.__mutations = [];
+        // Everything that changes in the log while it plays. The player may touch the style of its two moving parts and the clock text; nothing else may change.
+        const log = document.querySelector('.wa-log')!;
+        w.__observer = new MutationObserver((list) => { for (const m of list) { const t = m.target instanceof Element ? m.target : m.target.parentElement!; w.__mutations.push({ type: m.type, attr: m.attributeName, cls: t.className, inPlayer: !!t.closest('.fq-audio') }); } });
+        w.__observer.observe(log, { subtree: true, childList: true, attributes: true, characterData: true });
+        const tick = () => { if (!w.__frames) return; w.__frames.push({ x: knob.getBoundingClientRect().left, clip: on.style.clipPath }); requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      });
+      await page.waitForTimeout(1500);
+      const r = await page.evaluate(() => { const w = window as any; const frames = w.__frames as { x: number; clip: string }[]; w.__frames = null; w.__observer.disconnect(); return { frames, renders: w.__fqAudioRenders as number, mutations: w.__mutations as { type: string; attr: string | null; cls: string; inPlayer: boolean }[] }; });
+      expect(r.frames.length).toBeGreaterThan(12); // a loaded CI machine draws fewer frames; what matters is that each one moves
+      const moved = r.frames.slice(1).filter((f, i) => f.x > r.frames[i].x && f.clip !== r.frames[i].clip).length;
+      expect(moved / (r.frames.length - 1)).toBeGreaterThan(0.9);
+      expect(r.frames.at(-1)!.x).toBeGreaterThan(r.frames[0].x + 20);
+      // no React render of any audio bubble or player, so none of the list
+      expect(r.renders).toBe(0);
+      expect(r.mutations.filter((m) => !m.inPlayer)).toEqual([]);
+      const allowed = (m: { type: string; attr: string | null; cls: string }) => (m.type === 'attributes' && ((m.attr === 'style' && /fq-audio-(knob|bars-on)/.test(m.cls)) || (/^aria-value/.test(m.attr ?? '') && /fq-audio-track/.test(m.cls)))) || (m.type !== 'attributes' && /fq-audio-time/.test(m.cls));
+      expect(r.mutations.filter((m) => !allowed(m))).toEqual([]);
+      // paused: it stands still
+      await first.getByRole('button', { name: /^Pause voice message/ }).click();
+      await expect(first.getByRole('button', { name: /^Play voice message/ })).toBeVisible();
+      const x1 = await first.locator('.fq-audio-knob').evaluate((e) => e.getBoundingClientRect().left);
+      await page.waitForTimeout(400);
+      expect(await first.locator('.fq-audio-knob').evaluate((e) => e.getBoundingClientRect().left)).toBe(x1);
+      expect(x1).toBeGreaterThan(r.frames[0].x);
+    });
+
+    for (const [label, size] of [['wide', WIDE], ['narrow', NARROW], ['tiny', { width: 320, height: 760 }]] as const) {
+      test(`voice note layout at ${label} width: the play button, the waveform and the knob share one centre line, paused and playing`, async ({ page }) => {
+        await open(page, theme, size);
+        const centre = (el: Element) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
+        const check = async (kind: string, n: number) => {
+          const m = msg(page, kind, n);
+          const button = await m.locator('.fq-audio-play').evaluate(centre), wave = await m.locator('.fq-audio-track').evaluate(centre), knob = await m.locator('.fq-audio-knob').evaluate(centre);
+          expect(Math.abs(button - wave), `${kind} ${n} button vs waveform`).toBeLessThanOrEqual(1);
+          expect(Math.abs(button - knob), `${kind} ${n} button vs knob`).toBeLessThanOrEqual(1);
+          // the time is under the waveform and starts where it starts
+          const time = (await m.locator('.fq-audio-time').boundingBox())!, track = (await m.locator('.fq-audio-track').boundingBox())!;
+          expect(time.y).toBeGreaterThanOrEqual(track.y + track.height - 0.5);
+          expect(Math.abs(time.x - track.x)).toBeLessThanOrEqual(1);
+          expect(track.width).toBeGreaterThan(60);
+          // nothing of the player leaves its bubble
+          const bubble = (await m.locator('.wa-bubble').boundingBox())!, player = (await m.locator('.wa-audio').boundingBox())!;
+          expect(player.x + player.width).toBeLessThanOrEqual(bubble.x + bubble.width + 0.5);
+        };
+        await scrollTo(page, 'ptt', 0);
+        // received voice note, own voice note, an audio file with its name
+        await check('ptt', 0); await check('ptt', 1); await check('audio', 0);
+        const first = msg(page, 'ptt', 0);
+        await first.getByRole('button', { name: /^Play voice message/ }).click();
+        await expect(first.getByRole('button', { name: /^Pause voice message/ })).toBeVisible({ timeout: 8000 });
+        await page.waitForTimeout(900);
+        await check('ptt', 0); // playing: the speed button is there now
+        const rate = await first.locator('.fq-audio-rate').evaluate(centre), button = await first.locator('.fq-audio-play').evaluate(centre);
+        expect(Math.abs(button - rate)).toBeLessThanOrEqual(1);
+        if (label !== 'tiny') await shot(page, theme, 'voice-aligned-' + label);
+        await first.getByRole('button', { name: /^Pause voice message/ }).click();
+        await expect(first.getByRole('button', { name: /^Play voice message/ })).toBeVisible();
+        await check('ptt', 0);
+      });
+    }
 
     test('unavailable media says so and can retry', async ({ page }) => {
       await open(page, theme);

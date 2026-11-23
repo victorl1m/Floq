@@ -7,6 +7,8 @@ export type NotificationPlugin = {
   id: string; name: string; icon: string | null; kind: "message"; subtitle: string | null; avatar: string | null; tag: string | null;
   actions: { id: string; label: string; input?: { placeholder: string } }[];
   target: { view: string; params: Record<string, string> } | null;
+  /** An audio attachment (a voice note): seconds and bar heights (0 to 1) when the plugin knows them. The bytes come from the runtime. */
+  audio?: { duration: number | null; waveform: number[] | null };
 };
 export type AppNotification = {
   id: string;

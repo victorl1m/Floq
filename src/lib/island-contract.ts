@@ -2,8 +2,18 @@ import type { ApprovalRequest, DecisionView } from './runtime/types';
 import type { AppNotification } from './notifications';
 
 export type AttentionItem = { kind: 'approval'; id: string; createdAt: string; approval: ApprovalRequest } | { kind: 'decision'; id: string; createdAt: string; decision: DecisionView } | { kind: 'notification'; id: string; createdAt: string; notification: AppNotification };
-export interface IslandSnapshot { epoch: string; revision: number; connected: boolean; items: AttentionItem[]; busy: string[]; error?: string }
-export type IslandIntent = { type: 'ready' } | { type: 'approval'; id: string; decision: 'allow' | 'deny' } | { type: 'decision'; id: string; answers: DecisionAnswer[] } | { type: 'terminal'; id: string} | { type: 'notification'; id: string; action: 'dismiss' | 'open' | 'hold' } | { type: 'notification-action'; id: string; actionId: string; input?: string };
+/**
+ * The audio of a notification. It plays in the main window (which holds the runtime session); the island is its remote control and draws the
+ * progress itself between snapshots: while "playing", the position now is `position + (Date.now() - at) / 1000 * rate`.
+ */
+export interface IslandAudioState { id: string; status: 'loading' | 'playing' | 'paused' | 'error'; position: number; at: number; duration: number | null; rate: number; peaks: number[] | null; error?: string; rev: number }
+export type IslandAudioOp = 'play' | 'pause' | 'seek' | 'rate';
+export const audioPositionAt = (a: Pick<IslandAudioState, 'status' | 'position' | 'at' | 'duration' | 'rate'>, now: number): number => {
+  const t = a.status === 'playing' ? a.position + Math.max(0, now - a.at) / 1000 * a.rate : a.position;
+  return Math.max(0, a.duration ? Math.min(a.duration, t) : t);
+};
+export interface IslandSnapshot { epoch: string; revision: number; connected: boolean; items: AttentionItem[]; busy: string[]; error?: string; audio?: IslandAudioState }
+export type IslandIntent = { type: 'ready' } | { type: 'approval'; id: string; decision: 'allow' | 'deny' } | { type: 'decision'; id: string; answers: DecisionAnswer[] } | { type: 'terminal'; id: string} | { type: 'notification'; id: string; action: 'dismiss' | 'open' | 'hold' } | { type: 'notification-action'; id: string; actionId: string; input?: string } | { type: 'notification-audio'; id: string; op: IslandAudioOp; value?: number };
 export interface DecisionAnswer { questionId: string; optionIds: string[]; text: string }
 const RANK: Record<string, number> = { approval: 0, notification: 2 };
 /** Approvals first, then decisions (oldest first), then notifications (newest first): a notification never outranks a request waiting on the user. */
@@ -69,7 +79,8 @@ export function capAttention<T extends { kind: string }>(items: T[]): T[] {
     const notification = (item as unknown as { notification?: AppNotification }).notification;
     if (item.kind === 'notification' && notification) {
       const p = notification.plugin;
-      const plugin = p ? { plugin: { ...p, name: capText(p.name, 60), subtitle: p.subtitle && capText(p.subtitle, 80), avatar: safeAvatar(p.avatar), actions: p.actions.slice(0, 4).map(a => ({ ...a, label: capText(a.label, 40), ...(a.input ? { input: { placeholder: capText(a.input.placeholder ?? '', 80) } } : {}) })) } } : {};
+      const audio = p?.audio ? { audio: { duration: typeof p.audio.duration === 'number' && Number.isFinite(p.audio.duration) && p.audio.duration > 0 ? p.audio.duration : null, waveform: Array.isArray(p.audio.waveform) && p.audio.waveform.length <= 64 && p.audio.waveform.every(v => typeof v === 'number' && Number.isFinite(v)) ? p.audio.waveform.map(v => Math.min(1, Math.max(0, v))) : null } } : {};
+      const plugin = p ? { plugin: { ...p, ...audio, name: capText(p.name, 60), subtitle: p.subtitle && capText(p.subtitle, 80), avatar: safeAvatar(p.avatar), actions: p.actions.slice(0, 4).map(a => ({ ...a, label: capText(a.label, 40), ...(a.input ? { input: { placeholder: capText(a.input.placeholder ?? '', 80) } } : {}) })) } } : {};
       return { ...item, notification: { ...notification, title: capText(notification.title, MAX_NOTIFICATION_TITLE_CHARS), body: notification.body && capText(notification.body, MAX_NOTIFICATION_BODY_CHARS), ...plugin } };
     }
     const approval = (item as unknown as { approval?: ApprovalRequest }).approval;

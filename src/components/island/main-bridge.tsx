@@ -6,7 +6,8 @@ import { markApprovalOutcome, removeApproval, useApprovalState } from '@/lib/app
 import { useAttentionState } from '@/lib/attention';
 import { useNotifications } from '@/components/notifications/notifications-provider';
 import { useNotificationAction } from '@/components/notifications/use-notification-action';
-import { dismissAfterMs, MAX_REPLY_CHARS, notificationAttention, capAttention, deferEmptySnapshot, EMPTY_DEFER_AFTER_ANSWER_MS, EMPTY_DEFER_MS, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
+import { NotificationAudio } from './notification-audio';
+import { dismissAfterMs, MAX_REPLY_CHARS, notificationAttention, capAttention, deferEmptySnapshot, EMPTY_DEFER_AFTER_ANSWER_MS, EMPTY_DEFER_MS, orderAttention, sameSnapshotContent, validAnswers, type AttentionItem, type IslandAudioState, type IslandIntent, type IslandSnapshot } from '@/lib/island-contract';
 
 export function useIslandBridge() {
   const { client } = useRuntime();
@@ -24,6 +25,20 @@ export function useIslandBridge() {
   const dismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   /** Notifications the user is answering in the island (its reply field got focus): no auto-dismiss any more. */
   const heldNotifications = useRef(new Set<string>());
+  /** The audio of a notification plays here, where the runtime session is; the island gets its state in the snapshot. */
+  const [audio, setAudio] = useState<IslandAudioState | null>(null);
+  const audioEngine = useRef<NotificationAudio | null>(null);
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  useEffect(() => {
+    const engine = new NotificationAudio({
+      fetch: id => clientRef.current ? clientRef.current.notificationAudio(id) : Promise.reject(Object.assign(new Error('Floq is not connected.'), { status: 0 })),
+      played: id => { void clientRef.current?.notificationAudioPlayed(id).catch(() => undefined); },
+      publish: setAudio,
+    });
+    audioEngine.current = engine;
+    return () => { audioEngine.current = null; engine.dispose(); setAudio(null); };
+  }, []);
   const [ready, setReady] = useState(true);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState<string[]>([]);
@@ -60,7 +75,9 @@ export function useIslandBridge() {
     }
   }, [notificationKey]);
   useEffect(() => () => dismissTimers.current.forEach(clearTimeout), []);
-  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected, items: capAttention(queue), busy, error };
+  // A notification that left the island (dismissed, read, answered, replaced) stops playing.
+  useEffect(() => { audioEngine.current?.retain(new Set(notificationKey ? notificationKey.split(',') : [])); }, [notificationKey]);
+  const candidate: IslandSnapshot = { epoch: epoch.current, revision: revision.current, connected: !!client && connected, items: capAttention(queue), busy, error, ...(audio && queue.some(i => i.id === audio.id) ? { audio } : {}) };
   const contentKey = JSON.stringify(candidate, (key, value) => key === 'revision' ? undefined : value);
   const publish = () => invoke('island_publish', { snapshot: latest.current });
   const publishRef = useRef(publish); publishRef.current = publish;
@@ -74,6 +91,18 @@ export function useIslandBridge() {
       if (intent.action === 'open') notificationRefs.current.run(item.notification);
       notificationRefs.current.markRead([item.id]);
       dismissFromIsland(item.id);
+      return;
+    }
+    if (intent.type === 'notification-audio') {
+      // The island's player. Listening keeps the card (no auto-dismiss) like typing a reply does.
+      const item = latest.current.items.find(i => i.id === intent.id);
+      const engine = audioEngine.current;
+      if (!engine || !item || item.kind !== 'notification' || !item.notification.plugin?.audio) return;
+      heldNotifications.current.add(item.id); clearTimeout(dismissTimers.current.get(item.id));
+      if (intent.op === 'play') void engine.play(item.id);
+      else if (intent.op === 'pause') engine.pause(item.id);
+      else if (intent.op === 'seek' && typeof intent.value === 'number') engine.seek(item.id, intent.value);
+      else if (intent.op === 'rate' && typeof intent.value === 'number') engine.setRate(item.id, intent.value);
       return;
     }
     if (!client || !connected || inflight.current.has(intent.id)) return;

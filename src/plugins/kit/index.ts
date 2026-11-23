@@ -24,6 +24,8 @@ export * from "@/components/ui/kbd";
 export { toast } from "sonner";
 export { cn } from "cn";
 
+export { VoicePlayer, type VoicePlayerProps } from "@/components/audio/voice-player";
+export { claimPlayback, decodeWaveform, nextPlaybackRate, placeholderPeaks, PLAYBACK_RATES, WAVEFORM_BARS } from "@/lib/audio-playback";
 export { PluginPage } from "./plugin-page";
 export { PluginState, type PluginStateKind, type PluginStateProps } from "./plugin-state";
 export { PluginSettingsForm } from "./plugin-settings-form";

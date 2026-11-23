@@ -1,7 +1,7 @@
 // Run: node --experimental-strip-types --test e2e/island-notifications.unit.mts
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autoDismisses, capAttention, dismissAfterMs, initials, safeAvatar, MESSAGE_AUTO_DISMISS_MS, NOTIFICATION_AUTO_DISMISS_MS, MAX_NOTIFICATIONS, notificationAttention, orderAttention } from '../src/lib/island-contract.ts';
+import { audioPositionAt, autoDismisses, capAttention, dismissAfterMs, initials, safeAvatar, MESSAGE_AUTO_DISMISS_MS, NOTIFICATION_AUTO_DISMISS_MS, MAX_NOTIFICATIONS, notificationAttention, orderAttention } from '../src/lib/island-contract.ts';
 
 const n = (id: string, createdAt: string, extra: object = {}) => ({ id, userId: 'u', projectId: null, sessionId: null, sessionName: null, level: 'info', category: 'custom', title: id, body: null, action: null, createdAt, readAt: null, ...extra }) as any;
 
@@ -50,4 +50,24 @@ test('a plugin message: longer on screen, only an inline image as avatar, capped
   assert.equal(safeAvatar(png), png);
   for (const bad of ['data:image/svg+xml;base64,AAAA', 'javascript:alert(1)', 'data:text/html;base64,AAAA', 'data:image/png;base64,' + 'A'.repeat(60_000), null, undefined]) assert.equal(safeAvatar(bad as any), null);
   assert.deepEqual(['Marina Duarte', 'ana', '  ', '+55 11 90000-0001', 'João da Silva'].map(initials), ['MD', 'A', '?', '#', 'JS']);
+});
+
+test('audio position between snapshots: it advances with the clock and the speed while playing, and stops at the end', () => {
+  const base = { position: 2, at: 10_000, duration: 8, rate: 1 };
+  assert.equal(audioPositionAt({ ...base, status: 'paused' }, 15_000), 2);
+  assert.equal(audioPositionAt({ ...base, status: 'loading' }, 15_000), 2);
+  assert.equal(audioPositionAt({ ...base, status: 'playing' }, 11_500), 3.5);
+  assert.equal(audioPositionAt({ ...base, status: 'playing', rate: 2 }, 11_500), 5);
+  assert.equal(audioPositionAt({ ...base, status: 'playing' }, 60_000), 8);
+  assert.equal(audioPositionAt({ ...base, status: 'playing' }, 9_000), 2); // a clock that went back never rewinds
+  assert.equal(audioPositionAt({ ...base, status: 'playing', duration: null }, 60_000), 52);
+});
+
+test('the audio part of a plugin notification reaches the island cleaned: finite duration, at most 64 bars from 0 to 1', () => {
+  const plugin = (audio: unknown) => ({ id: 'waha', name: 'WhatsApp', icon: null, kind: 'message', subtitle: null, avatar: null, tag: null, actions: [], target: null, audio });
+  const cap = (audio: unknown) => (capAttention([{ kind: 'notification', id: 'a', createdAt: 'x', notification: n('a', 'x', { plugin: plugin(audio) }) }]) as any)[0].notification.plugin.audio;
+  assert.deepEqual(cap({ duration: 7, waveform: [0, 0.5, 2, -1] }), { duration: 7, waveform: [0, 0.5, 1, 0] });
+  assert.deepEqual(cap({ duration: Infinity, waveform: Array(65).fill(0.5) }), { duration: null, waveform: null });
+  assert.deepEqual(cap({ duration: -1, waveform: ['x'] }), { duration: null, waveform: null });
+  assert.equal(cap(undefined), undefined);
 });

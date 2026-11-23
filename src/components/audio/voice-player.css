@@ -1,0 +1,29 @@
+/* The app's one audio player (voice notes in a chat, the audio of an island notification). Colours come from the place it sits in:
+   --fq-audio-accent (played part, knob), --fq-audio-rest (bars not played yet), --fq-audio-fg (icons, text), --fq-audio-meta (time). */
+.fq-audio { --_accent:var(--fq-audio-accent, var(--primary, #f97316)); --_fg:var(--fq-audio-fg, currentColor); --_rest:var(--fq-audio-rest, color-mix(in srgb, var(--_fg) 28%, transparent)); --_meta:var(--fq-audio-meta, color-mix(in srgb, var(--_fg) 62%, transparent));
+  /* Row 1 holds the button, the waveform and the speed: all three are centred on the same line. The time sits in a row of its own under the
+     waveform, so it never moves that line. */
+  display:grid; grid-template-columns:auto minmax(0,1fr) auto; grid-template-areas:"play track rate" ". meta meta"; align-items:center; column-gap:8px; row-gap:1px; min-width:0; flex:1; }
+.fq-audio-play { grid-area:play; display:grid; place-items:center; width:36px; height:36px; padding:0; margin:0; border:0; border-radius:50%; background:var(--fq-audio-play-bg, transparent); color:var(--fq-audio-play-fg, var(--_fg)); cursor:pointer; }
+.fq-audio-play:hover:not(:disabled) { background:var(--fq-audio-play-hover, color-mix(in srgb, var(--_fg) 8%, transparent)); filter:none; }
+.fq-audio-play:focus-visible, .fq-audio-rate:focus-visible { outline:2px solid var(--_accent); outline-offset:1px; }
+/* The icon is swapped while the pointer is on it (play, loading, pause). It takes no pointer events, so the element under the pointer is always
+   the button: a container that tracks hover (the island) never loses the "pointer left" of a node that is gone. */
+.fq-audio-play svg { width:var(--fq-audio-icon, 26px); height:var(--fq-audio-icon, 26px); display:block; pointer-events:none; }
+.fq-audio-spin { animation:fq-audio-spin .7s linear infinite; }
+@keyframes fq-audio-spin { to { transform:rotate(360deg); } }
+.fq-audio-track { grid-area:track; position:relative; height:28px; min-width:0; cursor:pointer; touch-action:none; border-radius:4px; outline:none; }
+.fq-audio-track:focus-visible { outline:2px solid var(--_accent); outline-offset:2px; }
+/* Bars of one width spread over the whole track, so a point of the waveform is the same point of the recording at any width. */
+.fq-audio-bars { position:absolute; inset:0; display:flex; align-items:center; justify-content:space-between; gap:1px; pointer-events:none; }
+.fq-audio-bars i { flex:0 1 3px; min-width:1px; border-radius:2px; background:var(--_rest); }
+/* The played part is the same bars in the accent colour, clipped from the right: one element moves, no bar is repainted. */
+.fq-audio-bars-on { clip-path:inset(0 100% 0 0); will-change:clip-path; }
+.fq-audio-bars-on i { background:var(--_accent); }
+.fq-audio-knob { position:absolute; left:0; top:50%; width:100%; height:0; pointer-events:none; will-change:transform; }
+.fq-audio-knob::before { content:''; position:absolute; left:-6px; top:-6px; width:12px; height:12px; border-radius:50%; background:var(--_accent); }
+.fq-audio-meta { grid-area:meta; display:flex; justify-content:space-between; gap:8px; min-width:0; font-size:11.5px; line-height:14px; color:var(--_meta); font-variant-numeric:tabular-nums; }
+.fq-audio-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fq-audio-rate { grid-area:rate; min-width:38px; height:26px; padding:0 6px; margin:0; border:0; border-radius:13px; background:var(--fq-audio-rate-bg, color-mix(in srgb, var(--_fg) 12%, transparent)); color:var(--_fg); font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; cursor:pointer; }
+@media (prefers-reduced-motion:reduce) { .fq-audio-spin { animation:none; } .fq-audio-bars-on, .fq-audio-knob { will-change:auto; } }
+@media (forced-colors:active) { .fq-audio-bars i { background:GrayText; } .fq-audio-bars-on i, .fq-audio-knob::before { background:Highlight; } .fq-audio-play, .fq-audio-rate { border:1px solid ButtonText; } }
