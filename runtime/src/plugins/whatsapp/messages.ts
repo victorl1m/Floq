@@ -1,4 +1,5 @@
 // The message store: rows from webhooks and from WAHA's own history, folded per canonical chat; the chat list and the conversation the UI and agents read.
+import { pgJson } from "./pgsafe.js";
 import type { Core, WebhookEvent } from "./core.js";
 import { notifierOf } from "./notify.js";
 import type { Identity } from "./identity.js";
@@ -112,7 +113,7 @@ export function createStore(core: Core, identity: Identity): Store {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19, CASE WHEN $20::boolean THEN $11::timestamptz ELSE now() END)
          ON CONFLICT (session, msg_id) DO NOTHING RETURNING id`,
         [userId, m.session, m.chatId, m.msgId, m.stanza, m.fromMe, m.sender, m.senderName, m.body, m.hasMedia, m.sentAt.toISOString(), r?.id ?? "", r?.body ?? "", r?.sender ?? "", r?.hasMedia ?? false,
-          m.type, m.media ? JSON.stringify(m.media) : null, Object.keys(m.extra).length ? JSON.stringify(m.extra) : null, m.ack, opts.history === true]);
+          m.type, m.media ? pgJson(m.media) : null, Object.keys(m.extra).length ? pgJson(m.extra) : null, m.ack, opts.history === true]);
       const fresh = ins.rows.length > 0;
       if (!fresh) {
         // Seen before (history sync, or an event repeated): acks only go up, details fill in.
@@ -121,7 +122,7 @@ export function createStore(core: Core, identity: Identity): Store {
              media = CASE WHEN $5::jsonb IS NOT NULL AND (media IS NULL OR media->>'url' IS NULL OR $5::jsonb->>'url' IS NOT NULL) THEN $5::jsonb ELSE media END,
              extra = COALESCE(extra, $6::jsonb), sender_name = CASE WHEN sender_name = '' THEN $7 ELSE sender_name END
            WHERE session = $1 AND msg_id = $2`,
-          [m.session, m.msgId, m.ack, m.type, m.media ? JSON.stringify(m.media) : null, Object.keys(m.extra).length ? JSON.stringify(m.extra) : null, m.senderName]);
+          [m.session, m.msgId, m.ack, m.type, m.media ? pgJson(m.media) : null, Object.keys(m.extra).length ? pgJson(m.extra) : null, m.senderName]);
       }
       if (!m.fromMe && !isGroup(m.chatId) && (m.senderName || m.senderPhone)) await identity.upsertContact(userId, m.chatId, { pushName: m.senderName, phone: m.senderPhone });
       if (!m.fromMe && isGroup(m.chatId) && m.senderName && isUser(m.sender)) await identity.upsertContact(userId, m.sender, { pushName: m.senderName });
@@ -326,7 +327,7 @@ export function createStore(core: Core, identity: Identity): Store {
     async setState(userId, chatId, patch) {
       const cols = ["archived", "pinned", "muted_until", "marked_unread", "cleared_at", "hidden", "labels"].filter((k) => patch[k] !== undefined);
       if (!cols.length) return;
-      const vals = cols.map((k) => (k === "labels" ? JSON.stringify(patch[k]) : patch[k]));
+      const vals = cols.map((k) => (k === "labels" ? pgJson(patch[k]) : patch[k]));
       await q(
         `INSERT INTO {{p}}chat_state (user_id, session, chat_id, ${cols.join(", ")}) VALUES ($1,$S,$2,${cols.map((k, i) => `$${i + 3}${k === "labels" ? "::jsonb" : ""}`).join(", ")})
          ON CONFLICT (user_id, session, chat_id) DO UPDATE SET ${cols.map((k) => `${k} = EXCLUDED.${k}`).join(", ")}, updated_at = now()`, [userId, chatId, ...vals]);
@@ -428,7 +429,7 @@ export function createStore(core: Core, identity: Identity): Store {
     if (!stanza) return;
     const voter = vote.fromMe === true ? "me" : await identity.canonical(userId, normId(vote.participant) || normId(vote.from));
     const options = (Array.isArray(vote.selectedOptions) ? vote.selectedOptions : []).filter((o): o is string => typeof o === "string").slice(0, 12);
-    await q(`INSERT INTO {{p}}poll_votes (user_id, session, stanza, voter, options) VALUES ($1,$S,$2,$3,$4::jsonb) ON CONFLICT (user_id, session, stanza, voter) DO UPDATE SET options = EXCLUDED.options, at = now()`, [userId, stanza, voter, JSON.stringify(options)]);
+    await q(`INSERT INTO {{p}}poll_votes (user_id, session, stanza, voter, options) VALUES ($1,$S,$2,$3,$4::jsonb) ON CONFLICT (user_id, session, stanza, voter) DO UPDATE SET options = EXCLUDED.options, at = now()`, [userId, stanza, voter, pgJson(options)]);
     await touched(userId, stanza, "poll");
   });
   core.on("chat.archive", async (userId, e) => {

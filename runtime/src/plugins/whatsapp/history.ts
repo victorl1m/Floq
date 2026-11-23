@@ -240,7 +240,9 @@ export function createHistory(core: Core, identity: Identity, store: Store): His
         // WAHA answers one contact's lid chat and phone chat together: both ids are the same person.
         if (isUser(target) && isUser(m.chatId) && m.chatId !== target) { const lid = lidOf(target) ?? lidOf(m.chatId), pn = pnOf(target) ?? pnOf(m.chatId); if (lid && pn) { await identity.seen(userId, pn, true); await identity.link(userId, lid, pn); } }
         const saved = isGroup(target) ? { ...m, chatId: target } : m;
-        if ((await store.save(userId, saved, { history: true })) === "new") pageNew++;
+        // One message the database refuses must not end the whole import: log it and go on.
+        try { if ((await store.save(userId, saved, { history: true })) === "new") pageNew++; }
+        catch (e) { ctx.log.warn("history message skipped", { chatId: saved.chatId, error: e instanceof Error ? e.message.slice(0, 200) : "error" }); continue; }
         if (!touched.has(saved.chatId)) { touched.add(saved.chatId); await seenUntil(userId, saved.chatId, o.startedAt); }
       }
       offset += HISTORY_PAGE; seen += pageSeen; total += pageSeen; added += pageNew;

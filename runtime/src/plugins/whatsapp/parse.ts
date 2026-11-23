@@ -1,5 +1,6 @@
 // WAHA payloads -> rows. Pure: no I/O. Engines differ (WEBJS: _data.type and flat fields; NOWEB: _data.message.<kind>Message; GOWS: _data.Info + _data.Message),
 // so every reader looks in all the places and matches proto field names case-insensitively.
+import { wellFormed } from "./pgsafe.js";
 import { CHAT_ID, digitsOf, isGroup, lidOf, normId, pnOf, stanzaOf } from "./ids.js";
 
 export type MessageType = "chat" | "image" | "video" | "audio" | "ptt" | "document" | "sticker" | "location" | "vcard" | "poll" | "call" | "system" | "reaction" | "unknown";
@@ -25,7 +26,7 @@ export interface Parsed {
 
 export const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const s = (v: unknown, max: number) => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "").slice(0, max);
-const text = (v: unknown, max: number) => s(v, max).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+const text = (v: unknown, max: number) => wellFormed(s(v, max).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ""));
 const num = (v: unknown): number | undefined => { const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : rec(v).low !== undefined ? Number(rec(v).low) : NaN; return Number.isFinite(n) ? n : undefined; };
 /** Case-insensitive property read (proto JSON is camelCase on NOWEB and PascalCase-ish on some GOWS builds). */
 export function ci(o: Record<string, unknown>, ...names: string[]): unknown {

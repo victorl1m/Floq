@@ -1,5 +1,6 @@
 // WhatsApp status (stories): incoming statuses arrive as message events from "status@broadcast" and are kept for 24 hours in {{p}}statuses.
 // WAHA deletes downloaded files after a few minutes, so media is cached as soon as the event arrives. Posting and deleting go through WAHA's /status endpoints.
+import { pgJson } from "./pgsafe.js";
 import type { Deps } from "./extras.js";
 import { digitsOf, displayDigits, normId } from "./ids.js";
 import { parseMessage, participantOf, rec } from "./parse.js";
@@ -26,7 +27,7 @@ export function registerStatus({ core, identity, store }: Deps): void {
   async function keep(userId: string, s: { stanza: string; msgId: string; poster: string; name: string; mine: boolean; type: string; body: string; bg: string; media: Record<string, unknown> | null; at: Date }) {
     const r = await q(
       `INSERT INTO {{p}}statuses (user_id, session, stanza, msg_id, poster, poster_name, mine, type, body, bg, media, sent_at) VALUES ($1,$S,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
-       ON CONFLICT (user_id, session, stanza) DO NOTHING RETURNING stanza`, [userId, s.stanza, s.msgId, s.poster, s.name, s.mine, s.type, s.body.slice(0, 2000), s.bg, s.media ? JSON.stringify(s.media) : null, s.at.toISOString()]);
+       ON CONFLICT (user_id, session, stanza) DO NOTHING RETURNING stanza`, [userId, s.stanza, s.msgId, s.poster, s.name, s.mine, s.type, s.body.slice(0, 2000), s.bg, s.media ? pgJson(s.media) : null, s.at.toISOString()]);
     await purge(userId);
     return r.rows.length > 0;
   }

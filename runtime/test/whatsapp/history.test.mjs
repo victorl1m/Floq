@@ -548,3 +548,25 @@ test("the scheduled refresh reads the contacts of every working account when the
   try { Date.now = () => now() + 6 * 3600_000 + 1000; await h.tick(); for (let i = 0; i < 2000 && reqs(h, /^\/api\/contacts\/all$/).length < n + 4; i++) await sleep(5); } finally { Date.now = now; }
   assert.equal(reqs(h, /^\/api\/contacts\/all$/).length, n + 4, "two accounts, two pages each");
 });
+
+test("a message Postgres would refuse (an emoji cut in half, a NUL) is cleaned and stored; the import does not fail", async () => {
+  // A link preview description longer than 300 characters is cut at 300 code units: here the cut falls inside an emoji (a lone surrogate),
+  // which JSON.stringify writes as "\ud83d" and JSONB refuses with "invalid input syntax for type json".
+  const desc = "x".repeat(299) + "🔥 tail";
+  const msgs = [
+    { id: "false_" + ANA + "_P2", timestamp: 1690000120, fromMe: false, from: ANA, body: "see https://example.com", hasMedia: false,
+      _data: { message: { extendedTextMessage: { text: "see https://example.com", matchedText: "https://example.com", title: "Ti\u0000tle", description: desc } } } },
+    { id: "false_" + ANA + "_P1", timestamp: 1690000060, fromMe: false, from: ANA, body: "hi \ud83d", hasMedia: false },
+  ];
+  const w = { sessions: { default: { status: "SCAN_QR_CODE", engine: "NOWEB", config: { webhooks: [HOOK], noweb: { store: STORE } } } },
+    store: { default: { chats: [{ id: ANA, name: "Ana Lima" }], messages: { [ANA]: msgs }, contacts: [], lids: [], groups: [] } } };
+  const h = await start(w);
+  await h.event("session.status", { status: "SCAN_QR_CODE" });
+  Object.assign(w.sessions.default, { status: "WORKING", me: ME });
+  await h.event("session.status", { status: "WORKING" }, { me: ME });
+  const s = await settled(h);
+  assert.equal(s.error, null); assert.equal(s.state, "done");
+  assert.equal(await count(h), 2);
+  const page = await h.messages(ANA);
+  assert.ok(page.every((m) => m.body.isWellFormed() && !m.body.includes("\u0000")));
+});

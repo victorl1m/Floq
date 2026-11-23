@@ -1,4 +1,5 @@
 // The inbox routes of the UI: read, send every kind of message, act on messages, media and avatars. A click in the UI is consent, so nothing here asks for approval.
+import { pgJson } from "./pgsafe.js";
 import type { Core } from "./core.js";
 import type { Identity } from "./identity.js";
 import type { Store } from "./messages.js";
@@ -168,7 +169,7 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     const o = b(body), { x } = await msg(userId, o.messageId);
     const votes = (Array.isArray(o.options) ? o.options : []).filter((v): v is string => typeof v === "string").slice(0, 12);
     await core.guard(() => core.waha(userId, "POST", "/api/sendPollVote", { body: { chatId: x.chat_id, pollMessageId: x.msg_id, votes } }), "poll vote");
-    await q(`INSERT INTO {{p}}poll_votes (user_id, session, stanza, voter, options) VALUES ($1,$S,$2,'me',$3::jsonb) ON CONFLICT (user_id, session, stanza, voter) DO UPDATE SET options = EXCLUDED.options, at = now()`, [userId, x.stanza, JSON.stringify(votes)]);
+    await q(`INSERT INTO {{p}}poll_votes (user_id, session, stanza, voter, options) VALUES ($1,$S,$2,'me',$3::jsonb) ON CONFLICT (user_id, session, stanza, voter) DO UPDATE SET options = EXCLUDED.options, at = now()`, [userId, x.stanza, pgJson(votes)]);
     await changed(userId, x.chat_id);
     return { ok: true };
   });
