@@ -109,7 +109,15 @@ export const CSS = THEME_CSS + `
 .wa-theirs.wa-first .wa-bubble::before{left:-8px;clip-path:polygon(0 0,100% 0,100% 100%,18% 14%);border-top-left-radius:3px}
 .wa-mine.wa-first .wa-bubble{border-top-right-radius:0}
 .wa-mine.wa-first .wa-bubble::before{right:-8px;clip-path:polygon(0 0,100% 0,82% 14%,0 100%);border-top-right-radius:3px}
-.wa-pending .wa-bubble{opacity:.72}
+/* a message sent from here is a normal bubble from the first frame: the clock in its time row says it is on its way */
+.wa-failrow{align-self:flex-end;display:flex;align-items:center;gap:6px;margin:3px 2px 2px;font-size:12.5px;line-height:18px;color:var(--wa-danger)}
+.wa-failrow svg{flex:none;width:15px;height:15px;stroke-width:2}
+.wa-failbtn{height:22px;padding:0 9px;border:1px solid color-mix(in srgb,var(--wa-danger) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--wa-danger) 10%,transparent);color:var(--wa-danger);font-size:12px;font-weight:500;line-height:20px;cursor:pointer}
+.wa-failbtn:hover{background:color-mix(in srgb,var(--wa-danger) 18%,transparent)}
+.wa-failbtn:focus-visible{outline:2px solid var(--wa-accent);outline-offset:1px}
+.wa-failbtn-quiet{border-color:transparent;background:transparent;color:var(--wa-sub)}
+.wa-failbtn-quiet:hover{background:var(--wa-hover)}
+@keyframes wa-sent-in{from{opacity:0;transform:translateY(6px)}}
 .wa-sender{display:block;margin-bottom:1px;font-size:12.8px;font-weight:500;line-height:20px;color:hsl(var(--wa-h,215) 62% var(--wa-l));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wa-stamp{float:right;display:inline-flex;align-items:center;gap:3px;height:15px;margin:7px -2px -5px 12px;font-size:11px;line-height:15px;color:var(--wa-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
 .wa-mine .wa-stamp{color:color-mix(in srgb,var(--wa-text) 70%,var(--wa-out))}
@@ -154,6 +162,8 @@ export const CSS = THEME_CSS + `
 @media (prefers-reduced-motion:no-preference){
   .wa-row,.wa-chip,.wa-root .wa-iconbtn,.wa-root .wa-send,.wa-jump{transition:background-color .12s ease}
   .wa-root .wa-refresh[data-spin] svg{animation:wa-rot .9s linear infinite}
+  /* once, when the bubble is added: the row keeps its node and its class when the stored message takes over, so it never runs again */
+  .wa-msg.wa-sent-here .wa-bw{animation:wa-sent-in .16s ease-out}
 }
 .wa-root .wa-refresh svg{transform-origin:50% 50%;will-change:transform}
 /* reduced motion: no spin, the icon takes the accent colour while the refresh is pending */

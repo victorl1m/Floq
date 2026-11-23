@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Button, Tooltip, TooltipContent, TooltipTrigger, resolvePluginIcon } from "@/plugins/kit";
 import { chatPhoneDigits, chatTitle, subtitle, type Chat, type Message, type Quote } from "@whatsapp-shared/chat";
 import { Avatar } from "./avatar";
@@ -8,6 +8,7 @@ import { useWa } from "./context";
 import { IconAlert, IconArrowLeft, IconLock, IconSearch, Spinner } from "./icons";
 import { IconPlus } from "./icons-composer";
 import { MessageLog } from "./message-log";
+import { countRender } from "./render-probe";
 import { ChatSearch, ContactDialog, ForwardDialog, LocationDialog, MessageInfoDialog, PollDialog } from "./dialogs";
 
 const IconWhatsApp = resolvePluginIcon("IconBrandWhatsapp");
@@ -26,7 +27,7 @@ export function EmptyConversation({ session, account }: { session: string; accou
   );
 }
 
-export type MessageAction = "react" | "star" | "pin" | "delete" | "forward" | "info" | "vote";
+export type MessageAction = "react" | "star" | "pin" | "delete" | "forward" | "info" | "vote" | "retry" | "discard";
 export interface ConversationHandlers {
   onReply(m: Message): void; onCancelReply(): void; onEdit(m: Message): void; onCancelEdit(): void; onBack(): void; onRetry(): void; onDraft(v: string): void;
   onSend(p: { text: string; attachments: Attachment[] }): void; onSendVoice(blob: Blob, durationMs: number): void; onTyping(state: "composing" | "recording" | "paused"): void;
@@ -44,7 +45,19 @@ interface Props {
 /** Header, message log (or its loading / error / empty state) and composer for one chat, plus the dialogs and panels that belong to it. */
 export function Conversation({ chat, messages, hasMore, error, now, draft, sending, focusToken, reply, editing, handlers: h, onInfo, menu, presence }: Props) {
   const { features } = useWa();
+  countRender("conversation");
   useAckRefresh(chat.chatId, messages);
+  // The log is memoized: it gets callbacks that never change and read the handlers of the latest render.
+  const live = useRef(h);
+  live.current = h;
+  const onLoadMore = useCallback(() => live.current.onLoadMore(), []);
+  const onReply = useCallback((m: Message) => live.current.onReply(m), []);
+  const onEdit = useCallback((m: Message) => live.current.onEdit(m), []);
+  const onAction = useCallback((action: MessageAction, m: Message, arg?: unknown) => {
+    if (action === "forward") { setForward(m); return; }
+    if (action === "info") { setInfoOf(m); return; }
+    return live.current.onAction(action, m, arg);
+  }, []);
   const name = chatTitle(chat), sub = subtitle(chat);
   const composer = useRef<ComposerHandle>(null);
   const log = useRef<{ jumpTo(id: string): boolean }>(null);
@@ -94,10 +107,9 @@ export function Conversation({ chat, messages, hasMore, error, now, draft, sendi
       ) : messages.length === 0 ? (
         <div className="wa-center wa-wall"><span className="wa-note">{chat.isSelf ? "Messages you send here go to your own WhatsApp" : "No messages in this chat yet"}</span></div>
       ) : (
-        <MessageLog ref={log} key={chat.chatId} chat={chat} messages={messages} now={now} hasMore={hasMore} onLoadMore={h.onLoadMore} onReply={h.onReply} onEdit={h.onEdit}
-          onAction={(action, m, arg) => { if (action === "forward") { setForward(m); return; } if (action === "info") { setInfoOf(m); return; } return h.onAction(action, m, arg); }} />
+        <MessageLog ref={log} key={chat.chatId} chat={chat} messages={messages} now={now} hasMore={hasMore} onLoadMore={onLoadMore} onReply={onReply} onEdit={onEdit} onAction={onAction} />
       )}
-      <Composer ref={composer} value={draft} onChange={h.onDraft} onSend={h.onSend} onSendVoice={h.onSendVoice} onTyping={h.onTyping} onExtra={setDialog}
+      <Composer ref={composer} draft={draft} onChange={h.onDraft} onSend={h.onSend} onSendVoice={h.onSendVoice} onTyping={h.onTyping} onExtra={setDialog}
         features={{ media: features.media, voice: features.voice, poll: features.poll, location: features.location, contact: features.contact }}
         mentions={mentions} sending={sending} placeholder="Type a message" focusToken={focusToken} chat={chat} reply={reply} onCancelReply={h.onCancelReply} editing={editing} onCancelEdit={h.onCancelEdit} />
       {dragging && <div className="wa-drop" aria-hidden="true"><div><IconPlus />Drop files to send</div></div>}

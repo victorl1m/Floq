@@ -7,6 +7,7 @@ import { EmojiPicker } from "./emoji-picker";
 import { IconCheck, IconFile, IconSend, IconX, Spinner } from "./icons";
 import { IconCamera, IconContact, IconDocument, IconImage, IconMic, IconPencil, IconPin, IconPlus, IconPoll, IconSmile, IconTrash } from "./icons-composer";
 import { quoteStyle } from "./message-log";
+import { countRender } from "./render-probe";
 import { startVoice, voiceSupported, type VoiceSession } from "./voice-recorder";
 
 export type { Attachment } from "./attachments";
@@ -17,8 +18,9 @@ export interface ComposerFeatures { media: boolean; voice: boolean; poll: boolea
 export interface ComposerHandle { addFiles(files: File[] | FileList): void; focus(): void }
 export interface ComposerProps {
   chat: Chat; placeholder: string; focusToken: string; disabled?: boolean;
-  /** The text draft, owned by the parent (per chat). While `editing` is set the field shows editing.body: the composer pushes it through onChange when the edit starts. */
-  value: string; onChange(v: string): void;
+  /** The draft this chat starts with. The text itself lives in the composer, so typing re-renders nothing above it: onChange only tells the parent what to keep for this chat.
+   *  While `editing` is set the field shows editing.body; it empties when the edit ends and after a send. */
+  draft: string; onChange(v: string): void;
   reply?: Quote | null; onCancelReply(): void;
   editing?: { id: string; body: string } | null; onCancelEdit?(): void;
   sending: boolean;
@@ -37,7 +39,15 @@ const isComposing = (e: KeyboardEvent) => e.nativeEvent.isComposing || e.keyCode
 
 /** WhatsApp-Web-style bar: emoji and attach buttons beside one rounded field, mic that turns into send, preview tray, reply/edit bar, voice recording mode. */
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(p, ref) {
-  const { chat, value, onChange, reply, editing, sending, features, mentions = [], disabled = false } = p;
+  const { chat, reply, editing, sending, features, mentions = [], disabled = false } = p;
+  countRender("composer");
+  const [value, setValue] = useState(p.draft);
+  const [forChat, setForChat] = useState(chat.chatId);
+  if (forChat !== chat.chatId) { setForChat(chat.chatId); setValue(p.draft); } // another chat: its own draft
+  const report = useRef(p.onChange);
+  report.current = p.onChange;
+  const onChange = useCallback((v: string) => { setValue(v); report.current(v); }, []);
+  const lastLen = useRef(0);
   const ta = useRef<HTMLTextAreaElement>(null), rootEl = useRef<HTMLDivElement>(null);
   const emojiBtn = useRef<HTMLButtonElement>(null), attachBtn = useRef<HTMLButtonElement>(null), menuEl = useRef<HTMLDivElement>(null);
   const mediaIn = useRef<HTMLInputElement>(null), docIn = useRef<HTMLInputElement>(null), camIn = useRef<HTMLInputElement>(null);
@@ -106,6 +116,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useLayoutEffect(() => {
     const el = ta.current;
     if (!el) return;
+    // Text that still fits needs no new height: skip the reset, which would lay the whole conversation out again on every key.
+    const longer = value.length >= lastLen.current;
+    lastLen.current = value.length;
+    if (longer && el.style.height && el.scrollHeight <= el.clientHeight) return;
     el.style.height = "auto";
     el.style.height = el.scrollHeight + "px";
   }, [value, p.focusToken, recording, attachments.length, editing]);
@@ -124,7 +138,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const timers = [60, 200].map((ms) => setTimeout(() => { if (!rootEl.current?.querySelector("[role=menu],[role=dialog]")) ta.current?.focus(); }, ms));
     return () => timers.forEach(clearTimeout);
   }, [reply, editing?.id]);
-  useEffect(() => { if (editing && value !== editing.body) p.onChange(editing.body); }, [editing?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const wasEditing = useRef(false);
+  useEffect(() => {
+    if (editing) { if (value !== editing.body) onChange(editing.body); }
+    else if (wasEditing.current) onChange(""); // the edit was cancelled or saved
+    wasEditing.current = !!editing;
+  }, [editing?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const root = ta.current?.closest<HTMLElement>(".wa-root");
     if (root && root.clientWidth > 720) ta.current?.focus(); // wide layouts only: on narrow the keyboard would cover the log
@@ -170,6 +189,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     pauseTyping();
     setPopover(null);
     p.onSend(payload);
+    if (!editing) onChange("");
     setAttachments([]);
     setTimeout(() => payload.attachments.forEach(revokeAttachment), 0);
     focus();

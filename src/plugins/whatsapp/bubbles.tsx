@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useRef, useState, type CSSProperties } from "react";
+import { Fragment, createContext, memo, useContext, useRef, useState, type CSSProperties } from "react";
 import { cn } from "@/plugins/kit";
 import { fullDate, hueOf, quoteAuthor, quoteText, timeOf, chatKind, type Chat, type Message } from "@whatsapp-shared/chat";
 import { ACK_LABEL, ackState, callLabel, emojiOnly, mapsUrl, menuPlan, messageKind, parseFormat, safeHref, splitHighlight, type Block, type Inline, type MenuKey } from "@whatsapp-shared/format";
@@ -9,8 +9,9 @@ import { IconBan, IconCallMissed, IconCheckCircle, IconExternal, IconForward, Ic
 import { IconFile, IconReply } from "./icons";
 import { AudioPlayer, DocumentMedia, ImageMedia, VideoMedia } from "./media";
 import { MessageMenu } from "./message-menu";
+import { countRender } from "./render-probe";
 
-export type LogAction = "react" | "star" | "pin" | "delete" | "forward" | "info" | "vote";
+export type LogAction = "react" | "star" | "pin" | "delete" | "forward" | "info" | "vote" | "retry" | "discard";
 /** What every bubble of a log shares; the functions are stable so memoised rows do not re-render. */
 export interface LogApi {
   chat: Chat;
@@ -242,6 +243,7 @@ interface RowProps { m: Message; chat: Chat; first: boolean; last: boolean; send
 function Row({ m, chat, first, last, sender }: RowProps) {
   const log = useLog();
   const { features } = useWa();
+  countRender("row");
   const kind = messageKind(m);
   const [menu, setMenu] = useState(false);
   const [quick, setQuick] = useState(false);
@@ -292,7 +294,7 @@ function Row({ m, chat, first, last, sender }: RowProps) {
   };
 
   return (
-    <div className={cn("wa-msg", mine ? "wa-mine" : "wa-theirs", first && "wa-first", last && "wa-last", m.pending && "wa-pending", "wa-k-" + kind)} data-mid={m.id} data-kind={kind}>
+    <div className={cn("wa-msg", mine ? "wa-mine" : "wa-theirs", first && "wa-first", last && "wa-last", m.pending && "wa-pending", m.localId && "wa-sent-here", m.failed && "wa-failed", "wa-k-" + kind)} data-mid={m.id} data-kind={kind}>
       <div className="wa-bw">
       <div className={cn("wa-bubble", noBg && "wa-nobg", mediaOnly && "wa-b-media", (kind === "image" || kind === "video") && "wa-has-media", emoji > 0 && "wa-b-emoji", kind === "deleted" && "wa-b-deleted")}
         onDoubleClick={canReply && kind !== "poll" ? (e) => { if (!(e.target as HTMLElement).closest("a,button,video,audio,[role=slider]")) log.onReply!(m); } : undefined}
@@ -313,7 +315,8 @@ function Row({ m, chat, first, last, sender }: RowProps) {
         ) : (
           <>
             {kind === "text" && <Preview m={m} />}
-            {media}
+            {/* The row keeps its node when the stored message takes over a bubble sent from here; its media starts anew (it is another file then). */}
+            <Fragment key={m.id}>{media}</Fragment>
             {kind === "location" && <LocationCard m={m} />}
             {kind === "vcard" && <ContactCards m={m} />}
             {kind === "poll" && <PollCard m={m} />}
@@ -335,6 +338,13 @@ function Row({ m, chat, first, last, sender }: RowProps) {
         {quick && <QuickBar m={m} onClose={() => setQuick(false)} />}
       </div>
       <Reactions m={m} />
+      {m.failed && mine && m.localId && (
+        <div className="wa-failrow" role="group" aria-label="Message not sent">
+          <IconTickFail aria-hidden="true" /><span>Not sent</span>
+          <button type="button" className="wa-failbtn" onClick={() => void log.act("retry", m)}>Retry</button>
+          <button type="button" className="wa-failbtn wa-failbtn-quiet" onClick={() => void log.act("discard", m)}>Delete</button>
+        </div>
+      )}
       </div>
     </div>
   );

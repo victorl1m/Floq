@@ -119,8 +119,10 @@ for (const theme of ['light', 'dark']) {
     await field(page).fill('isto #fail');
     await field(page).press('Enter');
     await expect(page.getByText('Message not sent')).toBeVisible();
-    await expect(field(page)).toHaveValue('isto #fail');
-    await expect(bubble(page, 'isto #fail')).toHaveCount(0);
+    // the text stays in the log as a bubble that says so and can be sent again; the field is free
+    await expect(field(page)).toHaveValue('');
+    await expect(bubble(page, 'isto #fail')).toHaveCount(1);
+    await expect(bubble(page, 'isto #fail').getByRole('button', { name: 'Retry' })).toBeVisible();
   });
 
   test(`${theme}: attachments: pick, caption, upload as base64, image bubble`, async ({ page }) => {

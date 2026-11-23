@@ -34,8 +34,25 @@ import { SESSION_CSS } from "./styles-session";
 
 interface Status { configured: boolean; missingSettings: string[]; missingSecrets: string[]; session: string; engine?: Engine; features?: Features; me?: { name: string; phone: string | null } | null }
 type Phase = { kind: "loading" } | { kind: "error"; message: string } | { kind: "forbidden" } | { kind: "ready"; status: Status };
-/** A message being sent from this screen: shown at once, replaced by the stored one when the send returns. */
-interface Pending { chatId: string; message: Message }
+/** A message being sent from this screen: shown at once. When the send returns, the stored message takes its row (same key, same node) and this entry goes.
+ *  known: the ids in the log when it was sent, so a message that arrives before the send returns can be told apart from older ones. */
+interface Pending { chatId: string; message: Message; serverId?: string; known: Set<string>; retry: () => void }
+const sameContent = (a: Message, b: Message) => a.body === b.body && (a.type ?? "chat") === (b.type ?? "chat");
+
+/** The log to show: stored messages (the ones sent from here keep their row key) followed by what is still on its way or failed. */
+export function withPending(messages: Message[], pending: Pending[], aliases: Map<string, string>): Message[] {
+  const ids = new Set(messages.map((m) => m.id));
+  // A stored copy can arrive (webhook) before the send call returns its id: match it by content among the messages that were not there before.
+  for (const p of pending) {
+    if (p.serverId || p.message.failed) continue;
+    const hit = messages.find((m) => m.fromMe && !p.known.has(m.id) && !aliases.has(m.id) && sameContent(m, p.message));
+    if (hit) aliases.set(hit.id, p.message.id);
+  }
+  const taken = new Set<string>();
+  const out = messages.map((m) => { const local = aliases.get(m.id); if (!local) return m; taken.add(local); return { ...m, localId: local }; });
+  for (const p of pending) if (!taken.has(p.message.id) && !(p.serverId && ids.has(p.serverId))) out.push(p.message);
+  return out;
+}
 
 const PAGE = 80;
 const LOGIN_STATES = ["SCAN_QR_CODE", "MISSING", "STOPPED", "FAILED", "STARTING", "PASSKEY_REQUIRED", "PASSKEY_CONFIRMATION_REQUIRED"];
@@ -145,12 +162,14 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [messagesError, setMessagesError] = useState("");
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Drafts are not state: the composer owns its text, so typing renders nothing here. This only remembers each chat's text for when it is opened again.
+  const drafts = useRef<Record<string, string>>({});
+  /** Stored message id -> the row key of the bubble that was shown while it was sent. */
+  const aliases = useRef(new Map<string, string>());
   const [pending, setPending] = useState<Pending[]>([]);
   const [replies, setReplies] = useState<Record<string, Quote | null>>({});
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
   const [sendingId, setSendingId] = useState("");
-  const [focusN, setFocusN] = useState(0);
   const [info, setInfo] = useState(false);
   const [newChat, setNewChat] = useState(false);
   const [side, setSide] = useState<"" | "status" | "channels" | "contacts">("");
@@ -232,6 +251,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
   useEffect(() => {
     if (!selected) return;
     setMessages(null); setMessagesError(""); setHasMore(false); setEditing(null);
+    aliases.current.clear(); // the log is mounted anew for another chat: no row to keep
     void loadMessages(selected);
     void markRead(selected);
   }, [selected, loadMessages, markRead]);
@@ -268,15 +288,40 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
   const everyChat = useMemo(() => [...(chats ?? []), ...archived.filter((a) => !(chats ?? []).some((c) => c.chatId === a.chatId))], [chats, archived]);
   const wa = useMemo<Wa>(() => ({ pluginId: plugin.id, api, session, engine, features, me, chats: everyChat, refreshChats: () => void loadChats(), openChat, useAvatar: useAvatarUrl }), [plugin.id, api, session, engine, features, me, everyChat, loadChats, openChat]);
 
-  /** Adds an optimistic bubble, runs the request, then swaps in what the runtime stored. Returns false when it failed. */
-  async function deliver(chatId: string, optimistic: Omit<Message, "id" | "fromMe" | "sender" | "sentAt" | "pending">, run: () => Promise<unknown>, failTitle: string): Promise<boolean> {
-    const id = `pending-${++seq.current}`;
-    const message: Message = { ...optimistic, id, fromMe: true, sender: "", sentAt: new Date().toISOString(), pending: true };
-    setPending((p) => [...p, { chatId, message }]);
-    try { await run(); await loadMessages(chatId); void loadChats(); return true; }
-    catch (e) { toast.error(failTitle, { description: explain(e) }); return false; }
-    finally { setPending((p) => p.filter((x) => x.message.id !== id)); }
+  /**
+   * Shows the bubble at once (a clock in its time row), runs the request, then shows one tick and lets the stored message take the same row.
+   * When it fails the bubble stays, marked "Not sent" with Retry (keepFailed) or goes away (a dialog that stays open to try again). Returns false when it failed.
+   */
+  async function deliver(chatId: string, optimistic: Omit<Message, "id" | "fromMe" | "sender" | "sentAt" | "pending">, run: () => Promise<unknown>, failTitle: string, keepFailed = true, id = `pending-${++seq.current}`): Promise<boolean> {
+    const message: Message = { ...optimistic, id, localId: id, fromMe: true, sender: "", sentAt: new Date().toISOString(), pending: true };
+    const entry: Pending = { chatId, message, known: new Set((selectedRef.current === chatId ? messagesRef.current ?? [] : []).map((m) => m.id)), retry: () => void deliver(chatId, optimistic, run, failTitle, keepFailed, id) };
+    const patch = (fn: (p: Pending) => Pending | null) => setPending((list) => list.flatMap((x) => { if (x.message.id !== id) return [x]; const next = fn(x); return next ? [next] : []; }));
+    setPending((list) => (list.some((x) => x.message.id === id) ? list.map((x) => (x.message.id === id ? entry : x)) : [...list, entry]));
+    try {
+      const res = await run() as { id?: unknown } | null | undefined;
+      const serverId = typeof res?.id === "string" && res.id ? res.id : undefined;
+      if (serverId) aliases.current.set(serverId, id);
+      patch((x) => ({ ...x, serverId, message: { ...x.message, pending: false, ack: 1 } }));
+      await loadMessages(chatId);
+      void loadChats();
+      // A runtime that does not say which message it stored: nothing can take the row over, so the bubble goes as the log is read again.
+      if (!serverId) patch((x) => (x.serverId ? x : null));
+      return true;
+    } catch (e) {
+      toast.error(failTitle, { description: explain(e) });
+      patch((x) => (keepFailed ? { ...x, message: { ...x.message, pending: false, failed: true } } : null));
+      return false;
+    }
   }
+  // A bubble sent from here leaves the pending list once the stored message is in the log (it shows in the same row).
+  useEffect(() => {
+    if (!messages || !pending.length) return;
+    const ids = new Set(messages.map((m) => m.id)), taken = new Set(messages.flatMap((m) => aliases.current.get(m.id) ?? []));
+    const left = pending.filter((p) => p.chatId !== selected || !(taken.has(p.message.id) || (p.serverId && ids.has(p.serverId))));
+    if (left.length !== pending.length) setPending(left);
+  }, [messages, pending, selected]);
+  // One array per change of the log: the memoized message list is not handed a new one on every render of this screen.
+  const shownMemo = useMemo(() => messages && withPending(messages, pending.filter((p) => p.chatId === selected), aliases.current), [messages, pending, selected]);
 
   async function send(payload: { text: string; attachments: Attachment[] }) {
     const chatId = selected;
@@ -285,7 +330,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
     if (editing) {
       const target = editing;
       if (!text) return;
-      setEditing(null); setDrafts((d) => ({ ...d, [chatId]: "" }));
+      setEditing(null);
       setMessages((ms) => ms && ms.map((m) => (m.id === target.id ? { ...m, body: text, edited: true } : m)));
       try { await api("/edit", { method: "POST", body: { messageId: target.id, text } }); }
       catch (e) { toast.error("Message not edited", { description: explain(e) }); }
@@ -295,18 +340,13 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
     if (!text && !payload.attachments.length) return;
     const replyTo = replies[chatId] ?? null;
     const chat = everyChat.find((c) => c.chatId === chatId);
-    setDrafts((d) => ({ ...d, [chatId]: "" }));
     setReplies((r) => ({ ...r, [chatId]: null }));
     setSendingId(chatId);
     try {
       if (!payload.attachments.length) {
         const mentions = chat?.kind === "group" ? mentionsIn(text, mentionList.current) : [];
-        const ok = await deliver(chatId, { body: text, hasMedia: false, type: "chat", replyTo }, () => api("/send", { method: "POST", body: { chatId, text, ...(replyTo ? { replyTo: replyTo.id } : {}), ...(mentions.length ? { mentions } : {}) } }), "Message not sent");
-        if (!ok) {
-          setDrafts((d) => (d[chatId]?.trim() ? d : { ...d, [chatId]: text }));
-          setReplies((r) => (r[chatId] ? r : { ...r, [chatId]: replyTo }));
-          setFocusN((n) => n + 1);
-        }
+        // A failed send stays in the log as a "Not sent" bubble with Retry: the text is not lost and the field is free for the next message.
+        await deliver(chatId, { body: text, hasMedia: false, type: "chat", replyTo }, () => api("/send", { method: "POST", body: { chatId, text, ...(replyTo ? { replyTo: replyTo.id } : {}), ...(mentions.length ? { mentions } : {}) } }), "Message not sent");
         return;
       }
       // One message per file, in order; the caption and the reply go on the first.
@@ -335,10 +375,10 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
     onReply: (m) => setReplies((r) => ({ ...r, [selected]: quoteOf(m) })),
     onCancelReply: () => setReplies((r) => ({ ...r, [selected]: null })),
     onEdit: (m) => { setReplies((r) => ({ ...r, [selected]: null })); setEditing({ id: m.id, body: m.body }); },
-    onCancelEdit: () => { setEditing(null); setDrafts((d) => ({ ...d, [selected]: "" })); },
+    onCancelEdit: () => setEditing(null),
     onBack: () => setPane("list"),
     onRetry: () => void loadMessages(selected),
-    onDraft: (v) => setDrafts((d) => ({ ...d, [selected]: v })),
+    onDraft: (v) => { drafts.current[selected] = v; },
     onSend: (p) => void send(p),
     onSendVoice: (b, d) => void sendVoice(b, d),
     onTyping: (state) => { void api("/typing", { method: "POST", body: { chatId: selected, state } }).catch(() => undefined); },
@@ -347,6 +387,9 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
     /** Message actions from the bubble menu. The row updates at once and settles with the next read. */
     onAction: async (action, m, arg) => {
       const chatId = selected;
+      // a bubble that was not sent: try again in the same bubble, or take it away
+      if (action === "retry") { pending.find((p) => p.message.id === m.id)?.retry(); return; }
+      if (action === "discard") { setPending((list) => list.filter((p) => p.message.id !== m.id)); return; }
       const patch = (fn: (x: Message) => Message) => setMessages((ms) => ms && ms.map((x) => (x.id === m.id ? fn(x) : x)));
       const settle = () => { if (selectedRef.current === chatId) void loadMessages(chatId); };
       // The log shows a reaction at once and takes it back itself when this throws.
@@ -373,7 +416,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
       setReplies((r) => ({ ...r, [chatId]: null }));
       const path = kind === "poll" ? "/send-poll" : kind === "location" ? "/send-location" : "/send-contact";
       const type: MessageType = kind === "poll" ? "poll" : kind === "location" ? "location" : "vcard";
-      return deliver(chatId, { body: "", hasMedia: false, type, replyTo }, () => api(path, { method: "POST", body: { chatId, ...body, ...(replyTo ? { replyTo: replyTo.id } : {}) } }), kind === "poll" ? "Poll not sent" : kind === "location" ? "Location not sent" : "Contact not sent");
+      return deliver(chatId, { body: "", hasMedia: false, type, replyTo }, () => api(path, { method: "POST", body: { chatId, ...body, ...(replyTo ? { replyTo: replyTo.id } : {}) } }), kind === "poll" ? "Poll not sent" : kind === "location" ? "Location not sent" : "Contact not sent", false);
     },
   };
 
@@ -385,7 +428,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
   }
 
   const chat: Chat | null = selected ? everyChat.find((c) => c.chatId === selected) ?? { chatId: selected, lastBody: "", lastAt: "", total: 0, ...hints[selected] } : null;
-  const shown = messages && [...messages, ...pending.filter((p) => p.chatId === selected).map((p) => p.message)];
+  const shown = shownMemo;
 
   return (
     <WaContext.Provider value={wa}>
@@ -411,7 +454,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
               <AccountMenu onContacts={() => setSide("contacts")} />
             </>)} />
           {chat ? (
-            <Conversation chat={chat} messages={shown} hasMore={hasMore} error={messagesError} now={now} draft={drafts[selected] ?? ""} sending={sendingId === selected} focusToken={`${selected}:${focusN}`}
+            <Conversation chat={chat} messages={shown} hasMore={hasMore} error={messagesError} now={now} draft={drafts.current[selected] ?? ""} sending={sendingId === selected} focusToken={selected}
               reply={replies[selected] ?? null} editing={editing} handlers={handlers}
               onInfo={() => setInfo((v) => !v)} menu={<>{many && account && <span className="wa-chip-acct" title={`This chat belongs to ${accountName(account)}. Replies go out from that account.`} aria-label={`Account: ${accountName(account)}`}><i style={{ "--wa-h": accountHue(account) } as CSSProperties} aria-hidden="true" /><span>{accountName(account)}</span></span>}{features.labels && chat.kind !== "group" && <LabelPicker chat={chat} />}<ChatMenu chat={chat} onInfo={() => setInfo(true)} onGone={closeChat} /></>}
               presence={features.presence && !chat.isSelf ? <PresenceLine chat={chat} fallback={subtitle(chat)} /> : undefined} />

@@ -20,6 +20,8 @@ export interface Poll { name: string; multiple: boolean; voters: number; options
 /** The message a reply quotes. `id` is the quoted message's id when it is loaded in this conversation, else "". */
 export interface Quote { id: string; body: string; hasMedia?: boolean; fromMe: boolean; sender: string; senderName?: string }
 export interface Message {
+  /** UI only: the row key of a message sent from this screen. It stays the same when the stored message replaces the one shown while sending. */
+  localId?: string;
   pending?: boolean; failed?: boolean; id: string; fromMe: boolean; sender: string; senderName?: string; body: string; hasMedia: boolean; sentAt: string; replyTo?: Quote | null;
   type?: MessageType; media?: Media | null;
   /** 0 pending, 1 sent, 2 delivered, 3 read, 4 played, -1 failed. */

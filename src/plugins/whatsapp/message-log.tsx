@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/plugins/kit";
 import { chatKind, chatPhoneDigits, displayName, groupMessages, type Chat, type Message } from "@whatsapp-shared/chat";
 import { messageKind, withMyReaction } from "@whatsapp-shared/format";
@@ -11,6 +11,7 @@ import { IconChevronDown } from "./icons";
 import { IconPin } from "./icons-bubbles";
 import { Lightbox } from "./lightbox";
 import { downloadMedia } from "./media";
+import { countRender } from "./render-probe";
 
 export { quoteStyle };
 const NEAR_PX = 120;
@@ -35,9 +36,11 @@ export interface MessageLogHandle {
 
 const MEDIA_LABEL = (m: Message) => (m.body ? m.body : ({ image: "Photo", video: "Video", audio: "Audio", ptt: "Voice message", document: "Document", sticker: "Sticker", location: "Location", vcard: "Contact", poll: "Poll" } as Record<string, string>)[messageKind(m)] ?? "Message");
 
-/** Scrolling conversation. Mount it with key=chatId: it jumps to the bottom once, then only follows new messages when near the bottom or sent by you. */
-export const MessageLog = forwardRef<MessageLogHandle, MessageLogProps>(function MessageLog({ chat, messages, now, hasMore, onLoadMore, onReply, onEdit, onAction, highlight = "" }, handle) {
+/** Scrolling conversation. Mount it with key=chatId: it jumps to the bottom once, then only follows new messages when near the bottom or sent by you.
+ *  Memoized: it renders again only when its messages, chat or clock change (never while the composer is typed in). */
+export const MessageLog = memo(forwardRef<MessageLogHandle, MessageLogProps>(function MessageLog({ chat, messages, now, hasMore, onLoadMore, onReply, onEdit, onAction, highlight = "" }, handle) {
   const { api, chats, features } = useWa();
+  countRender("log");
   const ref = useRef<HTMLDivElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const near = useRef(true);
@@ -147,7 +150,7 @@ export const MessageLog = forwardRef<MessageLogHandle, MessageLogProps>(function
     if (lastMsg.id === handled.current) { if (el && near.current) el.scrollTop = el.scrollHeight; return; }
     handled.current = lastMsg.id;
     if (lastMsg.fromMe || near.current) toBottom(); else setUnseen(true);
-  }, [messages]);
+  }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps -- shown follows messages and your own reaction, which makes a bubble taller before the log is read again
 
   const more = () => {
     const el = ref.current;
@@ -181,7 +184,7 @@ export const MessageLog = forwardRef<MessageLogHandle, MessageLogProps>(function
             {hasMore && <button type="button" className="wa-older" onClick={more}>Load earlier messages</button>}
             {rows.map((r) => r.type === "day"
               ? <div key={r.key} className="wa-day">{r.label}</div>
-              : <MessageRow key={r.key} m={r.message} chat={chat} first={r.first} last={r.last} sender={group ? groupSender(r.message, chat) : ""} />)}
+              : <MessageRow key={r.message.localId ?? r.key} m={r.message} chat={chat} first={r.first} last={r.last} sender={group ? groupSender(r.message, chat) : ""} />)}
           </div>
         </div>
         {unseen && <button type="button" className="wa-jump" aria-label="Jump to latest" onClick={() => { toBottom(); setUnseen(false); }}><IconChevronDown /><i /></button>}
@@ -199,4 +202,4 @@ export const MessageLog = forwardRef<MessageLogHandle, MessageLogProps>(function
       </div>
     </LogCtx.Provider>
   );
-});
+}));
