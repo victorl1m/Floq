@@ -10,13 +10,14 @@ export const INBOX_CSS = `
 .wa-pill:empty{min-width:12px;width:12px;height:12px;padding:0;align-self:center}
 .wa-pill-muted{background:var(--wa-sub)}
 .wa-rowwrap{position:relative}
-.wa-rowmenu{position:absolute;right:8px;bottom:8px;display:none}
-.wa-rowwrap:hover .wa-rowmenu,.wa-rowwrap:focus-within .wa-rowmenu,.wa-rowmenu:has([data-state="open"]){display:block}
+/* The menu button is always laid out (never display:none): a hidden trigger has no box, and its open menu would be placed at the window's top-left corner. It fades in instead. */
+.wa-rowmenu{position:absolute;right:8px;bottom:8px;opacity:0;transform:translateX(4px);pointer-events:none}
+.wa-rowwrap:hover .wa-rowmenu,.wa-rowwrap:focus-within .wa-rowmenu,.wa-rowmenu:has([data-state="open"]){opacity:1;transform:none;pointer-events:auto}
+@media (prefers-reduced-motion:no-preference){.wa-rowmenu{transition:opacity .15s ease-out,transform .15s ease-out}}
 /* the menu button takes room from the preview line instead of covering it */
 .wa-rowwrap:is(:hover,:focus-within) .wa-row .wa-line:last-child,.wa-rowwrap:has(.wa-rowmenu [data-state="open"]) .wa-row .wa-line:last-child{padding-right:34px}
 @media (hover:none){.wa-rowwrap .wa-row .wa-line:last-child{padding-right:0!important}}
 .wa-rowmenu .wa-iconbtn{width:28px;height:28px;background:var(--wa-hover)}
-.wa-rowwrap:hover .wa-row .wa-pill,.wa-rowwrap:hover .wa-row .wa-rowico{visibility:hidden}
 @media (hover:none){.wa-rowmenu{display:none!important}}
 .wa-archived{flex:none;display:flex;align-items:center;gap:22px;width:100%;height:50px;padding:0 20px 0 26px;border:0;border-bottom:1px solid var(--wa-line);background:transparent;color:var(--wa-text);font:inherit;font-size:15px;text-align:left;cursor:pointer}
 .wa-archived:hover{background:var(--wa-hover)}

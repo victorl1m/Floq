@@ -153,8 +153,11 @@ export const CSS = THEME_CSS + `
 .wa-spin{animation:wa-rot .8s linear infinite}
 @media (prefers-reduced-motion:no-preference){
   .wa-row,.wa-chip,.wa-root .wa-iconbtn,.wa-root .wa-send,.wa-jump{transition:background-color .12s ease}
-  .wa-spin-on svg{animation:wa-rot .8s linear infinite}
+  .wa-root .wa-refresh[data-spin] svg{animation:wa-rot .9s linear infinite}
 }
+.wa-root .wa-refresh svg{transform-origin:50% 50%;will-change:transform}
+/* reduced motion: no spin, the icon takes the accent colour while the refresh is pending */
+@media (prefers-reduced-motion:reduce){.wa-root .wa-refresh[aria-busy="true"] svg{color:var(--wa-accent-text);opacity:.6}}
 @media (prefers-reduced-motion:reduce){.wa-spin{animation-duration:2.4s}}
 @container (max-width:720px){
   .wa-panel{grid-template-columns:minmax(0,1fr)}

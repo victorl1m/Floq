@@ -10,8 +10,13 @@ export const MORE_CSS = `
 
 /* labels */
 .wa-lchips{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
-.wa-lchip{flex:0 1 auto;min-width:0;max-width:96px;height:16px;padding:0 6px;border-radius:8px;font-size:11px;font-weight:500;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.wa-lchip-more{flex:none;background:var(--wa-pill);color:var(--wa-sub)}
+/* a tag: the label colour is a dot and a faint tint, the text is the theme's own, so it reads on any theme. Same height as the unread badge. */
+.wa-lchip{flex:0 1 auto;display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:112px;height:20px;padding:0 7px 0 6px;border-radius:6px;font-size:11.5px;font-weight:500;line-height:18px;white-space:nowrap;
+  color:var(--wa-text);background:color-mix(in srgb,var(--wa-lc,var(--wa-sub)) 14%,transparent);border:1px solid color-mix(in srgb,var(--wa-lc,var(--wa-sub)) 34%,transparent)}
+.wa-lchip i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--wa-lc)}
+.wa-lchip span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.wa-lchip-more{flex:none;padding:0 6px;background:var(--wa-pill);border-color:transparent;color:var(--wa-sub)}
+@media (forced-colors:active){.wa-lchip{border-color:CanvasText}.wa-lchip i{forced-color-adjust:none}}
 .wa-ldot{flex:none;display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%}
 .wa-ldot-none{background:transparent;border:1.5px solid var(--wa-sub)}
 .wa-ldot-lg{width:22px;height:22px}

@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useState, type CSSProperties } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Input, Tooltip, TooltipContent, TooltipTrigger, cn, toast } from "@/plugins/kit";
 import type { Chat } from "@whatsapp-shared/chat";
 import { errorCode, useWa, useWaEvent, type Api } from "./context";
@@ -52,7 +52,7 @@ export function LabelChips({ ids, max = 2 }: { ids?: string[]; max?: number }) {
   if (!own.length) return null;
   return (
     <span className="wa-lchips" role="list" aria-label="Labels">
-      {own.slice(0, max).map((l) => <span key={l.id} role="listitem" className="wa-lchip" style={{ background: l.color, color: inkOn(l.color) }} title={l.name}>{l.name}</span>)}
+      {own.slice(0, max).map((l) => <span key={l.id} role="listitem" className="wa-lchip" style={{ "--wa-lc": l.color } as CSSProperties} title={l.name}><i aria-hidden="true" /><span>{l.name}</span></span>)}
       {own.length > max && <span role="listitem" className="wa-lchip wa-lchip-more" title={own.slice(max).map((l) => l.name).join(", ")}>+{own.length - max}</span>}
     </span>
   );

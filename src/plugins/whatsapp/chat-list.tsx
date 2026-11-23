@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Input, Tooltip, TooltipContent, TooltipTrigger, cn } from "@/plugins/kit";
 import { chatKind, chatTitle, matchesQuery, previewText, relativeTime, type Chat, type MessageType } from "@whatsapp-shared/chat";
 import { Avatar } from "./avatar";
@@ -55,6 +55,34 @@ function Row({ chat, selected, now, onSelect, menu, extra }: { chat: Chat; selec
   );
 }
 
+/** The refresh button. Its icon turns at a constant speed while a refresh is pending and stops at the end of a turn, never mid-way:
+ *  the class is not tied to `pending` (a refresh often takes a few milliseconds, which would start and cut the animation over and over). */
+function RefreshButton({ pending, onRefresh }: { pending: boolean; onRefresh: () => void }) {
+  const [spin, setSpin] = useState(false);
+  const live = useRef(pending);
+  live.current = pending;
+  useEffect(() => {
+    if (!pending) return;
+    // background refreshes that end at once do not start a turn
+    const t = setTimeout(() => setSpin(true), 150);
+    return () => clearTimeout(t);
+  }, [pending]);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="wa-iconbtn wa-refresh" aria-label="Refresh chats" aria-busy={pending || undefined} data-spin={spin ? "" : undefined}
+          onClick={() => { setSpin(true); onRefresh(); }} onAnimationIteration={(e) => {
+            if (e.animationName !== "wa-rot" || live.current) return;
+            // Taken off the node right here, before this frame is painted: waiting for React's render would show the first degrees of one more turn, then snap back.
+            e.currentTarget.removeAttribute("data-spin");
+            setSpin(false);
+          }}><IconRefresh /></Button>
+      </TooltipTrigger>
+      <TooltipContent>Refresh chats</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** Left pane: header with actions, search pill, filter chips, the archived entry and the chat rows (or a loading / error / empty state). */
 export function ChatList({ chats, error, selected, query, now, refreshing, archivedCount, showArchived, onQuery, onSelect, onRefresh, onArchived, actions, banner, overlay, filterExtra, rowMenu, rowExtra, passes: extraPass }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
@@ -65,12 +93,7 @@ export function ChatList({ chats, error, selected, query, now, refreshing, archi
         {showArchived && <Button type="button" variant="ghost" size="icon" className="wa-iconbtn" aria-label="Back to chats" onClick={() => onArchived(false)}><IconArrowLeft /></Button>}
         <h2 className="wa-title">{showArchived ? "Archived" : "Chats"}</h2>
         {!showArchived && actions}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button type="button" variant="ghost" size="icon" className={cn("wa-iconbtn", refreshing && "wa-spin-on")} aria-label="Refresh chats" onClick={onRefresh}><IconRefresh /></Button>
-          </TooltipTrigger>
-          <TooltipContent>Refresh chats</TooltipContent>
-        </Tooltip>
+        <RefreshButton pending={refreshing} onRefresh={onRefresh} />
       </div>
       {banner}
       <div className="wa-search">
