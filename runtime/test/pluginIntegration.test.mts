@@ -52,16 +52,16 @@ test("integrationActive: empty or the built-in address itself", () => {
 
 test("built-in server: the plugin gets address, key and an internal webhook URL with nothing saved; the key is never stored or shown", async () => {
   const h = await setup();
-  assert.equal((await h.ctx().settings.get("admin")).baseUrl, "http://waha:3000");
+  assert.equal((await h.ctx().settings.get("admin")).baseUrl, "http://floq-whatsapp:3000");
   assert.equal(await h.ctx().secrets.getInstall("WAHA_API_KEY"), KEY);
   assert.equal(await h.ctx().secrets.getInstall("WAHA_WEBHOOK_HMAC"), undefined); // only the declared integration secret is provided
   const hook: string = await h.ctx().webhooks.url("events");
   assert.match(hook, /^http:\/\/runtime:8787\/v1\/plugins\/waha\/hooks\/events\/[\w-]{20,}$/);
   // The plugin reaches the built-in address without any saved setting; a send counts as activity, a read does not.
-  await h.ctx().fetchUserUrl("admin", "http://waha:3000/api/sessions");
-  await h.ctx().fetchUserUrl("admin", "http://waha:3000/api/sendText", { method: "POST", body: "{}" });
+  await h.ctx().fetchUserUrl("admin", "http://floq-whatsapp:3000/api/sessions");
+  await h.ctx().fetchUserUrl("admin", "http://floq-whatsapp:3000/api/sendText", { method: "POST", body: "{}" });
   await assert.rejects(h.ctx().fetchUserUrl("admin", "http://elsewhere:3000/api/sessions"), /not one the owner configured/);
-  assert.deepEqual(h.fetched, ["http://waha:3000/api/sessions", "http://waha:3000/api/sendText"]);
+  assert.deepEqual(h.fetched, ["http://floq-whatsapp:3000/api/sessions", "http://floq-whatsapp:3000/api/sendText"]);
   assert.equal(h.activity(), 1);
 
   const p = await h.info();
@@ -101,7 +101,7 @@ test("external WAHA: a saved address switches every default off and the built-in
   assert.equal((await h.ctx().settings.get("admin")).baseUrl, "https://waha.example.com");
   assert.equal(await h.ctx().secrets.getInstall("WAHA_API_KEY"), undefined);
   assert.match(await h.ctx().webhooks.url("events"), /^https:\/\/floq\.example\.com\/v1\/plugins\/waha\/hooks\/events\//);
-  await assert.rejects(h.ctx().fetchUserUrl("admin", "http://waha:3000/api/sessions"), /not one the owner configured/);
+  await assert.rejects(h.ctx().fetchUserUrl("admin", "http://floq-whatsapp:3000/api/sessions"), /not one the owner configured/);
   const p = await h.info();
   assert.deepEqual(p.integration, { kind: "builtin-whatsapp", active: false });
   assert.equal(p.secrets.find((s) => s.name === "WAHA_API_KEY")!.present, false);

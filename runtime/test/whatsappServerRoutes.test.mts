@@ -41,7 +41,7 @@ async function harness(t: any, env: Record<string, string> = { FLOQ_WHATSAPP_API
     const url = String(input), key = init?.headers?.["X-Api-Key"] ?? null;
     seen.push({ url, key });
     if (url.startsWith("https://api.github.com/")) return Response.json([{ tag_name: "2026.10.1" }, { tag_name: "2026.11.1", prerelease: true }]);
-    if (!url.startsWith("http://waha:3000")) throw new Error("ECONNREFUSED");
+    if (!url.startsWith("http://floq-whatsapp:3000")) throw new Error("ECONNREFUSED");
     if (key !== KEY) return new Response("{}", { status: 401 });
     if (url.endsWith("/api/server/version")) return Response.json({ version: "2026.9.2", engine: "NOWEB", tier: "CORE" });
     return Response.json(sessions.list);

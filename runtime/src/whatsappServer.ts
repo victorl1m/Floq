@@ -80,7 +80,7 @@ export function builtinWhatsappFromEnv(env: Record<string, string | undefined> =
   }
   return {
     enabled: !off && Boolean(apiKey) && !problem,
-    url: cleanBase(env.FLOQ_WHATSAPP_URL) ?? "http://waha:3000",
+    url: cleanBase(env.FLOQ_WHATSAPP_URL) ?? "http://floq-whatsapp:3000",
     apiKey: off || problem ? "" : apiKey,
     internalUrl: cleanBase(env.FLOQ_INTERNAL_URL) ?? `http://runtime:${port}`,
     problem,

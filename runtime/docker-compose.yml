@@ -117,9 +117,14 @@ services:
     stop_grace_period: 30s
     expose:
       - "3000"
+    # The runtime reaches it as floq-whatsapp: hosts like Dokploy also put the runtime on a shared proxy network where another
+    # stack's service may be called "waha", and that name would then point at the wrong server.
+    networks:
+      default:
+        aliases: [floq-whatsapp]
     environment:
       WHATSAPP_DEFAULT_ENGINE: NOWEB
-      WAHA_BASE_URL: http://waha:3000
+      WAHA_BASE_URL: http://floq-whatsapp:3000
       # No web UI on this server: Floq is the interface.
       WAHA_DASHBOARD_ENABLED: "False"
       WHATSAPP_SWAGGER_ENABLED: "False"
@@ -219,7 +224,7 @@ services:
       FLOQ_WHATSAPP_API_KEY: ${FLOQ_WHATSAPP_API_KEY:-}
       FLOQ_WHATSAPP_KEY_FILE: /var/lib/floq/whatsapp/api-key
       FLOQ_WHATSAPP_BUILTIN: ${FLOQ_WHATSAPP_BUILTIN:-1}
-      FLOQ_WHATSAPP_URL: ${FLOQ_WHATSAPP_URL:-http://waha:3000}
+      FLOQ_WHATSAPP_URL: ${FLOQ_WHATSAPP_URL:-http://floq-whatsapp:3000}
       # Where services on the compose network reach this runtime (WAHA delivers its webhooks here).
       FLOQ_INTERNAL_URL: ${FLOQ_INTERNAL_URL:-http://runtime:8787}
     volumes:

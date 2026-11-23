@@ -13,7 +13,7 @@ const KEY = "k".repeat(40);
 const cfg = (over: Record<string, string> = {}) => builtinWhatsappFromEnv({ FLOQ_WHATSAPP_API_KEY: KEY, ...over });
 
 test("config: the key switches the built-in server on; a short or hashed key and FLOQ_WHATSAPP_BUILTIN=0 keep it off", () => {
-  assert.deepEqual(builtinWhatsappFromEnv({}), { enabled: false, url: "http://waha:3000", apiKey: "", internalUrl: "http://runtime:8787", problem: null });
+  assert.deepEqual(builtinWhatsappFromEnv({}), { enabled: false, url: "http://floq-whatsapp:3000", apiKey: "", internalUrl: "http://runtime:8787", problem: null });
   const on = cfg({ FLOQ_PORT: "9000" });
   assert.equal(on.enabled, true);
   assert.equal(on.internalUrl, "http://runtime:9000");
@@ -29,13 +29,13 @@ test("integration descriptor: defaults only when on; message webhooks and sends 
   assert.equal(whatsappIntegration(builtinWhatsappFromEnv({})).builtin, null);
   let n = 0;
   const i = whatsappIntegration(cfg(), () => n++);
-  assert.deepEqual(i.builtin, { url: "http://waha:3000", secret: KEY, webhookBase: "http://runtime:8787" });
+  assert.deepEqual(i.builtin, { url: "http://floq-whatsapp:3000", secret: KEY, webhookBase: "http://runtime:8787" });
   assert.equal(i.urlSetting, "baseUrl"); assert.equal(i.secretName, "WAHA_API_KEY");
   i.onWebhook({ event: "message" }); i.onWebhook({ event: "message.ack" }); i.onWebhook({ event: "session.status" }); i.onWebhook(null);
-  i.onFetch("POST", "http://waha:3000/api/sendText"); i.onFetch("GET", "http://waha:3000/api/sendText"); i.onFetch("POST", "http://waha:3000/api/default/chats/x/messages/read");
+  i.onFetch("POST", "http://floq-whatsapp:3000/api/sendText"); i.onFetch("GET", "http://floq-whatsapp:3000/api/sendText"); i.onFetch("POST", "http://floq-whatsapp:3000/api/default/chats/x/messages/read");
   assert.equal(n, 2);
   assert.equal(wahaMessageEvent({ event: "message.any" }), true);
-  assert.equal(wahaSendCall("PUT", "http://waha:3000/api/reaction"), true);
+  assert.equal(wahaSendCall("PUT", "http://floq-whatsapp:3000/api/reaction"), true);
   assert.equal(wahaSendCall("POST", "not a url"), false);
 });
 
@@ -188,7 +188,7 @@ test("test connection: the built-in key never goes to another address", async ()
   assert.deepEqual(waha.seen.at(-1), { url: "https://waha.example.com/api/server/version", key: null });
   await s.test({ baseUrl: "https://waha.example.com", apiKey: "theirs" });
   assert.equal(waha.seen.at(-1)!.key, "theirs");
-  assert.ok(waha.seen.filter((x) => !x.url.startsWith("http://waha:3000")).every((x) => x.key !== KEY));
+  assert.ok(waha.seen.filter((x) => !x.url.startsWith("http://floq-whatsapp:3000")).every((x) => x.key !== KEY));
   await assert.rejects(s.test({ baseUrl: "ftp://x", apiKey: "" }), { status: 400 });
   await assert.rejects(service({ env: {} }).s.test({ baseUrl: "", apiKey: "" }), { status: 400 });
 });
@@ -315,6 +315,8 @@ test("docker-compose.yml: on by default, key from the shared volume, pinned tag,
   assert.match(waha, /until \[ -s \/floq\/api-key \]/);
   assert.match(waha, /exec \/entrypoint\.sh/);
   assert.match(waha, /wahakey:\/floq:ro/);
+  assert.match(waha, /aliases: \[floq-whatsapp\]/, "a name no other stack on a shared proxy network uses");
+  assert.match(text.slice(end), /FLOQ_WHATSAPP_URL: \$\{FLOQ_WHATSAPP_URL:-http:\/\/floq-whatsapp:3000\}/);
   assert.ok(!/^\s+ports:/m.test(waha), "the WhatsApp server must not publish a host port");
   assert.ok(!/WAHA_API_KEY:/.test(waha), "the key comes from the shared file, never from compose");
   assert.match(waha, /WAHA_DASHBOARD_ENABLED: "False"/);
