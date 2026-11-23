@@ -47,6 +47,8 @@ export function createStore(core: Core, identity: Identity): Store {
   const chatsSyncedAt = new Map<string, number>();
   const chatSynced = new Map<string, number>();
   const caching = new Set<string>();
+  /** One download per message at a time: the bubble, the lightbox and a save share it. */
+  const fetching = new Map<string, Promise<{ mime: string; filename: string; bytes: Uint8Array }>>();
 
   async function putBlob(userId: string, key: string, mime: string, bytes: Uint8Array) {
     await q(`INSERT INTO {{p}}media_blobs (user_id, session, key, mime, bytes, size) VALUES ($1,$S,$2,$3,$4,$5) ON CONFLICT (user_id, session, key) DO UPDATE SET mime = EXCLUDED.mime, bytes = EXCLUDED.bytes, size = EXCLUDED.size, created_at = now()`, [userId, key, mime, Buffer.from(bytes), bytes.length]);
@@ -247,20 +249,43 @@ export function createStore(core: Core, identity: Identity): Store {
       const filename = String(media.filename ?? "");
       const hit = (await q(`SELECT mime, bytes FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key = $2`, [userId, "m:" + stanza])).rows[0];
       if (hit) return { mime: String(hit.mime || media.mime || "application/octet-stream"), filename, bytes: hit.bytes as Uint8Array };
-      const tryUrl = async (url: unknown) => {
-        if (typeof url !== "string" || !url) return null;
-        try { const f = await core.wahaBytes(userId, url); return f.bytes.length ? f : null; } catch { return null; }
-      };
-      let f = await tryUrl(media.url);
-      if (!f) {
-        // WAHA dropped the file: ask it to download the message's media again.
-        const fresh = rec(await core.tryWaha(userId, "GET", `/api/{session}/chats/${encodeURIComponent(String(x.chat_id))}/messages/${encodeURIComponent(String(x.msg_id))}`, { query: { downloadMedia: true } }));
-        f = await tryUrl(rec(fresh.media).url);
-      }
-      if (!f) throw ctx.httpError(404, "media_unavailable", "This file is no longer available from WAHA. Open WhatsApp on your phone to see it.");
-      const mime = media.mime || f.mime || "application/octet-stream";
-      if (f.bytes.length <= MEDIA_MAX_BYTES) await putBlob(userId, "m:" + stanza, mime, f.bytes).catch(() => undefined);
-      return { mime, filename, bytes: f.bytes };
+      const key = userId + "\n" + String(x.id);
+      const running = fetching.get(key);
+      if (running) return running;
+      const job = (async () => {
+        // "Gone" is only what WAHA itself says is gone (a 404, or a message it has no file for). Anything else (WAHA down, busy, the session
+        // starting) is a passing failure: a 503 the UI tries again by itself instead of telling the user to pick up the phone.
+        const is404 = (e: unknown) => (e as { status?: number } | null)?.status === 404;
+        let passing = false;
+        const tryUrl = async (url: unknown, definitive: boolean) => {
+          if (typeof url !== "string" || !url) return null;
+          try { const f = await core.wahaBytes(userId, url); if (f.bytes.length) return f; if (!definitive) passing = true; return null; }
+          catch (e) { if (!definitive || !is404(e)) passing = true; return null; }
+        };
+        // The address the message came with: a 404 here only means WAHA cleaned its downloads (it does after a few minutes).
+        let f = await tryUrl(media.url, true);
+        if (!f) {
+          // No address yet (a message imported from the history has none) or WAHA dropped the file: have WAHA download the message's media again.
+          passing = false;
+          let fresh: Record<string, unknown> = {};
+          try { fresh = rec(await core.waha(userId, "GET", `/api/{session}/chats/${encodeURIComponent(String(x.chat_id))}/messages/${encodeURIComponent(String(x.msg_id))}`, { query: { downloadMedia: true } })); }
+          catch (e) { if (!is404(e)) passing = true; }
+          // A file WAHA has just downloaded and cannot serve is a hiccup, not a missing file.
+          f = await tryUrl(rec(fresh.media).url, false);
+        }
+        const flagged = rec(x.extra).mediaGone === true;
+        if (!f) {
+          if (passing) throw ctx.httpError(503, "media_busy", "WhatsApp could not hand over this file right now. Try again in a moment.");
+          if (!flagged) await q(`UPDATE {{p}}messages SET extra = COALESCE(extra, '{}'::jsonb) || '{"mediaGone":true}'::jsonb WHERE id = $1`, [x.id]).catch(() => undefined);
+          throw ctx.httpError(404, "media_unavailable", "This file is no longer available from WAHA. Open WhatsApp on your phone to see it.");
+        }
+        if (flagged) await q(`UPDATE {{p}}messages SET extra = extra - 'mediaGone' WHERE id = $1`, [x.id]).catch(() => undefined);
+        const mime = media.mime || f.mime || "application/octet-stream";
+        if (f.bytes.length <= MEDIA_MAX_BYTES) await putBlob(userId, "m:" + stanza, mime, f.bytes).catch(() => undefined);
+        return { mime, filename, bytes: f.bytes };
+      })();
+      fetching.set(key, job);
+      try { return await job; } finally { fetching.delete(key); }
     },
 
     async syncChats(userId, force = false) {
@@ -357,7 +382,7 @@ export function createStore(core: Core, identity: Identity): Store {
       id: String(x.msg_id), fromMe: x.from_me === true, sender, senderName: String(x.sender_label ?? x.sender_name ?? ""),
       body: deleted ? "" : String(x.body ?? ""), type: deleted ? "deleted" : String(x.type ?? "chat"), hasMedia: !deleted && x.has_media === true, sentAt: iso(x.sent_at),
       ack: Number(x.ack) || 0, edited: Boolean(x.edited_at), deleted, starred: x.starred === true, pinned: x.pinned === true, forwarded: extra.forwarded === true,
-      media: media && !deleted ? { mime: media.mime, filename: media.filename, size: media.size ?? null, duration: media.duration ?? null, width: media.width ?? null, height: media.height ?? null, gif: media.gif === true, available: x.cached === true || (Boolean(media.url) && !media.error) } : null,
+      media: media && !deleted ? { mime: media.mime, filename: media.filename, size: media.size ?? null, duration: media.duration ?? null, width: media.width ?? null, height: media.height ?? null, gif: media.gif === true, available: x.cached === true || (extra as { mediaGone?: boolean }).mediaGone !== true } : null,
       ...(extra.location && !deleted ? { location: extra.location } : {}), ...(extra.vcards && !deleted ? { vcards: extra.vcards.map((v) => ({ name: v.name, phones: v.phones, formatted: v.phones.map((p) => formatPhone(p)) })) } : {}),
       ...(poll ? { poll } : {}), ...(extra.preview && !deleted ? { preview: extra.preview } : {}), ...(extra.mentions ? { mentions: extra.mentions } : {}), ...(extra.call ? { call: extra.call } : {}),
       reactions: [...reactions.values()],

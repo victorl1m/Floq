@@ -24,28 +24,53 @@ function b64Blob(data: string, mime: string): Blob {
   return new Blob([bytes], { type: mime || "application/octet-stream" });
 }
 
-/** GET /media?id= once per message id, shared by every bubble, the lightbox and the menu. */
+/** True when the server said the file is gone for good (a 404). Anything else (WhatsApp busy, the network, a restart) passes. */
+export const mediaGone = (e: unknown) => errorStatus(e) === 404 || errorCode(e) === "media_unavailable" || errorCode(e) === "no_media";
+/** Waits before the 2nd, 3rd and 4th try of a file that failed for a passing reason. */
+export const MEDIA_RETRY_MS = [800, 2000, 5000];
+/** A conversation full of photos asks for a few files at a time, not all at once. */
+const MAX_PARALLEL = 4;
+let active = 0;
+const waiting: Array<() => void> = [];
+async function slot<T>(fn: () => Promise<T>): Promise<T> {
+  if (active >= MAX_PARALLEL) await new Promise<void>((r) => waiting.push(r));
+  active++;
+  try { return await fn(); } finally { active--; waiting.shift()?.(); }
+}
+
+/**
+ * GET /media?id= once per message id, shared by every bubble, the lightbox and the menu. The server downloads the file from WhatsApp when it
+ * does not have it yet; a passing failure is tried again by itself (MEDIA_RETRY_MS), a file that is gone fails at once.
+ */
 export function fetchMedia(api: Api, id: string): Promise<MediaEntry> {
   const hit = cache.get(id);
   if (hit) return Promise.resolve(hit);
   let p = inflight.get(id);
   if (!p) {
-    p = api<{ mime: string; filename: string; size: number; data: string }>("/media?id=" + encodeURIComponent(id))
-      .then((r) => {
-        if (!r || typeof r.data !== "string") throw Object.assign(new Error("No file"), { status: 404, code: "media_unavailable" });
-        const blob = b64Blob(r.data, r.mime);
-        const e: MediaEntry = { url: URL.createObjectURL(blob), blob, mime: r.mime || blob.type, filename: r.filename || "file", size: r.size ?? blob.size, refs: 0 };
-        cache.set(id, e);
-        return e;
-      })
-      .finally(() => { inflight.delete(id); });
+    const once = () => slot(() => api<{ mime: string; filename: string; size: number; data: string }>("/media?id=" + encodeURIComponent(id)));
+    p = (async () => {
+      for (let n = 0; ; n++) {
+        try {
+          const r = await once();
+          if (!r || typeof r.data !== "string") throw Object.assign(new Error("No file"), { status: 404, code: "media_unavailable" });
+          const blob = b64Blob(r.data, r.mime);
+          const e: MediaEntry = { url: URL.createObjectURL(blob), blob, mime: r.mime || blob.type, filename: r.filename || "file", size: r.size ?? blob.size, refs: 0 };
+          cache.set(id, e);
+          return e;
+        } catch (e) {
+          if (mediaGone(e) || n >= MEDIA_RETRY_MS.length) throw e;
+          await new Promise((r) => setTimeout(r, MEDIA_RETRY_MS[n]));
+        }
+      }
+    })().finally(() => { inflight.delete(id); });
     inflight.set(id, p);
   }
   return p;
 }
 
+/** "unavailable": WhatsApp no longer has the file. "error": it could not be loaded after the automatic tries. Both offer Retry. */
 export type MediaStatus = "idle" | "loading" | "ready" | "error" | "unavailable";
-/** Loads a message's file. With auto it starts as soon as the element is on screen, else on load(). */
+/** Loads a message's file. With auto it starts as soon as the element is on screen, else on load(). `available: false` means an earlier try found the file gone. */
 export function useMedia(m: Message, auto = false, visible = true) {
   const { api } = useWa();
   const id = m.id;
@@ -58,7 +83,7 @@ export function useMedia(m: Message, auto = false, visible = true) {
     setStatus("loading");
     fetchMedia(api, id).then(
       (e) => { if (alive.current) { setEntry(e); setStatus("ready"); } },
-      (e) => { if (alive.current) setStatus(errorStatus(e) === 404 || errorCode(e) === "media_unavailable" ? "unavailable" : "error"); },
+      (e) => { if (alive.current) setStatus(mediaGone(e) ? "unavailable" : "error"); },
     );
   }, [api, id]);
   useEffect(() => { if (auto && visible && status === "idle" && !m.localUrl) load(); }, [auto, visible, status, load, m.localUrl]);
@@ -91,12 +116,14 @@ export async function downloadMedia(api: Api, m: Message): Promise<void> {
   a.remove();
 }
 
-/** "Not available here" with a retry. */
-export function MediaGone({ onRetry, busy, compact }: { onRetry: () => void; busy?: boolean; compact?: boolean }) {
+export const GONE_TEXT = "Not available here. Open WhatsApp on your phone to view it.";
+export const FAILED_TEXT = "Could not load this file.";
+/** "Not available here" (the file is gone) or "Could not load" (failed, the file may still be there), with a retry. */
+export function MediaGone({ onRetry, busy, compact, failed }: { onRetry: () => void; busy?: boolean; compact?: boolean; failed?: boolean }) {
   return (
-    <div className={cn("wa-gone", compact && "wa-gone-c")} role="status">
+    <div className={cn("wa-gone", compact && "wa-gone-c")} role="status" data-state={failed ? "failed" : "gone"}>
       <IconBan />
-      <span>Not available here. Open WhatsApp on your phone to view it.</span>
+      <span>{failed ? FAILED_TEXT : GONE_TEXT}</span>
       <button type="button" className="wa-linkbtn" onClick={onRetry} disabled={busy}><IconRefresh />Retry</button>
     </div>
   );
@@ -120,7 +147,7 @@ export function ImageMedia({ m, sticker, onOpen }: { m: Message; sticker?: boole
           <img src={url} alt={alt} decoding="async" draggable={false} className={cn(decoded && "wa-in")} onLoad={() => setDecoded(true)} />
         </button>
       ) : status === "unavailable" || status === "error" ? (
-        <MediaGone onRetry={retry} compact />
+        <MediaGone onRetry={retry} compact failed={status === "error"} />
       ) : (
         <div className="wa-skel" aria-busy="true" aria-label="Loading photo">{status === "loading" ? <Spinner /> : <IconImage />}</div>
       )}
@@ -141,7 +168,7 @@ export function VideoMedia({ m }: { m: Message }) {
       {url && (armed || gif) ? (
         <video src={url} className="wa-in" controls={!gif} autoPlay muted={gif} loop={gif} playsInline preload="metadata" aria-label={gif ? "GIF" : "Video"} />
       ) : status === "unavailable" || status === "error" ? (
-        <MediaGone onRetry={retry} compact />
+        <MediaGone onRetry={retry} compact failed={status === "error"} />
       ) : (
         <button type="button" className="wa-vposter" aria-label={"Play video" + (dur ? ", " + formatDuration(dur * 1000) : "")} onClick={() => { setArmed(true); if (status === "idle") load(); }}>
           <span className="wa-vplay">{armed && status === "loading" ? <Spinner /> : <IconPlay />}</span>
@@ -156,13 +183,13 @@ export function VideoMedia({ m }: { m: Message }) {
 export function DocumentMedia({ m }: { m: Message }) {
   const { api } = useWa();
   const [busy, setBusy] = useState(false);
-  const [gone, setGone] = useState(m.media?.available === false);
+  const [gone, setGone] = useState<"" | "gone" | "failed">(m.media?.available === false ? "gone" : "");
   const name = m.media?.filename || m.body || "Document";
   const k = docKind(name, m.media?.mime);
   const go = async () => {
     setBusy(true);
-    try { await downloadMedia(api, m); setGone(false); }
-    catch (e) { if (errorStatus(e) === 404 || errorCode(e) === "media_unavailable") setGone(true); }
+    try { await downloadMedia(api, m); setGone(""); }
+    catch (e) { setGone(mediaGone(e) ? "gone" : "failed"); }
     finally { setBusy(false); }
   };
   return (
@@ -170,9 +197,9 @@ export function DocumentMedia({ m }: { m: Message }) {
       <div className="wa-doc">
         <span className={cn("wa-doc-ico", "wa-k-" + k.kind)} aria-hidden="true">{k.ext ? <b>{k.ext.slice(0, 4)}</b> : <IconFileText />}</span>
         <span className="wa-doc-t"><b title={name}>{name}</b><span>{[k.ext.toUpperCase(), m.media?.size ? formatBytes(m.media.size) : ""].filter(Boolean).join(" · ") || "Document"}</span></span>
-        <button type="button" className="wa-doc-dl" aria-label={"Download " + name} title="Download" disabled={busy || gone} onClick={() => void go()}>{busy ? <Spinner /> : <IconDownload />}</button>
+        <button type="button" className="wa-doc-dl" aria-label={"Download " + name} title="Download" disabled={busy || gone === "gone"} onClick={() => void go()}>{busy ? <Spinner /> : <IconDownload />}</button>
       </div>
-      {gone && <MediaGone onRetry={() => void go()} busy={busy} compact />}
+      {gone && <MediaGone onRetry={() => void go()} busy={busy} compact failed={gone === "failed"} />}
     </div>
   );
 }

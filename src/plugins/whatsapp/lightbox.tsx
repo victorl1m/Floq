@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import type { Message } from "@whatsapp-shared/chat";
-import { downloadMedia, useMedia } from "./media";
+import { downloadMedia, FAILED_TEXT, GONE_TEXT, useMedia } from "./media";
 import { useWa } from "./context";
 import { IconArrowLeft, IconArrowRight, IconClose, IconDownload, IconZoomIn, IconZoomOut } from "./icons-bubbles";
 import { Spinner } from "./icons";
@@ -14,7 +14,7 @@ function Slide({ m, scale, pan, onPan }: { m: Message; scale: number; pan: { x: 
     return (
       <div className="wa-lb-state">
         {status === "unavailable" || status === "error"
-          ? <><span>Not available here. Open WhatsApp on your phone to view it.</span><button type="button" className="wa-linkbtn" onClick={retry}>Retry</button></>
+          ? <><span>{status === "error" ? FAILED_TEXT : GONE_TEXT}</span><button type="button" className="wa-linkbtn" onClick={retry}>Retry</button></>
           : <Spinner />}
       </div>
     );

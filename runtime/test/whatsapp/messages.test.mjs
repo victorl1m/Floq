@@ -186,9 +186,96 @@ test("media WAHA no longer has: asked again with downloadMedia, else a clear 404
   fresh = false;
   const log = await h.messages(A);
   await assert.rejects(h.get("/media", { id: log[1].id }), { status: 404, code: "no_media" });
+  assert.equal(log[2].media.available, true, "a file is worth a try until WAHA has said it is gone");
   await assert.rejects(h.get("/media", { id: log[2].id }), { status: 404, code: "media_unavailable" });
-  assert.equal(log[2].media.available, false);
+  assert.equal((await h.messages(A))[2].media.available, false, "WAHA said it is gone: the UI shows that without asking again");
   await assert.rejects(h.get("/media", { id: "nope" }), { status: 404 });
+});
+
+test("a message imported from the history (no file address yet) is served on the first request, no retry needed", async () => {
+  const bytes = Buffer.from("history-jpeg");
+  const h = await harness(plugin, migrations, { waha: (m, path, { query }) => {
+    if (path === "/api/files/hist.jpg") return { bytes, headers: { "content-type": "image/jpeg" } };
+    if (path.includes("/messages/") && query.downloadMedia === "true") return { json: { id: "x", media: { url: "http://localhost:3000/api/files/hist.jpg", mimetype: "image/jpeg" } } };
+    return undefined;
+  } });
+  // What the history import and the 20 s re-read store: downloadMedia=false, so the message has no media address.
+  await h.message({ from: A, hasMedia: true, media: null, _data: { key: { id: "H1" }, message: { imageMessage: { mimetype: "image/jpeg", width: 640, height: 480 } } } });
+  await h.idle();
+  const m = (await h.messages(A))[0];
+  assert.equal(m.type, "image");
+  assert.equal(m.media.available, true, "not yet downloaded is not the same as gone: the UI loads it by itself");
+  h.requests.length = 0;
+  const got = await h.get("/media", { id: m.id });
+  assert.equal(Buffer.from(got.data, "base64").toString(), "history-jpeg");
+  assert.equal(got.mime, "image/jpeg");
+  assert.ok(h.requests.some((r) => r.path.includes("/messages/") && r.query.downloadMedia === "true"), "WAHA was asked to download the file");
+  h.requests.length = 0;
+  await h.get("/media", { id: m.id });
+  assert.equal(h.requests.length, 0, "kept: the second view does not go back to WAHA");
+});
+
+test("a cached address that expired is downloaded again on the first request", async () => {
+  const bytes = Buffer.from("fresh-copy");
+  let files = 0;
+  const h = await harness(plugin, migrations, { waha: (m, path, { query }) => {
+    if (path === "/api/files/old.jpg") { files++; return undefined; } // WAHA deleted it
+    if (path === "/api/files/again.jpg") return { bytes, headers: { "content-type": "image/jpeg" } };
+    if (path.includes("/messages/") && query.downloadMedia === "true") return { json: { media: { url: "http://localhost:3000/api/files/again.jpg", mimetype: "image/jpeg" } } };
+    return undefined;
+  } });
+  await h.message({ from: A, hasMedia: true, media: { url: "http://localhost:3000/api/files/old.jpg", mimetype: "image/jpeg", filename: "a.jpg" }, _data: { type: "image" } });
+  await h.idle();
+  assert.ok(files >= 1, "the background download found the file already gone");
+  const m = (await h.messages(A))[0];
+  assert.equal(m.media.available, true);
+  assert.equal(Buffer.from((await h.get("/media", { id: m.id })).data, "base64").toString(), "fresh-copy");
+});
+
+test("a passing WAHA failure is a 503 the UI tries again, never 'gone'; a real 404 is remembered and Retry can still bring it back", async () => {
+  const bytes = Buffer.from("late");
+  let mode = "down";
+  const h = await harness(plugin, migrations, { waha: (m, path, { query }) => {
+    if (path === "/api/files/late.jpg") return mode === "ok" ? { bytes, headers: { "content-type": "image/jpeg" } } : mode === "down" ? { status: 500 } : undefined;
+    if (path.includes("/messages/") && query.downloadMedia === "true") {
+      if (mode === "down") return { status: 500, json: { message: "busy" } };
+      if (mode === "starting") return { status: 422, json: { message: "Session status is not as expected" } };
+      if (mode === "nofile") return { json: { id: "x", media: null } };
+      if (mode === "ok") return { json: { media: { url: "http://localhost:3000/api/files/late.jpg", mimetype: "image/jpeg" } } };
+    }
+    return undefined;
+  } });
+  await h.message({ from: A, hasMedia: true, media: null, _data: { key: { id: "H2" }, message: { imageMessage: { mimetype: "image/jpeg" } } } });
+  await h.idle();
+  const id = (await h.messages(A))[0].id;
+  await assert.rejects(h.get("/media", { id }), { status: 503, code: "media_busy" });
+  mode = "starting";
+  await assert.rejects(h.get("/media", { id }), { status: 503, code: "media_busy" });
+  assert.equal((await h.messages(A))[0].media.available, true, "a passing failure does not mark the file as gone");
+  mode = "nofile";
+  await assert.rejects(h.get("/media", { id }), { status: 404, code: "media_unavailable" });
+  assert.equal((await h.messages(A))[0].media.available, false);
+  // The history is re-read every 20 s without media: that must not forget what WAHA said.
+  await h.message({ id: id, from: A, hasMedia: true, media: null, _data: { key: { id: "H2" }, message: { imageMessage: { mimetype: "image/jpeg" } } } });
+  assert.equal((await h.messages(A))[0].media.available, false);
+  mode = "ok";
+  assert.equal(Buffer.from((await h.get("/media", { id })).data, "base64").toString(), "late", "Retry asks WAHA again");
+  assert.equal((await h.messages(A))[0].media.available, true);
+});
+
+test("two requests for the same file share one download", async () => {
+  let asked = 0;
+  const h = await harness(plugin, migrations, { waha: async (m, path, { query }) => {
+    if (path === "/api/files/one.jpg") return { bytes: Buffer.from("one"), headers: { "content-type": "image/jpeg" } };
+    if (path.includes("/messages/") && query.downloadMedia === "true") { asked++; await new Promise((r) => setTimeout(r, 30)); return { json: { media: { url: "http://localhost:3000/api/files/one.jpg", mimetype: "image/jpeg" } } }; }
+    return undefined;
+  } });
+  await h.message({ from: A, hasMedia: true, media: null, _data: { key: { id: "H3" }, message: { imageMessage: { mimetype: "image/jpeg" } } } });
+  await h.idle();
+  const id = (await h.messages(A))[0].id;
+  const [a, b] = await Promise.all([h.get("/media", { id }), h.get("/media", { id })]);
+  assert.equal(a.data, b.data);
+  assert.equal(asked, 1);
 });
 
 // ---- sending ----

@@ -89,6 +89,7 @@ const chats: Chat[] = [
   { chatId: BIA, kind: "user", name: "Bia Nogueira", phone: "5511933334444", lastBody: "", lastAt: ago(5), total: 3 },
 ];
 const chat: Chat = GROUP ? chats[1] : chats[0];
+const mediaTries = new Map<string, number>();
 
 export default function BubblesDemo() {
   const [messages, setMessages] = useState<Message[]>(build);
@@ -108,6 +109,11 @@ export default function BubblesDemo() {
     if (url.pathname === "/media") {
       const m = messages.find((x) => x.id === url.searchParams.get("id"));
       if (!m || m.media?.available === false || m.type === "video") throw Object.assign(new Error("This file is no longer available."), { status: 404, code: "media_unavailable" });
+      // ?flaky=N: the first N tries of every file fail the way a busy WhatsApp server does (the UI tries again by itself).
+      const flaky = Number(q.get("flaky")) || 0, tries = (mediaTries.get(m.id) ?? 0) + 1;
+      mediaTries.set(m.id, tries);
+      if (tries <= flaky) throw Object.assign(new Error("WhatsApp could not hand over this file right now."), { status: 503, code: "media_busy" });
+      if (q.get("slow")) await new Promise((r) => setTimeout(r, Number(q.get("slow")) || 0));
       const kind = m.media?.mime ?? "";
       if (kind.startsWith("audio/")) return { mime: "audio/wav", filename: m.media!.filename, size: 96000, data: wavB64(6) };
       if (kind.startsWith("image/")) return { mime: "image/png", filename: m.media!.filename, size: 5000, data: canvasPng(m.media?.width ?? 400, m.media?.height ?? 300, (m.id.length * 47 + Number(m.id.slice(1)) * 29) % 360, m.type === "sticker" ? "😀" : "Ateliê Zoe") };
