@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parse as parseToml } from "smol-toml";
 import {
+  mcpHelperError,
   FLOQ_BROWSER_MCP_SPEC, isReservedMcpName, reconcileReservedMcp,
   addToJsonConfig, addToTomlConfig, describeMcp, mergeGlobalCodexMcp, normalizeMcpInput, removeFromJsonConfig, removeFromTomlConfig,
 } from "../dist/mcpConfig.js";
@@ -252,3 +253,11 @@ for (const kind of ["json", "toml"]) {
     assert.throws(() => apply(kind === "json" ? "{not json" : "[mcp_servers\nbroken", true), (error) => error.status === 400 && error.code === "mcp_config_malformed");
   });
 }
+
+test("a helper failure always names a reason, even when the helper reported none", () => {
+  assert.match(mcpHelperError("").message, /\(NO_OUTPUT\)/);
+  assert.match(mcpHelperError("", 137).message, /\(EXIT_137\)/);
+  assert.match(mcpHelperError("garbage", 0).message, /\(BAD_OUTPUT\)/);
+  assert.match(mcpHelperError("MCP_FAILED:EACCES", 1).message, /\(EACCES\)/);
+  assert.match(mcpHelperError("MCP_FAILED:CHECKSUM").message, /\(CHECKSUM\)/);
+});

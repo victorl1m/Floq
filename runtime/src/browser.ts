@@ -737,6 +737,22 @@ export class BrowserService {
   // ------------------------------------------------------------------ MCP registration
 
   /**
+   * Background sync (shard wake, browser toggle): a home that just woke can refuse the first helper run (sandbox still settling),
+   * so a failure is retried after 5 s and 30 s before it is logged once, with the helper's reason.
+   */
+  async syncMcpQuietly(userId: string, delays: number[] = [5_000, 30_000]): Promise<void> {
+    const attempt = async (n: number): Promise<void> => {
+      try { await this.syncMcp(userId); }
+      catch (error) {
+        if (n >= delays.length) { log.warn("browser.mcp_sync_failed", { userId, attempts: n + 1, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }); return; }
+        // The first try is awaited (callers see the usual outcome); later tries run in the background.
+        setTimeout(() => { void attempt(n + 1); }, delays[n]).unref?.();
+      }
+    };
+    await attempt(0);
+  }
+
+  /**
    * Makes ~/.claude.json and ~/.codex/config.toml match the user's desired state: the floq-browser entry present when the browser is
    * available and on for them, absent otherwise. Idempotent. A hand-edited entry is reported ("edited") and left alone.
    */
@@ -847,7 +863,7 @@ export class BrowserService {
   async onToggle(userId: string): Promise<void> {
     if (!(await this.settings.agentBrowser(userId)) || this.capability() !== "available") await this.stop(userId, "disabled");
     else { await this.reconcileEgress(userId, 0); void this.pushEgress(userId); }
-    await this.syncMcp(userId).catch((error) => log.warn("browser.mcp_sync_failed", { userId, error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }));
+    await this.syncMcpQuietly(userId);
   }
 
   /** Stops every daemon (runtime shutdown). */

@@ -666,12 +666,12 @@ export class SkillsService {
       let expect = "absent";
       if (!(read.exitCode === 0 && read.output.includes("MCP_ABSENT"))) {
         const match = /MCP_FILE:([0-9a-f]{64}):([A-Za-z0-9+/=]*)/.exec(read.output);
-        if (read.exitCode !== 0 || !match) throw mcpHelperError(read.output);
+        if (read.exitCode !== 0 || !match) throw mcpHelperError(read.output, read.exitCode);
         expect = match[1];
         const bytes = Buffer.from(match[2], "base64");
         try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
         catch { throw badRequest("That MCP config is not valid UTF-8 text, so Floq did not change it.", "mcp_config_malformed"); }
-        if (sha256(bytes) !== expect) throw mcpHelperError("");
+        if (sha256(bytes) !== expect) throw mcpHelperError("MCP_FAILED:CHECKSUM");
       }
       const next = transform(raw);
       if (next === null || next === raw) return false;
@@ -683,7 +683,7 @@ export class SkillsService {
       if (write.exitCode === 0 && write.output.includes("MCP_WRITTEN")) return true;
       if (write.exitCode === 0 && write.output.includes("MCP_GONE")) return false;
       if (write.output.includes("MCP_CHANGED")) continue;
-      throw mcpHelperError(write.output);
+      throw mcpHelperError(write.output, write.exitCode);
     }
     throw conflict("The MCP config kept changing while Floq updated it. Try again.", "mcp_config_busy");
   }

@@ -512,11 +512,16 @@ try {
 }
 `;
 
-export function mcpHelperError(output: string): HttpError {
+/**
+ * Error for a failed helper run. Always names a reason so a log line says what went wrong: the helper's own code, or, when the
+ * helper never reported one (it did not start, died, or its output was cut), NO_OUTPUT / EXIT_<n> / BAD_OUTPUT.
+ */
+export function mcpHelperError(output: string, exitCode?: number | null): HttpError {
   if (output.includes("MCP_UNSAFE")) return badRequest("The MCP config path contains an unsafe entry (a link or unexpected file type), so Floq did not touch it.", "mcp_config_unsafe");
   if (output.includes("MCP_TOO_LARGE")) return tooLarge();
-  const code = /MCP_FAILED:([A-Z0-9_]+)/i.exec(output)?.[1];
-  return badRequest(`Could not safely update the MCP config${code ? ` (${code})` : ""}.`, "mcp_write_failed");
+  const code = /MCP_FAILED:([A-Z0-9_]+)/i.exec(output)?.[1]
+    ?? (!output.trim() ? (typeof exitCode === "number" && exitCode !== 0 ? `EXIT_${exitCode}` : "NO_OUTPUT") : typeof exitCode === "number" && exitCode !== 0 ? `EXIT_${exitCode}` : "BAD_OUTPUT");
+  return badRequest(`Could not safely update the MCP config (${code}).`, "mcp_write_failed");
 }
 
 /** Recognises the floq-vault wrapper this module writes. Returns the original command and secret names, or null. */

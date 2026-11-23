@@ -599,3 +599,13 @@ test("a route switch is held back while a page loads or a person is typing / cli
   assert.equal((service as any).routeBusy(e), false);
   await service.shutdown();
 });
+
+test("a background MCP sync that fails right after a wake is retried before it is logged", async () => {
+  let calls = 0;
+  const mcp = { sync: async () => { calls++; if (calls < 3) throw new Error("Could not safely update the MCP config (NO_OUTPUT)."); return { claude: "unchanged", codex: "unchanged" }; } };
+  const svc = new BrowserService({}, { agentBrowser: async () => true }, mcp, { mode: "on", idleMs: 0, memMb: 0, allowPrivate: false, browsersDir: "/x", version: { chromium: "1", revision: "1", playwrightMcp: "1" } }, () => true);
+  await svc.syncMcpQuietly("alice", [5, 5]);
+  assert.equal(calls, 1, "first try awaited");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(calls, 3, "two retries, the last one succeeds");
+});
