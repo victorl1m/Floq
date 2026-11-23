@@ -612,7 +612,7 @@ function AgentCanvas() {
   const wakeAll = useCallback(async () => {
     const queue = projectSessions.filter((session) => session.state === "sleeping");
     if (queue.length === 0) return;
-    if (queue.length > 5 && !(await askConfirm({ title: `Wake ${queue.length} sleeping agents?`, description: "Each one resumes its conversation and starts using your provider quota again.", actionLabel: `Wake ${queue.length}` }))) return;
+    if (queue.length > 5 && !(await askConfirm({ title: `Wake ${queue.length} sleeping agents?`, description: "Each one resumes its conversation and starts using your provider quota again.", actionLabel: `Wake ${queue.length}`, enterConfirms: true }))) return;
     const worker = async () => { for (let next = queue.shift(); next; next = queue.shift()) await wake(next); };
     await Promise.all([worker(), worker()]);
   }, [projectSessions, wake]);

@@ -24,6 +24,9 @@ type ConfirmRequest = {
   actionLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
+  /** Enter runs the action (the action button is focused on open) instead of Cancel. For safe confirms that follow an
+   * Enter the user already pressed, e.g. "Wake and send". Never for destructive ones. */
+  enterConfirms?: boolean;
   resolve: (value: boolean) => void;
 };
 
@@ -85,6 +88,8 @@ function AskDialog({ request }: { request: AskRequest }) {
   const [value, setValue] = useState(request.kind === "text" ? request.initial ?? "" : "");
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
+  const actionRef = useRef<HTMLButtonElement>(null);
+  const enterConfirms = request.kind === "confirm" && request.enterConfirms === true && !request.destructive;
   const finish = (result: boolean | string | null) => {
     if (done.current) return;
     done.current = true;
@@ -100,7 +105,9 @@ function AskDialog({ request }: { request: AskRequest }) {
 
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) finish(request.kind === "confirm" ? false : null); }}>
-      <AlertDialogContent>
+      <AlertDialogContent
+        onOpenAutoFocus={enterConfirms ? (event) => { event.preventDefault(); actionRef.current?.focus(); } : undefined}
+        onKeyDown={enterConfirms ? (event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !event.repeat) { event.preventDefault(); submit(); } } : undefined}>
         <AlertDialogHeader>
           <AlertDialogTitle>{request.title}</AlertDialogTitle>
           {request.description && <AlertDialogDescription asChild><div>{request.description}</div></AlertDialogDescription>}
@@ -124,7 +131,7 @@ function AskDialog({ request }: { request: AskRequest }) {
         )}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => finish(request.kind === "confirm" ? false : null)}>{request.cancelLabel ?? "Cancel"}</AlertDialogCancel>
-          <Button variant={request.kind === "confirm" && request.destructive ? "destructive" : "default"} onClick={submit}>
+          <Button ref={actionRef} variant={request.kind === "confirm" && request.destructive ? "destructive" : "default"} onClick={submit}>
             {request.actionLabel ?? (request.kind === "confirm" ? "Continue" : "Save")}
           </Button>
         </AlertDialogFooter>

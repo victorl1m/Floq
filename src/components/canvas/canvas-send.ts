@@ -86,6 +86,7 @@ export async function sendToTargets(options: SendOptions): Promise<SendResult> {
       description: (one ? `${names} is not running.` : `These agents are not running: ${names}.`) + ` Floq wakes ${one ? "it" : "them"}, then sends your message.` + (someRunning ? " Skip sends only to the running agents." : ""),
       actionLabel: one ? "Wake and send" : `Wake ${dormant.length} and send`,
       cancelLabel: someRunning ? "Skip" : "Cancel",
+      enterConfirms: true,
     });
     if (!wakeThem) {
       skipped.push(...dormant.map((session) => session.id));
