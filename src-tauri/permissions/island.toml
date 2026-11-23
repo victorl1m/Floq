@@ -14,6 +14,7 @@ commands.allow = [
   "upload_dropped_file",
   "cancel_dropped_upload",
   "download_to_downloads",
+  "download_with_picker",
   "open_dav_mount",
   "eject_dav_mount",
   "native_material_support",
