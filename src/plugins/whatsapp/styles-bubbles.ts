@@ -205,8 +205,8 @@ a.wa-lp:hover{background:color-mix(in srgb,var(--wa-text) 11%,transparent)}
 .wa-qpick .wa-emoji{position:static;width:100%;height:min(340px,55vh);animation:none}
 
 /* lightbox: the log is its own stacking context, so it must rise above the header while the viewer is open */
-.wa-logwrap.wa-lb-on{z-index:20}
-.wa-lb{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;background:rgba(0,0,0,.92);color:#fff;outline:0}
+/* The viewer is portalled into .wa-root and covers exactly that box: position:fixed would be laid out against the window, under the host's sidebar. */
+.wa-lb{position:absolute;inset:0;z-index:60;overflow:hidden;display:flex;flex-direction:column;background:rgba(0,0,0,.92);color:#fff;outline:0}
 .wa-lb-top{display:flex;align-items:center;gap:6px;flex:none;padding:10px 12px}
 .wa-lb-count{margin-right:auto;font-size:13px;opacity:.85}
 .wa-lb-btn{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.1);color:#fff;cursor:pointer}
@@ -214,8 +214,10 @@ a.wa-lp:hover{background:color-mix(in srgb,var(--wa-text) 11%,transparent)}
 .wa-lb-btn:disabled{opacity:.35;cursor:default}
 .wa-lb-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .wa-lb-btn svg{width:22px;height:22px}
-.wa-lb-stage{flex:1;min-height:0;display:grid;place-items:center;overflow:hidden;padding:0 60px}
-.wa-lb-stage img{max-width:100%;max-height:100%;object-fit:contain;user-select:none;cursor:zoom-in}
+/* A flex stage of definite size (the viewer minus its bar and caption): the photo's percentage max sizes resolve against it at any aspect ratio.
+   In a grid stage the auto row grew with a tall photo, so max-height:100% never held it. */
+.wa-lb-stage{flex:1 1 0;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 60px}
+.wa-lb-stage img{display:block;flex:none;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;user-select:none;cursor:zoom-in}
 .wa-lb-stage img[data-zoom]{cursor:grab}
 .wa-lb-prev,.wa-lb-next{position:absolute;top:50%;margin-top:-20px}
 .wa-lb-prev{left:10px}

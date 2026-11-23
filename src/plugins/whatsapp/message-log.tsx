@@ -166,7 +166,7 @@ export const MessageLog = memo(forwardRef<MessageLogHandle, MessageLogProps>(fun
 
   return (
     <LogCtx.Provider value={api2}>
-      <div ref={wrap} className={boxIndex >= 0 ? "wa-logwrap wa-lb-on" : "wa-logwrap"}>
+      <div ref={wrap} className="wa-logwrap">
         {pin && (
           <button type="button" className="wa-pinbar" aria-label={"Pinned message: " + MEDIA_LABEL(pin) + (pinned.length > 1 ? ". " + pinned.length + " pinned, click for the next" : "")}
             onClick={() => { jumpTo(pin.id); setPinAt((n) => n + 1); }}>

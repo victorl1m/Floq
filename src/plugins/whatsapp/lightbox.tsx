@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import type { Message } from "@whatsapp-shared/chat";
 import { downloadMedia, FAILED_TEXT, GONE_TEXT, useMedia } from "./media";
 import { useWa } from "./context";
@@ -29,22 +30,28 @@ function Slide({ m, scale, pan, onPan }: { m: Message; scale: number; pan: { x: 
   );
 }
 
-/** Full-view image with zoom (buttons, wheel, drag), download, Esc to close and arrows between the chat's images. */
+/** Full-view image with zoom (buttons, wheel, drag), download, Esc to close and arrows between the chat's images.
+ *  Rendered through a portal into the plugin's .wa-root, which it covers exactly: it is laid out against the WhatsApp view (never the window,
+ *  where the host's sidebar and title bar paint above the view) and sits above both panes, not inside the log's stacking context. */
 export function Lightbox({ items, index, onIndex, onClose }: { items: Message[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
   const { api } = useWa();
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const root = useRef<HTMLDivElement>(null);
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => { setHost(anchor.current?.closest<HTMLElement>(".wa-root") ?? document.body); }, []);
   const m = items[index];
   const reset = () => { setScale(1); setPan({ x: 0, y: 0 }); };
   const go = (d: number) => { const n = index + d; if (n >= 0 && n < items.length) { reset(); onIndex(n); } };
   const zoom = (k: number) => { const s = Math.min(MAX, Math.max(MIN, +(scale * k).toFixed(2))); setScale(s); if (s === 1) setPan({ x: 0, y: 0 }); };
 
   useEffect(() => {
+    if (!host) return;
     const prev = document.activeElement as HTMLElement | null;
     root.current?.focus();
     return () => { prev?.focus?.(); };
-  }, []);
+  }, [host]);
   // Neighbours load ahead so the arrows feel instant.
   const next = items[index + 1], before = items[index - 1];
   useMedia(next ?? m, Boolean(next), true);
@@ -66,7 +73,8 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: Message[];
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
   };
-  return (
+  if (!host) return <span ref={anchor} hidden />;
+  return createPortal(
     <div ref={root} className="wa-lb" role="dialog" aria-modal="true" aria-label="Photo viewer" tabIndex={-1} onKeyDown={onKey}
       onWheel={(e) => { if (e.deltaY) zoom(e.deltaY < 0 ? 1.15 : 0.87); }}
       onClick={(e) => { if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("wa-lb-stage")) onClose(); }}>
@@ -81,6 +89,7 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: Message[];
       {index > 0 && <button type="button" className="wa-lb-btn wa-lb-prev" aria-label="Previous photo" onClick={() => go(-1)}><IconArrowLeft /></button>}
       {index < items.length - 1 && <button type="button" className="wa-lb-btn wa-lb-next" aria-label="Next photo" onClick={() => go(1)}><IconArrowRight /></button>}
       {m.body && <div className="wa-lb-cap">{m.body}</div>}
-    </div>
+    </div>,
+    host,
   );
 }
