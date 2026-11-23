@@ -40,6 +40,13 @@ const client = {
     updates = updates.filter((x) => x.id !== id);
     return plugins.find((p) => p.id === id);
   },
+  uninstallPlugin: async (id: string, confirm: string) => {
+    w.__calls.push({ name: "uninstall", args: { id, confirm } });
+    if (confirm !== id) throw new Error("Type the plugin id to confirm.");
+    plugins = plugins.filter((p) => p.id !== id);
+    updates = updates.filter((x) => x.id !== id);
+  },
+  purgePluginData: async (id: string, confirm: string) => { w.__calls.push({ name: "purge", args: { id, confirm } }); },
 };
 
 function App() {

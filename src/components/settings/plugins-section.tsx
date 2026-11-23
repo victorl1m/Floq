@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconChevronDown, IconDownload, IconRefresh } from "@tabler/icons-react";
+import { IconChevronDown, IconDownload, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { toast } from "sonner";
+import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { errorMessage, useRuntime } from "@/lib/runtime/store";
 import type { PluginInfo, PluginSecretMigration, PluginSettingValues, PluginStatus, PluginUpdateNotice } from "@/lib/runtime/types";
 import { isIntegration } from "@/plugins/integrations";
+import { confirmMatches } from "@/plugins/install-ui";
 import { PluginBoundary, usePlugins } from "@/plugins/host";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { PluginSettingsForm } from "@/plugins/kit/plugin-settings-form";
@@ -56,13 +61,15 @@ function PluginConfig({ plugin, isAdmin }: { plugin: PluginInfo; isAdmin: boolea
     );
 }
 
-export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser, update, updating = false, onUpdate, deprecated }: {
+export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser, update, updating = false, onUpdate, deprecated, onUninstall }: {
     plugin: PluginInfo; isAdmin: boolean; busy: boolean;
     onToggleInstall: (on: boolean) => void; onToggleUser: (on: boolean) => void;
     /** A newer version of this plugin exists (admins only); the row then offers a one-click update. */
     update?: PluginUpdateNotice; updating?: boolean; onUpdate?: () => void;
     /** The catalog marks this installed plugin as deprecated: the text says what replaces it. */
     deprecated?: string;
+    /** Installed (not bundled) plugins: admins can uninstall them from the row. */
+    onUninstall?: () => void;
 }) {
     const [open, setOpen] = useState(false);
     const Icon = resolvePluginIcon(plugin.icon);
@@ -113,6 +120,16 @@ export function PluginRow({ plugin, isAdmin, busy, onToggleInstall, onToggleUser
                             <Switch checked={plugin.userEnabled} disabled={busy} aria-label={`Use ${plugin.name}`} onCheckedChange={onToggleUser} />
                         </label>
                     )}
+                    {isAdmin && onUninstall && (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={`Uninstall ${plugin.name}`} data-slot="plugin-uninstall" onClick={onUninstall}>
+                                    <IconTrash aria-hidden />
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Uninstall</TooltipContent>
+                        </Tooltip>
+                    )}
                     {!invalid && (
                         <Button variant="ghost" size="sm" className="min-w-[6.5rem]" aria-expanded={open} aria-controls={regionId} onClick={() => setOpen((v) => !v)}>
                             Configure <IconChevronDown className={open ? "rotate-180" : undefined} aria-hidden />
@@ -136,6 +153,10 @@ export default function PluginsSection() {
     const [updates, setUpdates] = useState<Record<string, PluginUpdateNotice>>({});
     const [updatingId, setUpdatingId] = useState<string | null>(null);
     const [deprecated, setDeprecated] = useState<Record<string, string>>({});
+    const [removing, setRemoving] = useState<PluginInfo | null>(null);
+    const [typed, setTyped] = useState("");
+    const [alsoData, setAlsoData] = useState(false);
+    const [uninstalling, setUninstalling] = useState(false);
     // Integrations (WhatsApp) are bundled plugins with their own page: Settings > Integrations.
     const listed = all.filter((p) => !isIntegration(p));
 
@@ -164,6 +185,30 @@ export default function PluginsSection() {
             toast.error(`Could not update ${plugin.name}`, { description: errorMessage(e) });
         } finally {
             setUpdatingId(null);
+        }
+    }
+
+    function askUninstall(plugin: PluginInfo) { setRemoving(plugin); setTyped(""); setAlsoData(false); }
+
+    /** Uninstalls the package (it turns off first); with "also delete its data" its storage, settings and credentials go too. */
+    async function uninstall() {
+        if (!client || !removing || !confirmMatches(typed, removing.id)) return;
+        const plugin = removing;
+        setUninstalling(true);
+        try {
+            await client.uninstallPlugin(plugin.id, typed.trim());
+            let dataNote = "Its data and credentials are kept: installing it again brings them back.";
+            if (alsoData) {
+                try { await client.purgePluginData(plugin.id, typed.trim()); dataNote = "Its data and credentials were deleted too."; }
+                catch (e) { dataNote = `Its data could not be deleted: ${errorMessage(e)}`; }
+            }
+            toast.success(`${plugin.name} uninstalled`, { description: dataNote });
+            setRemoving(null);
+            await Promise.all([refresh(), loadUpdates()]);
+        } catch (e) {
+            toast.error(`Could not uninstall ${plugin.name}`, { description: errorMessage(e) });
+        } finally {
+            setUninstalling(false);
         }
     }
 
@@ -217,10 +262,38 @@ export default function PluginsSection() {
                         onToggleInstall={(on) => void toggle(plugin, on, "install")}
                         onToggleUser={(on) => void toggle(plugin, on, "user")}
                         deprecated={deprecated[plugin.id]} update={updates[plugin.id]} updating={updatingId === plugin.id} onUpdate={() => void applyUpdate(plugin, updates[plugin.id])}
+                        onUninstall={plugin.source === "installed" ? () => askUninstall(plugin) : undefined}
                     />
                 ))}
             </SettingsGroup>
             {isAdmin && <PluginCatalogDialog open={browsing} onOpenChange={setBrowsing} />}
+            <AlertDialog open={!!removing} onOpenChange={(o) => { if (!o && !uninstalling) setRemoving(null); }}>
+                <AlertDialogContent data-slot="plugin-uninstall-dialog">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Uninstall {removing?.name}?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            It is turned off and removed from this runtime for everyone. Its screens, routes and tools disappear. Unless you tick the box below, its data and credentials are kept, so installing it again brings them back.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="space-y-3">
+                        <div className="space-y-1.5">
+                            <Label htmlFor="plugin-uninstall-confirm" className="text-xs">Type <span className="font-mono">{removing?.id}</span> to confirm</Label>
+                            <Input id="plugin-uninstall-confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} className="font-mono" autoFocus
+                                onKeyDown={(e) => { if (e.key === "Enter" && removing && confirmMatches(typed, removing.id)) void uninstall(); }} />
+                        </div>
+                        <label className="flex items-start gap-2 text-sm">
+                            <Checkbox checked={alsoData} onCheckedChange={(v) => setAlsoData(v === true)} aria-label="Also delete its data and credentials" />
+                            <span>Also delete its data and credentials <span className="block text-xs text-muted-foreground">Cannot be undone.</span></span>
+                        </label>
+                    </div>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={uninstalling}>Cancel</AlertDialogCancel>
+                        <Button variant="destructive" loading={uninstalling} disabled={!removing || !confirmMatches(typed, removing.id) || uninstalling} data-slot="plugin-uninstall-confirm" onClick={() => void uninstall()}>
+                            Uninstall
+                        </Button>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </SettingsPage>
     );
 }

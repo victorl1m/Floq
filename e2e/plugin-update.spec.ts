@@ -44,3 +44,43 @@ for (const theme of ['light', 'dark'] as const) {
     expect(calls.find((c: any) => c.name === 'inspect').args).toBe('https://github.com/acme/repo-plugin');
   });
 }
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`uninstall from the row: installed plugins only, typed id required, optional data delete (${theme})`, async ({ page }) => {
+    await page.goto(`/e2e/harness/plugin-update.html?theme=${theme}`);
+    const row = (id: string) => page.locator(`[data-plugin="${id}"]`);
+    await expect(row('current')).toBeVisible();
+    // bundled plugins cannot be uninstalled
+    await expect(row('movidesk').locator('[data-slot="plugin-uninstall"]')).toHaveCount(0);
+    await expect(row('current').getByRole('button', { name: 'Uninstall Up to date' })).toBeVisible();
+
+    // keep data: confirm needs the id
+    await row('current').getByRole('button', { name: 'Uninstall Up to date' }).click();
+    const dialog = page.locator('[data-slot="plugin-uninstall-dialog"]');
+    await expect(dialog).toBeVisible();
+    const confirm = dialog.locator('[data-slot="plugin-uninstall-confirm"]');
+    await expect(confirm).toBeDisabled();
+    await dialog.getByLabel(/Type current to confirm/).fill('curren');
+    await expect(confirm).toBeDisabled();
+    await dialog.getByLabel(/Type current to confirm/).fill('current');
+    await expect(confirm).toBeEnabled();
+    await page.screenshot({ path: `/home/agent/Artifacts/1151cd0e-3578-48c7-8816-0d0c82f16a7f/plugin-uninstall-${theme}-dialog.png` });
+    await confirm.click();
+    await expect(page.getByText('Up to date uninstalled')).toBeVisible();
+    await expect(row('current')).toHaveCount(0);
+
+    // with data: purge after uninstall
+    await row('gitrepo').getByRole('button', { name: 'Uninstall Repo plugin' }).click();
+    await dialog.getByLabel(/Type gitrepo to confirm/).fill('gitrepo');
+    await dialog.getByRole('checkbox', { name: 'Also delete its data and credentials' }).click();
+    await dialog.getByLabel(/Type gitrepo to confirm/).press('Enter');
+    await expect(page.getByText('Its data and credentials were deleted too.')).toBeVisible();
+    await expect(row('gitrepo')).toHaveCount(0);
+    const calls = await page.evaluate(() => (window as any).__calls);
+    expect(calls.filter((c: any) => c.name === 'uninstall' || c.name === 'purge')).toEqual([
+      { name: 'uninstall', args: { id: 'current', confirm: 'current' } },
+      { name: 'uninstall', args: { id: 'gitrepo', confirm: 'gitrepo' } },
+      { name: 'purge', args: { id: 'gitrepo', confirm: 'gitrepo' } },
+    ]);
+  });
+}
