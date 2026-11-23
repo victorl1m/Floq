@@ -1,9 +1,12 @@
 /**
- * The built-in WhatsApp server: WAHA Core (devlikeapro/waha, Apache-2.0, unmodified image) as the optional compose service `waha`
- * (profile `whatsapp`). It is never part of the runtime image. The runtime only talks to it on the compose network, hands its address
+ * The built-in WhatsApp server: WAHA Core (devlikeapro/waha, Apache-2.0, unmodified image) as the compose service `waha`, on by
+ * default in docker-compose.yml. It is never part of the runtime image. The runtime only talks to it on the compose network, hands its address
  * and API key to the WhatsApp plugin as host-provided defaults, and keeps it current through the Docker socket (the one "Update runtime" uses).
  */
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { dirname } from "node:path";
 import type pg from "pg";
 import { HttpError, badRequest, conflict } from "./errors.js";
 import { log } from "./logger.js";
@@ -23,7 +26,7 @@ const DAY_MS = 24 * 60 * 60_000;
 const PROBE_TIMEOUT_MS = 5_000;
 
 export interface BuiltinWhatsappConfig {
-  /** FLOQ_WHATSAPP_API_KEY is set (compose gives the same value to WAHA as WAHA_API_KEY) and FLOQ_WHATSAPP_BUILTIN is not 0. */
+  /** A key exists (FLOQ_WHATSAPP_API_KEY, or the shared key file the runtime creates) and FLOQ_WHATSAPP_BUILTIN is not 0. */
   enabled: boolean;
   /** Where the runtime reaches WAHA on the compose network. */
   url: string;
@@ -38,9 +41,37 @@ const cleanBase = (v: string | undefined): string | null => {
   try { const u = new URL(String(v ?? "").trim()); return u.protocol === "http:" || u.protocol === "https:" ? (u.origin + u.pathname).replace(/\/+$/, "") : null; } catch { return null; }
 };
 
+/**
+ * The key both sides use. FLOQ_WHATSAPP_API_KEY wins when set; otherwise the key file shared with the waha service
+ * (FLOQ_WHATSAPP_KEY_FILE, a volume only the runtime and WAHA mount) is read, or created once with a random key. The value
+ * is also written to the file when it came from the environment, so WAHA (which waits for the file) always gets the same key.
+ * No file configured and no variable: "" (built-in server off). Never logs the value.
+ */
+export function resolveWhatsappKey(env: Record<string, string | undefined>): string {
+  const fromEnv = (env.FLOQ_WHATSAPP_API_KEY ?? "").trim();
+  const file = (env.FLOQ_WHATSAPP_KEY_FILE ?? "").trim();
+  if (!file) return fromEnv;
+  let stored = "";
+  try { stored = readFileSync(file, "utf8").trim(); } catch { /* not created yet */ }
+  const key = fromEnv || stored || randomBytes(32).toString("hex");
+  if (key !== stored && !key.startsWith("sha512:")) {
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o755 });
+      const tmp = file + ".tmp-" + process.pid;
+      writeFileSync(tmp, key + "\n", { mode: 0o644 });
+      chmodSync(tmp, 0o644); // WAHA reads it as another user in its own container
+      renameSync(tmp, file);
+    } catch (error) {
+      log.warn("whatsapp.key_file_failed", { file, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      if (!fromEnv) return "";
+    }
+  }
+  return key;
+}
+
 export function builtinWhatsappFromEnv(env: Record<string, string | undefined> = process.env): BuiltinWhatsappConfig {
-  const apiKey = (env.FLOQ_WHATSAPP_API_KEY ?? "").trim();
   const off = /^(0|false|off|no)$/i.test((env.FLOQ_WHATSAPP_BUILTIN ?? "").trim());
+  const apiKey = off ? (env.FLOQ_WHATSAPP_API_KEY ?? "").trim() : resolveWhatsappKey(env);
   const port = /^\d{2,5}$/.test(env.FLOQ_PORT ?? "") ? env.FLOQ_PORT : "8787";
   let problem: string | null = null;
   if (!off && apiKey) {

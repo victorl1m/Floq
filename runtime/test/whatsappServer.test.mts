@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  BuiltinWhatsapp, WAHA_PINNED_TAG, autoUpdateDecision, builtinWhatsappFromEnv, healthVerdict, isQuiet, latestStable, parseWahaImage, parseWahaTag,
+  BuiltinWhatsapp, WAHA_PINNED_TAG, autoUpdateDecision, builtinWhatsappFromEnv, resolveWhatsappKey, healthVerdict, isQuiet, latestStable, parseWahaImage, parseWahaTag,
   swapContainer, wahaMessageEvent, wahaSendCall, wahaTag, whatsappIntegration, type ContainerInfo, type WahaDocker,
 } from "../dist/whatsappServer.js";
 import { UpdateService, isNewer, isUpdateTarget } from "../dist/updates.js";
@@ -302,16 +304,19 @@ test("Settings > Updates: the built-in server is a managed target, an external W
   await assert.rejects(none.apply("admin", { target: "whatsapp" }), { code: "not_managed" });
 });
 
-test("docker-compose.yml: optional profile, pinned tag, no host port, no secrets, local media, named volumes", () => {
+test("docker-compose.yml: on by default, key from the shared volume, pinned tag, no host port, no secrets, local media, named volumes", () => {
   const text = readFileSync(new URL("../docker-compose.yml", import.meta.url), "utf8");
   const start = text.indexOf("\n  waha:\n"), end = text.indexOf("\n  runtime:\n");
   assert.ok(start > 0 && end > start);
   const waha = text.slice(start, end);
   assert.ok(waha.includes(`image: devlikeapro/waha:\${FLOQ_WHATSAPP_IMAGE_TAG:-${WAHA_PINNED_TAG}}`), "compose pin and WAHA_PINNED_TAG differ");
   assert.ok(parseWahaTag(WAHA_PINNED_TAG));
-  assert.match(waha, /profiles: \["whatsapp"\]/);
+  assert.ok(!/profiles:/.test(waha), "the built-in server starts with the default compose");
+  assert.match(waha, /until \[ -s \/floq\/api-key \]/);
+  assert.match(waha, /exec \/entrypoint\.sh/);
+  assert.match(waha, /wahakey:\/floq:ro/);
   assert.ok(!/^\s+ports:/m.test(waha), "the WhatsApp server must not publish a host port");
-  assert.match(waha, /WAHA_API_KEY: \$\{FLOQ_WHATSAPP_API_KEY:-\}/);
+  assert.ok(!/WAHA_API_KEY:/.test(waha), "the key comes from the shared file, never from compose");
   assert.match(waha, /WAHA_DASHBOARD_ENABLED: "False"/);
   assert.match(waha, /WHATSAPP_SWAGGER_ENABLED: "False"/);
   assert.match(waha, /WHATSAPP_RESTART_ALL_SESSIONS: "True"/);
@@ -320,7 +325,27 @@ test("docker-compose.yml: optional profile, pinned tag, no host port, no secrets
   assert.match(waha, /wahasessions:\/app\/\.sessions/);
   assert.match(waha, /healthcheck:/);
   assert.match(text.slice(end), /FLOQ_WHATSAPP_API_KEY: \$\{FLOQ_WHATSAPP_API_KEY:-\}/);
-  assert.match(text, /\nvolumes:[\s\S]*\n  wahasessions:\n  wahamedia:/);
+  assert.match(text.slice(end), /FLOQ_WHATSAPP_KEY_FILE: \/var\/lib\/floq\/whatsapp\/api-key/);
+  assert.match(text.slice(end), /- wahakey:\/var\/lib\/floq\/whatsapp/);
+  assert.match(text, /\nvolumes:[\s\S]*\n  wahasessions:\n  wahamedia:\n  wahakey:/);
   // The runtime image never contains or starts WAHA.
   assert.ok(!/waha/i.test(readFileSync(new URL("../Dockerfile", import.meta.url), "utf8")));
+});
+
+test("zero-config key: created once in the shared file and reused; an own key overrides and is written for WAHA; no file and no key = off", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wa-key-"));
+  const file = join(dir, "sub", "api-key");
+  const first = builtinWhatsappFromEnv({ FLOQ_WHATSAPP_KEY_FILE: file });
+  assert.equal(first.enabled, true);
+  assert.match(first.apiKey, /^[0-9a-f]{64}$/);
+  assert.equal(readFileSync(file, "utf8").trim(), first.apiKey);
+  assert.equal(statSync(file).mode & 0o777, 0o644, "WAHA reads it from its own container");
+  assert.equal(builtinWhatsappFromEnv({ FLOQ_WHATSAPP_KEY_FILE: file }).apiKey, first.apiKey, "a restart keeps the key");
+  const own = builtinWhatsappFromEnv({ FLOQ_WHATSAPP_KEY_FILE: file, FLOQ_WHATSAPP_API_KEY: KEY });
+  assert.equal(own.apiKey, KEY);
+  assert.equal(readFileSync(file, "utf8").trim(), KEY, "WAHA gets the same key");
+  assert.equal(builtinWhatsappFromEnv({ FLOQ_WHATSAPP_KEY_FILE: file, FLOQ_WHATSAPP_BUILTIN: "0" }).enabled, false);
+  assert.equal(builtinWhatsappFromEnv({}).enabled, false);
+  writeFileSync(join(dir, "blocked"), "x");
+  assert.equal(resolveWhatsappKey({ FLOQ_WHATSAPP_KEY_FILE: join(dir, "blocked", "api-key") }), "", "an unwritable key file leaves the server off");
 });

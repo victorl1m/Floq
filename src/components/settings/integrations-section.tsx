@@ -298,8 +298,7 @@ function WhatsappIntegration() {
                         </p>
                         <ol className="max-w-prose list-decimal space-y-2 pl-5 text-xs leading-relaxed text-muted-foreground">
                             <li>
-                                <span className="text-foreground">Run the built-in server beside Floq.</span> On the machine that hosts the runtime, add these two lines to <code className="rounded bg-muted px-1 py-0.5 font-mono">runtime/.env</code> and run <code className="rounded bg-muted px-1 py-0.5 font-mono">docker compose up -d</code>. Floq then sets the address, the key and the webhook by itself.
-                                <pre className="mt-2 overflow-x-auto rounded-lg border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground">{"COMPOSE_PROFILES=whatsapp\nFLOQ_WHATSAPP_API_KEY=<openssl rand -hex 32>"}</pre>
+                                <span className="text-foreground">Update the runtime with the standard compose file.</span> The built-in server is part of it and starts on its own; Floq then sets the address, the key and the webhook by itself. On a runtime deployed before it existed, redeploy (or run <code className="rounded bg-muted px-1 py-0.5 font-mono">docker compose up -d</code>) on the machine that hosts it.
                             </li>
                             <li><span className="text-foreground">Connect a WAHA server you already run.</span> Enter its address and API key below; Floq tests them before saving.</li>
                         </ol>

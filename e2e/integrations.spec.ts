@@ -27,8 +27,8 @@ test('no WhatsApp server: nothing to enable, an explanation and the two ways to 
   await expect(page.getByRole('button', { name: 'Open WhatsApp' })).toHaveCount(0);
   const help = page.locator('[data-slot="whatsapp-no-server"]');
   await expect(help.getByText('WhatsApp needs a WhatsApp server (WAHA)')).toBeVisible();
-  await expect(help.getByText('Run the built-in server beside Floq.')).toBeVisible();
-  await expect(help.locator('pre')).toHaveText('COMPOSE_PROFILES=whatsapp\nFLOQ_WHATSAPP_API_KEY=<openssl rand -hex 32>');
+  await expect(help.getByText('Update the runtime with the standard compose file.')).toBeVisible();
+  await expect(help.locator('pre')).toHaveCount(0);
   await expect(help.getByText('Connect a WAHA server you already run.')).toBeVisible();
   await expect(help.getByRole('button', { name: 'Connect a WAHA server' })).toBeVisible();
   await expect(page.locator('[data-slot="whatsapp-settings"]')).toHaveCount(0);

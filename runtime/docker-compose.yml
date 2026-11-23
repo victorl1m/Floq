@@ -101,25 +101,24 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # --- Optional built-in WhatsApp server (the runtime does not depend on it) ---
-  # WAHA Core (https://github.com/devlikeapro/waha, Apache-2.0), the official image, unmodified. Enable: in .env set
-  #   COMPOSE_PROFILES=whatsapp   (with agent memory: COMPOSE_PROFILES=memory,whatsapp)
-  #   FLOQ_WHATSAPP_API_KEY=<openssl rand -hex 32>
-  # Floq does the rest: the WhatsApp integration uses this server and key by itself, registers its webhook on the compose
-  # network and keeps the server updated (Settings > Updates). You only scan the QR code. See runtime/README.md.
-  # No host port: only the runtime talks to it. Without a key WAHA makes up its own and the runtime reports "key mismatch".
+  # --- Built-in WhatsApp server (on by default; its own container in this compose, the runtime does not depend on it) ---
+  # WAHA Core (https://github.com/devlikeapro/waha, Apache-2.0), the official image, unmodified. Nothing to set up: the runtime
+  # creates a random API key once in the shared `wahakey` volume, WAHA waits for it and starts with it, and the WhatsApp
+  # integration uses this server, registers its webhook on the compose network and keeps the server updated (Settings > Updates).
+  # You only scan the QR code. Own key: FLOQ_WHATSAPP_API_KEY=<openssl rand -hex 32>. Off: FLOQ_WHATSAPP_BUILTIN=0 and
+  # `docker compose stop waha`. No host port: only the runtime talks to it. See runtime/README.md.
   # The tag is the floor: Floq moves the container to newer stable releases itself and puts its release back after a redeploy.
   # ARM hosts: FLOQ_WHATSAPP_IMAGE_TAG=noweb-arm-2026.10.1
   waha:
     image: devlikeapro/waha:${FLOQ_WHATSAPP_IMAGE_TAG:-noweb-2026.10.1}
-    profiles: ["whatsapp"]
     restart: unless-stopped
+    # The image's own start (tini -> /entrypoint.sh), once the runtime has written the shared key.
+    command: ["/bin/sh", "-c", "until [ -s /floq/api-key ]; do sleep 2; done; WAHA_API_KEY=\"$$(cat /floq/api-key)\"; export WAHA_API_KEY; exec /entrypoint.sh"]
     stop_grace_period: 30s
     expose:
       - "3000"
     environment:
       WHATSAPP_DEFAULT_ENGINE: NOWEB
-      WAHA_API_KEY: ${FLOQ_WHATSAPP_API_KEY:-}
       WAHA_BASE_URL: http://waha:3000
       # No web UI on this server: Floq is the interface.
       WAHA_DASHBOARD_ENABLED: "False"
@@ -136,6 +135,8 @@ services:
       # The linked WhatsApp accounts. Losing this volume means scanning the QR code again.
       - wahasessions:/app/.sessions
       - wahamedia:/app/.media
+      # The API key the runtime creates (read only here).
+      - wahakey:/floq:ro
     # /ping needs no API key. The image has no curl, so Node (which WAHA runs on) makes the request.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ping').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
@@ -214,13 +215,17 @@ services:
       FLOQ_EMBEDDINGS_DTYPE: ${FLOQ_EMBEDDINGS_DTYPE:-}
       FLOQ_EMBEDDINGS_CACHE: /var/lib/floq/embeddings
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # Built-in WhatsApp server (optional; see the waha service). Empty FLOQ_WHATSAPP_API_KEY = off. The same key goes to WAHA.
+      # Built-in WhatsApp server (see the waha service). No key set: the runtime creates one in the shared key file. 0 = off.
       FLOQ_WHATSAPP_API_KEY: ${FLOQ_WHATSAPP_API_KEY:-}
+      FLOQ_WHATSAPP_KEY_FILE: /var/lib/floq/whatsapp/api-key
+      FLOQ_WHATSAPP_BUILTIN: ${FLOQ_WHATSAPP_BUILTIN:-1}
       FLOQ_WHATSAPP_URL: ${FLOQ_WHATSAPP_URL:-http://waha:3000}
       # Where services on the compose network reach this runtime (WAHA delivers its webhooks here).
       FLOQ_INTERNAL_URL: ${FLOQ_INTERNAL_URL:-http://runtime:8787}
     volumes:
       - shards3:/var/lib/floq/shards
+      # The built-in WhatsApp server's API key, shared with the waha service only.
+      - wahakey:/var/lib/floq/whatsapp
       # Downloaded embedding models survive image rebuilds.
       - embeddings3:/var/lib/floq/embeddings
       # In-app "Update runtime" (Settings > Runtime > Updates): the runtime rebuilds itself from the newest release and
@@ -271,6 +276,7 @@ volumes:
   pgdata3:
   wahasessions:
   wahamedia:
+  wahakey:
   redisdata:
   dragonflydata:
   embeddings3:
