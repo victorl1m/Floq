@@ -1,15 +1,35 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { encryptSecret } from "../dist/crypto.js";
 import { MountWatchdog, RestartStormGuard, recoverFromMountDeath } from "../dist/mountWatch.js";
-import { gocryptfsArgv, probeMountAsync } from "../dist/shard.js";
+import { gocryptfsArgv, probeMountAsync, quarantineStrayEntries } from "../dist/shard.js";
 import { ShardService } from "../dist/shards.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("stray entries in a locked home's mountpoint are moved aside so gocryptfs can mount (exit 10)", () => {
+  const root = mkdtempSync(join(tmpdir(), "floq-stray-"));
+  try {
+    const mountPath = join(root, "20000");
+    mkdirSync(mountPath);
+    assert.equal(quarantineStrayEntries(mountPath, join(root, ".stray")), null);
+    assert.equal(quarantineStrayEntries(join(root, "missing"), join(root, ".stray")), null);
+    mkdirSync(join(mountPath, ".codex"));
+    writeFileSync(join(mountPath, ".codex", "config.toml"), "x");
+    writeFileSync(join(mountPath, ".claude.json"), "{}");
+    const moved = quarantineStrayEntries(mountPath, join(root, ".stray"), 42)!;
+    assert.deepEqual(moved.entries.sort(), [".claude.json", ".codex"]);
+    assert.equal(moved.dir, join(root, ".stray", "20000-42"));
+    assert.deepEqual(readdirSync(mountPath), []);
+    assert.ok(existsSync(join(moved.dir, ".codex", "config.toml")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("watchdog keeps one probe in flight and runs onDead once per death", async () => {
   let release!: () => void;

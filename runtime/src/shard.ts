@@ -667,6 +667,45 @@ export function probeMountAsync(path: string, timeoutMs: number, command = "ls",
   });
 }
 
+/**
+ * gocryptfs refuses a non-empty mountpoint (exit 10), so one stray write into the bare directory while the home was locked
+ * (a holder of a stale handle creating a path after the unmount) made every later wake fail until someone cleaned it by hand.
+ * Move such entries aside (same filesystem, so a rename) into a root-only directory instead of deleting them: they may be
+ * user data, and they were written in plaintext outside the encrypted home. Returns the moved names and their new location.
+ */
+export function quarantineStrayEntries(mountPath: string, quarantineRoot: string, now = Date.now()): { entries: string[]; dir: string } | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(mountPath);
+  } catch {
+    return null;
+  }
+  if (!entries.length) return null;
+  mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  const dir = join(quarantineRoot, basename(mountPath) + "-" + now);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const name of entries) renameSync(join(mountPath, name), join(dir, name));
+  return { entries, dir };
+}
+
+/** Last non-empty line of gocryptfs's stderr log (its own reason for a failed mount), bounded. */
+function lastLogLine(logFile: string): string {
+  try {
+    const fd = openSync(logFile, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, 2048);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      return buffer.toString("utf8").trim().split("\n").pop()?.trim().slice(0, 240) ?? "";
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
 async function lazyUnmount(path: string): Promise<void> {
   try {
     await run("fusermount3", ["-u", "-z", path], { timeout: 10_000 });
@@ -827,6 +866,8 @@ export class LinuxShardDriver implements ShardDriver {
           ownTree(cipher, uid);
           log.info("shard.provisioned", { userId, uid });
         }
+        const stray = quarantineStrayEntries(mountPath, join(this.mountRoot, ".stray"));
+        if (stray) log.warn("shard.mountpoint_not_empty", { userId, uid, count: stray.entries.length, entries: stray.entries.slice(0, 20), movedTo: stray.dir });
         await runGocryptfs([
           "-q",
           "-passfile",
@@ -839,7 +880,7 @@ export class LinuxShardDriver implements ShardDriver {
         if (!isAlive(mountPath)) throw new Error("mount is not responding");
       } catch (error) {
         const detail = error instanceof Error ? error.message.split("\n").slice(0, 3).join(" | ") : String(error);
-        log.error("shard.mount_failed", { userId, uid, error: detail });
+        log.error("shard.mount_failed", { userId, uid, error: detail, gocryptfs: lastLogLine(gocryptfsLog) || undefined });
         throw unavailable("Your encrypted workspace could not be mounted right now. Try again shortly.");
       } finally {
         rmSync(passfile, { force: true });
