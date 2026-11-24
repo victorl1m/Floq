@@ -1,7 +1,7 @@
 {
   "name": "floq-runtime",
   "private": true,
-  "version": "1.0.54",
+  "version": "1.0.55",
   "description": "Self-hosted runtime for Floq: hosts Claude Code and Codex agent sessions in sandboxed per-user terminals",
   "author": "Victor Lima",
   "license": "MIT",
