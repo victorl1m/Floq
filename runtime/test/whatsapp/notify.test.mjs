@@ -81,13 +81,13 @@ test("a stale focus report expires", async () => {
   assert.equal(h.notes.length, 1);
 });
 
-test("a group message names the sender and puts the group in the subtitle; media gets a readable preview", async () => {
+test("a group message is titled with the group, marked Group, and the sender leads the text; media gets a readable preview", async () => {
   const h = await start();
   await h.sql("INSERT INTO contacts (user_id, session, chat_id, name) VALUES ('u1','default',$1,'Sunday football')", [G]);
   await h.message({ from: G, participant: A, fromMe: false, body: "", hasMedia: true, notifyName: "Rafael Nunes", media: { mimetype: "image/jpeg", url: null }, _data: { type: "image" } });
   await h.idle();
   const n = h.notes[0];
-  assert.deepEqual([n.title, n.subtitle, n.body, n.tag], ["Rafael Nunes", "Sunday football", "Photo", "default:" + G]);
+  assert.deepEqual([n.title, n.subtitle, n.body, n.tag], ["Sunday football", "Group", "Rafael Nunes: Photo", "default:" + G]);
   assert.equal(n.actions[0].input.placeholder, "Message Sunday football");
   const P = (m) => notify.previewOf({ body: "", hasMedia: false, media: null, extra: {}, ...m });
   assert.deepEqual([

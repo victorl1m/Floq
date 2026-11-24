@@ -89,7 +89,11 @@ export function notifierOf(core: Core, identity: Identity): Notifier {
       const audio = isAudio(m) && m.msgId ? { route: AUDIO_ROUTE, played: true, ...(m.media!.duration && m.media!.duration > 0 ? { duration: m.media!.duration } : {}) } : undefined;
       try {
         await host.notify!(owner, {
-          kind: "message", title: who || group || "New message", body: previewOf(m), subtitle: [account, who ? group : ""].filter(Boolean).join(" · ") || undefined, avatar, tag,
+          // A group message reads as the group's: its name is the title (and the collapsed pill), the sender leads the text, "Group" says what it is.
+          ...(isGroup(chatId)
+            ? { title: group || "Group", body: who ? `${who}: ${previewOf(m)}` : previewOf(m), subtitle: [account, "Group"].filter(Boolean).join(" · ") }
+            : { title: who || "New message", body: previewOf(m), subtitle: account || undefined }),
+          kind: "message", avatar, tag,
           actions: [{ id: "reply", label: "Reply", input: { placeholder: isGroup(chatId) && group ? `Message ${group}`.slice(0, 80) : "Message" } }, { id: "read", label: "Mark read" }],
           actionRoute: ACTION_ROUTE, data: { session, chatId, ...(audio ? { msgId: m.msgId } : {}) }, ...(audio ? { audio } : {}), target: { view: "inbox", params: { chat: chatId, session } },
         });
