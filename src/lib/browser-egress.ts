@@ -33,7 +33,13 @@ export const DEFAULT_POLICY: EgressPolicy = { allowOtherPorts: false, dailyCapBy
 const HERE_KEY = "floq.browserEgress.here";
 const POLICY_KEY = "floq.browserEgress.policy";
 
-interface State { here: boolean; policy: EgressPolicy; status: EgressStatus | null }
+interface State {
+  here: boolean;
+  policy: EgressPolicy;
+  status: EgressStatus | null;
+  /** When the relay last went "up" on this computer (epoch ms), null while it is not up. */
+  upSince: number | null;
+}
 
 function readLocal(): State {
   let here = false;
@@ -49,7 +55,7 @@ function readLocal(): State {
       };
     }
   } catch { /* storage unavailable: defaults (off) */ }
-  return { here, policy, status: null };
+  return { here, policy, status: null, upSince: null };
 }
 
 let state: State = readLocal();
@@ -70,7 +76,8 @@ export function setEgressPolicy(policy: EgressPolicy) {
   set({ ...state, policy });
 }
 export function setEgressStatus(status: EgressStatus | null) {
-  set({ ...state, status });
+  const up = status?.state === "up";
+  set({ ...state, status, upSince: up ? state.upSince ?? Date.now() : null });
 }
 
 const message = (error: unknown) => (typeof error === "string" ? error : error instanceof Error ? error.message : "Could not start the connection relay");
@@ -96,6 +103,41 @@ export async function refreshEgressStatus(): Promise<EgressStatus | null> {
     setEgressStatus(status);
     return status;
   } catch { return null; }
+}
+
+/**
+ * The kill switch everywhere (footer, indicator, tray): this computer stops relaying at once and the runtime setting goes back to "server",
+ * so no other computer of the user's picks it up either.
+ */
+export async function stopUsingMyConnection(client: RuntimeClient): Promise<void> {
+  setEgressHere(false);
+  await stopEgress();
+  await client.updateSettings({ agentBrowserEgress: "server" });
+  window.dispatchEvent(new CustomEvent(EGRESS_SETTINGS_EVENT, { detail: "server" }));
+}
+
+/** Turns routing through this computer back on (same as the Settings switch): keeps "desktop-fallback" if that was chosen. */
+export async function startUsingMyConnection(client: RuntimeClient): Promise<void> {
+  if (!egressSupported()) throw new Error("Available in the desktop app");
+  const current = await client.settings().then((s) => s.agentBrowserEgress, () => undefined);
+  const mode: BrowserEgressMode = current === "desktop-fallback" ? "desktop-fallback" : "desktop";
+  setEgressHere(true);
+  try {
+    await client.updateSettings({ agentBrowserEgress: mode });
+  } catch (error) { setEgressHere(false); throw error; }
+  window.dispatchEvent(new CustomEvent(EGRESS_SETTINGS_EVENT, { detail: mode }));
+}
+
+/** Destination hosts of the recent connections, most used first (host:port, count, bytes). */
+export function topDestinations(recent: EgressRecent[] | undefined, max = 5): Array<{ host: string; count: number; bytes: number; denied: number }> {
+  const by = new Map<string, { host: string; count: number; bytes: number; denied: number }>();
+  for (const r of recent ?? []) {
+    const key = r.port === 443 || r.port === 80 ? r.host : `${r.host}:${r.port}`;
+    const e = by.get(key) ?? { host: key, count: 0, bytes: 0, denied: 0 };
+    e.count++; e.bytes += r.bytes; if (/^(denied|refused)/.test(r.result)) e.denied++;
+    by.set(key, e);
+  }
+  return [...by.values()].sort((a, b) => b.count - a.count || b.bytes - a.bytes).slice(0, max);
 }
 
 /** Whether the relay should be running: this machine chose it AND the user's mode wants a desktop. */

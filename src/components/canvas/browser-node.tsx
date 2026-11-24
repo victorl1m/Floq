@@ -6,6 +6,7 @@ import { IconUpload, IconArrowLeft, IconArrowRight, IconHandStop, IconGripHorizo
 import { Button } from "@/components/ui/button";
 import { CanvasCtx } from "@/components/canvas/canvas-context";
 import { BrowserImportDialog } from "@/components/canvas/browser-import-dialog";
+import { BrowserContextMenu } from "@/components/canvas/browser-context-menu";
 import { RESIZER_ABOVE, SIDE_STRIP_CLASS, SIDE_STRIP_STYLE } from "@/components/canvas/wire-edge";
 import { MAX_SIZE, MIN_SIZE } from "@/components/canvas/agent-node";
 import { robotAvatarSvg } from "@/lib/robot-avatar";
@@ -29,13 +30,20 @@ const SIDES = [
 
 export type BrowserNode = Node<{ projectId: string; nodeId: string }, "browser">;
 export interface BrowserLinkedAgent { sessionId: string; title: string }
+/** `url`: page to load in the new node; `near`: node id (with prefix) to place the new one beside (Duplicate). */
+export interface NewBrowserOptions { url?: string; near?: string }
+// URLs a freshly opened node loads once its page exists (Open in new browser node / Duplicate). Keyed by node id with prefix.
+const pendingUrls = new Map<string, string>();
+export const queueBrowserUrl = (nodeId: string, url: string) => { pendingUrls.set(nodeId, url); };
 interface BrowserCtxValue {
   client: RuntimeClient | null;
   openSettings?: () => void;
   /** Closes a node (id incl. the `browser:` prefix). */
   close: (nodeId: string) => void;
   linkedAgents: (nodeId: string) => BrowserLinkedAgent[];
-  newBrowser: () => void;
+  newBrowser: (opts?: NewBrowserOptions) => void;
+  /** Removes an agent's link to a node (bare node id, without the prefix). */
+  unlink?: (nodeId: string, sessionId: string) => void;
 }
 const BrowserCtx = createContext<BrowserCtxValue>({ client: null, close: () => {}, linkedAgents: () => [], newBrowser: () => {} });
 export const BrowserProvider = BrowserCtx.Provider;
@@ -52,7 +60,7 @@ export const BrowserProvider = BrowserCtx.Provider;
  * - Keyboard: only the focused textarea feeds the page, and it stops propagation so canvas shortcuts (L, N, F, Delete...) never fire.
  */
 const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<BrowserNode>) {
-  const { client, openSettings, close, linkedAgents, newBrowser } = useContext(BrowserCtx);
+  const { client, openSettings, close, linkedAgents, newBrowser, unlink } = useContext(BrowserCtx);
   const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
   const stream = useBrowserStream(client, true, nodeId);
   const { state, frame, targetId, nav: info, activity, control, cursor, send, reconnect, dialog, clipboard, download, egress } = stream;
@@ -108,6 +116,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
     return () => { io.disconnect(); document.removeEventListener("visibilitychange", update); };
   }, [state]);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [zoom, setZoom] = useState(1);
   useEffect(() => {
     const el = viewRef.current; if (!el) return;
     const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
@@ -120,11 +129,13 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
     if (state !== "running" || !targetId || size.w < 50 || size.h < 50) return;
     const t = setTimeout(() => {
       const c = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(n)));
-      send({ type: "viewport", width: c(size.w, 200, 3840), height: c(size.h, 200, 2160), dpr: typeof devicePixelRatio === "number" ? devicePixelRatio : 1 });
+      // Page zoom: a smaller CSS viewport rendered at a higher device scale, so the page looks zoomed and stays sharp.
+      const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+      send({ type: "viewport", width: c(size.w / zoom, 200, 3840), height: c(size.h / zoom, 200, 2160), dpr: Math.min(4, Math.max(0.5, dpr * zoom)) });
     }, VIEWPORT_DEBOUNCE_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, targetId, size.w, size.h, send]);
+  }, [state, targetId, size.w, size.h, send, zoom]);
   useEffect(() => {
     if (state !== "running" || !targetId || !visible || size.w < 50 || size.h < 50) { if (state === "running") send({ type: "screencast.stop" }); return; }
     const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
@@ -142,6 +153,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
   const buttonsFor = (b: number) => (b & 1 ? "left" : b & 4 ? "middle" : b & 2 ? "right" : "none") as "left" | "middle" | "right" | "none";
   const onPointerDown = (e: React.PointerEvent) => {
     if (linking) return;
+    if (e.button === 2 && !e.shiftKey) return; // right-click opens the node's menu; Shift+right-click goes to the page
     focusInput(); // letterbox clicks still focus the page for typing
     const p = point(e, false); if (!p) return;
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -197,6 +209,12 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
 
   const go = () => { const url = normalizeUrl(urlText); if (url) send({ type: "nav.go", url }); };
   const closeNode = () => { send({ type: "page.close" }); close(id); }; // only the user closing the node destroys the page
+  // Open in new browser node / Duplicate: the new node loads the queued URL once its page is bound.
+  useEffect(() => {
+    if (state !== "running" || !targetId) return;
+    const url = pendingUrls.get(id);
+    if (url) { pendingUrls.delete(id); send({ type: "nav.go", url }); }
+  }, [state, targetId, id, send]);
   const live = state === "running";
   const badge = egressBadge(egress);
   const [switching, setSwitching] = useState(false);
@@ -218,7 +236,9 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
       {SIDES.map((side) => (
         <Handle key={side.id} id={side.id} type="source" position={side.position} style={SIDE_STRIP_STYLE[side.position]} isConnectable isConnectableStart isConnectableEnd className={SIDE_STRIP_CLASS} />
       ))}
-    <div ref={rootRef} data-testid="browser-node" data-state={state} data-node-id={id} className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+    <BrowserContextMenu nodeId={id} live={live} nav={info} frame={frame} control={control} zoom={zoom} setZoom={setZoom} send={send}
+      linked={linked} newBrowser={newBrowser} unlink={unlink} closeNode={closeNode}>
+    <div ref={rootRef} data-testid="browser-node" data-zoom={zoom} data-state={state} data-node-id={id} className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
       onPointerEnter={() => { hovering.current = true; }} onPointerLeave={() => { hovering.current = false; }}>
       <div className="browser-drag flex h-8 shrink-0 cursor-grab items-center gap-2 border-b border-border/70 px-3 text-xs font-medium">
         <IconWorld size={14} className="shrink-0 text-muted-foreground" />
@@ -241,7 +261,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
         )}
         <span className="flex-1" />
         <IconGripHorizontal size={14} className="text-muted-foreground" />
-        <button type="button" aria-label="New browser" title="New browser" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={newBrowser}><IconPlus size={14} /></button>
+        <button type="button" aria-label="New browser" title="New browser" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={() => newBrowser()}><IconPlus size={14} /></button>
         {client && state !== "disabled" && state !== "unavailable" && (
           <button type="button" aria-label="Import cookies and data" title="Import cookies & data" className="nodrag rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={() => setImportOpen(true)}><IconUpload size={14} /></button>
         )}
@@ -258,7 +278,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
                 : <button type="button" aria-label="Reload" className="rounded p-1 text-muted-foreground hover:text-foreground" onClick={() => send({ type: "nav.reload" })}><IconRefresh size={15} /></button>}
               <input aria-label="Address" spellCheck={false} value={urlText} placeholder="Search or enter address"
                 className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-                onFocus={(e) => { setUrlFocused(true); e.currentTarget.select(); }} onBlur={() => setUrlFocused(false)}
+                onFocus={(e) => { setUrlFocused(true); e.currentTarget.select(); }} onBlur={() => setUrlFocused(false)} onContextMenu={(e) => e.stopPropagation()}
                 onChange={(e) => setUrlText(e.target.value)}
                 onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); go(); } else if (e.key === "Escape") { setUrlText(info?.url ?? ""); e.currentTarget.blur(); } }} />
               <button type="button" aria-label="Take control" aria-pressed={control} title={control ? "Release control to the agent" : "Take control: agents cannot drive this page while you do"} data-testid="browser-take-control"
@@ -287,7 +307,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
               {frame && <img ref={imgRef} data-testid="browser-frame" alt="Browser page" draggable={false} src={`data:image/jpeg;base64,${frame.jpeg}`}
                 className="nokey absolute inset-0 h-full w-full select-none object-contain touch-none" style={{ cursor: linking ? "pointer" : cursor, pointerEvents: spacePan || linking ? "none" : undefined }}
                 onMouseDown={(e) => { e.preventDefault(); focusInput(); }} onPointerDown={onPointerDown} onPointerUp={release} onPointerCancel={release} onPointerMove={onPointerMove}
-                onContextMenu={(e) => e.preventDefault()} />}
+                />}
               <textarea ref={inputRef} data-testid="browser-input" aria-label="Browser keyboard input" autoCapitalize="off" autoCorrect="off" spellCheck={false}
                 className="pointer-events-none absolute bottom-0 left-0 size-px opacity-0"
                 onKeyDown={onKeyDown} onKeyUp={onKeyUp} onKeyPress={onKeyPress} onPaste={onPaste}
@@ -321,6 +341,7 @@ const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<Browse
       </div>
       {client && <BrowserImportDialog client={client} open={importOpen} onOpenChange={setImportOpen} />}
     </div>
+    </BrowserContextMenu>
     </div>
   );
 });

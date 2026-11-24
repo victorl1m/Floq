@@ -53,7 +53,7 @@ def main():
         page = context.new_page(); errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
         fx = make_fixture(); page.route("**/*", fx.handle)
         page.goto(os.environ.get("FLOQ_UI_URL", "http://127.0.0.1:1421/"), wait_until="domcontentloaded", timeout=15000); page.wait_for_timeout(2500)
-        chip = page.locator("footer").get_by_role("button", name="Ports", exact=False); chip.click(); page.wait_for_timeout(300)
+        chip = page.locator("footer").get_by_role("button", name="Network", exact=False); chip.click(); page.wait_for_timeout(300)
         pop = page.locator("[data-slot=popover-content]")
         field = pop.get_by_label("Port to forward"); btn = pop.get_by_role("button", name="Forward", exact=True)
         c["fieldEnabledNoSession"] = field.is_enabled()

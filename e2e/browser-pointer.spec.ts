@@ -46,16 +46,23 @@ test('press/release carry the button and double-click counts 1,1,2,2', async ({ 
   expect(ev[1].buttons).toBe(0);
 });
 
-test('right and middle buttons are forwarded and no context menu opens', async ({ page }) => {
+test('Shift+right and middle buttons are forwarded; a plain right-click opens the node menu instead', async ({ page }) => {
   await open(page);
   const p = await at(page, 0.5, 0.5);
   await page.mouse.move(p.x, p.y); await clear(page);
+  await page.keyboard.down('Shift');
   await page.mouse.click(p.x, p.y, { button: 'right' });
+  await page.keyboard.up('Shift');
   await page.mouse.click(p.x, p.y, { button: 'middle' });
   const ev = (await mouse(page)).filter((m) => m.kind !== 'mouseMoved');
   expect(ev.map((m) => `${m.kind}:${m.button}`)).toEqual(['mousePressed:right', 'mouseReleased:right', 'mousePressed:middle', 'mouseReleased:middle']);
   expect(ev[0].buttons).toBe(2);
   expect(ev[2].buttons).toBe(4);
+  await expect(page.getByTestId('browser-menu')).toHaveCount(0);
+  await clear(page);
+  await page.mouse.click(p.x, p.y, { button: 'right' });
+  await expect(page.getByTestId('browser-menu')).toBeVisible();
+  expect((await mouse(page)).filter((m) => m.kind !== 'mouseMoved')).toEqual([]);
 });
 
 test('drag sends moves with the pressed button and releases clamped outside the frame', async ({ page }) => {

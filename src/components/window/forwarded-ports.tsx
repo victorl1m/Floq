@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconAppWindow, IconBug, IconCopy, IconExternalLink, IconPlugConnected, IconX, IconChevronRight } from "@tabler/icons-react";
+import { IconAppWindow, IconBug, IconCopy, IconExternalLink, IconNetwork, IconX, IconChevronRight } from "@tabler/icons-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "cn";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import { PortRequestCard } from "@/components/window/port-requests";
 import { openDebugLink, portForwardingSupported, startForward, stopForward, usePortForwarding } from "@/lib/port-forwarding";
 import type { RuntimeClient } from "@/lib/runtime/client";
 import type { SessionDebugLink } from "@/lib/runtime/types";
+import { EgressDot, EgressSection, useEgressIndicator } from "@/components/window/network-egress";
 
 function copyUrl(port: number) {
     navigator.clipboard.writeText(`http://localhost:${port}`).then(
@@ -61,8 +62,11 @@ function Previews({ links, client, sessionId }: { links: SessionDebugLink[]; cli
     );
 }
 
-/** Footer indicator with the count of forwarded ports; its popover lists them and offers manual forwarding. */
-export function ForwardedPorts() {
+/**
+ * Footer "Network" item: forwarded ports count and, while the agent browser goes out through this computer, a live
+ * "Using your connection" indicator. Its popover holds the egress details with the kill switch, then the ports (list, manual forward).
+ */
+export function NetworkStatus() {
     const [open, setOpen] = useState(false);
     const { forwarded, ports, links: allLinks } = usePortForwarding();
     const { client, sessionId } = useActiveForwardSession();
@@ -72,7 +76,8 @@ export function ForwardedPorts() {
     const links = sessionId ? allLinks[sessionId] ?? [] : [];
     const requests = usePortRequests();
     const waiting = requests.filter((item) => item.state === "pending").length;
-    const label = `Ports: ${count} forwarded${waiting ? `, ${waiting} request${waiting === 1 ? "" : "s"} waiting for your answer` : ""}`;
+    const egress = useEgressIndicator();
+    const label = `Network: ${count} port${count === 1 ? "" : "s"} forwarded${egress ? `, ${egress.label.toLowerCase()}${egress.streams ? ` (${egress.streams} connection${egress.streams === 1 ? "" : "s"})` : ""}` : ""}${waiting ? `, ${waiting} request${waiting === 1 ? "" : "s"} waiting for your answer` : ""}`;
 
     return (
         <Popover open={open} onOpenChange={setOpen}>
@@ -81,15 +86,24 @@ export function ForwardedPorts() {
                     type="button"
                     title={label}
                     aria-label={label}
-                    className={cn("-mr-2 ml-2 gap-1.5 px-2 text-[11px] tabular-nums", count === 0 && !waiting && "opacity-60", open && "bg-muted text-foreground")}
+                    data-testid="network-footer"
+                    className={cn("-mr-2 ml-2 gap-1.5 px-2 text-[11px] tabular-nums", count === 0 && !waiting && !egress && "opacity-60", open && "bg-muted text-foreground")}
                 >
-                    <IconPlugConnected size={12} stroke={1.5} aria-hidden="true" />
-                    <span>Ports</span>
-                    <span>{count}</span>
+                    <IconNetwork size={12} stroke={1.5} aria-hidden="true" />
+                    <span>Network</span>
+                    {(count > 0 || !egress) && <span>{count}</span>}
+                    {egress && (
+                        <span data-testid="network-egress-indicator" data-tone={egress.tone} className={cn("flex items-center gap-1 rounded-full border px-1.5 leading-4", egress.tone === "green" ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : "border-amber-500/40 text-amber-700 dark:text-amber-300")}>
+                            <EgressDot tone={egress.tone} pulse={egress.streams > 0} />
+                            <span>{egress.label}</span>
+                            {egress.streams > 0 && <span className="text-muted-foreground">· {egress.streams}</span>}
+                        </span>
+                    )}
                     {waiting > 0 && <span aria-hidden="true" className="rounded-full bg-destructive px-1 text-[10px] leading-4 text-white">{waiting}</span>}
                 </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" side="top" sideOffset={8} className="w-80 gap-3 p-3">
+            <PopoverContent align="end" side="top" sideOffset={8} className="w-80 gap-3 p-3" aria-label="Network">
+                <EgressSection client={client} open={open} />
                 <div className="space-y-0.5">
                     <p className="text-xs font-medium">Port forwarding</p>
                     <p className="text-[10px] text-muted-foreground">Reach ports from your sessions on this computer.</p>

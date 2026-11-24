@@ -2,7 +2,7 @@ import { UsageMeters } from "@/components/window/usage-meter";
 import { MemoryUsageButton } from "@/components/window/memory-usage";
 import { StorageSenseFooterButton } from "@/components/window/storage-sense-footer";
 import { ApprovalChip } from "@/components/window/approval-requests";
-import { ForwardedPorts } from "@/components/window/forwarded-ports";
+import { NetworkStatus } from "@/components/window/forwarded-ports";
 
 export default function Footer() {
     return (
@@ -15,7 +15,7 @@ export default function Footer() {
                 <MemoryUsageButton />
                 <StorageSenseFooterButton />
                 <ApprovalChip />
-                <ForwardedPorts />
+                <NetworkStatus />
             </div>
         </footer>
     );

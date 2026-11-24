@@ -187,7 +187,7 @@ export function PortRequestHost() {
         </DialogHeader>
         <div ref={body}><PortRequestCard key={current.request.id} item={current} client={client} autoFocusDeny /></div>
         <DialogFooter className="bg-transparent text-xs text-muted-foreground sm:justify-start">
-          <span>Esc decides later from the Ports control in the footer.</span>
+          <span>Esc decides later from Network in the footer.</span>
         </DialogFooter>
       </DialogContent>
     </Dialog>

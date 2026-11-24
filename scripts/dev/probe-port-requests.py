@@ -83,7 +83,7 @@ def main():
         # Esc defers; the footer chip shows the waiting count and the popover lists the requests.
         page.keyboard.press("Escape"); page.wait_for_timeout(300)
         c["escDefers"] = page.get_by_role("dialog", name="Open a port?").count() == 0 or "req-2" in str(fixture.pending.keys())
-        chip = page.locator("footer").get_by_role("button", name="Ports", exact=False)
+        chip = page.locator("footer").get_by_role("button", name="Network", exact=False)
         # req-2 is the next undismissed request; it is privileged and needs the acknowledgement.
         d2 = page.get_by_role("dialog", name="Open a port?")
         if d2.count():

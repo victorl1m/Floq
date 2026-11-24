@@ -57,7 +57,7 @@ import { createLinkRequest, deleteLinkRequest, useAgentEvents, useProjectLinks, 
 import { DEFAULT_NODE_SIZE, layoutFloors, nodePosition, resolveLayoutParents } from "./layout";
 import FloorBands, { type FloorInfo } from "./floor-band";
 import BranchSwitcher from "./branch-switcher";
-import { BROWSER_PREFIX, BrowserProvider, browserNodeTypes, isBrowserId, useCanvasBrowsers } from "./browser-node";
+import { BROWSER_PREFIX, BrowserProvider, browserNodeTypes, isBrowserId, queueBrowserUrl, useCanvasBrowsers, type NewBrowserOptions } from "./browser-node";
 import VirtualAgentCard, { VirtualAgentProvider } from "./virtual-agent-node";
 import { isVirtualId, useShowKilled, useVirtualAgentNodes, useVirtualAgents } from "./use-virtual-agents";
 import { isBrowserWireId, parseBrowserWire, useBrowserLinks } from "./browser-links";
@@ -921,8 +921,14 @@ function AgentCanvas() {
     apply: [(c) => notes.onNodesChange(c.filter((x) => "id" in x && isNoteId(x.id)) as never), (c) => appWindows.onNodesChange(c.filter((x) => "id" in x && isAppWindowId(x.id))), (c) => browser.onNodesChange(c.filter((x) => "id" in x && isBrowserId(x.id))), (c) => virtual.onNodesChange(c.filter((x) => "id" in x && isVirtualId(x.id)))],
   };
   const closeBrowser = useCallback((nodeId: string) => { browser.close(nodeId); browserLinks.dropNode(nodeId); }, [browser.close, browserLinks.dropNode]);
-  const newBrowser = useCallback(() => { browser.open(); }, [browser.open]);
-  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("browser"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser]);
+  const browserNodesRef = useRef(browser.nodes); browserNodesRef.current = browser.nodes;
+  // "Duplicate" opens the copy right of its node; "Open in new browser" (no `near`) uses the usual cascade. The URL loads once the new page exists.
+  const newBrowser = useCallback((opts?: NewBrowserOptions) => {
+    const near = opts?.near ? browserNodesRef.current.find((n) => n.id === opts.near) : undefined;
+    const id = browser.open(near ? { x: near.position.x + (near.width ?? 900) + 40, y: near.position.y } : undefined);
+    if (opts?.url) queueBrowserUrl(id, opts.url);
+  }, [browser.open]);
+  const browserCtx = useMemo(() => ({ client, openSettings: () => openSettings("browser"), close: closeBrowser, linkedAgents: browserLinks.linkedAgents, newBrowser, unlink: browserLinks.unlink }), [client, openSettings, closeBrowser, browserLinks.linkedAgents, newBrowser, browserLinks.unlink]);
   const appWindowCtx = useMemo(() => ({ client, sessions: projectSessions }), [client, projectSessions]);
   const allNodes = useMemo(() => [
     ...notes.nodes, ...appWindows.nodes, ...browser.nodes, ...virtual.nodes, ...nodes,

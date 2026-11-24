@@ -9,7 +9,7 @@ import "@xyflow/react/dist/style.css";
 import "@/index.css";
 import "./font-shim";
 import { CanvasCtx, type CanvasCtxValue } from "@/components/canvas/canvas-context";
-import { BrowserProvider, browserNodeTypes, useCanvasBrowsers } from "@/components/canvas/browser-node";
+import { BrowserProvider, browserNodeTypes, queueBrowserUrl, useCanvasBrowsers, type NewBrowserOptions } from "@/components/canvas/browser-node";
 
 const q = new URLSearchParams(location.search);
 const state = q.get("state") ?? "running";
@@ -20,6 +20,9 @@ w.__sent = []; w.__settings = 0; w.__kbd = [];
 const socks: MockSocket[] = [];
 w.__push = (m) => socks.forEach((x) => x.onmessage?.({ data: JSON.stringify(m) } as MessageEvent));
 (w as unknown as { __urls: string[] }).__urls = [];
+(w as unknown as { __opened: unknown[] }).__opened = [];
+(w as unknown as { __unlinks: unknown[] }).__unlinks = [];
+(w as unknown as { __startLink: string[] }).__startLink = [];
 
 class MockSocket {
   static OPEN = 1; readyState = 1;
@@ -74,9 +77,13 @@ function App() {
     (w as unknown as { __viewport: () => unknown }).__viewport = () => rf.getViewport();
   }, [rf]);
   const linked = React.useMemo(() => Array.from({ length: linkedCount }, (_, i) => ({ sessionId: `00000000-0000-4000-8000-00000000000${i}`, title: `Agent ${i + 1}` })), []);
-  const ctx = React.useMemo(() => ({ client, openSettings: () => { w.__settings++; }, close: b.close, linkedAgents: () => linked, newBrowser: () => { b.open(); } }), [b.close, b.open, linked]);
+  const ctx = React.useMemo(() => ({
+    client, openSettings: () => { w.__settings++; }, close: b.close, linkedAgents: () => linked,
+    newBrowser: (opts?: NewBrowserOptions) => { const id = b.open(); (w as unknown as { __opened: unknown[] }).__opened.push({ id, ...opts }); if (opts?.url) queueBrowserUrl(id, opts.url); },
+    unlink: (nodeId: string, sessionId: string) => { (w as unknown as { __unlinks: unknown[] }).__unlinks.push({ nodeId, sessionId }); },
+  }), [b.close, b.open, linked]);
   // Stands in for the canvas wrapper's shortcut handler: it must not see keys typed into the browser.
-  const canvasCtx = React.useMemo(() => ({ linkMode: q.get("link") ? { from: null } : null }) as unknown as CanvasCtxValue, []);
+  const canvasCtx = React.useMemo(() => ({ linkMode: q.get("link") ? { from: null } : null, startLink: (id: string) => { (w as unknown as { __startLink: string[] }).__startLink.push(id); } }) as unknown as CanvasCtxValue, []);
   return (
     <CanvasCtx.Provider value={canvasCtx}>
     <BrowserProvider value={ctx}>
