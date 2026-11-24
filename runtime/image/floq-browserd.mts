@@ -42,6 +42,8 @@ export function writeSavedState(st: SavedState, file = STATE_FILE): void {
 }
 const DOWNLOADS = join(HOME, "Downloads");
 const BROWSERS = process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/floq/browsers";
+/** Screencast watchdog: a casting page with no frame for this long is checked (and recovered when hidden), every CAST_CHECK_MS. */
+const CAST_STALL_MS = 2000, CAST_CHECK_MS = 500, CAST_REFRESH_MS = 5000;
 
 const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(JSON.stringify({ at: new Date().toISOString(), event, ...extra }) + "\n");
 const out = (msg: Record<string, unknown>) => process.stdout.write(JSON.stringify(msg) + "\n");
@@ -323,6 +325,8 @@ async function main() {
   let viewport = { ...DEFAULT_VIEWPORT }; // upper bound for pointer coordinates: the largest page viewport seen
   const nodes = new Map<string, string>(); // Browser node id -> its page's targetId (one page per node)
   const casting = new Set<string>(); // targets with a running screencast
+  /** Per casting target: its screencast params, when it (re)started and when its last frame arrived (watchdog, see castWatchdog). */
+  const castInfo = new Map<string, { params: Record<string, unknown>; startedAt: number; lastFrameAt: number; busy: boolean }>();
   const ackIds = new Map<number, { id: number; sid: string }>(); // our frame n -> Chromium screencast ack
   const agentScope = new Map<string, string | null>(); // agent session id -> node it is linked to (null/absent = unlinked)
   const muxClients = new Map<number, MuxClient>();
@@ -358,7 +362,7 @@ async function main() {
   };
   mux.onTargetsChanged = () => {
     // A node's page that went away (closed by its linked agent, or crashed): forget it and let the runtime re-open it for a live viewer.
-    for (const [nodeId, tid] of [...nodes]) if (!mux.targets.has(tid)) { nodes.delete(nodeId); casting.delete(tid); refreshScopes(); out({ type: "pageGone", nodeId }); }
+    for (const [nodeId, tid] of [...nodes]) if (!mux.targets.has(tid)) { nodes.delete(nodeId); casting.delete(tid); castInfo.delete(tid); refreshScopes(); out({ type: "pageGone", nodeId }); }
     adoptPopups();
     enforceTabCap(); emitTabs();
     for (const tid of nodes.values()) { const t = mux.targets.get(tid); if (t) void emitNav(t.targetId); }
@@ -489,6 +493,7 @@ async function main() {
       if (frameTarget && casting.has(frameTarget) && msg.sessionId) {
         const meta = (p.metadata ?? {}) as { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number };
         const n = ++frameN;
+        const ci = castInfo.get(frameTarget); if (ci) ci.lastFrameAt = Date.now();
         ackIds.set(n, { id: Number(p.sessionId), sid: msg.sessionId });
         if (ackIds.size > 64) ackIds.delete(ackIds.keys().next().value as number);
         const w = Math.round(meta.deviceWidth ?? viewport.w), h = Math.round(meta.deviceHeight ?? viewport.h);
@@ -572,7 +577,7 @@ async function main() {
       if (url) await mux.command("Page.navigate", { url }, mux.sessionFor(targetId)).catch(() => {});
     } else {
       mux.reserve = true; mux.reserved = [];
-      try { targetId = String((await mux.command("Target.createTarget", { url: url ?? "about:blank" })).result?.targetId ?? ""); }
+      try { targetId = String((await mux.command("Target.createTarget", { url: url ?? "about:blank", newWindow: true })).result?.targetId ?? ""); }
       finally { mux.reserve = false; }
       if (!targetId) throw new Error("no target");
     }
@@ -584,7 +589,7 @@ async function main() {
   }
   function closePage(nodeId: string) {
     const tid = nodes.get(nodeId); if (!tid) return;
-    lock.release(tid); nodes.delete(nodeId); casting.delete(tid); delete lastUrls[nodeId];
+    lock.release(tid); nodes.delete(nodeId); casting.delete(tid); castInfo.delete(tid); delete lastUrls[nodeId];
     for (const [agent, node] of agentScope) if (node === nodeId) agentScope.delete(agent);
     refreshScopes();
     mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
@@ -655,10 +660,41 @@ async function main() {
   const noTarget = () => out({ type: "error", code: "no_target" });
 
   async function stopScreencast(targetId: string) {
+    castInfo.delete(targetId);
     if (!casting.delete(targetId)) return;
     const sid = mux.sessionFor(targetId);
     if (sid) await mux.command("Page.stopScreencast", {}, sid).catch(() => {});
   }
+
+  /**
+   * Screencast watchdog. Chromium sends a frame only when a VISIBLE page paints: a page that became a background tab of its window
+   * (a tab opened next to it, a popup the node does not adopt) sends nothing, and the node kept showing its last, often white, frame.
+   * A casting page without a frame for CAST_STALL_MS is checked: hidden -> brought to the front of its window, and its screencast is
+   * restarted (which sends the current picture at once). A visible page that has not repainted is restarted when it sent no frame at all
+   * since the screencast (re)started, otherwise only every CAST_REFRESH_MS.
+   */
+  async function checkCast(targetId: string, now = false) {
+    const ci = castInfo.get(targetId); if (!ci || ci.busy) return;
+    const t = Date.now();
+    if (!now && t - Math.max(ci.startedAt, ci.lastFrameAt) < CAST_STALL_MS) return;
+    const sid = mux.sessionFor(targetId); if (!sid) return;
+    ci.busy = true;
+    try {
+      const r = (await mux.command("Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true }, sid, 1500).catch(() => ({}))) as { result?: { result?: { value?: unknown } } };
+      const hidden = r.result?.result?.value === "hidden";
+      const noFrame = ci.lastFrameAt < ci.startedAt;
+      // A visible page that sent frames before and is just static gets a fresh picture only every CAST_REFRESH_MS (a lost paint or ack never sticks).
+      if (!hidden && (now || (!noFrame && t - Math.max(ci.startedAt, ci.lastFrameAt) < CAST_REFRESH_MS))) return;
+      if (castInfo.get(targetId) !== ci) return; // stopped or restarted meanwhile
+      log("browser.screencast_recover", { hidden, noFrame });
+      if (hidden) await mux.command("Target.activateTarget", { targetId }).catch(() => {});
+      await mux.command("Page.stopScreencast", {}, sid).catch(() => {});
+      if (castInfo.get(targetId) !== ci) return;
+      ci.startedAt = Date.now();
+      await mux.command("Page.startScreencast", ci.params, sid).catch(() => {});
+    } finally { ci.busy = false; }
+  }
+  setInterval(() => { for (const tid of castInfo.keys()) void checkCast(tid); }, CAST_CHECK_MS).unref();
 
   // Human take-control lock: user input on a node's page holds it; agents on that page are refused until released (toggle or 60 s idle).
   const lock = new ControlLock((targetId, held) => out({ type: "control", targetId, held }));
@@ -697,6 +733,10 @@ async function main() {
         const start = () => mux.command("Page.startScreencast", { format: "jpeg", quality: c.quality, maxWidth: c.maxW, maxHeight: c.maxH, everyNthFrame: 1 }, v.sid);
         // A page that has not painted yet (just created or adopted) answers "Not attached to an active page": activate it and retry.
         try { await start(); } catch { await mux.command("Target.activateTarget", { targetId: v.targetId }).catch(() => {}); await new Promise((r) => setTimeout(r, 150)); await start(); }
+        if (casting.has(v.targetId)) {
+          castInfo.set(v.targetId, { params: { format: "jpeg", quality: c.quality, maxWidth: c.maxW, maxHeight: c.maxH, everyNthFrame: 1 }, startedAt: Date.now(), lastFrameAt: 0, busy: false });
+          void checkCast(v.targetId, true); // a page that is a background tab right now would never send its first painted frame
+        }
         void emitNav(v.targetId);
         return;
       }

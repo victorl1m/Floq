@@ -586,7 +586,9 @@ export class CdpMux {
       case "Target.createTarget":
         // A linked agent works in its node's page: it may not open more (the user watches exactly one page).
         if (this.isScoped(client.id)) return fail("This agent is linked to one browser page; navigate that page instead of opening a new one");
-        return this.forward(client, id, method, params, undefined);
+        // Always a window of its own: headful Chromium paints only the active tab of a window, so a tab opened next to a node's
+        // page would hide it and freeze that node's screencast (and a hidden agent tab runs no requestAnimationFrame).
+        return this.forward(client, id, method, { ...params, newWindow: true }, undefined);
       case "Target.createBrowserContext": {
         // Egress mode: a context may not pick its own proxy ("direct://" would leave from the server, an http proxy would route through a third party).
         let p = params;

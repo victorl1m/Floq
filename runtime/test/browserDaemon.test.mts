@@ -370,6 +370,37 @@ test("daemon: control channel validates, binds one page per node, streams frames
   await d.waitFor((m) => m.type === "exit");
 });
 
+test("daemon: node pages and agent tabs open in windows of their own (a background tab sends no screencast frames)", async (t) => {
+  const d = await startDaemon(t);
+  d.send({ type: "page.open", nodeId: "a" }); await d.waitFor((m) => m.type === "page" && m.nodeId === "a"); // adopts the initial tab
+  d.send({ type: "page.open", nodeId: "b" }); await d.waitFor((m) => m.type === "page" && m.nodeId === "b");
+  const agent = await connect(d, t);
+  const r = await agent.call("Target.createTarget", { url: "about:blank" });
+  assert.ok(r.result?.targetId, JSON.stringify(r));
+  const creates = d.chromiumLog().split("\n").filter((l) => l.startsWith("CREATE ")).map((l) => JSON.parse(l.slice(7)));
+  assert.equal(creates.length, 2, d.chromiumLog());
+  for (const c of creates) assert.equal(c.newWindow, true, "every new page gets its own window: " + JSON.stringify(c));
+});
+
+test("daemon: screencast watchdog brings a hidden node page to the front and restarts its screencast", async (t) => {
+  const d = await startDaemon(t, { env: { FAKE_CHROMIUM_HIDDEN: "1" } });
+  d.send({ type: "page.open", nodeId: "n" });
+  const { targetId } = await d.waitFor((m) => m.type === "page" && m.nodeId === "n");
+  d.send({ type: "screencast.start", targetId, maxW: 400, maxH: 300, quality: 60 });
+  const first = await d.waitFor((m) => m.type === "frame" && m.targetId === targetId);
+  d.send({ type: "frame.ack", n: first.n });
+  // The page is a background tab: no more frames on their own. Within the stall window the daemon must activate it and restart the cast.
+  const again = await d.waitFor((m) => m.type === "frame" && m.targetId === targetId && m.n > first.n, 5000);
+  assert.ok(again.n > first.n);
+  assert.match(d.chromiumLog(), new RegExp("ACTIVATE " + targetId));
+  // Stopped: the watchdog leaves it alone.
+  d.send({ type: "screencast.stop", targetId });
+  await new Promise((r) => setTimeout(r, 300));
+  const count = d.msgs.filter((m) => m.type === "frame").length;
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.equal(d.msgs.filter((m) => m.type === "frame").length, count, "no frames after screencast.stop");
+});
+
 test("daemon: a linked agent sees exactly its node's page; unlinked agents never see node pages; linking and unlinking are live", async (t) => {
   const d = await startDaemon(t);
   d.send({ type: "page.open", nodeId: "n1" });
@@ -696,6 +727,45 @@ test("real Chromium: a cross-origin iframe (OOPIF) loads, is in the screencast a
   const jpeg = await (async () => { for (let i = 0; i < 40; i++) { const f = d.msgs.filter((m) => m.type === "frame" && m.targetId === node.targetId).pop(); if (f) return f; await new Promise((r) => setTimeout(r, 100)); } })();
   assert.ok(jpeg, "screencast frames are streamed");
   await w.close();
+});
+
+test("real Chromium: a node's live view keeps streaming when other tabs open (agent tabs, another node, a page's own non-http popup)", realSkip, async (t) => {
+  // Headful Chromium (Xvfb) paints only the active tab of a window: a node page that became a background tab sent no screencast
+  // frame any more, and the node kept showing its first (white) frame. Each animated page below must keep streaming.
+  const site = createServer((req, res) => { res.setHeader("content-type", "text/html");
+    res.end(`<title>tick${req.url}</title><body style="margin:0"><h1 id=t>0</h1><button id=b style="position:absolute;left:0;top:100px;width:200px;height:80px" onclick="window.open('about:blank#popup')">open</button><script>let n=0;setInterval(()=>{t.textContent=++n},50)</script>`); });
+  await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
+  t.after(() => site.close());
+  const base = `http://127.0.0.1:${(site.address() as any).port}`;
+  const d = await startDaemon(t, { exe: REAL!, env: { FLOQ_BROWSER_ALLOW_PRIVATE: "1" } });
+  // The runtime acks every frame it relays.
+  const frames = new Map<string, number>();
+  d.child.stdout!.on("data", () => { for (const m of d.msgs.splice(0)) { if (m.type === "frame") { frames.set(m.targetId, (frames.get(m.targetId) ?? 0) + 1); d.send({ type: "frame.ack", n: m.n }); } else kept.push(m); } });
+  const kept: any[] = [];
+  const page = async (nodeId: string, path: string) => { d.send({ type: "page.open", nodeId, url: base + path }); for (let i = 0; i < 100; i++) { const p = [...kept, ...d.msgs].find((m) => m.type === "page" && m.nodeId === nodeId); if (p) return p.targetId as string; await new Promise((r) => setTimeout(r, 100)); } throw new Error("no page for " + nodeId); };
+  const streams = async (tid: string, what: string) => {
+    await new Promise((r) => setTimeout(r, 4000)); // the page settles (and any recovery runs)
+    const before = frames.get(tid) ?? 0;
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok((frames.get(tid) ?? 0) - before >= 3, what + ": the animated node page must keep sending frames, got " + ((frames.get(tid) ?? 0) - before) + d.stderr.slice(-400));
+  };
+  const n1 = await page("n1", "/one");
+  d.send({ type: "screencast.start", targetId: n1, maxW: 800, maxH: 600, quality: 50 });
+  await streams(n1, "alone");
+  // An agent opens its own tab.
+  const b = await PW.chromium.connectOverCDP(`ws://127.0.0.1:${d.ready.port}/devtools/browser`, { headers: { Authorization: "Bearer " + d.ready.token } });
+  t.after(() => b.close().catch(() => {}));
+  const p = await b.contexts()[0].newPage();
+  await p.goto(base + "/agent");
+  await streams(n1, "after an agent tab opened");
+  // A second node opens its page; both nodes stream at once.
+  const n2 = await page("n2", "/two");
+  d.send({ type: "screencast.start", targetId: n2, maxW: 800, maxH: 600, quality: 50 });
+  await streams(n1, "after a second node opened (n1)");
+  await streams(n2, "second node");
+  // The node's page opens a popup the node does not adopt (not http): the node's own view must come back.
+  for (const kind of ["mousePressed", "mouseReleased"]) d.send({ type: "input.mouse", targetId: n1, kind, x: 100, y: 140, button: "left", buttons: kind === "mousePressed" ? 1 : 0, clickCount: 1, modifiers: 0 });
+  await streams(n1, "after the page opened a popup tab");
 });
 
 test("real Chromium: the private-network interceptor refuses loopback pages and leaves the switch-off case alone", realSkip, async (t) => {

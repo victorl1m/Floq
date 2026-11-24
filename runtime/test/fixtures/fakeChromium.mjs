@@ -49,9 +49,9 @@ function handle(m) {
       return reply();
     case "Target.attachToTarget": { if (!targets.has(m.params.targetId)) return send({ id: m.id, error: { code: -32602, message: "No target with given id found" } }); const sessionId = "S" + seq++; sessions.set(sessionId, m.params.targetId); return reply({ sessionId }); }
     case "Target.detachFromTarget": sessions.delete(m.params.sessionId); return reply();
-    case "Target.createTarget": { const t = addTarget(m.params.url || "about:blank"); return reply({ targetId: t.id }); }
+    case "Target.createTarget": { note("CREATE " + JSON.stringify(m.params)); const t = addTarget(m.params.url || "about:blank"); return reply({ targetId: t.id }); }
     case "Target.closeTarget": { process.stderr.write("CLOSE_TARGET\n"); targets.delete(m.params.targetId); send({ method: "Target.targetDestroyed", params: { targetId: m.params.targetId } }); return reply({ success: true }); }
-    case "Target.activateTarget": return reply();
+    case "Target.activateTarget": note("ACTIVATE " + m.params.targetId); return reply();
     case "Target.getTargets": return reply({ targetInfos: [...targets.values()].map(info) });
     case "Fetch.enable":
       if (process.env.FAKE_CHROMIUM_FETCH_FAILS === "1") return send({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), error: { code: -32000, message: "Fetch.enable failed" } });
@@ -71,7 +71,10 @@ function handle(m) {
     case "Page.stopScreencast": case "Page.screencastFrameAck": return reply();
     case "Input.dispatchMouseEvent": case "Input.dispatchKeyEvent": case "Input.insertText": note("INPUT " + m.method + " " + JSON.stringify(m.params)); return reply();
     case "Emulation.setDeviceMetricsOverride": note("EMULATION " + JSON.stringify(m.params)); target.viewport = m.params; return reply();
-    case "Runtime.evaluate": return reply({ result: { type: "string", value: /elementFromPoint/.test(m.params.expression ?? "") ? "pointer" : "url=" + target.url } });
+    case "Runtime.evaluate":
+      // FAKE_CHROMIUM_HIDDEN=1: every page is a background tab (it paints nothing, so no frame after the first one).
+      if (m.params.expression === "document.visibilityState") return reply({ result: { type: "string", value: process.env.FAKE_CHROMIUM_HIDDEN === "1" ? "hidden" : "visible" } });
+      return reply({ result: { type: "string", value: /elementFromPoint/.test(m.params.expression ?? "") ? "pointer" : "url=" + target.url } });
     default: return send({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), error: { code: -32601, message: m.method + " wasn't found" } });
   }
 }
