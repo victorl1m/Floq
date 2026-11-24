@@ -314,3 +314,22 @@ test("notification audio: played acknowledges that one message to WhatsApp; unkn
   await assert.rejects(h.post("/notify/audio", { audio: "fetch", data: { session: "default", chatId: A } }), (e) => e.status === 404);
   await assert.rejects(h.post("/notify/audio", { audio: "fetch", data: { session: "default", chatId: A, msgId: "nope" } }), (e) => e.status === 404);
 });
+
+test("the name the user saved for a contact beats the name they set on WhatsApp, in a direct chat, in a group and in the chat list", async () => {
+  const h = await start();
+  await h.sql("INSERT INTO contacts (user_id, session, chat_id, name, push_name) VALUES ('u1','default',$1,'Márcia (Fiscal)','Márcia Marques Xavier')", [A]);
+  await h.sql("INSERT INTO contacts (user_id, session, chat_id, name) VALUES ('u1','default',$1,'Sarah - Fiscal')", [G]);
+  await h.message({ from: A, fromMe: false, body: "oi", notifyName: "Márcia Marques Xavier" });
+  await h.message({ from: G, participant: A, fromMe: false, body: "Bom dia!", notifyName: "Márcia Marques Xavier" });
+  await h.idle();
+  assert.deepEqual(h.notes.map((n) => [n.title, n.body]), [["Márcia (Fiscal)", "oi"], ["Sarah - Fiscal", "Márcia (Fiscal): Bom dia!"]]);
+  const g = (await h.chats()).find((c) => c.chatId === G);
+  assert.equal(g.lastSenderName, "Márcia (Fiscal)");
+});
+
+test("without a saved name the WhatsApp name is used, then the number", async () => {
+  const h = await start();
+  await h.message({ from: A, fromMe: false, body: "oi", notifyName: "Márcia Marques Xavier" });
+  await h.idle();
+  assert.equal(h.notes[0].title, "Márcia Marques Xavier");
+});

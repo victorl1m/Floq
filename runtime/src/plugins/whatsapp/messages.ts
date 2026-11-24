@@ -145,7 +145,7 @@ export function createStore(core: Core, identity: Identity): Store {
          unr AS (SELECT u.cid, COUNT(*)::int AS n FROM vis u LEFT JOIN {{p}}chat_reads r ON r.user_id = $1 AND r.session = $S AND r.chat_id = u.chat_id
                   WHERE u.from_me = FALSE AND (r.read_at IS NULL OR u.created_at > r.read_at) GROUP BY u.cid)
          SELECT a.cid AS chat_id, a.last_at, a.total, l.body AS last_body, l.from_me AS last_from_me, l.has_media AS last_has_media, l.type AS last_type, l.ack AS last_ack, l.deleted_at AS last_deleted,
-                COALESCE(NULLIF(l.sender_name, ''), (SELECT COALESCE(NULLIF(k2.name, ''), k2.push_name) FROM {{p}}contacts k2 WHERE k2.user_id = $1 AND k2.session = $S AND k2.chat_id = l.sender LIMIT 1), '') AS last_sender_name, c.name AS name, c.push_name AS push_name, c.phone AS phone, c.has_picture AS has_picture, c.picture_at AS picture_at, c.blocked AS blocked,
+                COALESCE((SELECT NULLIF(k2.name, '') FROM {{p}}contacts k2 WHERE k2.user_id = $1 AND k2.session = $S AND k2.chat_id = l.sender LIMIT 1), NULLIF(l.sender_name, ''), (SELECT NULLIF(k2.push_name, '') FROM {{p}}contacts k2 WHERE k2.user_id = $1 AND k2.session = $S AND k2.chat_id = l.sender LIMIT 1), '') AS last_sender_name, c.name AS name, c.push_name AS push_name, c.phone AS phone, c.has_picture AS has_picture, c.picture_at AS picture_at, c.blocked AS blocked,
                 COALESCE(st.archived, FALSE) AS archived, COALESCE(st.pinned, FALSE) AS pinned, st.muted_until AS muted_until, COALESCE(st.marked_unread, FALSE) AS marked_unread, COALESCE(st.labels, '[]'::jsonb) AS labels,
                 COALESCE(unr.n, 0) AS unread
            FROM agg a
@@ -414,11 +414,11 @@ export function createStore(core: Core, identity: Identity): Store {
     core.publish(userId, "message", { chatId, fromMe: false, preview: m.body.slice(0, 120) });
     const st = (await q(`SELECT muted_until, archived FROM {{p}}chat_state WHERE user_id = $1 AND session = $S AND chat_id = $2`, [userId, chatId])).rows[0];
     if (st?.muted_until && new Date(st.muted_until as string).getTime() > Date.now()) return;
-    let who = m.senderName || (m.senderPhone ? formatPhone(displayDigits(m.senderPhone)) : "");
-    // A saved name beats the push name; in a group the sender is named, with the group after it.
-    const known = async (id: string) => { const k = (await q(`SELECT name, push_name FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = ANY($2::text[]) ORDER BY (name <> '') DESC LIMIT 1`, [userId, await identity.aliases(userId, id)])).rows[0]; return String(k?.name || k?.push_name || ""); };
-    const group = isGroup(chatId) ? await known(chatId) : "";
-    if (!who) who = await known(isGroup(chatId) ? m.sender : chatId);
+    // The name the user saved for the contact comes first, then the name the person set on WhatsApp, then the number.
+    const known = async (id: string) => { const k = (await q(`SELECT name, push_name FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = ANY($2::text[]) ORDER BY (name <> '') DESC LIMIT 1`, [userId, await identity.aliases(userId, id)])).rows[0]; return { saved: String(k?.name || ""), push: String(k?.push_name || "") }; };
+    const g = isGroup(chatId) ? await known(chatId) : null, group = g ? g.saved || g.push : "";
+    const c = await known(isGroup(chatId) ? m.sender : chatId);
+    let who = c.saved || m.senderName || c.push || (m.senderPhone ? formatPhone(displayDigits(m.senderPhone)) : "");
     // Floq's island (sender, preview, reply, mark read, open chat) where the host has it; the plain toast on an older Floq.
     if ((await notifierOf(core, identity).message(userId, { chatId, m, who, group })) !== "unsupported") return;
     if (group) who = who ? `${who} in ${group}` : group;
