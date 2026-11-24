@@ -1,16 +1,15 @@
 // Root-level host for the browser egress relay: starts/stops the Rust relay from this machine's choice and the user's mode,
-// follows its status, and briefly shows the "your connection is in use" notice with the kill switch when it starts
+// follows its status, and shows a short "your connection is in use" toast with the kill switch when it starts
 // (docs/design/browser-user-egress.md §3.3). The live indicator and details stay in the footer's Network item (network-egress.tsx).
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { IconPlugConnectedX } from "@tabler/icons-react";
-import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import { useClient } from "@/lib/runtime/store";
 import { EGRESS_SETTINGS_EVENT, egressSupported, refreshEgressStatus, relayWanted, setEgressHere, setEgressStatus, startEgress, stopEgress, stopUsingMyConnection, useBrowserEgress, type EgressStatus } from "@/lib/browser-egress";
 import type { BrowserEgressMode } from "@/lib/runtime/browser-types";
 
 const MODE_POLL_MS = 20_000;
-/** The floating notice shows only briefly when the browser starts using the connection; the footer's Network item stays live. */
+/** The start notice (a toast) shows only briefly when the browser starts using the connection; the footer's Network item stays live. */
 export const EGRESS_NOTICE_MS = 6_000;
 
 export function BrowserEgressRelay() {
@@ -61,29 +60,18 @@ export function BrowserEgressRelay() {
     return () => { gone = true; unlisten.forEach((fn) => fn()); };
   }, [supported]);
 
-  // Brief notice once per "up" period, when the first connection goes through this computer; afterwards the footer shows it.
+  // One notice per "up" period, when the first connection goes through this computer: a normal toast at the top of the window
+  // (never a floating pill over the content), with the kill switch. The footer's Network item keeps the live indicator.
   const active = supported && status?.state === "up" && status.streams > 0;
-  const [noticeFor, setNoticeFor] = useState<number | null>(null);
-  const [noticeShown, setNoticeShown] = useState(false);
+  const noticedFor = useRef<number | null>(null);
   useEffect(() => {
-    if (!active || upSince === null || noticeFor === upSince) return;
-    setNoticeFor(upSince); setNoticeShown(true);
-  }, [active, upSince, noticeFor]);
-  useEffect(() => {
-    if (!noticeShown) return;
-    const t = setTimeout(() => setNoticeShown(false), EGRESS_NOTICE_MS);
-    return () => clearTimeout(t);
-  }, [noticeShown]);
+    if (!active || upSince === null || noticedFor.current === upSince) return;
+    noticedFor.current = upSince;
+    toast("Agent browser is using your connection", {
+      id: "egress-notice", duration: EGRESS_NOTICE_MS, description: "Details and the switch are in the footer's Network item.",
+      action: { label: "Stop", onClick: () => { void stopUsingMyConnection(clientRef.current).catch(() => undefined); } },
+    });
+  }, [active, upSince]);
 
-  if (!active || !noticeShown) return null;
-  return (
-    <div role="status" data-testid="egress-indicator" className="fixed bottom-3 right-3 z-50 flex items-center gap-2 rounded-full border border-border bg-card/95 py-1 pl-3 pr-1 text-xs shadow-lg backdrop-blur">
-      <span className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden />
-      <span>Agent browser is using your connection · {status!.streams} connection{status!.streams === 1 ? "" : "s"} · details in the footer's Network</span>
-      <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 rounded-full px-2 text-xs" data-testid="egress-indicator-stop"
-        onClick={() => { setNoticeShown(false); void stopUsingMyConnection(client).catch(() => undefined); }}>
-        <IconPlugConnectedX size={12} /> Stop using my connection
-      </Button>
-    </div>
-  );
+  return null;
 }

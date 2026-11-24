@@ -42,21 +42,23 @@ export const COMPOSER_CSS = `
 .wa-replyto{flex:1;min-width:0;padding:6px 12px 7px;border-left:4px solid var(--wa-qc);border-radius:8px;background:color-mix(in srgb,var(--wa-text) 6%,var(--wa-field))}
 .wa-replyto span{display:block;font-size:13px;line-height:18px;color:var(--wa-sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-.wa-tray{list-style:none;margin:0;padding:2px 0 4px;display:flex;align-items:center;gap:8px;overflow-x:auto;scrollbar-width:thin}
+.wa-tray{list-style:none;margin:0;padding:8px 8px 4px 0;display:flex;align-items:center;gap:8px;overflow-x:auto;scrollbar-width:thin}
 .wa-tray li{margin:0;padding:0;flex:none}
 .wa-att{position:relative}
 .wa-att-thumb{width:72px;height:72px;border-radius:10px;overflow:hidden;background:var(--wa-active)}
 .wa-att-thumb img,.wa-att-thumb video{display:block;width:100%;height:100%;object-fit:cover}
 .wa-att-play{position:absolute;inset:0;display:grid;place-items:center;color:#fff;background:rgba(0,0,0,.22);pointer-events:none}
 .wa-att-play svg{width:26px;height:26px}
-.wa-att-chip{display:flex;align-items:center;gap:10px;height:56px;width:210px;max-width:70cqw;padding:0 38px 0 10px;border:1px solid var(--wa-line);border-radius:10px;background:var(--wa-field)}
+.wa-tray .wa-att-chip{display:flex;align-items:center;gap:10px;height:56px;width:210px;max-width:70cqw;padding:0 18px 0 10px;border:1px solid var(--wa-line);border-radius:10px;background:var(--wa-field)}
 .wa-att-ico{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:color-mix(in srgb,var(--wa-text) 10%,transparent);color:var(--wa-icon)}
 .wa-att-ico svg{width:20px;height:20px}
 .wa-att-meta{min-width:0;display:flex;flex-direction:column}
 .wa-att-meta b{font-size:13.5px;font-weight:500;line-height:18px;color:var(--wa-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wa-att-meta span{font-size:12px;line-height:16px;color:var(--wa-sub)}
 .wa-root .wa-att-x{position:absolute;top:4px;right:4px;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;cursor:pointer;box-shadow:none}
-.wa-att-chip .wa-att-x{top:50%;margin-top:-12px;background:color-mix(in srgb,var(--wa-text) 14%,transparent);color:var(--wa-text)}
+/* a file card keeps its whole width for the name: the remove button is a badge on its corner, like on photo thumbnails */
+.wa-att-chip .wa-att-x{top:-7px;right:-7px;width:22px;height:22px;background:var(--wa-panel);color:var(--wa-text);border:1px solid var(--wa-line);box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.wa-att-chip .wa-att-x:hover{background:var(--wa-hover)}
 .wa-att-x::before{content:"";position:absolute;inset:-8px}
 .wa-att-x svg{width:14px;height:14px}
 .wa-root .wa-att-add{display:grid;place-items:center;width:56px;height:56px;padding:0;border:1.5px dashed var(--wa-sub);border-radius:10px;background:transparent;color:var(--wa-icon);cursor:pointer;box-shadow:none}

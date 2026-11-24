@@ -75,12 +75,15 @@ test('paused egress shows an amber indicator and the reason', async ({ page }) =
   await expect(page.getByTestId('network-egress-stop')).toBeVisible();
 });
 
-test('the floating notice shows only briefly when the connection starts being used', async ({ page }) => {
+test('starting to use the connection shows a short toast at the top (no floating pill over the content), with Stop', async ({ page }) => {
   await page.clock.install();
   await page.goto('/e2e/harness/network.html?egress=up&relay=1');
-  const notice = page.getByTestId('egress-indicator');
+  const notice = page.locator('[data-sonner-toast]').filter({ hasText: 'Agent browser is using your connection' });
   await expect(notice).toBeVisible();
-  await expect(notice).toContainText('15 connections');
+  await expect(page.getByTestId('egress-indicator')).toHaveCount(0);
+  const box = await notice.boundingBox();
+  expect(box!.y).toBeLessThan(200); // top of the window, away from the message box at the bottom
+  await expect(notice.getByRole('button', { name: 'Stop' })).toBeVisible();
   await page.clock.runFor(7000);
   await expect(notice).toHaveCount(0);
   // The footer keeps the live indicator.

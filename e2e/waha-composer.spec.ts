@@ -156,6 +156,12 @@ for (const theme of ['light', 'dark']) {
       await expect(page.locator('.wa-att img')).toHaveCount(1);
       await expect(page.locator('.wa-att-chip')).toContainText('orcamento-festa-40-canecas.pdf');
       await expect(page.locator('.wa-att-chip')).toContainText('117 KB');
+      // The file card's remove button sits on its corner: it never covers the name, and it is not clipped by the tray.
+      const overlap = await page.locator('.wa-att-chip').evaluate((chip) => {
+        const name = chip.querySelector('.wa-att-meta b')!.getBoundingClientRect(), x = chip.querySelector('.wa-att-x')!.getBoundingClientRect(), tray = chip.closest('.wa-tray')!.getBoundingClientRect();
+        return { covers: x.left < name.right && x.right > name.left && x.top < name.bottom && x.bottom > name.top, clipped: x.top < tray.top - 0.5 || x.right > tray.right + 0.5 };
+      });
+      expect(overlap).toEqual({ covers: false, clipped: false });
       await expect(field(page)).toHaveAttribute('placeholder', 'Add a caption');
       await expect(action(page)).toHaveAttribute('data-mode', 'send'); // attachments alone turn the mic into send
       await shot(page, theme, 'tray');
