@@ -5,6 +5,7 @@ import App from "@/App";
 import IslandRoot from "@/components/island/island-root";
 import IslandBoundary from "@/components/island/island-boundary";
 import { applyCursorPreference } from "@/lib/cursor-preference";
+import { suppressNativeContextMenu } from "@/lib/native-context-menu";
 
 
 import { NotificationsProvider } from "@/components/notifications/notifications-provider";
@@ -26,6 +27,7 @@ function PersistedSidebarProvider({ children }: { children: React.ReactNode }) {
     </SidebarProvider>;
 }
 
+suppressNativeContextMenu();
 const island = new URLSearchParams(window.location.search).get("window") === "island";
 if (island) void import("@/island.css");
 else { void import("@/index.css"); applyCursorPreference(); }

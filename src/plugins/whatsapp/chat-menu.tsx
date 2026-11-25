@@ -1,5 +1,5 @@
 // The "⋯" menu of a chat (row and header): archive, pin, mute, read state, info, clear, delete, block, exit group.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger, toast } from "@/plugins/kit";
 import { displayName, type Chat } from "@whatsapp-shared/chat";
 import { useWa } from "./context";
@@ -18,6 +18,22 @@ const MUTES: Array<[string, () => string]> = [["8 hours", () => new Date(Date.no
 export function ChatMenu({ chat, onInfo, onGone }: { chat: Chat; onInfo?: () => void; onGone?: () => void }) {
   const { api, features, refreshChats } = useWa();
   const [ask, setAsk] = useState<Ask | null>(null);
+  // Right-click (or long-press) on the chat's row opens this same menu at the pointer: it is anchored to the "⋮" button and shifted by the offset to the pointer.
+  const btn = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const row = btn.current?.closest("li");
+    if (!row) return;
+    const show = (x: number, y: number) => { const r = btn.current?.getBoundingClientRect(); if (r) { setAt({ x: x - r.left, y: y - r.bottom }); setOpen(true); } };
+    const onCtx = (e: MouseEvent) => { e.preventDefault(); show(e.clientX, e.clientY); };
+    let timer = 0, from = { x: 0, y: 0 };
+    const down = (e: PointerEvent) => { if (e.pointerType !== "touch") return; from = { x: e.clientX, y: e.clientY }; timer = window.setTimeout(() => show(from.x, from.y), 500); };
+    const cancel = () => window.clearTimeout(timer);
+    const move = (e: PointerEvent) => { if (Math.hypot(e.clientX - from.x, e.clientY - from.y) > 8) cancel(); };
+    row.addEventListener("contextmenu", onCtx); row.addEventListener("pointerdown", down); row.addEventListener("pointermove", move); row.addEventListener("pointerup", cancel); row.addEventListener("pointercancel", cancel);
+    return () => { cancel(); row.removeEventListener("contextmenu", onCtx); row.removeEventListener("pointerdown", down); row.removeEventListener("pointermove", move); row.removeEventListener("pointerup", cancel); row.removeEventListener("pointercancel", cancel); };
+  }, []);
   const group = isGroupChat(chat), name = displayName(chat);
   const unread = (chat.unread ?? 0) > 0 || chat.markedUnread === true;
 
@@ -47,11 +63,11 @@ export function ChatMenu({ chat, onInfo, onGone }: { chat: Chat; onInfo?: () => 
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu open={open} onOpenChange={(o) => { setOpen(o); if (!o) setAt(null); }}>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="ghost" size="icon" className="wa-iconbtn" aria-label={`Menu of ${name}`} title="Menu"><IconDots /></Button>
+          <Button ref={btn} type="button" variant="ghost" size="icon" className="wa-iconbtn" aria-label={`Menu of ${name}`} title="Menu"><IconDots /></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="wa-menu">
+        <DropdownMenuContent {...(at ? { side: "bottom" as const, align: "start" as const, alignOffset: at.x, sideOffset: at.y } : { align: "end" as const })} className="wa-menu">
           {onInfo && <DropdownMenuItem onSelect={onInfo}><IconInfo />{group ? "Group info" : "Contact info"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => void archive()}>{chat.archived ? <IconUnarchive /> : <IconArchive />}{chat.archived ? "Unarchive chat" : "Archive chat"}</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void pin()}>{chat.pinned ? <IconPinOff /> : <IconPinChat />}{chat.pinned ? "Unpin chat" : "Pin chat"}</DropdownMenuItem>
