@@ -6,7 +6,13 @@ import { CHAT_ID, digitsOf, isGroup, lidOf, normId, pnOf, stanzaOf } from "./ids
 export type MessageType = "chat" | "image" | "video" | "audio" | "ptt" | "document" | "sticker" | "location" | "vcard" | "poll" | "call" | "system" | "reaction" | "unknown";
 export interface ReplyRef { id: string; body: string; sender: string; hasMedia: boolean }
 export interface IdLink { lid: string; pn: string }
-export interface MediaMeta { url?: string; mime: string; filename: string; size?: number; duration?: number; width?: number; height?: number; error?: boolean; gif?: boolean }
+export interface MediaMeta { url?: string; mime: string; filename: string; size?: number; duration?: number; width?: number; height?: number; error?: boolean; gif?: boolean; animated?: boolean; lottie?: boolean }
+/**
+ * A protocol message: not a message of its own but an action on another one (WhatsApp's "delete for everyone" and "edit").
+ * target: the stanza of the message it acts on; targetFromMe / targetSender: who sent that message, when the key says so.
+ * "other": any other protocol message (disappearing-messages setting, history sync, keys): nothing to show.
+ */
+export interface ProtocolOp { kind: "revoke" | "edit" | "other"; target: string; targetFromMe: boolean | null; targetSender: string; body: string; at: Date | null }
 export interface VCard { name: string; phones: string[] }
 export interface MessageExtra {
   location?: { lat: number; lng: number; name: string; address: string; live?: boolean };
@@ -22,6 +28,12 @@ export interface Parsed {
   body: string; type: MessageType; hasMedia: boolean; media: MediaMeta | null; extra: MessageExtra; ack: number; sentAt: Date; reply: ReplyRef | null; links: IdLink[];
   /** A reaction delivered as a message (some engines): not stored as a row. */
   reaction?: { target: string; emoji: string };
+  /** A delete or an edit of another message (NOWEB / GOWS protocolMessage): applied to that message, not stored as a row. */
+  protocol?: ProtocolOp;
+  /** The message itself says it was deleted for everyone (WEBJS "revoked", a NOWEB revoke stub, a GOWS revoked entry): its content is gone. */
+  revoked?: boolean;
+  /** The engine says the message was edited (WEBJS latestEditMsgKey) without giving the versions. */
+  editedAt?: Date;
 }
 
 export const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -134,7 +146,10 @@ export function describe(p: Record<string, unknown>): { type: MessageType; media
   const d = rec(p._data), info = rec(d.Info), m = protoOf(p), hit = nodeOf(m);
   const pm = rec(p.media);
   let type: MessageType = typeof d.type === "string" && WEBJS[d.type] ? WEBJS[d.type] : hit?.type ?? "unknown";
-  const node = hit?.node ?? {};
+  let node = hit?.node ?? {};
+  // A lottie sticker wraps an ordinary stickerMessage (mimetype application/was, an animation WhatsApp packs itself).
+  const lottie = hit?.key === "lottieStickerMessage" || ci(node, "isLottie") === true || d.isLottie === true;
+  if (hit?.key === "lottieStickerMessage") { const inner = rec(ci(rec(ci(node, "message")), "stickerMessage")); if (Object.keys(inner).length) node = inner; }
   const mimeGuess = s(pm.mimetype ?? ci(node, "mimetype") ?? d.mimetype, 100).toLowerCase();
   if (type === "audio" && (ci(node, "ptt") === true || ci(node, "PTT") === true || String(info.MediaType).toLowerCase() === "ptt")) type = "ptt";
   if (type === "unknown") {
@@ -157,10 +172,13 @@ export function describe(p: Record<string, unknown>): { type: MessageType; media
       ...(num(ci(node, "height") ?? d.height) ? { height: num(ci(node, "height") ?? d.height) } : {}),
       ...(pm.error ? { error: true } : {}),
       ...(ci(node, "gifPlayback") === true || d.isGif === true ? { gif: true } : {}),
+      ...(type === "sticker" && (ci(node, "isAnimated") === true || d.isAnimated === true || lottie) ? { animated: true } : {}),
+      ...(type === "sticker" && lottie ? { lottie: true } : {}),
     };
+    if (type === "sticker" && !media.mime) media.mime = lottie ? "application/was" : "image/webp";
     const caption = ci(node, "caption") ?? d.caption;
     if (typeof caption === "string" && !body) body = caption;
-    if (looksBinary(body) || (type !== "document" && body === filename)) body = "";
+    if (looksBinary(body) || (type !== "document" && body === filename) || type === "sticker") body = "";
   }
   if (type === "location") {
     const l = rec(p.location);
@@ -215,14 +233,36 @@ export function describe(p: Record<string, unknown>): { type: MessageType; media
 function quotedText(q: Record<string, unknown>): { body: string; media: boolean } {
   const direct = ci(q, "conversation");
   if (typeof direct === "string" && direct) return { body: direct, media: false };
-  const ext = rec(ci(q, "extendedTextMessage"));
-  if (typeof ext.text === "string" && ext.text) return { body: ext.text, media: false };
-  for (const k of ["imageMessage", "videoMessage", "documentMessage", "audioMessage", "stickerMessage", "documentWithCaptionMessage"]) {
+  const ext = rec(ci(q, "extendedTextMessage")), et = ci(ext, "text");
+  if (typeof et === "string" && et) return { body: et, media: false };
+  const dwc = rec(ci(rec(ci(q, "documentWithCaptionMessage")), "message"));
+  if (Object.keys(dwc).length) return { ...quotedText(dwc), media: true };
+  for (const k of ["imageMessage", "videoMessage", "ptvMessage", "documentMessage", "audioMessage", "stickerMessage"]) {
     const m = ci(q, k);
-    if (m && typeof m === "object") { const c = rec(m).caption; return { body: typeof c === "string" ? c : "", media: true }; }
+    if (m && typeof m === "object") { const c = ci(rec(m), "caption"); return { body: typeof c === "string" ? c : "", media: true }; }
   }
   return { body: "", media: false };
 }
+
+const toDate = (v: unknown): Date | null => { const n = num(v); return n && n > 0 ? new Date(n < 1e12 ? n * 1000 : n) : null; };
+/** The delete / edit a protocol message carries (NOWEB: _data.message, GOWS: _data.Message; an edit may come wrapped in editedMessage). */
+export function protocolOf(p: Record<string, unknown>): ProtocolOp | null {
+  const pm = rec(ci(protoOf(p), "protocolMessage"));
+  if (!Object.keys(pm).length) return null;
+  const key = rec(ci(pm, "key")), edited = rec(ci(pm, "editedMessage"));
+  const raw = ci(pm, "type"), t = typeof raw === "string" ? raw.toUpperCase() : num(raw);
+  const gows = s(rec(rec(p._data).Info).Edit, 4);
+  // REVOKE is enum 0: proto JSON leaves a zero enum out, so a protocol message with a key and nothing else is a revoke.
+  const kind: ProtocolOp["kind"] = Object.keys(edited).length || t === 14 || t === "MESSAGE_EDIT" || gows === "1" ? "edit"
+    : t === 0 || t === "REVOKE" || gows === "7" || gows === "8" || (t === undefined && Object.keys(key).length) ? "revoke" : "other";
+  const target = stanzaOf(ci(key, "id", "ID") ?? "");
+  const fm = ci(key, "fromMe", "FromMe");
+  const who = normId(ci(key, "participant", "Participant"));
+  return { kind, target, targetFromMe: typeof fm === "boolean" ? fm : null, targetSender: who && !isGroup(who) ? who : "", body: kind === "edit" ? text(textOfProto(edited), 8000) : "", at: toDate(ci(pm, "timestampMs")) };
+}
+
+/** The text of a raw proto message object: its text, or the caption of its file. */
+export function textOfProto(q: Record<string, unknown>): string { return quotedText(q).body; }
 
 /**
  * The quoted message of a reply, from WAHA's normalized `replyTo` or the engine's raw fields
@@ -284,6 +324,12 @@ export function parseMessage(p: Record<string, unknown>, session: string, me?: u
   if (reply && meLid && reply.sender === meLid) reply.sender = "me";
   const dsc = describe(p);
   const ackRaw = Number(p.ack);
+  const d = rec(p._data);
+  const protocol = protocolOf(p) ?? undefined;
+  const stub = d.messageStubType;
+  const revoked = d.type === "revoked" || ((stub === 1 || stub === "REVOKE") && !Object.keys(protoOf(p)).length) || undefined;
+  const editMs = num(d.latestEditSenderTimestampMs);
+  const editedAt = d.latestEditMsgKey && editMs ? new Date(editMs < 1e12 ? editMs * 1000 : editMs) : undefined;
   return {
     reply, links, source: s(p.source, 16).toLowerCase(), session, chatId, msgId, stanza: stanzaOf(msgId), fromMe,
     sender: fromMe ? "me" : (isGroup(chatId) && participantOf(p)) || from,
@@ -292,6 +338,7 @@ export function parseMessage(p: Record<string, unknown>, session: string, me?: u
     ack: Number.isFinite(ackRaw) ? Math.max(-1, Math.min(4, Math.trunc(ackRaw))) : fromMe ? 1 : 0,
     sentAt: new Date(Number.isFinite(seconds) && seconds > 0 ? seconds * (seconds < 1e12 ? 1000 : 1) : Date.now()),
     ...(dsc.reaction ? { reaction: dsc.reaction } : {}),
+    ...(protocol ? { protocol } : {}), ...(revoked ? { revoked: true } : {}), ...(editedAt ? { editedAt } : {}),
   };
 }
 

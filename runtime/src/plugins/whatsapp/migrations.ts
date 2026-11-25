@@ -168,4 +168,20 @@ export const migrations: PluginMigration[] = [
       ALTER TABLE {{p}}contacts ADD COLUMN synced_at TIMESTAMPTZ;
     `,
   },
+  {
+    // 3.3.0: deleted and edited messages keep what Floq had. orig_body: the text before the first edit; message_edits: every edit (also one that
+    // arrived before its message), the newest is the body. deleted_by: "me" | "sender" | "admin:<id>" | "" (unknown). lost: a row Floq made for a
+    // message deleted before its content arrived (filled in when the content comes after all). Empty protocol rows of older versions go.
+    id: "008_edits_revokes",
+    sql: `
+      ALTER TABLE {{p}}messages ADD COLUMN orig_body TEXT;
+      ALTER TABLE {{p}}messages ADD COLUMN deleted_by TEXT NOT NULL DEFAULT '';
+      ALTER TABLE {{p}}messages ADD COLUMN lost BOOLEAN NOT NULL DEFAULT FALSE;
+      CREATE TABLE {{p}}message_edits (
+        user_id TEXT NOT NULL, session TEXT NOT NULL, stanza TEXT NOT NULL, edit_id TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (user_id, session, stanza, edit_id)
+      );
+      DELETE FROM {{p}}messages WHERE type = 'system' AND body = '' AND has_media = FALSE;
+    `,
+  },
 ];

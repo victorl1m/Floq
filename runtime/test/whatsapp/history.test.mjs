@@ -570,3 +570,35 @@ test("a message Postgres would refuse (an emoji cut in half, a NUL) is cleaned a
   const page = await h.messages(ANA);
   assert.ok(page.every((m) => m.body.isWellFormed() && !m.body.includes("\u0000")));
 });
+
+test("imported history: deletes and edits listed before their messages end right, revoke stubs show as deleted, stickers come in as stickers", async () => {
+  const k = (id, extra) => ({ id: `false_${ANA}_${id}`, from: ANA, fromMe: false, hasMedia: false, body: "", ...extra });
+  // Newest first, as WAHA lists them: the delete and the edit come before the messages they act on.
+  const list = [
+    k("H6", { timestamp: 1690000600, _data: { key: { id: "H6" }, messageStubType: 1 } }),
+    k("P2", { timestamp: 1690000500, _data: { key: { id: "P2" }, message: { protocolMessage: { key: { id: "H1", remoteJid: ANA, fromMe: false } } } } }),
+    k("P1", { timestamp: 1690000400, _data: { key: { id: "P1" }, message: { editedMessage: { message: { protocolMessage: { key: { id: "H2" }, type: 14, editedMessage: { conversation: "final" }, timestampMs: "1690000400000" } } } } } }),
+    k("H3", { timestamp: 1690000300, hasMedia: true, media: null, _data: { key: { id: "H3" }, message: { stickerMessage: { mimetype: "image/webp", isAnimated: true, width: 512, height: 512 } } } }),
+    k("H2", { timestamp: 1690000200, body: "draft" }),
+    k("H1", { timestamp: 1690000100, body: "gone soon" }),
+  ];
+  const w = { sessions: { default: linked() }, store: { default: { chats: [{ id: ANA, name: "Ana Lima" }], messages: { [ANA]: list }, contacts: [] } } };
+  const h = await start(w);
+  await h.post("/history/start");
+  const s = await settled(h);
+  assert.equal(s.state, "done");
+  const log = await h.messages(ANA);
+  assert.deepEqual(log.map((m) => [m.id.split("_")[2], m.type, m.body, m.deleted, m.edited]), [
+    ["H1", "deleted", "", true, false], ["H2", "chat", "final", false, true], ["H3", "sticker", "", false, false], ["H6", "deleted", "", true, false],
+  ]);
+  assert.equal(log[0].original.body, "gone soon");
+  assert.equal(log[3].original, null);
+  assert.equal(log[2].media.animated, true);
+  assert.deepEqual((await h.get("/message-info", { id: log[1].id })).versions.map((v) => v.body), ["draft", "final"]);
+  const c = (await h.chats()).find((x) => x.chatId === ANA);
+  assert.deepEqual([c.total, c.unread, c.lastDeleted], [4, 0, true]);
+  // Importing again changes nothing.
+  await h.post("/history/start");
+  await settled(h);
+  assert.deepEqual((await h.messages(ANA)).map((m) => [m.body, m.deleted]), log.map((m) => [m.body, m.deleted]));
+});

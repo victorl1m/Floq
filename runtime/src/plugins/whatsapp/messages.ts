@@ -3,7 +3,7 @@ import { pgJson } from "./pgsafe.js";
 import type { Core, WebhookEvent } from "./core.js";
 import { notifierOf } from "./notify.js";
 import type { Identity } from "./identity.js";
-import { digitsOf, displayDigits, isGroup, isUser, kindOf, lidOf, normId, pnOf, stanzaOf } from "./ids.js";
+import { CHAT_ID, digitsOf, displayDigits, isGroup, isUser, kindOf, lidOf, normId, pnOf, stanzaOf } from "./ids.js";
 import { MESSAGE_EVENTS, parseMessage, rec, type MediaMeta, type MessageExtra, type Parsed } from "./parse.js";
 import { formatPhone } from "./shared/phone.js";
 import { ackOf, applyAck } from "./acks.js";
@@ -34,7 +34,23 @@ export interface Store {
   syncChats(userId: string, force?: boolean): Promise<boolean>;
   syncChat(userId: string, chatId: string, force?: boolean): Promise<boolean>;
   setState(userId: string, chatId: string, patch: Record<string, unknown>): Promise<void>;
+  /**
+   * Records an edit of a message (from WhatsApp or made here). Every edit is kept; the newest by time is the message's text, the first text stays in
+   * orig_body. An edit whose message is not stored yet waits and is applied when the message arrives. A repeat (same id, or same text within two
+   * minutes: Floq's own edit coming back from WAHA) is not a new version. True when the stored text changed.
+   */
+  edit(userId: string, op: EditOp): Promise<boolean>;
+  /**
+   * Marks a message deleted for everyone, keeping everything Floq has of it. A message Floq does not have yet gets a row of its own ("lost") so the
+   * chat shows the deletion; its content fills in if it comes later. Never calls WhatsApp. True when the message was not deleted before.
+   */
+  revoke(userId: string, op: RevokeOp): Promise<boolean>;
+  /** Every text a message had, oldest first (the original, then each edit), with when it was written. Empty when Floq never saw an edit's text. */
+  versions(userId: string, row: Record<string, unknown>): Promise<Array<{ body: string; at: string }>>;
 }
+export interface EditOp { stanza: string; editId: string; body: string; at: Date; quiet?: boolean }
+/** revoker: "me", the id of who deleted it, or "" when unknown. targetFromMe / targetSender: who sent the deleted message, when known. */
+export interface RevokeOp { stanza: string; chatId?: string; targetFromMe: boolean | null; targetSender: string; revoker: string; at: Date; history?: boolean; quiet?: boolean }
 
 const iso = (v: unknown) => new Date(v as string).toISOString();
 
@@ -55,7 +71,9 @@ export function createStore(core: Core, identity: Identity): Store {
     // Keep the total bounded: drop the oldest message media.
     const total = Number((await q(`SELECT COALESCE(SUM(size),0)::bigint AS n FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key LIKE 'm:%'`, [userId])).rows[0]?.n ?? 0);
     if (total > MEDIA_TOTAL_BYTES) {
-      await q(`DELETE FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key IN (SELECT key FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key LIKE 'm:%' ORDER BY created_at ASC LIMIT 20)`, [userId]);
+      await q(`DELETE FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key IN (SELECT b.key FROM {{p}}media_blobs b WHERE b.user_id = $1 AND b.session = $S AND b.key LIKE 'm:%'
+        -- the file of a deleted message is what the user can still recover: it goes last
+        ORDER BY EXISTS (SELECT 1 FROM {{p}}messages d WHERE d.user_id = $1 AND d.session = $S AND d.deleted_at IS NOT NULL AND 'm:' || d.stanza = b.key), b.created_at ASC LIMIT 20)`, [userId]);
     }
   }
 
@@ -85,6 +103,16 @@ export function createStore(core: Core, identity: Identity): Store {
         if (m.reaction?.target) await react(userId, m.reaction.target, m.fromMe ? "me" : m.sender, m.reaction.emoji, m.sentAt);
         return "skipped";
       }
+      // A delete or an edit is applied to its message; the protocol message itself is never a row (nor unread, nor the chat's preview).
+      if (m.protocol) {
+        const op = m.protocol, quiet = opts.history === true;
+        if (op.kind === "revoke" && op.target) {
+          await store.revoke(userId, { stanza: op.target, chatId: m.chatId, targetFromMe: op.targetFromMe, targetSender: op.targetSender, revoker: m.fromMe ? "me" : m.sender, at: op.at ?? m.sentAt, history: opts.history, quiet });
+        } else if (op.kind === "edit" && op.target) {
+          await store.edit(userId, { stanza: op.target, editId: m.stanza || "t:" + (op.at ?? m.sentAt).getTime(), body: op.body, at: op.at ?? m.sentAt, quiet });
+        }
+        return "skipped";
+      }
       // The same message can arrive under the contact's lid and under its phone id: that proves both are one chat.
       if (m.stanza && isUser(m.chatId)) {
         const twin = (await q(`SELECT chat_id, msg_id FROM {{p}}messages WHERE user_id = $1 AND session = $S AND stanza = $2 AND msg_id <> $3 AND from_me = $4 LIMIT 1`, [userId, m.stanza, m.msgId, m.fromMe])).rows[0];
@@ -99,6 +127,11 @@ export function createStore(core: Core, identity: Identity): Store {
         const twin = (await q(`SELECT msg_id FROM {{p}}messages WHERE user_id = $1 AND session = $S AND chat_id = $2 AND stanza = $3 AND msg_id <> $4 AND from_me = $5 LIMIT 1`, [userId, m.chatId, m.stanza, m.msgId, m.fromMe])).rows[0];
         if (twin) m = { ...m, msgId: String(twin.msg_id) };
       }
+      // A row Floq made for a message deleted before it arrived: the message, now here, fills it in (whatever spelling its id has).
+      if (m.stanza && !m.revoked) {
+        const lostRow = (await q(`SELECT msg_id FROM {{p}}messages WHERE user_id = $1 AND session = $S AND stanza = $2 AND lost AND chat_id = ANY($3::text[]) LIMIT 1`, [userId, m.stanza, await identity.aliases(userId, m.chatId)])).rows[0];
+        if (lostRow) m = { ...m, msgId: String(lostRow.msg_id) };
+      }
       // A message we sent through the API and recorded without an id comes back on the webhook with its real id: adopt it instead of showing it twice.
       if (m.fromMe) {
         const ids = await identity.aliases(userId, m.chatId);
@@ -111,13 +144,26 @@ export function createStore(core: Core, identity: Identity): Store {
       }
       const r = m.reply;
       const ins = await q(
-        `INSERT INTO {{p}}messages (user_id, session, chat_id, msg_id, stanza, from_me, sender, sender_name, body, has_media, sent_at, reply_to, reply_body, reply_sender, reply_media, type, media, extra, ack, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19, CASE WHEN $20::boolean THEN $11::timestamptz ELSE now() END)
+        `INSERT INTO {{p}}messages (user_id, session, chat_id, msg_id, stanza, from_me, sender, sender_name, body, has_media, sent_at, reply_to, reply_body, reply_sender, reply_media, type, media, extra, ack, created_at, deleted_at, lost, edited_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19, CASE WHEN $20::boolean THEN $11::timestamptz ELSE now() END,
+                 CASE WHEN $21::boolean THEN $11::timestamptz END, $21::boolean, $22::timestamptz)
          ON CONFLICT (session, msg_id) DO NOTHING RETURNING id`,
         [userId, m.session, m.chatId, m.msgId, m.stanza, m.fromMe, m.sender, m.senderName, m.body, m.hasMedia, m.sentAt.toISOString(), r?.id ?? "", r?.body ?? "", r?.sender ?? "", r?.hasMedia ?? false,
-          m.type, m.media ? pgJson(m.media) : null, Object.keys(m.extra).length ? pgJson(m.extra) : null, m.ack, opts.history === true]);
+          m.type, m.media ? pgJson(m.media) : null, Object.keys(m.extra).length ? pgJson(m.extra) : null, m.ack, opts.history === true, m.revoked === true, m.editedAt ? m.editedAt.toISOString() : null]);
       const fresh = ins.rows.length > 0;
-      if (!fresh) {
+      let filled = false;
+      if (!fresh && m.revoked) {
+        // Deleted since Floq stored it: what Floq has stays (that is what the user can recover).
+        await q(`UPDATE {{p}}messages SET deleted_at = COALESCE(deleted_at, GREATEST(sent_at, $3::timestamptz)) WHERE session = $1 AND msg_id = $2`, [m.session, m.msgId, m.sentAt.toISOString()]);
+      } else if (!fresh) {
+        const r2 = m.reply;
+        filled = (await q(
+          `UPDATE {{p}}messages SET body = $3, type = $4, media = $5::jsonb, extra = $6::jsonb, has_media = $7, sender = $8, sender_name = $9, sent_at = $10, from_me = $11,
+             reply_to = $12, reply_body = $13, reply_sender = $14, reply_media = $15, lost = FALSE WHERE session = $1 AND msg_id = $2 AND lost RETURNING id`,
+          [m.session, m.msgId, m.body, m.type, m.media ? pgJson(m.media) : null, Object.keys(m.extra).length ? pgJson(m.extra) : null, m.hasMedia, m.sender, m.senderName, m.sentAt.toISOString(), m.fromMe,
+            r2?.id ?? "", r2?.body ?? "", r2?.sender ?? "", r2?.hasMedia ?? false])).rows.length > 0;
+      }
+      if (!fresh && !filled) {
         // Seen before (history sync, or an event repeated): acks only go up, details fill in.
         await q(
           `UPDATE {{p}}messages SET ack = GREATEST(ack, $3), type = CASE WHEN type IN ('chat','unknown') AND $4 <> 'unknown' THEN $4 ELSE type END,
@@ -128,6 +174,10 @@ export function createStore(core: Core, identity: Identity): Store {
       }
       if (!m.fromMe && !isGroup(m.chatId) && (m.senderName || m.senderPhone)) await identity.upsertContact(userId, m.chatId, { pushName: m.senderName, phone: m.senderPhone });
       if (!m.fromMe && isGroup(m.chatId) && m.senderName && isUser(m.sender)) await identity.upsertContact(userId, m.sender, { pushName: m.senderName });
+      if (!fresh && m.editedAt) await q(`UPDATE {{p}}messages SET edited_at = COALESCE(edited_at, $3::timestamptz) WHERE session = $1 AND msg_id = $2`, [m.session, m.msgId, m.editedAt.toISOString()]);
+      // Edits that came before the message (an import, webhooks out of order) apply now.
+      if ((fresh || filled) && m.stanza && !m.revoked) await applyEdits(userId, m.stanza);
+      if (filled && opts.history !== true) await touched(userId, m.stanza, "deleted");
       cacheMedia(userId, m.stanza, m.media);
       return fresh ? "new" : "known";
     },
@@ -189,7 +239,7 @@ export function createStore(core: Core, identity: Identity): Store {
            FROM (
            SELECT m.* FROM {{p}}messages m LEFT JOIN {{p}}chat_state st ON st.user_id = $1 AND st.session = $S AND st.chat_id = $5
             WHERE m.user_id = $1 AND m.session = $S AND m.chat_id = ANY($2::text[]) AND (st.cleared_at IS NULL OR m.sent_at > st.cleared_at)
-              AND ($4::timestamptz IS NULL OR m.sent_at < $4::timestamptz) AND ($6::text IS NULL OR m.body ILIKE $6)
+              AND ($4::timestamptz IS NULL OR m.sent_at < $4::timestamptz) AND ($6::text IS NULL OR (m.body ILIKE $6 AND m.deleted_at IS NULL))
             ORDER BY m.sent_at DESC, m.id DESC LIMIT $3) t
            LEFT JOIN {{p}}lid_map sm ON sm.user_id = $1 AND sm.session = $S AND sm.lid = t.sender
            LEFT JOIN {{p}}lid_map rm ON rm.user_id = $1 AND rm.session = $S AND rm.lid = t.reply_sender
@@ -198,6 +248,12 @@ export function createStore(core: Core, identity: Identity): Store {
       const more = r.rows.length > n;
       const page = more ? r.rows.slice(1) : r.rows;
       const rows = page.map((x) => shape(x));
+      // "Deleted by admin <name>": the names of the admins who deleted messages on this page.
+      const admins = [...new Set(page.map((x) => String(x.deleted_by ?? "")).filter((b) => b.startsWith("admin:")).map((b) => b.slice(6)))];
+      if (admins.length) {
+        const names = new Map((await q(`SELECT chat_id, COALESCE(NULLIF(name, ''), push_name, '') AS n FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = ANY($2::text[])`, [userId, admins])).rows.map((k) => [String(k.chat_id), String(k.n ?? "")]));
+        rows.forEach((m, i) => { const b = String(page[i].deleted_by ?? ""); if (b.startsWith("admin:")) { const id = b.slice(6); (m as Record<string, unknown>).deletedByName = names.get(id) || (digitsOf(id) ? formatPhone(displayDigits(digitsOf(id)!)) : ""); } });
+      }
       // A quote points at the original when it is on this page (so the UI can jump to it); otherwise it shows what the reply itself carried.
       const byStanza = new Map(rows.map((m) => [stanzaOf(m.id), m]));
       const messages = rows.map((m, i) => {
@@ -249,6 +305,8 @@ export function createStore(core: Core, identity: Identity): Store {
       const filename = String(media.filename ?? "");
       const hit = (await q(`SELECT mime, bytes FROM {{p}}media_blobs WHERE user_id = $1 AND session = $S AND key = $2`, [userId, "m:" + stanza])).rows[0];
       if (hit) return { mime: String(hit.mime || media.mime || "application/octet-stream"), filename, bytes: hit.bytes as Uint8Array };
+      // A deleted message's file is only what Floq kept: nothing is asked of WhatsApp for it.
+      if (x.deleted_at) throw ctx.httpError(404, "media_not_kept", "Floq did not keep this file before the message was deleted.");
       const key = userId + "\n" + String(x.id);
       const running = fetching.get(key);
       if (running) return running;
@@ -357,7 +415,78 @@ export function createStore(core: Core, identity: Identity): Store {
         `INSERT INTO {{p}}chat_state (user_id, session, chat_id, ${cols.join(", ")}) VALUES ($1,$S,$2,${cols.map((k, i) => `$${i + 3}${k === "labels" ? "::jsonb" : ""}`).join(", ")})
          ON CONFLICT (user_id, session, chat_id) DO UPDATE SET ${cols.map((k) => `${k} = EXCLUDED.${k}`).join(", ")}, updated_at = now()`, [userId, chatId, ...vals]);
     },
+
+    async edit(userId, op) {
+      if (!op.stanza) return false;
+      const body = op.body.slice(0, 8000), at = op.at.toISOString();
+      const dup = (await q(
+        `SELECT 1 AS x FROM {{p}}message_edits WHERE user_id = $1 AND session = $S AND stanza = $2
+           AND (edit_id = $3 OR (body = $4 AND at BETWEEN $5::timestamptz - interval '2 minutes' AND $5::timestamptz + interval '2 minutes')) LIMIT 1`,
+        [userId, op.stanza, op.editId.slice(0, 200), body, at])).rows.length > 0;
+      if (!dup) await q(`INSERT INTO {{p}}message_edits (user_id, session, stanza, edit_id, body, at) VALUES ($1,$S,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [userId, op.stanza, op.editId.slice(0, 200), body, at]);
+      const changed = await applyEdits(userId, op.stanza);
+      if (changed && !op.quiet) await touched(userId, op.stanza, "edited");
+      return changed;
+    },
+
+    async revoke(userId, op) {
+      if (!op.stanza) return false;
+      const at = op.at.toISOString();
+      const rows = (await q(`SELECT id, chat_id, from_me, sender, deleted_at FROM {{p}}messages WHERE user_id = $1 AND session = $S AND stanza = $2`, [userId, op.stanza])).rows;
+      /** "admin:<id>" when someone deleted another person's message in a group. */
+      const byOf = async (chatId: string, origFromMe: boolean, origSender: string) => {
+        if (op.revoker === "me") return "me";
+        if (!op.revoker || !isGroup(chatId)) return "sender";
+        const rev = await identity.canonical(userId, op.revoker);
+        if (origFromMe) return "admin:" + rev;
+        if (!origSender) return "sender";
+        return (await identity.canonical(userId, origSender)) === rev ? "sender" : "admin:" + rev;
+      };
+      if (rows.length) {
+        const x = rows[0], fresh = rows.some((r) => !r.deleted_at);
+        const by = await byOf(String(x.chat_id), x.from_me === true, String(x.sender ?? ""));
+        await q(`UPDATE {{p}}messages SET deleted_at = COALESCE(deleted_at, $3::timestamptz), deleted_by = CASE WHEN deleted_by = '' THEN $4 ELSE deleted_by END WHERE user_id = $1 AND session = $S AND stanza = $2`, [userId, op.stanza, at, by]);
+        if (!fresh || op.quiet) return fresh;
+        // The island card of an incoming message that is now deleted goes away (when it is the chat's newest one: that is what the card shows).
+        if (x.from_me !== true) {
+          const newest = (await q(`SELECT stanza FROM {{p}}messages WHERE user_id = $1 AND session = $S AND chat_id = $2 AND from_me = FALSE ORDER BY sent_at DESC, id DESC LIMIT 1`, [userId, x.chat_id])).rows[0];
+          if (newest && String(newest.stanza) === op.stanza) notifierOf(core, identity).read(userId, await identity.canonical(userId, String(x.chat_id)));
+        }
+        await touched(userId, op.stanza, "deleted");
+        return true;
+      }
+      const chatId = op.chatId ?? "";
+      if (!chatId || !CHAT_ID.test(chatId) || chatId === "status@broadcast") return false;
+      const fromMe = op.targetFromMe ?? op.revoker === "me";
+      const sender = fromMe ? "me" : op.targetSender || (isGroup(chatId) ? (op.revoker !== "me" ? op.revoker : "") : chatId);
+      const by = await byOf(chatId, fromMe, sender);
+      const msgId = `${fromMe}_${chatId}_${op.stanza}` + (isGroup(chatId) && !fromMe && sender ? "_" + sender : "");
+      const ins = await q(
+        `INSERT INTO {{p}}messages (user_id, session, chat_id, msg_id, stanza, from_me, sender, body, sent_at, type, ack, deleted_at, deleted_by, lost, created_at)
+         VALUES ($1,$S,$2,$3,$4,$5,$6,'',$7,'chat',$8,$7,$9,TRUE, CASE WHEN $10::boolean THEN $7::timestamptz ELSE now() END) ON CONFLICT (session, msg_id) DO NOTHING RETURNING id`,
+        [userId, chatId, msgId.slice(0, 200), op.stanza, fromMe, sender, at, fromMe ? 1 : 0, by, op.history === true]);
+      if (ins.rows.length && !op.quiet) await touched(userId, op.stanza, "deleted");
+      return ins.rows.length > 0;
+    },
+
+    async versions(userId, x) {
+      const stanza = String(x.stanza ?? "");
+      if (!stanza || x.orig_body === null || x.orig_body === undefined) return [];
+      const edits = (await q(`SELECT body, at FROM {{p}}message_edits WHERE user_id = $1 AND session = $S AND stanza = $2 ORDER BY at ASC, edit_id ASC`, [userId, stanza])).rows;
+      const out: Array<{ body: string; at: string }> = [{ body: String(x.orig_body), at: iso(x.sent_at) }];
+      for (const e of edits) { const body = String(e.body ?? ""); if (body !== out[out.length - 1].body) out.push({ body, at: iso(e.at) }); }
+      return out.length > 1 ? out : [];
+    },
   };
+
+  /** Makes the newest recorded edit the message's text (the first text is kept in orig_body). True when the row changed. */
+  async function applyEdits(userId: string, stanza: string): Promise<boolean> {
+    const r = await q(
+      `UPDATE {{p}}messages m SET orig_body = COALESCE(m.orig_body, m.body), body = e.body, edited_at = e.at
+         FROM (SELECT body, at FROM {{p}}message_edits WHERE user_id = $1 AND session = $S AND stanza = $2 ORDER BY at DESC, edit_id DESC LIMIT 1) e
+        WHERE m.user_id = $1 AND m.session = $S AND m.stanza = $2 AND m.lost = FALSE AND (m.body <> e.body OR m.edited_at IS DISTINCT FROM e.at) RETURNING m.id`, [userId, stanza]);
+    return r.rows.length > 0;
+  }
 
   /** One stored row as the UI and agents see it. Never carries a WAHA URL. */
   function shape(x: Record<string, unknown>) {
@@ -378,11 +507,22 @@ export function createStore(core: Core, identity: Identity): Store {
         voted: votes.some((v) => v.voter === "me" && Array.isArray(v.options) && (v.options as unknown[]).includes(name)) })) };
     }
     const sender = String(x.sender_c ?? x.sender ?? "");
+    const by = String(x.deleted_by ?? "");
+    const deletedAt = deleted && new Date(x.deleted_at as string).getTime() > new Date(x.sent_at as string).getTime() ? iso(x.deleted_at) : null;
+    // What a deleted message was, as Floq had it (the user can reveal it); null when Floq never had its content.
+    const original = deleted && x.lost !== true ? {
+      type: String(x.type ?? "chat"), body: String(x.body ?? ""), hasMedia: x.has_media === true,
+      media: media ? { mime: media.mime, filename: media.filename, size: media.size ?? null, duration: media.duration ?? null, width: media.width ?? null, height: media.height ?? null, gif: media.gif === true, ...(media.animated ? { animated: true } : {}), ...(media.lottie ? { lottie: true } : {}), available: x.cached === true } : null,
+      ...(extra.location ? { location: extra.location } : {}), ...(extra.vcards ? { vcards: extra.vcards.map((v) => ({ name: v.name, phones: v.phones, formatted: v.phones.map((p) => formatPhone(p)) })) } : {}),
+      ...(extra.poll ? { poll: { name: extra.poll.name, multiple: extra.poll.multiple, voters: 0, options: extra.poll.options.map((name) => ({ name, votes: 0, voted: false })) } } : {}),
+      ...(extra.preview ? { preview: extra.preview } : {}), ...(extra.mentions ? { mentions: extra.mentions } : {}), forwarded: extra.forwarded === true, edited: Boolean(x.edited_at),
+    } : null;
     return {
       id: String(x.msg_id), fromMe: x.from_me === true, sender, senderName: String(x.sender_label ?? x.sender_name ?? ""),
       body: deleted ? "" : String(x.body ?? ""), type: deleted ? "deleted" : String(x.type ?? "chat"), hasMedia: !deleted && x.has_media === true, sentAt: iso(x.sent_at),
-      ack: Number(x.ack) || 0, edited: Boolean(x.edited_at), deleted, starred: x.starred === true, pinned: x.pinned === true, forwarded: extra.forwarded === true,
-      media: media && !deleted ? { mime: media.mime, filename: media.filename, size: media.size ?? null, duration: media.duration ?? null, width: media.width ?? null, height: media.height ?? null, gif: media.gif === true, available: x.cached === true || (extra as { mediaGone?: boolean }).mediaGone !== true } : null,
+      ack: Number(x.ack) || 0, edited: Boolean(x.edited_at) && !deleted, editedAt: x.edited_at && !deleted ? iso(x.edited_at) : null, deleted, starred: x.starred === true, pinned: x.pinned === true, forwarded: extra.forwarded === true,
+      ...(deleted ? { deletedAt, deletedBy: by === "me" ? "me" : by.startsWith("admin:") ? "admin" : by === "sender" ? "sender" : null, original } : {}),
+      media: media && !deleted ? { mime: media.mime, filename: media.filename, size: media.size ?? null, duration: media.duration ?? null, width: media.width ?? null, height: media.height ?? null, gif: media.gif === true, ...(media.animated ? { animated: true } : {}), ...(media.lottie ? { lottie: true } : {}), available: x.cached === true || (extra as { mediaGone?: boolean }).mediaGone !== true } : null,
       ...(extra.location && !deleted ? { location: extra.location } : {}), ...(extra.vcards && !deleted ? { vcards: extra.vcards.map((v) => ({ name: v.name, phones: v.phones, formatted: v.phones.map((p) => formatPhone(p)) })) } : {}),
       ...(poll ? { poll } : {}), ...(extra.preview && !deleted ? { preview: extra.preview } : {}), ...(extra.mentions ? { mentions: extra.mentions } : {}), ...(extra.call ? { call: extra.call } : {}),
       reactions: [...reactions.values()],
@@ -407,9 +547,9 @@ export function createStore(core: Core, identity: Identity): Store {
     if (!m || m.chatId === "status@broadcast" || m.chatId.endsWith("@newsletter") || m.chatId.endsWith("@broadcast")) return;
     const res = await store.save(userId, m);
     const chatId = await identity.canonical(userId, m.chatId);
-    if (res === "skipped") { core.publish(userId, "message", { chatId, reaction: true }); return; }
+    if (res === "skipped") { if (!m.protocol) core.publish(userId, "message", { chatId, reaction: true }); return; }
     if (res !== "new") return;
-    if (m.fromMe) { core.publish(userId, "message", { chatId, fromMe: true }); return; }
+    if (m.fromMe || m.revoked) { core.publish(userId, "message", { chatId, fromMe: true }); return; }
     if (m.type === "system") return;
     core.publish(userId, "message", { chatId, fromMe: false, preview: m.body.slice(0, 120) });
     const st = (await q(`SELECT muted_until, archived FROM {{p}}chat_state WHERE user_id = $1 AND session = $S AND chat_id = $2`, [userId, chatId])).rows[0];
@@ -437,17 +577,34 @@ export function createStore(core: Core, identity: Identity): Store {
     await react(userId, stanza, sender, typeof r.text === "string" ? r.text : "", new Date(Number.isFinite(secs) && secs > 0 ? secs * (secs < 1e12 ? 1000 : 1) : Date.now()));
     await touched(userId, stanza, "reaction");
   });
+  // payload: { id: the edit's own id, editedMessageId: the edited message (no chat), body: the new text, _data } (every engine). message.any
+  // brings the same edit as a protocol message: both end as one version.
   core.on("message.edited", async (userId, e) => {
-    const p = e.payload, stanza = stanzaOf(p.editedMessageId ?? rec(p._data).editedMessageId ?? p.id);
-    if (!stanza || typeof p.body !== "string") return;
-    const r = await q(`UPDATE {{p}}messages SET body = $3, edited_at = now() WHERE user_id = $1 AND session = $S AND stanza = $2 RETURNING id`, [userId, stanza, p.body.slice(0, 8000)]);
-    if (r.rows.length) await touched(userId, stanza, "edited");
+    const p = e.payload, d = rec(p._data);
+    const m = parseMessage(p, e.session, e.me), op = m?.protocol?.kind === "edit" ? m.protocol : null;
+    const target = stanzaOf(p.editedMessageId ?? d.editedMessageId ?? op?.target ?? "");
+    const body = typeof p.body === "string" ? p.body : op ? op.body : null;
+    if (!target || body === null) return;
+    const secs = Number(p.timestamp);
+    const at = op?.at ?? (Number.isFinite(secs) && secs > 0 ? new Date(secs * (secs < 1e12 ? 1000 : 1)) : new Date());
+    let editId = m?.stanza ?? stanzaOf(p.id ?? "");
+    if (!editId || editId === target) editId = "t:" + at.getTime();
+    await store.edit(userId, { stanza: target, editId, body, at });
   });
+  // payload: { revokedMessageId, after: the revoke (a protocol message), before: the message as it was (WEBJS) or null }.
   core.on("message.revoked", async (userId, e) => {
-    const p = e.payload, stanza = stanzaOf(p.revokedMessageId ?? rec(p.before).id ?? rec(p.after).id);
-    if (!stanza) return;
-    const r = await q(`UPDATE {{p}}messages SET deleted_at = now() WHERE user_id = $1 AND session = $S AND stanza = $2 AND deleted_at IS NULL RETURNING id`, [userId, stanza]);
-    if (r.rows.length) await touched(userId, stanza, "deleted");
+    const p = e.payload, after = rec(p.after), before = rec(p.before);
+    const a = Object.keys(after).length ? parseMessage(after, e.session, e.me) : null;
+    const op = a?.protocol?.kind === "revoke" ? a.protocol : null;
+    const target = stanzaOf(p.revokedMessageId ?? op?.target ?? before.id ?? "");
+    if (!target) return;
+    // The message as it was, when the engine hands it over: kept, so it can be recovered even if Floq never stored it.
+    const b = Object.keys(before).length ? parseMessage(before, e.session, e.me) : null;
+    if (b && b.stanza === target && !b.protocol && (b.body || b.hasMedia)) await store.save(userId, b, { real: false });
+    await store.revoke(userId, {
+      stanza: target, chatId: a?.chatId ?? b?.chatId, targetFromMe: op?.targetFromMe ?? b?.fromMe ?? null, targetSender: op?.targetSender || (b && !b.fromMe ? b.sender : ""),
+      revoker: a ? (a.fromMe ? "me" : a.sender) : b?.fromMe ? "me" : "", at: op?.at ?? a?.sentAt ?? new Date(),
+    });
   });
   core.on("poll.vote", async (userId, e) => {
     const p = e.payload, vote = rec(p.vote), stanza = stanzaOf(rec(p.poll).id);

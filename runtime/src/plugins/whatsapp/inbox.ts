@@ -179,7 +179,8 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     const o = b(body), text = core.text(o.text), { x, path } = await msg(userId, o.messageId);
     if (x.from_me !== true) throw ctx.httpError(400, "not_yours", "Only your own messages can be edited.");
     await core.guard(() => core.waha(userId, "PUT", path, { body: { text } }), "edit");
-    await q(`UPDATE {{p}}messages SET body = $2, edited_at = now() WHERE id = $1`, [x.id, text]);
+    // A version of its own, like an edit made on the phone (WAHA's echo of it is recognised and not counted twice).
+    await store.edit(userId, { stanza: String(x.stanza ?? ""), editId: "floq:" + Date.now(), body: text, at: new Date(), quiet: true });
     await changed(userId, x.chat_id);
     return { ok: true };
   });
@@ -189,7 +190,8 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     if (o.forEveryone === true) {
       if (x.from_me !== true && !isGroup(String(x.chat_id))) throw ctx.httpError(400, "not_yours", "Only your own messages can be deleted for everyone.");
       await core.guard(() => core.waha(userId, "DELETE", path), "delete");
-      await q(`UPDATE {{p}}messages SET deleted_at = now() WHERE id = $1`, [x.id]);
+      // Kept as it was (the user can still see what it said), marked deleted by you.
+      await q(`UPDATE {{p}}messages SET deleted_at = COALESCE(deleted_at, now()), deleted_by = 'me' WHERE id = $1`, [x.id]);
     } else {
       // "Delete for me": gone from this inbox only.
       await q(`DELETE FROM {{p}}messages WHERE id = $1`, [x.id]);
@@ -234,8 +236,13 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     const ack = Number.isFinite(Number(live.ack)) ? Math.max(Number(x.ack) || 0, Math.trunc(Number(live.ack))) : Number(x.ack) || 0;
     if (ack !== Number(x.ack)) await q(`UPDATE {{p}}messages SET ack = $2 WHERE id = $1`, [x.id, Math.min(4, ack)]);
     const reactions = (await q(`SELECT r.emoji, COALESCE(lm.pn, r.sender) AS sender, r.at, COALESCE(NULLIF(c.name,''), c.push_name, '') AS name FROM {{p}}reactions r LEFT JOIN {{p}}lid_map lm ON lm.user_id = $1 AND lm.session = $S AND lm.lid = r.sender LEFT JOIN {{p}}contacts c ON c.user_id = $1 AND c.session = $S AND c.chat_id = COALESCE(lm.pn, r.sender) WHERE r.user_id = $1 AND r.session = $S AND r.stanza = $2 ORDER BY r.at`, [userId, x.stanza])).rows;
+    const deleted = Boolean(x.deleted_at), by = String(x.deleted_by ?? "");
+    const versions = await store.versions(userId, x);
     return { id: x.msg_id, fromMe: x.from_me === true, sentAt: new Date(x.sent_at as string).toISOString(), ack: Math.min(4, ack), edited: Boolean(x.edited_at), starred: x.starred === true, pinned: x.pinned === true, type: x.type,
-      reactions: reactions.map((r) => ({ emoji: r.emoji, fromMe: r.sender === "me", name: String(r.name ?? ""), phone: digitsOf(String(r.sender)), at: new Date(r.at as string).toISOString() })) };
+      reactions: reactions.map((r) => ({ emoji: r.emoji, fromMe: r.sender === "me", name: String(r.name ?? ""), phone: digitsOf(String(r.sender)), at: new Date(r.at as string).toISOString() })),
+      editedAt: x.edited_at ? new Date(x.edited_at as string).toISOString() : null, versions,
+      deleted, ...(deleted ? { deletedAt: new Date(x.deleted_at as string).getTime() > new Date(x.sent_at as string).getTime() ? new Date(x.deleted_at as string).toISOString() : null,
+        deletedBy: by === "me" ? "me" : by.startsWith("admin:") ? "admin" : by === "sender" ? "sender" : null, lost: x.lost === true } : {}) };
   });
   R.get("/media", async ({ userId, query }) => {
     await core.owner(userId);
