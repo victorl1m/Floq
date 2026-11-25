@@ -96,7 +96,7 @@ test("T-12 settings validation: each kind once, unknown kinds and ladder ids rej
   assert.deepEqual(readUsageFallback(null), ok);
   assert.deepEqual(readUsageFallback({ nonsense: 1 }), ok);
   assert.equal(ok.steps.find((s) => s.kind === "model")!.enabled, true, "defaults: model downgrade on");
-  assert.equal(ok.steps.filter((s) => s.enabled).length, 1, "defaults: the other two steps off");
+  assert.equal(ok.steps.filter((s) => s.enabled).length, 2, "defaults: model downgrade and the other Claude accounts on, Codex off");
   assert.equal(ok.swapBack, true);
 });
 
@@ -482,8 +482,8 @@ function fakeAccounts(opts: { active?: string; since?: number | null; usage?: Re
 const accountChain = () => { const c = defaultUsageFallback(); c.steps = [c.steps[1]!, c.steps[0]!, c.steps[2]!]; c.steps[0]!.enabled = true; return c; };
 const okUsage = { acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 10 }, { id: "seven_day", usedPercent: 30 }], primary: [{ id: "five_hour", usedPercent: 100 }] };
 
-test("T-3 accountUsable: unknown usage or a full account-wide/blocked window is not usable", () => {
-  assert.equal(accountUsable(null, "five_hour"), false);
+test("T-3 accountUsable: unknown usage is tried; a full account-wide/blocked window is not usable", () => {
+  assert.equal(accountUsable(null, "five_hour"), true, "unknown usage (usage endpoint rate-limited) must not keep a free reserve idle");
   assert.equal(accountUsable([{ id: "five_hour", usedPercent: 99 } as never], "five_hour"), false, "99 % is exhausted in practice");
   assert.equal(accountUsable([{ id: "five_hour", usedPercent: 90 } as never], "five_hour"), true);
   assert.equal(accountUsable([{ id: "five_hour", usedPercent: 10 }, { id: "extra_usage", usedPercent: 100 }] as never, "spend_limit", "spend"), false, "an exhausted spend cap blocks despite plan room");
@@ -508,8 +508,8 @@ test("T-4 account step: a 5 h block switches the account, restarts the agent wit
   h.svc.stop();
 });
 
-test("T-4 account step: skipped when the reserve account is also full or its usage is unknown; the agent parks", async () => {
-  for (const usage of [{ acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 100 }] }, {}]) {
+test("T-4 account step: skipped when the reserve account is also full; the agent parks", async () => {
+  for (const usage of [{ acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 100 }] }]) {
     const h = harness({ transcript: jl(limit(fiveHour, "five_hour", "e1")), settings: accountChain() });
     const a = fakeAccounts({ usage }); h.svc.accounts = a.api;
     await h.svc.evaluate("a1", "u1");
@@ -519,11 +519,19 @@ test("T-4 account step: skipped when the reserve account is also full or its usa
   }
 });
 
-test("T-4 account step: off by default, and a per-agent 'Model only' override skips it", async () => {
+test("T-4 account step: unknown reserve usage (usage endpoint rate-limited) still switches to it", async () => {
+  const h = harness({ transcript: jl(limit(fiveHour, "five_hour", "e1")), settings: accountChain() });
+  const a = fakeAccounts({ usage: {} }); h.svc.accounts = a.api;
+  await h.svc.evaluate("a1", "u1");
+  assert.equal(a.st.switches.length, 1, "the reserve is tried instead of parking the agent");
+  h.svc.stop();
+});
+
+test("T-4 account step: on by default (a 5 h block cannot be helped by a smaller model), and a per-agent 'Model only' override skips it", async () => {
   const off = harness({ transcript: jl(limit(fiveHour, "five_hour", "e1")) });
   const a1 = fakeAccounts({ usage: okUsage }); off.svc.accounts = a1.api;
   await off.svc.evaluate("a1", "u1");
-  assert.deepEqual(a1.st.switches, []);
+  assert.deepEqual(a1.st.switches, ["acct_b0b0b0b0"], "the other account takes over with the default settings");
   const only = harness({ transcript: jl(limit(fiveHour, "five_hour", "e1")), settings: accountChain(), override: "model" });
   const a2 = fakeAccounts({ usage: okUsage }); only.svc.accounts = a2.api;
   await only.svc.evaluate("a1", "u1");

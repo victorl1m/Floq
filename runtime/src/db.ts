@@ -189,6 +189,8 @@ export async function migrateApp(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, slot)
     );
+    -- User-chosen order of the Claude accounts: the first is the one agents use, the rest are the fallback chain in order.
+    ALTER TABLE claude_accounts ADD COLUMN IF NOT EXISTS position INTEGER;
     -- claude.ai connectors in Claude sessions (NULL = on, the default).
     ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS claude_ai_connectors BOOLEAN;
     -- Shared agent browser for this user's agents (NULL = on, the default; docs/design/agent-browser.md).

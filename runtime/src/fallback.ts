@@ -28,7 +28,7 @@ export function defaultUsageFallback(): UsageFallback {
     enabled: true,
     steps: [
       { kind: "model", enabled: true, ladder: [...DEFAULT_LADDER] },
-      { kind: "account", enabled: false, slots: [] },
+      { kind: "account", enabled: true, slots: [] },
       { kind: "codex", enabled: false, model: "auto" },
     ],
     swapBack: true,
@@ -246,9 +246,13 @@ export interface FallbackAccounts {
   switchTo(userId: string, slot: string): Promise<{ from: string; to: string; changed: boolean }>;
 }
 
-/** A reserve account can take over when its usage is known and neither the blocked window nor an account-wide window is full. */
+/**
+ * A reserve account can take over unless its usage shows the blocked window or an account-wide window full.
+ * Unknown usage (the usage endpoint rate-limits often) means "try it": a reserve that turns out blocked too reports its own
+ * limit, gets marked tried and the chain moves on. Skipping it instead left agents parked while a free account sat idle.
+ */
 export function accountUsable(windows: UsageWindow[] | null, rateLimitType: string, kind: LimitKind = "window"): boolean {
-  if (!windows) return false;
+  if (!windows) return true;
   // 98 % and up is exhausted in practice (the CLI blocks at 99-100 %): taking over there would just block again.
   if (windows.some((w) => w.usedPercent >= NEAR_FULL_PERCENT && (w.id === rateLimitType || w.id === "five_hour" || w.id === "seven_day"))) return false;
   // An exhausted extra-usage / spend cap blocks an account whose plan windows still have room.
@@ -442,9 +446,12 @@ export class FallbackService {
       return;
     }
     let usable: string[] = [];
+    // Whether the account step had any other account at all (on by default: with a single login it simply does not apply).
+    let hadReserves = false;
     if (this.accounts && accountStep && accountStep.kind === "account" && override === "default") {
       const candidates: Array<{ slot: string; windows: UsageWindow[] | null }> = [];
       for (const reserve of await this.accounts.reserveSlots(userId, accountStep.slots)) candidates.push({ slot: reserve.slot, windows: await this.accounts.usageOf(userId, reserve.slot) });
+      hadReserves = candidates.length > 0;
       usable = walkableSlots(candidates, event.rateLimitType, event.kind ?? "window", base.tried ?? [], now);
     }
     let codexModel: string | null = null;
@@ -483,7 +490,7 @@ export class FallbackService {
       return;
     }
     // "No step" while an account or Codex step IS enabled means they exist but had no room: word the badge accordingly.
-    const stepsOn = override === "default" && settings.steps.some((st) => st.enabled && (st.kind === "account" || st.kind === "codex"));
+    const stepsOn = override === "default" && settings.steps.some((st) => st.enabled && ((st.kind === "account" && hadReserves) || st.kind === "codex"));
     const parkReason = plan.reason === "no_step" && stepsOn ? "steps_unavailable" : plan.reason;
     const parked: FallbackState = { ...base, current: { kind: "paused" }, parkReason };
     await this.pool.query("UPDATE agent_sessions SET fallback_state = $3, fallback_last_event = $4 WHERE id = $1 AND user_id = $2", [id, userId, JSON.stringify(parked), event.uuid]);

@@ -7,11 +7,11 @@ const open = async (page: Page, query = '') => {
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: Array<{ name: string; args: Record<string, unknown> | unknown[] }> }).__calls);
 const switchOf = (page: Page, name: string) => page.getByRole('switch', { name: new RegExp(name) });
 
-test('T-13 defaults: master on, model downgrade on, account and Codex off, swap-back on', async ({ page }) => {
+test('T-13 defaults: master on, model downgrade and other accounts on, Codex off, swap-back on', async ({ page }) => {
   await open(page);
   await expect(switchOf(page, 'Keep agents working')).toBeChecked();
   await expect(switchOf(page, 'Smaller Claude model')).toBeChecked();
-  await expect(switchOf(page, 'Another Claude account')).not.toBeChecked();
+  await expect(switchOf(page, 'Another Claude account')).toBeChecked();
   await expect(switchOf(page, 'Codex')).not.toBeChecked();
   await expect(switchOf(page, 'Switch back after the reset')).toBeChecked();
   const items = page.getByRole('list', { name: 'Fallback order' }).getByRole('listitem');
@@ -63,20 +63,19 @@ for (const kind of ['model', 'paused']) {
   });
 }
 
-test('T-13 accounts: lists the logins, Make active / Remove / rename call the API, the account step is a usable switch', async ({ page }) => {
+test('T-13 accounts: every login is listed in order, arrows reorder, the trash icon removes any account (after confirming), the account step is on', async ({ page }) => {
   await open(page, '?accounts=1');
   await expect(page.getByRole('heading', { name: 'Claude accounts' })).toBeVisible();
-  await expect(page.getByText('Active', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(1); // primary cannot be removed
-  await page.getByRole('button', { name: 'Make active' }).click();
-  await expect(page.getByRole('button', { name: 'Make active' })).toHaveCount(1); // now Primary can be re-activated
-  await page.getByRole('button', { name: 'Remove' }).click();
-  const names = (await calls(page)).filter((c) => ['activate', 'remove'].includes(c.name)).map((c) => `${c.name}:${(c.args as string[])[0]}`);
-  expect(names).toEqual(['activate:acct_b0b0b0b0', 'remove:acct_b0b0b0b0']);
-  await expect(switchOf(page, 'Another Claude account')).toBeEnabled();
-  await switchOf(page, 'Another Claude account').click();
-  const patches = (await calls(page)).filter((c) => c.name === 'patch').map((c) => (c.args as { usageFallback: { steps: Array<{ kind: string; enabled: boolean }> } }).usageFallback);
-  expect(patches.at(-1)!.steps.find((s) => s.kind === 'account')!.enabled).toBe(true);
+  await expect(page.getByRole('button', { name: 'Make active' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Remove / })).toHaveCount(2); // the one in use too
+  await page.getByRole('button', { name: 'Move Work up' }).click();
+  await expect(page.getByRole('button', { name: 'Move Work up' })).toBeDisabled(); // Work is first now
+  await page.getByRole('button', { name: 'Remove Primary' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove' }).click();
+  await expect(page.getByRole('button', { name: /^Remove / })).toHaveCount(1);
+  const names = (await calls(page)).filter((c) => ['reorder', 'remove'].includes(c.name)).map((c) => `${c.name}:${(c.args as string[]).join(',')}`);
+  expect(names).toEqual(['reorder:acct_b0b0b0b0,primary', 'remove:primary']);
+  await expect(switchOf(page, 'Another Claude account')).toBeChecked();
 });
 
 test('T-13 accounts: Add account opens the sign-in dialog', async ({ page }) => {

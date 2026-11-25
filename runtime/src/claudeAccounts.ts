@@ -53,20 +53,34 @@ export interface ClaudeAccountsDeps {
   fetchUsage?: (data: CredentialData) => Promise<UsageWindow[]>;
 }
 
+/**
+ * Identity of a login: the person AND the organization. One email can hold a personal Max plan and a seat in a Team
+ * organization; those are two logins with separate limits, so the account uuid alone would wrongly call them the same.
+ */
+export function loginIdentity(accountUuid: unknown, organizationUuid: unknown): string | null {
+  if (typeof accountUuid !== "string" || !accountUuid) return null;
+  return typeof organizationUuid === "string" && organizationUuid ? accountUuid + ":" + organizationUuid : accountUuid;
+}
+
 async function defaultProfile(accessToken: string): Promise<{ accountUuid: string | null } | null> {
   try {
     const response = await fetch(PROFILE_URL, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", "User-Agent": "floq-runtime" }, signal: AbortSignal.timeout(10_000) });
     if (!response.ok) return null;
-    const body = (await response.json()) as { account?: { uuid?: unknown } };
-    return { accountUuid: typeof body.account?.uuid === "string" ? body.account.uuid : null };
+    const body = (await response.json()) as { account?: { uuid?: unknown }; organization?: { uuid?: unknown } };
+    return { accountUuid: loginIdentity(body.account?.uuid, body.organization?.uuid) };
   } catch {
     return null;
   }
 }
 
+/** Identities stored before the organization was part of them ("<account>" without ":<org>") are recomputed once. */
+const LEGACY_IDENTITY = /^[^:]+$/;
+/** After a failed usage read (429 above all), the slot is not asked again for this long; the last known value is served. */
+const USAGE_BACKOFF_MS = 5 * 60_000;
+
 export class ClaudeAccounts {
   private readonly chains = new Map<string, Promise<unknown>>();
-  private readonly usageCache = new Map<string, { at: number; windows: UsageWindow[] }>();
+  private readonly usageCache = new Map<string, { at: number; windows: UsageWindow[] | null; backoffUntil: number }>();
   private timer: NodeJS.Timeout | undefined;
   /** Called before a switch (outside the per-user chain): adopt any credential the CLI rotated in the sandbox file, so a rotated refresh token is not lost. */
   beforeSwitch?: (userId: string) => Promise<void>;
@@ -151,7 +165,29 @@ export class ClaudeAccounts {
   }
 
   private async rows(userId: string): Promise<AccountRow[]> {
-    return (await this.pool.query("SELECT slot, label, account_uuid, plan, data_enc, status, expires_at, fail_count, next_attempt_at FROM claude_accounts WHERE user_id = $1 ORDER BY (slot = 'primary') DESC, created_at", [userId])).rows as AccountRow[];
+    return (await this.pool.query("SELECT slot, label, account_uuid, plan, data_enc, status, expires_at, fail_count, next_attempt_at FROM claude_accounts WHERE user_id = $1 ORDER BY COALESCE(position, -1), (slot = 'primary') DESC, created_at", [userId])).rows as AccountRow[];
+  }
+
+  /**
+   * Set the order of the accounts. The first one is the login agents use; the others are the fallback chain, in order.
+   * `slots` must name every account exactly once. Moving another account to the top switches to it.
+   */
+  async reorder(userId: string, slots: unknown): Promise<{ switched: boolean }> {
+    await this.ensureActiveMeta(userId);
+    const rows = await this.rows(userId);
+    if (!Array.isArray(slots) || slots.length !== rows.length || new Set(slots).size !== slots.length || !slots.every((s) => typeof s === "string" && rows.some((r) => r.slot === s))) {
+      throw badRequest("slots must list every Claude account exactly once", "invalid_order");
+    }
+    const order = slots as string[];
+    await this.serial(userId, () => this.transaction(userId, async (db) => {
+      for (const [index, slot] of order.entries()) await db.query("UPDATE claude_accounts SET position = $3 WHERE user_id = $1 AND slot = $2", [userId, slot, index]);
+    }));
+    const first = order[0]!;
+    if (first === (await this.activeSlot(userId))) return { switched: false };
+    const top = rows.find((r) => r.slot === first);
+    // A first account that needs a new sign-in cannot be used: the order is kept, the current login stays in use.
+    if (!top || top.status !== "connected") return { switched: false };
+    return { switched: (await this.switchTo(userId, first)).changed };
   }
 
   async list(userId: string): Promise<AccountInfo[]> {
@@ -168,7 +204,14 @@ export class ClaudeAccounts {
   }
 
   private async uuidOf(userId: string, row: AccountRow, active: string): Promise<string | null> {
-    if (row.account_uuid) return row.account_uuid;
+    if (row.account_uuid && !LEGACY_IDENTITY.test(row.account_uuid)) return row.account_uuid;
+    const legacy = row.account_uuid;
+    const resolved = await this.resolveIdentity(userId, row, active);
+    // The profile could not be read: a legacy value still identifies the person (better than nothing for attribution).
+    return resolved ?? legacy;
+  }
+
+  private async resolveIdentity(userId: string, row: AccountRow, active: string): Promise<string | null> {
     const data = row.slot === active ? await this.credentials.get(userId, "claude") : this.decryptRow(userId, row);
     if (!data || typeof data.accessToken !== "string") return null;
     const uuid = (await this.fetchProfile(data.accessToken))?.accountUuid ?? null;
@@ -196,16 +239,30 @@ export class ClaudeAccounts {
       if (!uuid) throw badRequest("Could not identify this Claude account. Try again.", "account_unknown");
       const active = await this.activeSlot(userId);
       const rows = await this.rows(userId);
+      const plan = typeof data.subscriptionType === "string" ? data.subscriptionType : null;
+      const expires = expiryOf("claude", data);
       for (const row of rows) {
-        if ((await this.uuidOf(userId, row, active)) === uuid) throw conflict("This account is already connected", "account_exists");
+        if ((await this.uuidOf(userId, row, active)) !== uuid) continue;
+        // The same login again: a new sign-in for it (renews an expired or "sign in again" account), never an error.
+        if (row.slot === active) {
+          await this.credentials.save(userId, "claude", data);
+          await this.pool.query("UPDATE claude_accounts SET account_uuid = $3, plan = COALESCE($4, plan), status = 'connected', fail_count = 0, next_attempt_at = NULL WHERE user_id = $1 AND slot = $2", [userId, row.slot, uuid, plan]);
+          this.onActiveChanged(userId, data, row.slot);
+        } else {
+          await this.pool.query(
+            "UPDATE claude_accounts SET account_uuid = $3, plan = COALESCE($4, plan), data_enc = $5, expires_at = $6, status = 'connected', fail_count = 0, next_attempt_at = NULL WHERE user_id = $1 AND slot = $2",
+            [userId, row.slot, uuid, plan, encryptSecret(this.config.encryptionKey, JSON.stringify(data), this.aad(userId, row.slot)), expires ? new Date(expires) : null],
+          );
+        }
+        this.usageCache.delete(userId + ":" + row.slot);
+        log.info("claude_accounts.renewed", { userId, slot: row.slot });
+        return { slot: row.slot, label: row.label, plan: plan ?? row.plan, active: row.slot === active, status: "connected" as const };
       }
       if (rows.length >= 8) throw badRequest("At most 8 Claude accounts can be connected", "too_many_accounts");
       const slot = "acct_" + randomBytes(4).toString("hex");
       const label = this.cleanLabel(labelInput) ?? "Account " + (rows.length + 1);
-      const plan = typeof data.subscriptionType === "string" ? data.subscriptionType : null;
-      const expires = expiryOf("claude", data);
       await this.pool.query(
-        "INSERT INTO claude_accounts (user_id, slot, label, account_uuid, plan, data_enc, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        "INSERT INTO claude_accounts (user_id, slot, label, account_uuid, plan, data_enc, expires_at, position) VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(position), COUNT(*) - 1) + 1 FROM claude_accounts WHERE user_id = $1))",
         [userId, slot, label, uuid, plan, encryptSecret(this.config.encryptionKey, JSON.stringify(data), this.aad(userId, slot)), expires ? new Date(expires) : null],
       );
       log.info("claude_accounts.added", { userId, slot });
@@ -287,18 +344,28 @@ export class ClaudeAccounts {
     });
   }
 
-  /** Disconnect one extra login. The active slot switches back to primary first (a primary login is removed with the normal disconnect). */
-  async remove(userId: string, slot: string): Promise<void> {
-    if (!SLOT.test(slot) || slot === "primary") throw badRequest("Only an extra account can be removed here");
+  /**
+   * Disconnect one login, whichever it is. The one in use is first replaced by the next connected account in the order.
+   * Returns "last" without changing anything when it is the only account: the caller signs Claude out entirely.
+   */
+  async remove(userId: string, slot: string): Promise<"removed" | "last"> {
+    if (!SLOT.test(slot)) throw notFound("Account not found");
     await this.ensureActiveMeta(userId);
+    const rows = await this.rows(userId);
+    if (!rows.some((r) => r.slot === slot)) throw notFound("Account not found");
+    if (rows.length <= 1) return "last";
     if ((await this.activeSlot(userId)) === slot) {
-      if (!(await this.rows(userId)).some((r) => r.slot === "primary" && r.status === "connected" && r.data_enc)) throw conflict("Connect another account before removing the active one", "no_other_account");
-      await this.switchTo(userId, "primary");
+      const next = rows.find((r) => r.slot !== slot && r.status === "connected" && r.data_enc);
+      if (!next) throw conflict("No other connected account can take over. Sign in to another account first, or sign Claude out.", "no_other_account");
+      await this.switchTo(userId, next.slot);
     }
     await this.serial(userId, async () => {
       const done = await this.pool.query("DELETE FROM claude_accounts WHERE user_id = $1 AND slot = $2", [userId, slot]);
       if (!done.rowCount) throw notFound("Account not found");
     });
+    this.usageCache.delete(userId + ":" + slot);
+    log.info("claude_accounts.removed", { userId, slot });
+    return "removed";
   }
 
   /** The normal Claude disconnect removed the active login: forget every extra slot too, back to a single-account state. */
@@ -355,7 +422,7 @@ export class ClaudeAccounts {
     if (!this.fetchUsage || !SLOT.test(slot)) return null;
     const key = userId + ":" + slot;
     const hit = this.usageCache.get(key);
-    if (hit && Date.now() - hit.at < USAGE_CACHE_MS) return hit.windows;
+    if (hit && (Date.now() - hit.at < USAGE_CACHE_MS || Date.now() < hit.backoffUntil)) return hit.windows;
     const active = await this.activeSlot(userId);
     let data: CredentialData | null;
     if (slot === active) data = await this.credentials.get(userId, "claude");
@@ -366,11 +433,14 @@ export class ClaudeAccounts {
     if (!data) return null;
     try {
       const windows = await this.fetchUsage(data);
-      this.usageCache.set(key, { at: Date.now(), windows });
+      this.usageCache.set(key, { at: Date.now(), windows, backoffUntil: 0 });
       return windows;
     } catch (error) {
+      // Serve the last known value and stop asking for a while: hammering a 429 only extends the rate limit.
+      const last = hit?.windows ?? null;
+      this.usageCache.set(key, { at: hit?.at ?? 0, windows: last, backoffUntil: Date.now() + USAGE_BACKOFF_MS });
       log.warn("claude_accounts.usage_failed", { userId, slot, reason: error instanceof Error ? error.message.slice(0, 80) : "unknown" });
-      return null;
+      return last;
     }
   }
 

@@ -920,6 +920,7 @@ export class RuntimeClient {
   claudeAccounts = async () => (await this.call<{ accounts: ClaudeAccount[] }>("GET", "/v1/providers/claude/accounts")).accounts;
   activateClaudeAccount = async (slot: string) => (await this.call<{ accounts: ClaudeAccount[] }>("POST", `/v1/providers/claude/accounts/${slot}/activate`, {})).accounts;
   renameClaudeAccount = async (slot: string, label: string) => (await this.call<{ accounts: ClaudeAccount[] }>("PATCH", `/v1/providers/claude/accounts/${slot}`, { label })).accounts;
+  reorderClaudeAccounts = async (slots: string[]) => (await this.call<{ accounts: ClaudeAccount[] }>("PUT", "/v1/providers/claude/accounts/order", { slots })).accounts;
   removeClaudeAccount = async (slot: string) => (await this.call<{ accounts: ClaudeAccount[] }>("DELETE", `/v1/providers/claude/accounts/${slot}`)).accounts;
 
   async providerLogout(id: LoginProviderId): Promise<void> {

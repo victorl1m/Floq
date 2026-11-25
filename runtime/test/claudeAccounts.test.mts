@@ -46,7 +46,7 @@ async function setup() {
   return { db, pool, broker, accounts, changed, refreshed };
 }
 
-test("T-7 add: a second login becomes a reserve slot; the active credential is untouched; a duplicate account is refused", async () => {
+test("T-7 add: a second login becomes a reserve slot; the active credential is untouched; the same login again renews it", async () => {
   uuids.tokA = "uuid-a"; uuids.tokB = "uuid-b";
   const { broker, accounts, db } = await setup();
   await broker.save(U, "claude", cred("tokA"));
@@ -55,8 +55,12 @@ test("T-7 add: a second login becomes a reserve slot; the active credential is u
   assert.equal((await broker.get(U, "claude"))?.accessToken, "tokA");
   const list = await accounts.list(U);
   assert.deepEqual(list.map((a) => [a.label, a.active]), [["Primary", true], ["Work", false]]);
-  await assert.rejects(accounts.add(U, cred("tokB"), "Again"), { code: "account_exists" });
-  await assert.rejects(accounts.add(U, cred("tokA"), "Same as active"), { code: "account_exists" }, "the active login counts too");
+  const again = await accounts.add(U, cred("tokB", { refreshToken: "r-tokB-new" }), "Again");
+  assert.equal(again.slot, added.slot, "the same login renews its slot instead of failing with 'already connected'");
+  const renewedActive = await accounts.add(U, cred("tokA", { refreshToken: "r-tokA-new" }), "Same as active");
+  assert.equal(renewedActive.slot, "primary");
+  assert.equal((await broker.get(U, "claude"))?.refreshToken, "r-tokA-new", "renewing the login in use replaces the stored active credential");
+  assert.equal((await accounts.list(U)).length, 2, "no duplicate rows");
   const raw = (await db.query<{ data_enc: string; slot: string }>("SELECT slot, data_enc FROM claude_accounts WHERE slot = $1", [added.slot])).rows[0]!;
   assert.ok(!raw.data_enc.includes("tokB"), "encrypted at rest");
   assert.equal(JSON.parse(decryptSecret(KEY, raw.data_enc, `${U}:claude_oauth:${added.slot}`)).accessToken, "tokB");
@@ -127,17 +131,25 @@ test("T-8 syncBack attribution: a late CLI refresh of account A is not adopted i
   assert.equal(await accounts.adoptAttributed(U, cred("nouuid")), "retry", "profile unavailable: not adopted now, not dropped either");
 });
 
-test("T-7 remove: the active extra account switches back to primary first; primary is not removable here; reset forgets all extras", async () => {
+test("T-7 remove: any account can be removed; the one in use hands over to the next; the last one is reported, not removed", async () => {
   uuids.tokA = "uuid-a"; uuids.tokB = "uuid-b";
   const { broker, accounts } = await setup();
   await broker.save(U, "claude", cred("tokA"));
   const b = await accounts.add(U, cred("tokB"), "Work");
-  await assert.rejects(accounts.remove(U, "primary"), /extra account/);
   await accounts.switchTo(U, b.slot);
-  await accounts.remove(U, b.slot);
+  assert.equal(await accounts.remove(U, b.slot), "removed");
   assert.equal(await accounts.activeSlot(U), "primary");
   assert.equal((await broker.get(U, "claude"))?.accessToken, "tokA");
   assert.deepEqual((await accounts.list(U)).map((a) => a.slot), ["primary"]);
+  assert.equal(await accounts.remove(U, "primary"), "last", "the only account: the caller signs Claude out");
+  const b2 = await accounts.add(U, cred("tokB"), "Work");
+  assert.equal(await accounts.remove(U, "primary"), "removed", "the primary login in use is removable too");
+  assert.equal(await accounts.activeSlot(U), b2.slot);
+  assert.equal((await broker.get(U, "claude"))?.accessToken, "tokB");
+  assert.deepEqual((await accounts.list(U)).map((a) => [a.slot, a.active]), [[b2.slot, true]]);
+  await accounts.add(U, cred("tokA"), "Personal");
+  await accounts.remove(U, (await accounts.list(U)).find((a) => a.label === "Personal")!.slot);
+  await accounts.switchTo(U, b2.slot);
   const c = await accounts.add(U, cred("tokB"), "Work");
   await accounts.reset(U);
   assert.equal(await accounts.activeSlot(U), "primary");
@@ -242,4 +254,36 @@ test("review2-10 tick does not refresh a reserve whose expiry is unknown, every 
   await db.query("UPDATE claude_accounts SET expires_at = NULL WHERE slot = $1", [b.slot]);
   await accounts.tick();
   assert.deepEqual(refreshed, []);
+});
+
+test("order: added accounts go last; moving one to the top switches to it; the order survives and drives reserveSlots", async () => {
+  uuids.tokA = "uuid-a"; uuids.tokB = "uuid-b"; uuids.tokC = "uuid-c";
+  const { broker, accounts } = await setup();
+  await broker.save(U, "claude", cred("tokA"));
+  const b = await accounts.add(U, cred("tokB"), "B");
+  const c = await accounts.add(U, cred("tokC"), "C");
+  assert.deepEqual((await accounts.list(U)).map((a) => a.slot), ["primary", b.slot, c.slot]);
+  assert.deepEqual(await accounts.reorder(U, [c.slot, "primary", b.slot]), { switched: true });
+  assert.equal(await accounts.activeSlot(U), c.slot);
+  assert.equal((await broker.get(U, "claude"))?.accessToken, "tokC");
+  assert.deepEqual((await accounts.list(U)).map((a) => a.slot), [c.slot, "primary", b.slot]);
+  assert.deepEqual((await accounts.reserveSlots(U)).map((a) => a.slot), ["primary", b.slot], "fallback walks the list order");
+  assert.deepEqual(await accounts.reorder(U, [c.slot, b.slot, "primary"]), { switched: false });
+  await assert.rejects(accounts.reorder(U, [c.slot, b.slot]), { code: "invalid_order" });
+  await assert.rejects(accounts.reorder(U, [c.slot, c.slot, b.slot]), { code: "invalid_order" });
+});
+
+test("usageOf: a failed read (429) serves the last value and is not retried during the backoff", async () => {
+  uuids.tokA = "uuid-a"; uuids.tokB = "uuid-b";
+  const { broker, accounts } = await setup();
+  await broker.save(U, "claude", cred("tokA"));
+  const b = await accounts.add(U, cred("tokB"), "B");
+  let calls = 0; let fail = false;
+  accounts.fetchUsage = async () => { calls++; if (fail) throw new Error("rate_limited"); return [{ id: "five_hour", label: "5h", usedPercent: 20, resetsAt: null }]; };
+  assert.equal((await accounts.usageOf(U, b.slot))?.[0]?.usedPercent, 20);
+  (accounts as any).usageCache.get(U + ":" + b.slot).at = 0; // the minute cache expired
+  fail = true;
+  assert.equal((await accounts.usageOf(U, b.slot))?.[0]?.usedPercent, 20, "last known value instead of null");
+  assert.equal((await accounts.usageOf(U, b.slot))?.[0]?.usedPercent, 20);
+  assert.equal(calls, 2, "no new request while backing off");
 });

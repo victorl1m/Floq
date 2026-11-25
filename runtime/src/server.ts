@@ -1244,6 +1244,13 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     if (claudeAccounts && url.pathname === "/v1/providers/claude/accounts" && method === "GET") {
       return send(res, 200, { accounts: await claudeAccounts.list(userId) });
     }
+    // Order of the accounts: the first is the one in use, the rest are the fallback chain.
+    if (claudeAccounts && url.pathname === "/v1/providers/claude/accounts/order" && method === "PUT") {
+      const body = await readJson<{ slots?: unknown }>(req);
+      const { switched } = await claudeAccounts.reorder(userId, body.slots);
+      if (switched) await fallback?.accountChangedByUser(userId);
+      return send(res, 200, { accounts: await claudeAccounts.list(userId) });
+    }
     const accountMatch = /^\/v1\/providers\/claude\/accounts\/([\w]+?)(\/activate)?$/.exec(url.pathname);
     if (claudeAccounts && accountMatch) {
       const slot = accountMatch[1]!;
@@ -1258,7 +1265,9 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
         return send(res, 200, { accounts: await claudeAccounts.list(userId) });
       }
       if (!accountMatch[2] && method === "DELETE") {
-        await claudeAccounts.remove(userId, slot);
+        // The only account: removing it is signing Claude out (credential, sandbox file and account rows).
+        if ((await claudeAccounts.remove(userId, slot)) === "last") await manager.disconnectProvider(userId, "claude");
+        else await fallback?.accountChangedByUser(userId); // a way back to a removed account must not be attempted
         return send(res, 200, { accounts: await claudeAccounts.list(userId) });
       }
     }

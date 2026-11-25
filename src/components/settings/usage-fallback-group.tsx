@@ -10,7 +10,7 @@ export const DEFAULT_USAGE_FALLBACK: UsageFallback = {
     enabled: true,
     steps: [
         { kind: "model", enabled: true, ladder: ["fable", "opus", "sonnet", "haiku"] },
-        { kind: "account", enabled: false, slots: [] },
+        { kind: "account", enabled: true, slots: [] },
         { kind: "codex", enabled: false, model: "auto" },
     ],
     swapBack: true,
@@ -18,7 +18,7 @@ export const DEFAULT_USAGE_FALLBACK: UsageFallback = {
 
 const STEP_TEXT: Record<FallbackStep["kind"], { label: string; description: string; soon?: boolean }> = {
     model: { label: "Smaller Claude model", description: "Opus → Sonnet → Haiku" },
-    account: { label: "Another Claude account", description: "One you connected in LLM Providers" },
+    account: { label: "Another Claude account", description: "The next one in your Claude accounts list" },
     codex: { label: "Codex", description: "Continues the same task in Codex" },
 };
 

@@ -24,6 +24,7 @@ const client = {
   claudeAccounts: async () => (q.get("single") ? accounts.slice(0, 1) : accounts),
   providersStatus: async () => ({ claude: { connected: true }, codex: { connected: q.get("codex") !== "off" } }),
   activateClaudeAccount: async (slot: string) => { w.__calls.push({ name: "activate", args: [slot] }); accounts = accounts.map((a) => ({ ...a, active: a.slot === slot })); return accounts; },
+  reorderClaudeAccounts: async (slots: string[]) => { w.__calls.push({ name: "reorder", args: slots }); accounts = slots.map((slot, i) => ({ ...accounts.find((a) => a.slot === slot)!, active: i === 0 })); return accounts; },
   removeClaudeAccount: async (slot: string) => { w.__calls.push({ name: "remove", args: [slot] }); accounts = accounts.filter((a) => a.slot !== slot); return accounts; },
   renameClaudeAccount: async (slot: string, label: string) => { w.__calls.push({ name: "rename", args: [slot, label] }); accounts = accounts.map((a) => (a.slot === slot ? { ...a, label } : a)); return accounts; },
   claudeOAuthStart: async () => ({ flowId: "f1", authorizeUrl: "https://example.test/authorize" }),
