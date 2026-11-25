@@ -87,16 +87,17 @@ export function NetworkStatus() {
                     title={label}
                     aria-label={label}
                     data-testid="network-footer"
-                    className={cn("-mr-2 ml-2 gap-1.5 px-2 text-[11px] tabular-nums", count === 0 && !waiting && !egress && "opacity-60", open && "bg-muted text-foreground")}
+                    className={cn("-mr-2 ml-2 h-6 items-center gap-1.5 px-2 text-[11px] leading-none tabular-nums", count === 0 && !waiting && !egress && "opacity-60", open && "bg-muted text-foreground")}
                 >
                     <IconNetwork size={12} stroke={1.5} aria-hidden="true" />
                     <span>Network</span>
                     {(count > 0 || !egress) && <span>{count}</span>}
                     {egress && (
-                        <span data-testid="network-egress-indicator" data-tone={egress.tone} className={cn("flex items-center gap-1 rounded-full border px-1.5 leading-4", egress.tone === "green" ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : "border-amber-500/40 text-amber-700 dark:text-amber-300")}>
+                        // Same type, height and baseline as the other footer items: a status dot and plain text, no pill.
+                        <span data-testid="network-egress-indicator" data-tone={egress.tone} className={cn("flex items-center gap-1 leading-none", egress.tone === "green" ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
                             <EgressDot tone={egress.tone} pulse={egress.streams > 0} />
-                            <span>{egress.label}</span>
-                            {egress.streams > 0 && <span className="text-muted-foreground">· {egress.streams}</span>}
+                            <span>{egress.tone === "green" ? "Your connection" : egress.label}</span>
+                            {egress.streams > 0 && <span className="text-muted-foreground">{egress.streams}</span>}
                         </span>
                     )}
                     {waiting > 0 && <span aria-hidden="true" className="rounded-full bg-destructive px-1 text-[10px] leading-4 text-white">{waiting}</span>}

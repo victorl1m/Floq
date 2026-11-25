@@ -25,8 +25,15 @@ test('egress active: live indicator in the footer, details in the popover, Stop 
   const ind = page.getByTestId('network-egress-indicator');
   await expect(ind).toBeVisible();
   await expect(ind).toHaveAttribute('data-tone', 'green');
-  await expect(ind).toContainText('Using your connection');
+  await expect(ind).toContainText('Your connection');
   await expect(ind).toContainText('15');
+  // Aligned with the rest of the footer: no pill border, and the indicator is centred on the item's line.
+  const geo = await ind.evaluate((el) => {
+    const r = el.getBoundingClientRect(), t = el.closest('button')!.getBoundingClientRect(), cs = getComputedStyle(el);
+    return { border: cs.borderTopWidth, centre: Math.abs((r.top + r.bottom) / 2 - (t.top + t.bottom) / 2) };
+  });
+  expect(geo.border).toBe('0px');
+  expect(geo.centre).toBeLessThanOrEqual(1);
   await expect(trigger(page)).toHaveAttribute('aria-label', /using your connection \(15 connections\)/);
   await page.screenshot({ path: `${ART}/network-footer-indicator.png`, clip: { x: 500, y: 660, width: 500, height: 60 } });
 
