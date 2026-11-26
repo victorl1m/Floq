@@ -999,7 +999,7 @@ test("advisor-3 UsageService.invalidate: after an account switch the next read r
 // ---- limit kinds, terminal banner, chain walking ----
 
 import { classifyLimitText, classifyBanner, parseResetClock } from "../dist/limitText.js";
-import { walkableSlots, markTried } from "../dist/fallback.js";
+import { walkableSlots, markTried, terminalBannerStale } from "../dist/fallback.js";
 
 test("limitText: every limit kind is classified, spend caps win over the window they mention", () => {
   const now = Date.parse("2026-11-18T01:00:00Z");
@@ -1085,4 +1085,31 @@ test("before the reset, an unknown usage window keeps checking without using up 
   assert.deepEqual(h.calls, []);
   assert.equal(h.row.model, "sonnet");
   h.svc.stop();
+});
+
+test("an old limit banner redrawn when a paused agent wakes is ignored while the account's usage has room: no pause, no account switch", async () => {
+  const h = harness({ transcript: "", settings: accountChain() });
+  const a = fakeAccounts({ usage: { primary: [{ id: "five_hour", usedPercent: 12 }], acct_b0b0b0b0: [{ id: "five_hour", usedPercent: 5 }] }, reserves: ["acct_b0b0b0b0"] });
+  h.svc.accounts = a.api;
+  // Claude Code repaints the conversation on resume, including the earlier banner.
+  h.svc.onOutput("a1", "u1", "You've hit your limit · resets 3:50pm (UTC)\n");
+  await h.svc.evaluate("a1", "u1");
+  assert.deepEqual(a.st.switches, [], "no account switch");
+  assert.equal(h.row.fallback_state ?? null, null, "not parked");
+  assert.ok(!h.calls.some((c) => c.startsWith("restart")));
+  // The same text arriving again does not trip it either (the screen tail was cleared).
+  h.svc.onOutput("a1", "u1", "working...\n");
+  await h.svc.evaluate("a1", "u1");
+  assert.deepEqual(a.st.switches, []);
+  h.svc.stop();
+});
+
+test("terminalBannerStale: usage decides when known; with usage unknown a 5-hour reset more than 5 hours away is stale", () => {
+  const now = Date.parse("2026-11-25T18:00:00Z");
+  assert.equal(terminalBannerStale([{ id: "five_hour", label: "", usedPercent: 12, resetsAt: null }], "five_hour", "window", null, now), true);
+  assert.equal(terminalBannerStale([{ id: "five_hour", label: "", usedPercent: 99, resetsAt: null }], "five_hour", "window", null, now), false);
+  assert.equal(terminalBannerStale([{ id: "seven_day", label: "", usedPercent: 100, resetsAt: null }], "five_hour", "window", null, now), false);
+  assert.equal(terminalBannerStale(null, "five_hour", "window", "2026-11-26T15:50:00Z", now), true);
+  assert.equal(terminalBannerStale(null, "five_hour", "window", "2026-11-25T20:50:00Z", now), false);
+  assert.equal(terminalBannerStale(null, "seven_day", "window", "2026-11-28T10:00:00Z", now), false);
 });

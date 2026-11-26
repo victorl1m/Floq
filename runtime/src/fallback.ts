@@ -259,6 +259,23 @@ export function accountUsable(windows: UsageWindow[] | null, rateLimitType: stri
   return !windows.some((w) => w.id === "extra_usage" && w.usedPercent >= 100 && kind !== "window");
 }
 
+/**
+ * A limit banner seen in the terminal can be old text: when a paused agent wakes, Claude Code redraws the conversation, including
+ * an earlier "You've hit your limit · resets 3:50pm" line, whose time then parses as tomorrow. Acting on it paused agents (or moved
+ * them to another account) with the limit not reached. A terminal banner counts only when the account's usage confirms it
+ * (readable and full for that window), or, with usage unknown, when its reset fits the window (a 5-hour limit resets within 5 hours).
+ */
+export function terminalBannerStale(windows: UsageWindow[] | null, rateLimitType: string, kind: LimitKind, resetsAt: string | number | null | undefined, now: number): boolean {
+  if (windows && windows.length) {
+    const full = windows.some((w) => w.usedPercent >= NEAR_FULL_PERCENT && (w.id === rateLimitType || w.id === "five_hour" || w.id === "seven_day"))
+      || (kind !== "window" && windows.some((w) => w.id === "extra_usage" && w.usedPercent >= 100));
+    return !full;
+  }
+  const at = typeof resetsAt === "number" ? resetsAt * (resetsAt < 1e12 ? 1000 : 1) : typeof resetsAt === "string" ? Date.parse(resetsAt) : NaN;
+  if (rateLimitType === "five_hour" && Number.isFinite(at) && at - now > 5.5 * 3_600_000) return true;
+  return false;
+}
+
 /** Reserve slots that can take over: usable usage and not already found blocked in this fallback. Pure part of the chain walk. */
 export function walkableSlots(candidates: Array<{ slot: string; windows: UsageWindow[] | null }>, rateLimitType: string, kind: LimitKind, tried: Array<{ slot: string; until: string }>, now: number): string[] {
   const blocked = new Set(tried.filter((t) => Date.parse(t.until) > now).map((t) => t.slot));
@@ -394,7 +411,13 @@ export class FallbackService {
     if (!event && tty) {
       const slot = this.accounts ? await this.accounts.activeSlot(userId) : "primary";
       const when = this.now();
-      event = { uuid: `tty:${slot}:${tty.rateLimitType}:${tty.resetsAt ?? Math.floor(when / 3_600_000)}`, rateLimitType: tty.rateLimitType, resetsAt: tty.resetsAt, timestamp: new Date(when).toISOString(), text: tty.text, latest: true, kind: tty.kind, source: "terminal" };
+      const windows = this.accounts ? await this.accounts.usageOf(userId, slot).catch(() => null) : null;
+      if (terminalBannerStale(windows, tty.rateLimitType, tty.kind ?? "window", tty.resetsAt, when)) {
+        log.info("fallback.banner_ignored", { sessionId: id, rateLimitType: tty.rateLimitType, usageKnown: Boolean(windows && windows.length) });
+        this.screen.delete(id); // the redrawn text must not match again on the next output frame
+      } else {
+        event = { uuid: `tty:${slot}:${tty.rateLimitType}:${tty.resetsAt ?? Math.floor(when / 3_600_000)}`, rateLimitType: tty.rateLimitType, resetsAt: tty.resetsAt, timestamp: new Date(when).toISOString(), text: tty.text, latest: true, kind: tty.kind, source: "terminal" };
+      }
     }
     const done = () => { if (stamp !== null && event?.source !== "terminal") this.seenStamp.set(id, stamp); };
     if (!event || event.uuid === row.fallback_state?.lastEventUuid || event.uuid === row.fallback_last_event) return done();
