@@ -155,6 +155,8 @@ export interface ServerInfo {
   capabilities?: string[];
   /** Agent browser in this runtime's image: available, disabled (FLOQ_AGENT_BROWSER=off) or missing (older image). Absent on older runtimes. */
   browser?: "available" | "disabled" | "missing";
+  /** The server's default IANA time zone and where it came from (FLOQ_TIMEZONE, TZ or the server's clock). Absent on older runtimes. */
+  timeZone?: { zone: string; source: "FLOQ_TIMEZONE" | "TZ" | "system" };
 }
 
 /** A mirrored Antigravity swarm worker / core subagent (derived from agy's files, never persisted). Identical to src/lib/runtime/types.ts. */

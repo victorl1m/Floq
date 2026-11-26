@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { HttpError, notFound } from "./errors.js";
 import { log } from "./logger.js";
+import { runtimeTimeZone } from "./timezone.js";
 import { isUuid, type ProjectTasks } from "./projectTasks.js";
 import { localDateLabel, nextRun, planAutomationTick, ScheduleError, upcomingRuns, validateSchedule, type CatchUp, type Schedule } from "./scheduleMath.js";
 
@@ -153,7 +154,7 @@ export class Automations {
   /** Inserts the occurrence's task (+ created event) and counts the run, inside the caller's transaction. */
   private async fire(client: pg.PoolClient, row: Row, now: Date, status: string, labelAt = now): Promise<string> {
     const schedule = scheduleOf(row);
-    const tz = schedule.kind === "recurring" ? schedule.timezone : "UTC";
+    const tz = schedule.kind === "recurring" ? schedule.timezone : runtimeTimeZone();
     const title = `${row.title} - ${localDateLabel(labelAt, tz)}`.slice(0, 200);
     const id = randomUUID();
     const created = "automation:" + row.id;

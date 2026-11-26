@@ -1016,7 +1016,11 @@ test("limitText: every limit kind is classified, spend caps win over the window 
 test("limitText: reset clock rolls to the next UTC occurrence", () => {
   const now = Date.parse("2026-11-18T03:00:00Z");
   assert.equal(parseResetClock("resets 2:50am (UTC)", now), "2026-11-19T02:50:00.000Z");
-  assert.equal(parseResetClock("continuing automatically at 6pm", now), "2026-11-18T18:00:00.000Z");
+  assert.equal(parseResetClock("continuing automatically at 6pm", now, "UTC"), "2026-11-18T18:00:00.000Z");
+  // Claude Code prints its own zone (the TZ agents get): read the clock there, and default to the runtime zone when none is printed.
+  assert.equal(parseResetClock("resets 3:50pm (America/Sao_Paulo)", now), "2026-11-18T18:50:00.000Z");
+  assert.equal(parseResetClock("resets 1am (America/Sao_Paulo)", Date.parse("2026-11-18T01:00:00Z")), "2026-11-18T04:00:00.000Z");
+  assert.equal(parseResetClock("continuing automatically at 6pm", now, "America/Sao_Paulo"), "2026-11-18T21:00:00.000Z");
   assert.equal(parseResetClock("no clock here", now), null);
 });
 

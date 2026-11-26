@@ -285,6 +285,8 @@ export interface ServerInfo {
   activeSessions: number;
   /** Optional features; absent on older runtimes. */
   capabilities?: string[];
+  /** Server default IANA time zone and its source; absent on older runtimes. */
+  timeZone?: { zone: string; source: "FLOQ_TIMEZONE" | "TZ" | "system" };
 }
 
 export interface RuntimeInfo {

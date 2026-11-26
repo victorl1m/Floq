@@ -53,11 +53,16 @@ import { EgressHub } from "./browserEgress.js";
 import { BrowserLinks } from "./browserLinks.js";
 import { FLOQ_BROWSER_MCP_SPEC } from "./mcpConfig.js";
 import { sha256Hex } from "./plugins/package.js";
+import { resolveTimeZone } from "./timezone.js";
 
 process.on("uncaughtException", (error) => log.error("process.uncaught", { error: error instanceof Error ? error.message : String(error) }));
 process.on("unhandledRejection", (reason) => log.error("process.unhandled_rejection", { error: reason instanceof Error ? reason.message : String(reason) }));
 
 const config = loadConfig();
+// One server zone for the process too: Date's local zone, logs and the agents' TZ (providers.ts) all agree.
+const serverZone = resolveTimeZone();
+process.env.TZ = serverZone.zone;
+log.info("runtime.timezone", { zone: serverZone.zone, source: serverZone.source });
 configureLogger(config);
 
 const pool = createPool(config);

@@ -40,6 +40,10 @@ Floq sessions sign in with the user's subscription, so Claude Code already uses 
 
 Invalid values fall back to `auto`.
 
+## Time zone (`FLOQ_TIMEZONE`)
+
+Optional. `FLOQ_TIMEZONE` is an IANA zone (e.g. `America/Sao_Paulo`). Order: `FLOQ_TIMEZONE`, then the standard `TZ`, then the server's own clock (the process zone, `/etc/timezone`, else UTC). To follow the VPS clock in Docker, uncomment the `/etc/localtime:/etc/localtime:ro` mount in `docker-compose.yml`; without it a container reports UTC. An invalid value logs `timezone.invalid` at warn level and is skipped. The zone is the default for one-off automation labels, the `TZ` of every agent session (so `date` and Claude Code's "resets 3:50pm (zone)" agree; the runtime reads the zone Claude Code prints, and assumes this one when none is printed) and WhatsApp exports without a client zone. A zone a user picks (an automation's schedule, the export dialog) always wins. `GET /v1/info` returns `server.timeZone {zone, source}` and Settings > Runtime shows it.
+
 ## Host requirements
 
 - `/dev/fuse` and the capabilities in `docker-compose.yml` (see the comment there).

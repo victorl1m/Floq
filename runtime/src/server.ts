@@ -64,6 +64,7 @@ import { databasePort, listAllListeners, listSessionPorts, MANUAL_DENY_PORTS, ma
 import { UpdateService, updatesConfigFromEnv } from "./updates.js";
 import { ProjectTasks } from "./projectTasks.js";
 import { Automations } from "./automations.js";
+import { resolveTimeZone } from "./timezone.js";
 
 const startedAt = new Date().toISOString();
 const SESSION_PATH = /^\/v1\/sessions\/([\w-]+)(?:\/(stream|input|resize|interrupt|resume|sleep))?$/;
@@ -213,6 +214,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     activeSessions: manager.activeCount,
     capabilities: runtimeCapabilities(browser?.capability() ?? "missing"),
     browser: browser?.capability() ?? "missing",
+    timeZone: resolveTimeZone(),
   });
 
   function originAllowed(origin: string | undefined): boolean {

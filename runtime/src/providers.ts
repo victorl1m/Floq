@@ -1,5 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import type { Config, ModelEntry } from "./config.js";
+import { runtimeTimeZone } from "./timezone.js";
 import type { RuntimeProfile } from "./settings.js";
 import type { ProviderId, ProviderInfo } from "./types.js";
 
@@ -271,6 +272,8 @@ export function buildSessionEnv(
       '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f';
   }
 
+  // Agents see the same zone as the runtime (`date`, Claude Code's "resets 3:50pm (zone)").
+  env.TZ = runtimeTimeZone();
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
   env.LANG = env.LANG || "C.UTF-8";

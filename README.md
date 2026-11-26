@@ -112,6 +112,7 @@ The runtime (`runtime/`) ships a Dockerfile and a Docker Compose file with the r
 
 1. Create a Compose service from `runtime/docker-compose.yml` (build context is `runtime/`).
 2. Fill in the environment from [`runtime/.env.example`](runtime/.env.example). Required: `POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `FLOQ_ENCRYPTION_KEY`, `BETTER_AUTH_URL`. Generator commands are in the file.
+   Optional: `FLOQ_TIMEZONE` (IANA zone such as `America/Sao_Paulo`) sets the server time zone; unset, the VPS clock is used (mount `/etc/localtime:/etc/localtime:ro`, see the compose file). Details in [`runtime/README.md`](runtime/README.md#time-zone-floq_timezone).
 3. Set `FLOQ_BOOTSTRAP_ADMIN_EMAIL` to the first account's address. On first start the runtime prints a one-time setup token to its logs (look for `FLOQ SETUP TOKEN`). In the app choose **Set up the administrator**, enter the token and the email, and pick a password. The token works once; only its hash is stored, and a new one is printed on restart while the account is still unclaimed.
 4. Publish the `runtime` service on port `8787` over HTTPS. Do not publish host ports and keep PostgreSQL unpublished.
 5. Deploy, then enter the runtime URL in the app and sign in.

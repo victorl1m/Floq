@@ -176,6 +176,9 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET (openssl rand -base64 48)}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set BETTER_AUTH_URL to the public https URL}
       FLOQ_ENCRYPTION_KEY: ${FLOQ_ENCRYPTION_KEY:?set FLOQ_ENCRYPTION_KEY (openssl rand -hex 32)}
+      # Optional server time zone (IANA, e.g. America/Sao_Paulo) for schedules' default, agents' TZ and exports. Unset = the TZ variable,
+      # else the VPS clock (mount /etc/localtime below; without the mount a container reports UTC).
+      FLOQ_TIMEZONE: ${FLOQ_TIMEZONE:-}
       FLOQ_ALLOW_SIGNUP: ${FLOQ_ALLOW_SIGNUP:-0}
       FLOQ_BOOTSTRAP_ADMIN_EMAIL: ${FLOQ_BOOTSTRAP_ADMIN_EMAIL:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
@@ -229,6 +232,8 @@ services:
       FLOQ_INTERNAL_URL: ${FLOQ_INTERNAL_URL:-http://runtime:8787}
     volumes:
       - shards3:/var/lib/floq/shards
+      # Optional: follow the VPS's own time zone when FLOQ_TIMEZONE is unset (otherwise the container reports UTC).
+      # - /etc/localtime:/etc/localtime:ro
       # The built-in WhatsApp server's API key, shared with the waha service only.
       - wahakey:/var/lib/floq/whatsapp
       # Downloaded embedding models survive image rebuilds.

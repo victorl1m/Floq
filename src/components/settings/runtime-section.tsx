@@ -33,6 +33,11 @@ export default function RuntimeSection() {
                         <SettingRow label="Started">
                             <span className="text-sm text-muted-foreground">{new Date(info.server.startedAt).toLocaleString()}</span>
                         </SettingRow>
+                        {info.server.timeZone && (
+                            <SettingRow label="Time zone" description={`Server time zone: ${info.server.timeZone.zone} (${info.server.timeZone.source === "system" ? "from the server's clock" : "from " + info.server.timeZone.source})`}>
+                                <span className="text-sm text-muted-foreground">{info.server.timeZone.zone}</span>
+                            </SettingRow>
+                        )}
                         <SettingRow label="Active sessions" description="Running terminals out of the server's limit.">
                             <span className="text-sm tabular-nums text-muted-foreground">
                                 {info.server.activeSessions} / {info.server.maxSessions}

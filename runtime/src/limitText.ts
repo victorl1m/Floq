@@ -1,12 +1,15 @@
 /** Pure helpers: classify Claude Code usage-limit TEXT (transcript record text or terminal banner). No manager imports (testable without node-pty). */
 
+import { localDateOf, zonedToUtc } from "./scheduleMath.js";
+import { isValidZone, runtimeTimeZone } from "./timezone.js";
+
 export type LimitKind = "window" | "spend" | "extra_usage";
 
 export interface LimitText {
   /** five_hour, seven_day, seven_day_opus, seven_day_sonnet, spend_limit, extra_usage or usage_limit (unknown wording). */
   rateLimitType: string;
   kind: LimitKind;
-  /** Next UTC occurrence of the clock time the text names ("resets 2:50am (UTC)"), ISO, or null. */
+  /** Next occurrence (UTC instant, ISO) of the clock time the text names ("resets 2:50am (UTC)", read in the zone it prints), or null. */
   resetsAt: string | null;
 }
 
@@ -19,17 +22,22 @@ export function stripAnsiText(text: string): string {
 /** True when the text is a Claude Code limit message: a "hit your ... limit" line, "Usage limit reached", a spend cap or an exhausted-extra-usage notice. */
 const LIMIT_MESSAGE = /(you['’]ve hit your [^\n]{0,80}(limit|spend)|usage limit reached|spend limit|usage-credits|out of extra usage|extra usage (is )?(exhausted|limit)|continuing automatically at)/i;
 
-/** "resets 2:50am (UTC)" / "resets 6pm (UTC)" / "continuing automatically at 2:50am" to the next such UTC time after `now`. */
-export function parseResetClock(text: string, now: number): string | null {
-  const m = /(?:resets?|continuing automatically at)\s+(?:[A-Z][a-z]{2}\s+\d{1,2},\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(text);
+/**
+ * "resets 2:50am (UTC)" / "resets 6pm (America/Sao_Paulo)" / "continuing automatically at 2:50am" to the next such time after `now`.
+ * Claude Code prints its own zone in parentheses (it follows the TZ the runtime gives agents); a clock without a zone is read in `defaultZone`
+ * (the runtime zone, which is the agents' TZ).
+ */
+export function parseResetClock(text: string, now: number, defaultZone: string = runtimeTimeZone()): string | null {
+  const m = /(?:resets?|continuing automatically at)\s+(?:[A-Z][a-z]{2}\s+\d{1,2},\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)\n]{1,64})\))?/i.exec(text);
   if (!m) return null;
   let hour = Number(m[1]) % 12;
   if (/pm/i.test(m[3]!)) hour += 12;
   const minute = m[2] ? Number(m[2]) : 0;
   if (hour > 23 || minute > 59) return null;
-  const base = new Date(now);
-  let at = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), hour, minute, 0);
-  if (at <= now) at += 86_400_000;
+  const zone = m[4] && isValidZone(m[4].trim()) ? m[4].trim() : isValidZone(defaultZone) ? defaultZone : "UTC";
+  const today = localDateOf(now, zone);
+  let at = zonedToUtc(today, hour, minute, zone);
+  if (at <= now) at = zonedToUtc(localDateOf(now + 86_400_000, zone), hour, minute, zone);
   return new Date(at).toISOString();
 }
 
