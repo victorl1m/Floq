@@ -1,9 +1,31 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { flushSync } from "react-dom";
 import { EMOJI_CATEGORIES, emojiIndex, loadRecent, pushRecent, saveRecent, searchEmoji, type Emoji } from "./emoji-data";
 import { IconSearch } from "./icons";
 
 interface Section { id: string; label: string; items: Emoji[] }
 const RECENT = "recent";
+const FIRST_PAINT = 16, SLICE = 40;
+
+// Warm the emoji index while the browser is idle so the first open does not build it.
+if (typeof window !== "undefined") { const idle = (window as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200)); idle(() => { emojiIndex(); }); }
+
+/** One category: memoized so revealing the next sections (or picking) does not re-render the ones already on screen. */
+const SectionView = memo(function SectionView({ s, first, onPick }: { s: Section; first?: string; onPick: (char: string) => void }) {
+  return (
+    <section data-sec={s.id} aria-label={s.label}>
+      <h3 className="wa-emoji-h">{s.label}</h3>
+      {s.items.length === 0 ? <p className="wa-emoji-none">No emoji found</p> : (
+        <div className="wa-emoji-grid" role="group" aria-label={s.label}>
+          {s.items.map((e) => (
+            <button key={e.char} type="button" data-emoji tabIndex={e.char === first ? 0 : -1} className="wa-emoji-btn" aria-label={e.name || e.char} title={e.name}
+              onMouseDown={(ev) => ev.preventDefault()} onClick={() => onPick(e.char)}>{e.char}</button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+});
 
 /** Emoji popover: search by name, category tabs, recently used, arrow-key navigation. Picking never moves focus out of the message field (the parent refocuses it). */
 export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => void; onClose: () => void }) {
@@ -12,6 +34,14 @@ export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => voi
   const [tab, setTab] = useState<string>(recent.length ? RECENT : EMOJI_CATEGORIES[0].id);
   const root = useRef<HTMLDivElement>(null), body = useRef<HTMLDivElement>(null), search = useRef<HTMLInputElement>(null);
   useEffect(() => { search.current?.focus(); }, []);
+  // Open in one frame: only the first rows are rendered at first, the rest of the grid is filled in small slices (each stays a short task).
+  const [budget, setBudget] = useState(FIRST_PAINT);
+  useEffect(() => {
+    if (budget === Infinity) return;
+    const id = setTimeout(() => setBudget((n) => n + SLICE), 30);
+    return () => clearTimeout(id);
+  }, [budget]);
+  const revealAll = () => flushSync(() => setBudget(Infinity));
 
   const sections = useMemo<Section[]>(() => {
     const idx = emojiIndex();
@@ -21,13 +51,17 @@ export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => voi
     return [...(rec.length ? [{ id: RECENT, label: "Recently used", items: rec }] : []), ...EMOJI_CATEGORIES.map((c) => ({ id: c.id, label: c.label, items: idx.byCat[c.id] }))];
   }, [query, recent]);
 
+  const pickRef = useRef<(char: string) => void>(() => {});
+  const stablePick = useMemo(() => (char: string) => pickRef.current(char), []);
   const pick = (char: string) => {
     const next = pushRecent(recent, char);
     setRecent(next); saveRecent(next);
     onPick(char);
   };
+  pickRef.current = pick;
   const buttons = () => [...(body.current?.querySelectorAll<HTMLButtonElement>("button[data-emoji]") ?? [])];
   const goTo = (id: string) => {
+    revealAll();
     const sec = body.current?.querySelector<HTMLElement>(`[data-sec="${id}"]`);
     if (sec && body.current) { body.current.scrollTop = sec.offsetTop - 2; setTab(id); }
   };
@@ -40,6 +74,7 @@ export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => voi
   };
 
   const onGridKey = (e: KeyboardEvent) => {
+    if (budget !== Infinity) revealAll();
     const list = buttons(), i = list.indexOf(document.activeElement as HTMLButtonElement);
     if (i < 0) return;
     const go = (b?: HTMLElement) => { if (b) { e.preventDefault(); b.focus(); b.scrollIntoView({ block: "nearest" }); } };
@@ -70,6 +105,20 @@ export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => voi
   };
 
   const first = sections[0]?.items[0]?.char;
+  // Sections cut to the render budget (search results are small and always complete). Cut item lists are memoized per section+length so filled sections keep their buttons.
+  const cuts = useRef(new Map<string, Section>());
+  const visible = useMemo(() => {
+    if (query.trim() || budget === Infinity) return sections;
+    let left = budget; const out: Section[] = [];
+    for (const s of sections) {
+      if (left <= 0) break;
+      const n = Math.min(s.items.length, left); left -= n;
+      const prev = cuts.current.get(s.id);
+      const cut = prev && prev.items.length === n && prev.label === s.label && prev.items[0] === s.items[0] ? prev : { ...s, items: s.items.slice(0, n) };
+      cuts.current.set(s.id, cut); out.push(cut);
+    }
+    return out;
+  }, [sections, budget, query]);
   return (
     <div ref={root} className="wa-popover wa-emoji" data-wa-pop role="dialog" aria-label="Emoji" onKeyDown={onRootKey}>
       <div className="wa-emoji-search">
@@ -86,19 +135,7 @@ export function EmojiPicker({ onPick, onClose }: { onPick: (char: string) => voi
         </div>
       )}
       <div ref={body} className="wa-emoji-body" onScroll={onScroll} onKeyDown={onGridKey}>
-        {sections.map((s) => (
-          <section key={s.id} data-sec={s.id} aria-label={s.label}>
-            <h3 className="wa-emoji-h">{s.label}</h3>
-            {s.items.length === 0 ? <p className="wa-emoji-none">No emoji found</p> : (
-              <div className="wa-emoji-grid" role="group" aria-label={s.label}>
-                {s.items.map((e) => (
-                  <button key={e.char} type="button" data-emoji tabIndex={e.char === first && s === sections[0] ? 0 : -1} className="wa-emoji-btn" aria-label={e.name || e.char} title={e.name}
-                    onMouseDown={(ev) => ev.preventDefault()} onClick={() => pick(e.char)}>{e.char}</button>
-                ))}
-              </div>
-            )}
-          </section>
-        ))}
+        {visible.map((s, i) => <SectionView key={s.id} s={s} first={i === 0 ? first : undefined} onPick={stablePick} />)}
       </div>
     </div>
   );
