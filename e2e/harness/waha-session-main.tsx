@@ -56,6 +56,8 @@ const set = (status: string) => { state.status = status; dispatchPluginFrame({ t
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4z8CAFQ0nCQCCmQ/h/mNylAAAAABJRU5ErkJggg==";
 
 const client = {
+  /** The signed link of a streamed plugin download: recorded, and it points nowhere (the spec checks what was asked, not the file). */
+  async pluginDownloadUrl(id: string, path: string, query: Record<string, string> = {}) { ((window as unknown as { __downloads?: unknown[] }).__downloads ??= []).push({ id, path, query }); return "http://localhost:1420/__export-test?" + new URLSearchParams(query).toString(); },
   async pluginFetch(_id: string, path: string, init?: { method?: string; body?: unknown }) {
     calls.push({ path, method: init?.method ?? "GET", body: init?.body });
     await sleep(15);

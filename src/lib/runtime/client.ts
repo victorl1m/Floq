@@ -696,6 +696,15 @@ export class RuntimeClient {
     return this.call<T>(init.method ?? "GET", `/v1/plugins/${encodeURIComponent(id)}/api${path.startsWith("/") ? path : "/" + path}`, init.body);
   }
 
+  /**
+   * Short-lived, single-use download URL for a GET route of a plugin that streams a file (PluginDownload), such as the WhatsApp chat export.
+   * Navigations and the Tauri downloader cannot send the bearer header, so the runtime signs the link instead.
+   */
+  async pluginDownloadUrl(id: string, path: string, query: Record<string, string> = {}): Promise<string> {
+    const result = await this.call<{ url: string; expiresAt: number }>("POST", `/v1/plugins/${encodeURIComponent(id)}/download-link`, { path, query });
+    return this.baseUrl + result.url;
+  }
+
   projectFolders(): Promise<ProjectFoldersState> {
     return this.call("GET", "/v1/project-folders");
   }

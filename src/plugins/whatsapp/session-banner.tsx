@@ -16,6 +16,7 @@ import { WEBHOOK_CSS, WebhookDialog, WebhookMenuItem, healthOf } from "./webhook
 import { NotifyMenuItem } from "./notify";
 import { useSessionInfo, type SessionStatus } from "./session-screen";
 import { SESSION_CSS } from "./styles-session";
+import { ExportDialog } from "./export-dialog";
 
 const STATUS_TEXT: Record<SessionStatus, string> = {
   WORKING: "Connected", STARTING: "Connecting", SCAN_QR_CODE: "Waiting for a scan", STOPPED: "Stopped", FAILED: "Connection failed", MISSING: "Not set up",
@@ -42,6 +43,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
   const others = list.filter((a) => a.session !== session).reduce((n, a) => n + (a.unread || 0), 0);
   const refresh = async () => { await Promise.all([refreshInfo(), accounts?.refresh()]); };
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [shot, setShot] = useState("");
   const status: SessionStatus = info?.status ?? "STARTING";
@@ -121,6 +123,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
               <DropdownMenuItem disabled={history.busy} onSelect={() => void history.cancel()}><IconX />Cancel import</DropdownMenuItem>
             </>
           ) : status === "WORKING" && <DropdownMenuItem disabled={history.busy} onSelect={() => void history.start()}><IconDownload />{hist?.everRan ? "Import history again" : "Import history"}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => setExporting(true)}><IconDownload />Export all chats</DropdownMenuItem>
           <DropdownMenuItem disabled={busy} onSelect={() => void act("/session/restart", "Could not restart", "Restarting WhatsApp")}><IconRefresh />Restart</DropdownMenuItem>
           {status !== "STOPPED" && status !== "MISSING" && <DropdownMenuItem disabled={busy} onSelect={() => void act("/session/stop", "Could not stop")}><IconStop />Stop</DropdownMenuItem>}
           {features.screenshot && status === "WORKING" && <DropdownMenuItem onSelect={() => void screenshot()}><IconCamera />Screenshot</DropdownMenuItem>}
@@ -134,6 +137,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
         </DropdownMenuContent>
       </DropdownMenu>
 
+      <ExportDialog open={exporting} onOpenChange={setExporting} />
       <RemoveAccountDialog account={removing} onOpenChange={(v) => { if (!v) setRemoving(null); }} api={api} onRemoved={() => accounts?.refresh()} />
       <RenameAccountDialog account={renaming} onOpenChange={(v) => { if (!v) setRenaming(null); }} api={api} onDone={() => accounts?.refresh()} />
 

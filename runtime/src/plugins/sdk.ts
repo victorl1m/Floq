@@ -78,6 +78,18 @@ export interface PluginRouteRequest {
   query: Record<string, string>;
   body: unknown;
 }
+/**
+ * A GET route may return this instead of JSON: a file the host streams to the caller (any size). It is only reachable through the signed link
+ * (`POST /v1/plugins/<id>/download-link`, then `GET /v1/plugins/<id>/download?t=`), which the desktop downloader and a browser navigation can use.
+ * Everything before the first byte (checks, names) happens in the route; `write` produces the body and must stop when `signal` aborts.
+ */
+export interface PluginDownload {
+  floqDownload: true;
+  filename: string;
+  contentType: string;
+  write(out: import("node:stream").Writable, signal: AbortSignal): Promise<void>;
+}
+
 /** Return value becomes the JSON body (HTTP 200). Throw `HttpError` for other statuses. */
 export type PluginRouteHandler = (req: PluginRouteRequest) => unknown | Promise<unknown>;
 export type PluginRouteMethod = "GET" | "POST" | "PUT" | "DELETE";

@@ -35,7 +35,7 @@ import type { SettingsPatch, SettingsStore } from "./settings.js";
 import type { Session } from "./session.js";
 import type { GitReview } from "./gitReview.js";
 import type { Artifacts } from "./artifacts.js";
-import type { WorkspaceFiles } from "./workspaceFiles.js";
+import { contentDisposition, type WorkspaceFiles } from "./workspaceFiles.js";
 import { DownloadLinks } from "./downloadLinks.js";
 import { DavMounts, mountLocations } from "./davMounts.js";
 import { WebDav } from "./webdav.js";
@@ -905,6 +905,22 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
       return artifacts.download(claims.u, claims.s, claims.p, res, typeof req.headers.range === "string" ? req.headers.range : undefined);
     }
 
+    // A plugin's streamed file (PluginDownload): the signed single-use link stands in for the bearer header, like the file downloads above.
+    const pluginDownload = plugins && method === "GET" ? /^\/v1\/plugins\/([a-z][a-z0-9-]*)\/download$/.exec(url.pathname) : null;
+    if (plugins && pluginDownload) {
+      const claims = downloadLinks.redeem(url.searchParams.get("t"), "plug");
+      if (!claims || claims.s !== pluginDownload[1]) throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again.");
+      let call: { path: string; query: Record<string, string> };
+      try { call = JSON.parse(claims.p) as typeof call; } catch { throw new HttpError(401, "invalid_download_link", "This download link has expired. Try again."); }
+      const file = await plugins.openDownload(claims.u, claims.s, call.path, call.query);
+      // Headers go out with the first byte; the user closing the download (or the connection) aborts the walk through the messages.
+      const stop = new AbortController();
+      res.once("close", () => stop.abort());
+      res.writeHead(200, { "Content-Type": file.contentType, "Content-Disposition": contentDisposition(file.filename), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+      try { await file.write(res, stop.signal); } catch { res.destroy(); }
+      return;
+    }
+
     const hookMatch = plugins && method === "POST" ? /^\/v1\/plugins\/([a-z][a-z0-9-]*)\/hooks\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_-]{16,128})$/.exec(url.pathname) : null;
     if (plugins && hookMatch) {
       // Unauthenticated by design: the install token in the path is the credential (see PluginHost.handleWebhook).
@@ -928,6 +944,20 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     const orgHeader = req.headers["x-floq-organization"];
     let activeOrgPromise: Promise<string> | undefined;
     const activeOrg = () => (activeOrgPromise ??= organizations.resolveActive(userId, Array.isArray(orgHeader) ? orgHeader[0] : orgHeader));
+
+    const pluginLink = plugins && method === "POST" ? /^\/v1\/plugins\/([a-z][a-z0-9-]*)\/download-link$/.exec(url.pathname) : null;
+    if (plugins && pluginLink) {
+      const body = await readJson<{ path?: unknown; query?: unknown }>(req);
+      const path = typeof body.path === "string" && body.path.startsWith("/") && !/(^|\/)\.\.?(\/|$)/.test(body.path) && body.path.length <= 200 ? body.path : null;
+      if (!path) throw badRequest("path is invalid");
+      const query: Record<string, string> = {};
+      if (body.query && typeof body.query === "object" && !Array.isArray(body.query)) for (const [k, v] of Object.entries(body.query)) if (typeof v === "string" && k.length <= 40 && v.length <= 300) query[k] = v;
+      const p = JSON.stringify({ path, query });
+      if (p.length > 1200) throw badRequest("The download request is too long");
+      await plugins.authorizeDownload(userId, pluginLink[1], path);
+      const { token, expiresAt } = downloadLinks.issue({ userId, authSessionId, sessionId: pluginLink[1], path: p, audience: "plug" });
+      return send(res, 200, { url: `/v1/plugins/${pluginLink[1]}/download?t=${token}`, expiresAt });
+    }
 
     if (plugins && (url.pathname === "/v1/plugins" || url.pathname.startsWith("/v1/plugins/") || url.pathname === "/v1/task-sources" || url.pathname.startsWith("/v1/task-sources/"))) {
       const result = await plugins.handle({

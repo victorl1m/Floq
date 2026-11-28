@@ -62,6 +62,8 @@ const chat = (id: string) => chats.find((c) => c.chatId === id);
 const q = (path: string) => new URLSearchParams(path.split("?")[1] ?? "");
 
 const client = {
+  /** The signed link of a streamed plugin download: recorded, and it points nowhere (the spec checks what was asked, not the file). */
+  async pluginDownloadUrl(id: string, path: string, query: Record<string, string> = {}) { ((window as unknown as { __downloads?: unknown[] }).__downloads ??= []).push({ id, path, query }); return "http://localhost:1420/__export-test?" + new URLSearchParams(query).toString(); },
   async pluginFetch(_id: string, path: string, init?: { method?: string; body?: unknown }) {
     const method = init?.method ?? "GET", body = (init?.body ?? {}) as Record<string, any>;
     calls.push({ path, method, body: init?.body });

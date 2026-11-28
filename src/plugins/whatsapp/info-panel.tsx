@@ -8,6 +8,8 @@ import { AddParticipantsDialog, ConfirmDialog, InviteLinkDialog, Pic, isGroupCha
 import { IconSearch, IconX, Spinner } from "./icons";
 import { IconBlock, IconChevronRight, IconDots, IconEdit, IconExit, IconLink, IconMerge, IconMessage, IconPhoto, IconShield, IconUserPlus } from "./icons-people";
 import { fail } from "./people-utils";
+import { ExportDialog } from "./export-dialog";
+import { IconDownload } from "./icons-session";
 
 interface ContactInfo { chatId: string; name: string; pushName: string; phone: string | null; about: string; blocked: boolean; isBusiness: boolean; isSelf: boolean; avatar: number | null; aliases: number }
 interface Member { id: string; name: string; phone: string | null; role: "superadmin" | "admin" | "member"; isMe: boolean }
@@ -53,6 +55,7 @@ function ContactBody({ chat }: { chat: Chat }) {
   const [linking, setLinking] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [busy, setBusy] = useState("");
+  const [exporting, setExporting] = useState(false);
   const load = useCallback(() => {
     setError("");
     api<ContactInfo>(`/contact?chatId=${encodeURIComponent(chat.chatId)}`).then(setInfo).catch((e) => setError(errorText(e)));
@@ -93,9 +96,11 @@ function ContactBody({ chat }: { chat: Chat }) {
           {info.aliases > 1 && <p className="wa-fine">This chat combines {info.aliases} WhatsApp ids of the same person.</p>}
         </section>
       )}
+      <section className="wa-card wa-rows"><Row icon={<IconDownload />} onClick={() => setExporting(true)}>Export chat</Row></section>
       {!info.isSelf && features.block && (
         <section className="wa-card wa-rows"><Row icon={<IconBlock />} danger onClick={() => (info.blocked ? void block() : setBlocking(true))}>{info.blocked ? `Unblock ${name}` : `Block ${name}`}</Row></section>
       )}
+      <ExportDialog open={exporting} onOpenChange={setExporting} chat={merged} />
       <SaveContactDialog open={saving} onOpenChange={setSaving} chatId={info.chatId} current={info.name} onDone={() => { load(); refreshChats(); }} />
       <LinkChatDialog open={linking} onOpenChange={setLinking} chat={merged} onDone={(id) => { refreshChats(); if (id !== chat.chatId) openChat(id); else load(); }} />
       <ConfirmDialog open={blocking} onOpenChange={setBlocking} title={`Block ${name}?`} description="Blocked contacts cannot call you or send you messages. You can unblock them at any time." confirm="Block" onConfirm={block} />
@@ -185,7 +190,7 @@ function GroupBody({ chat }: { chat: Chat }) {
   const [info, setInfo] = useState<GroupInfo | null>(null);
   const [error, setError] = useState("");
   const [find, setFind] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false), [invite, setInvite] = useState(false), [leaving, setLeaving] = useState(false);
+  const [adding, setAdding] = useState(false), [invite, setInvite] = useState(false), [leaving, setLeaving] = useState(false), [exporting, setExporting] = useState(false);
   const [edit, setEdit] = useState<null | "subject" | "description">(null);
   const [draft, setDraft] = useState("");
   const [removing, setRemoving] = useState<Member | null>(null);
@@ -283,11 +288,13 @@ function GroupBody({ chat }: { chat: Chat }) {
         {find !== null && find.trim() && shown.length === 0 && <p className="wa-dlg-note">No participants match “{find.trim()}”.</p>}
       </section>
       <section className="wa-card wa-rows">
+        <Row icon={<IconDownload />} onClick={() => setExporting(true)}>Export chat</Row>
         <Row icon={<IconLink />} onClick={() => setInvite(true)} trailing={<IconChevronRight className="wa-pchev" />}>Invite to group via link</Row>
         <Row icon={<IconExit />} danger onClick={() => setLeaving(true)}>Exit group</Row>
       </section>
       <AddParticipantsDialog open={adding} onOpenChange={setAdding} chatId={chat.chatId} existing={info.participants.map((p) => p.id)} onDone={() => load(true)} />
       <InviteLinkDialog open={invite} onOpenChange={setInvite} chatId={chat.chatId} />
+      <ExportDialog open={exporting} onOpenChange={setExporting} chat={chat} />
       <ConfirmDialog open={leaving} onOpenChange={setLeaving} title="Exit this group?" description={`You will stop receiving messages from “${name}”.`} confirm="Exit group" onConfirm={() => change("Could not exit the group", "/group/leave", {}, "You left the group").then(() => undefined)} />
       <ConfirmDialog open={removing !== null} onOpenChange={(o) => { if (!o) setRemoving(null); }} title={`Remove ${removing ? removing.name || phoneText(removing.phone) || "this person" : ""}?`} description={`They will no longer be part of “${name}”.`} confirm="Remove"
         onConfirm={() => (removing ? change("Could not remove the participant", "/group/participants", { action: "remove", participants: [removing.id] }, "Participant removed").then(() => undefined) : undefined)} />

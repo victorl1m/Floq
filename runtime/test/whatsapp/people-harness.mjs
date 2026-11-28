@@ -12,7 +12,7 @@ let tmp, plugin, migrations, shared;
 const open = [];
 const bundle = async (name, src) => {
   const out = join(tmp, name);
-  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent", banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   return import(pathToFileURL(out).href);
 };
 export async function setup() {

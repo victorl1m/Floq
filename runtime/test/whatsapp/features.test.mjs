@@ -11,10 +11,10 @@ let tmp, plugin, phoneToChatId;
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "waha-features-"));
   const out = join(tmp, "rt.mjs");
-  await build({ entryPoints: [new URL("../../src/plugins/whatsapp/index.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL("../../src/plugins/whatsapp/index.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent", banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   plugin = (await import(pathToFileURL(out).href)).default;
   const c = join(tmp, "client.mjs");
-  await build({ entryPoints: [new URL("../../src/plugins/whatsapp/client.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: c, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL("../../src/plugins/whatsapp/client.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: c, external: ["node:*"], logLevel: "silent", banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   ({ phoneToChatId } = await import(pathToFileURL(c).href));
 });
 after(() => rmSync(tmp, { recursive: true, force: true }));

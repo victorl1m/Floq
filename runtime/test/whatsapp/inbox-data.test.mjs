@@ -11,7 +11,7 @@ import { build } from "esbuild";
 let tmp, plugin, parseWebhook, migrations;
 const bundle = async (name, src) => {
   const out = join(tmp, name);
-  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent", banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   return import(pathToFileURL(out).href);
 };
 before(async () => {
@@ -106,7 +106,7 @@ test("GET /messages includes senderName", async () => {
 
 test("POST /read validates, is owner-only and writes for the right user and chat", async () => {
   const h = harness();
-  assert.deepEqual(await h.routes["POST /read"]({ userId: "u1", body: { chatId: "5511999999999@c.us" } }), { ok: true });
+  assert.deepEqual(await h.routes["POST /read"]({ userId: "u1", body: { chatId: "5511999999999@c.us", local: true } }), { ok: true });
   const reads = () => h.queries.filter((q) => /chat_reads/.test(q.sql));
   assert.equal(reads().length, 1); assert.deepEqual(reads()[0].params, ["u1", "5511999999999@c.us", "default"]);
   await assert.rejects(h.routes["POST /read"]({ userId: "u1", body: { chatId: "bad id!" } }), { status: 400 });

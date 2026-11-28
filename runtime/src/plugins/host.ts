@@ -12,7 +12,7 @@ import { PluginEvents } from "./events.js";
 import { TaskSourceRegistry } from "./taskSources.js";
 import { buildContext, expandSql, matchRoute, type BuiltContext, type ContextDeps } from "./context.js";
 import { ManifestError, parseManifest } from "./manifest.js";
-import type { PluginDefinition, PluginManifest, PluginMcpServerDecl, PluginSettingDecl } from "./sdk.js";
+import type { PluginDefinition, PluginDownload, PluginManifest, PluginMcpServerDecl, PluginSettingDecl } from "./sdk.js";
 
 export type PluginStatus = "available" | "enabled" | "disabled" | "failed" | "invalid";
 export const MAX_START_ATTEMPTS = 3;
@@ -289,6 +289,33 @@ export class PluginHost {
     const hit = matchRoute(e.built.routes, "POST", i.route);
     if (!hit) throw notFound("Route not found");
     return this.runHandler(e, () => hit.entry.handler({ userId: i.userId, params: hit.params, query: {}, body: i.body }));
+  }
+
+  /**
+   * A streamed download of a plugin's GET route (see PluginDownload). `authorizeDownload` checks the route exists and the user may use the plugin (the link
+   * is only issued then); `openDownload` runs it as the link's user. The route's own errors surface before the first byte.
+   */
+  async authorizeDownload(userId: string, pluginId: string, path: string): Promise<void> {
+    const e = this.entries.get(pluginId);
+    if (!e?.manifest || e.status !== "enabled" || !e.built) throw new HttpError(404, "plugin_disabled", "Plugin is not available");
+    await this.requireActiveFor(e, userId);
+    if (!matchRoute(e.built.routes, "GET", path)) throw notFound("Route not found");
+  }
+
+  async openDownload(userId: string, pluginId: string, path: string, query: Record<string, string>): Promise<PluginDownload> {
+    await this.authorizeDownload(userId, pluginId, path);
+    const e = this.entries.get(pluginId)!;
+    const hit = matchRoute(e.built!.routes, "GET", path)!;
+    const built = e.built!;
+    try {
+      const result = (await hit.entry.handler({ userId, params: hit.params, query, body: undefined })) as Partial<PluginDownload> | undefined;
+      if (!result || result.floqDownload !== true || typeof result.write !== "function") throw new HttpError(400, "not_a_download", "That route does not return a file");
+      return { floqDownload: true, filename: built.scrubText(String(result.filename ?? "download")), contentType: String(result.contentType ?? "application/octet-stream"), write: result.write };
+    } catch (error) {
+      if (error instanceof HttpError) throw new HttpError(error.status, error.code, built.scrubText(error.message));
+      this.log("error", "plugin.route_failed", { plugin: e.id, error: built.scrubText(msg(error)) });
+      throw new HttpError(500, "plugin_error", "Plugin request failed");
+    }
   }
 
   /** Called by the server once it has built Approvals and Decisions (backs `ctx.attention`). */

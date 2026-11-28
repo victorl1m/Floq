@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const DOWNLOAD_LINK_TTL_MS = 60_000;
 
-export type DownloadAudience = "ws" | "art";
+export type DownloadAudience = "ws" | "art" | "plug";
 
 export interface DownloadClaims {
   /** Floq user id. */

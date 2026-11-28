@@ -17,6 +17,7 @@ import type { History } from "./history.js";
 import { registerWebhook } from "./webhook.js";
 import { registerAcks } from "./acks.js";
 import { registerNotify } from "./notify.js";
+import { registerExport } from "./export.js";
 
 export interface Deps { core: Core; identity: Identity; store: Store; inbox: Inbox; history: History }
 
@@ -30,4 +31,5 @@ export function registerExtras(deps: Deps): void {
   registerWebhook(deps);
   registerAcks(deps);
   registerNotify(deps);
+  registerExport(deps);
 }

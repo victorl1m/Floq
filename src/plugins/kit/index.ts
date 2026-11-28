@@ -32,3 +32,4 @@ export { PluginSettingsForm } from "./plugin-settings-form";
 export { ExternalTaskRow, StatusCategoryBadge, STATUS_CATEGORY_LABEL } from "./external-task-row";
 export { PluginBoundary, usePlugins, usePluginEvent, usePluginApi } from "@/plugins/host";
 export { resolvePluginIcon } from "@/plugins/icons";
+export { usePluginDownload } from "./plugin-download";

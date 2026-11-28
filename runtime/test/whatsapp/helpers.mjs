@@ -10,7 +10,9 @@ let tmp, n = 0;
 export async function bundle(src) {
   tmp ??= mkdtempSync(join(tmpdir(), "waha-test-"));
   const out = join(tmp, `b${++n}.mjs`);
-  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent",
+    // Bundled CommonJS dependencies (yazl, in the export) call require("fs"): give the ESM bundle a real require.
+    banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   return import(pathToFileURL(out).href);
 }
 export const cleanup = () => { if (tmp) rmSync(tmp, { recursive: true, force: true }); tmp = undefined; };

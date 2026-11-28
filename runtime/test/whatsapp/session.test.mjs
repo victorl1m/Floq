@@ -11,7 +11,7 @@ import { newDb } from "./_db.mjs";
 let tmp, plugin, migrations, session, shared;
 const bundle = async (name, src) => {
   const out = join(tmp, name);
-  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent" });
+  await build({ entryPoints: [new URL(src, import.meta.url).pathname], bundle: true, format: "esm", platform: "node", outfile: out, external: ["node:*"], logLevel: "silent", banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
   return import(pathToFileURL(out).href);
 };
 before(async () => {

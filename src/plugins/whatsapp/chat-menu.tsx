@@ -6,6 +6,8 @@ import { useWa } from "./context";
 import { ConfirmDialog, isGroupChat } from "./group-dialogs";
 import { IconArchive, IconBell, IconBellOff, IconBin, IconBlock, IconClearChat, IconDots, IconExit, IconInfo, IconMarkRead, IconMarkUnread, IconPinChat, IconPinOff, IconUnarchive } from "./icons-people";
 import { fail } from "./people-utils";
+import { ExportDialog } from "./export-dialog";
+import { IconDownload } from "./icons-session";
 
 type Ask = "clear" | "delete" | "leave";
 interface Result { ok: boolean; localOnly?: boolean }
@@ -18,6 +20,7 @@ const MUTES: Array<[string, () => string]> = [["8 hours", () => new Date(Date.no
 export function ChatMenu({ chat, onInfo, onGone }: { chat: Chat; onInfo?: () => void; onGone?: () => void }) {
   const { api, features, refreshChats } = useWa();
   const [ask, setAsk] = useState<Ask | null>(null);
+  const [exporting, setExporting] = useState(false);
   // Right-click (or long-press) on the chat's row opens this same menu at the pointer: it is anchored to the "⋮" button and shifted by the offset to the pointer.
   const btn = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -82,6 +85,7 @@ export function ChatMenu({ chat, onInfo, onGone }: { chat: Chat; onInfo?: () => 
               </DropdownMenuSub>
             )}
           {(unread || features.markUnread) && <DropdownMenuItem onSelect={() => void toggleRead()}>{unread ? <IconMarkRead /> : <IconMarkUnread />}{unread ? "Mark as read" : "Mark as unread"}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => setExporting(true)}><IconDownload />Export chat</DropdownMenuItem>
           <DropdownMenuSeparator />
           {!group && !chat.isSelf && features.block && <DropdownMenuItem onSelect={() => void block()}><IconBlock />{chat.blocked ? "Unblock" : "Block"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => setAsk("clear")}><IconClearChat />Clear chat</DropdownMenuItem>
@@ -89,6 +93,7 @@ export function ChatMenu({ chat, onInfo, onGone }: { chat: Chat; onInfo?: () => 
           <DropdownMenuItem variant="destructive" onSelect={() => setAsk("delete")}><IconBin />Delete chat</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <ExportDialog open={exporting} onOpenChange={setExporting} chat={chat} />
       <ConfirmDialog open={ask !== null} onOpenChange={(o) => { if (!o) setAsk(null); }} {...copy[ask ?? "delete"]} onConfirm={confirm} />
     </>
   );
