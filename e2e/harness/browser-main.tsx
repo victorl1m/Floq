@@ -52,6 +52,7 @@ class MockSocket {
 (w as unknown as { __patches: unknown[] }).__patches = [];
 (w as unknown as { __overrides: unknown[] }).__overrides = [];
 const client = {
+  claimBrowserNode: async () => undefined, // the runtime registers each node to its project before a card connects
   browserEgressOverride: async (server: boolean) => { (w as unknown as { __overrides: unknown[] }).__overrides.push(server); return {}; },
   updateSettings: async (patch: unknown) => { (w as unknown as { __patches: unknown[] }).__patches.push(patch); return {}; },
   browserStreamUrl: (nodeId: string) => `ws://mock/v1/browser/stream?node=${nodeId}`, browserStatus: async () => ({ state: "running", agents: 0 }),

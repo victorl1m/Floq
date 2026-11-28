@@ -328,6 +328,8 @@ async function main() {
   /** Per casting target: its screencast params, when it (re)started and when its last frame arrived (watchdog, see castWatchdog). */
   const castInfo = new Map<string, { params: Record<string, unknown>; startedAt: number; lastFrameAt: number; busy: boolean }>();
   const ackIds = new Map<number, { id: number; sid: string }>(); // our frame n -> Chromium screencast ack
+  const nodeProject = new Map<string, string>(); // Browser node id -> the project that owns it (pages are per project)
+  const agentProject = new Map<string, string>(); // agent session id -> its project
   const agentScope = new Map<string, string | null>(); // agent session id -> node it is linked to (null/absent = unlinked)
   const muxClients = new Map<number, MuxClient>();
   let frameN = 0;
@@ -555,20 +557,24 @@ async function main() {
       if (!client.agent) continue;
       const node = agentScope.get(client.agent);
       mux.setScope(cid, node == null ? undefined : (nodes.get(node) ?? null));
+      mux.setClientProject(cid, agentProject.get(client.agent));
     }
   }
   const opening = new Map<string, Promise<string>>();
   /** Idempotent per node. Adopts an unclaimed user page first (the initial tab, or a pre-upgrade tab: the active one is kept, the rest dropped for the legacy node). */
-  function openPage(nodeId: string, url?: string): Promise<string> {
+  function openPage(nodeId: string, url?: string, project = "none"): Promise<string> {
     let p = opening.get(nodeId);
-    if (!p) { p = doOpen(nodeId, url).finally(() => opening.delete(nodeId)); opening.set(nodeId, p); }
+    if (!p) { p = doOpen(nodeId, url, project).finally(() => opening.delete(nodeId)); opening.set(nodeId, p); }
     return p;
   }
-  async function doOpen(nodeId: string, url?: string): Promise<string> {
+  async function doOpen(nodeId: string, url: string | undefined, project: string): Promise<string> {
     if (!url && lastUrls[nodeId]) url = lastUrls[nodeId]; // resume where the node was before the daemon stopped
+    // A node belongs to one project: another project asking for the same node id never gets its page.
+    if (nodeProject.has(nodeId) && nodeProject.get(nodeId) !== project) { out({ type: "error", code: "browser_node_other_project" }); throw new Error("node belongs to another project"); }
     const have = nodes.get(nodeId);
     if (have && mux.targets.has(have)) { out({ type: "page", nodeId, targetId: have, created: false }); return have; }
-    const free = pages().filter((t) => !mux.claimed.has(t.targetId) && !mux.agentOpened.has(t.targetId));
+    // Only a page that belongs to nobody can be adopted (the initial tab, or one from before pages had projects).
+    const free = pages().filter((t) => !mux.claimed.has(t.targetId) && !mux.agentOpened.has(t.targetId) && !mux.pageProject.has(t.targetId));
     let targetId: string;
     let created = true;
     if (free.length) {
@@ -576,12 +582,14 @@ async function main() {
       if (nodeId === "main") for (const t of free.slice(1)) mux.command("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
       if (url) await mux.command("Page.navigate", { url }, mux.sessionFor(targetId)).catch(() => {});
     } else {
-      mux.reserve = true; mux.reserved = [];
+      mux.reserve = true; mux.reserved = []; mux.reserveProject = project;
       try { targetId = String((await mux.command("Target.createTarget", { url: url ?? "about:blank", newWindow: true })).result?.targetId ?? ""); }
-      finally { mux.reserve = false; }
+      finally { mux.reserve = false; mux.reserveProject = undefined; }
       if (!targetId) throw new Error("no target");
     }
     nodes.set(nodeId, targetId);
+    nodeProject.set(nodeId, project);
+    mux.pageProject.set(targetId, project);
     for (let i = 0; i < 40 && !mux.sessionFor(targetId); i++) await new Promise((r) => setTimeout(r, 50));
     refreshScopes();
     out({ type: "page", nodeId, targetId, created });
@@ -589,7 +597,7 @@ async function main() {
   }
   function closePage(nodeId: string) {
     const tid = nodes.get(nodeId); if (!tid) return;
-    lock.release(tid); nodes.delete(nodeId); casting.delete(tid); castInfo.delete(tid); delete lastUrls[nodeId];
+    lock.release(tid); nodes.delete(nodeId); casting.delete(tid); castInfo.delete(tid); delete lastUrls[nodeId]; nodeProject.delete(nodeId);
     for (const [agent, node] of agentScope) if (node === nodeId) agentScope.delete(agent);
     refreshScopes();
     mux.command("Target.closeTarget", { targetId: tid }).catch(() => {});
@@ -645,6 +653,7 @@ async function main() {
     mux.addClient(client);
     // A linked agent is scoped before it asks for anything, so it only ever hears about its node's page.
     if (client.agent && agentScope.get(client.agent) != null) mux.setScope(id, nodes.get(agentScope.get(client.agent)!) ?? null);
+    if (client.agent && agentProject.has(client.agent)) mux.setClientProject(id, agentProject.get(client.agent));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
@@ -712,11 +721,16 @@ async function main() {
     switch (c.type) {
       case "hello": return;
       case "shutdown": return shutdown(0);
-      case "page.open": await openPage(c.nodeId, c.url); return;
+      case "page.open": await openPage(c.nodeId, c.url, c.project).catch(() => {}); return;
+      case "agent.project": {
+        if (c.project === null) agentProject.delete(c.agent); else agentProject.set(c.agent, c.project);
+        refreshScopes();
+        return;
+      }
       case "page.close": return closePage(c.nodeId);
       case "agent.scope": {
         if (c.nodeId === null) agentScope.delete(c.agent); else agentScope.set(c.agent, c.nodeId);
-        if (c.nodeId !== null && !nodes.has(c.nodeId)) await openPage(c.nodeId).catch(() => {}); // linking creates the node's page if its viewer has not
+        if (c.nodeId !== null && !nodes.has(c.nodeId)) await openPage(c.nodeId, undefined, nodeProject.get(c.nodeId) ?? agentProject.get(c.agent)).catch(() => {}); // linking creates the node's page if its viewer has not
         refreshScopes();
         return;
       }

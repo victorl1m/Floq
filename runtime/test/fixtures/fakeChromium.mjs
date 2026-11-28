@@ -14,9 +14,9 @@ let seq = 1;
 const targets = new Map();
 const sessions = new Map(); // sessionId -> targetId
 let autoAttach = false;
-const info = (t) => ({ targetId: t.id, type: "page", title: t.title, url: t.url, attached: false });
-function addTarget(url) {
-  const t = { id: "T" + String(seq++).padStart(15, "0") + "AB", url, title: url === "about:blank" ? "" : "Page", history: [url], index: 0 };
+const info = (t) => ({ targetId: t.id, type: "page", title: t.title, url: t.url, attached: false, ...(t.openerId ? { openerId: t.openerId } : {}) });
+function addTarget(url, openerId) {
+  const t = { openerId, id: "T" + String(seq++).padStart(15, "0") + "AB", url, title: url === "about:blank" ? "" : "Page", history: [url], index: 0 };
   targets.set(t.id, t);
   send({ method: "Target.targetCreated", params: { targetInfo: info(t) } });
   if (autoAttach) attach(t.id);
@@ -50,6 +50,7 @@ function handle(m) {
     case "Target.attachToTarget": { if (!targets.has(m.params.targetId)) return send({ id: m.id, error: { code: -32602, message: "No target with given id found" } }); const sessionId = "S" + seq++; sessions.set(sessionId, m.params.targetId); return reply({ sessionId }); }
     case "Target.detachFromTarget": sessions.delete(m.params.sessionId); return reply();
     case "Target.createTarget": { note("CREATE " + JSON.stringify(m.params)); const t = addTarget(m.params.url || "about:blank"); return reply({ targetId: t.id }); }
+    case "Fake.openPopup": { const t = addTarget(m.params.url || "about:blank", m.params.openerId); return reply({ targetId: t.id }); } // a page opened by another page (window.open)
     case "Target.closeTarget": { process.stderr.write("CLOSE_TARGET\n"); targets.delete(m.params.targetId); send({ method: "Target.targetDestroyed", params: { targetId: m.params.targetId } }); return reply({ success: true }); }
     case "Target.activateTarget": note("ACTIVATE " + m.params.targetId); return reply();
     case "Target.getTargets": return reply({ targetInfos: [...targets.values()].map(info) });

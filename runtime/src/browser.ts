@@ -66,7 +66,16 @@ export interface BrowserShards {
 export const agentToken = (master: string, agent: string): string => createHmac("sha256", master).update("floq-browser-agent:" + agent).digest("hex");
 
 /** Source of the user's agent <-> Browser node links (the browser_links table). */
-export interface BrowserLinkPort { forUser(userId: string): Promise<Array<{ sessionId: string; nodeId: string }>>; removeNode(userId: string, nodeId: string): Promise<string[]> }
+export interface BrowserLinkPort {
+  forUser(userId: string): Promise<Array<{ sessionId: string; nodeId: string; projectId?: string | null }>>;
+  removeNode(userId: string, nodeId: string): Promise<string[]>;
+  /** Owner of a node: undefined = unclaimed, null = no project. Without it every node counts as project-less. */
+  nodeOwner?(userId: string, nodeId: string): Promise<string | null | undefined>;
+  /** Project of an agent session (null = none). */
+  sessionProject?(userId: string, sessionId: string): Promise<string | null>;
+}
+/** Wire name of a project in the daemon: pages are per project; "none" is the project-less bucket. */
+const projectKey = (id: string | null | undefined): string => (typeof id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : "none");
 export interface BrowserSettingsPort { agentBrowser(userId: string): Promise<boolean>; /** The user's egress choice; absent in older callers = "server". */ agentBrowserEgress?(userId: string): Promise<BrowserEgressMode> }
 export interface BrowserMcpPort { sync(userId: string, desired: boolean): Promise<McpSyncResult> }
 
@@ -101,6 +110,8 @@ interface Viewer {
   input: RateWindow;
   /** The Browser node this socket shows. One node = one page. */
   nodeId: string;
+  /** The project that owns that node (daemon wire name). */
+  project: string;
   /** That node's page, once the daemon has bound it. */
   targetId: string | null;
   cast: boolean;
@@ -124,6 +135,8 @@ interface Entry {
   agents: number;
   /** Agent session ids that asked for the endpoint; cleared when the daemon reports no agent connection. */
   agentIds: Set<string>;
+  /** Agent session id -> its project, replayed to every new daemon. */
+  agentProjects: Map<string, string>;
   lastActivity: number;
   viewers: Set<Viewer>;
   /** How THIS daemon run routes its traffic (fixed at spawn; a change restarts the daemon). */
@@ -249,7 +262,13 @@ export class BrowserService {
     // `?agent=` names the agent session so the daemon can scope it to the Browser node the user linked it to (see setAgentScope).
     // The daemon-wide token never leaves the runtime: each caller gets a token derived for its own agent id, which the daemon checks against `?agent=`.
     const agentId = opts.agentId && /^[A-Za-z0-9-]{8,64}$/.test(opts.agentId) ? opts.agentId : "floq-runtime-helper";
-    if (agentId !== "floq-runtime-helper") entry.agentIds.add(agentId);
+    if (agentId !== "floq-runtime-helper") {
+      entry.agentIds.add(agentId);
+      // The agent only ever sees its own project's pages: tell the daemon before the agent connects.
+      const project = projectKey(await this.links?.sessionProject?.(userId, agentId).catch(() => null));
+      entry.agentProjects.set(agentId, project);
+      if (entry.state === "running") this.write(entry, { type: "agent.project", agent: agentId, project });
+    }
     return { wsEndpoint: `ws://127.0.0.1:${entry.port}/devtools/browser?agent=${agentId}`, token: agentToken(entry.token, agentId), chromium: this.installed?.chromium, ...(entry.egressMode === "desktop" && !this.egress?.isUp(userId) ? { egress: "paused" as const } : {}) };
   }
 
@@ -258,7 +277,7 @@ export class BrowserService {
     let entry = this.entries.get(userId);
     if (!entry) {
       const dead = exitedPromise();
-      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, agentIds: new Set(), lastActivity: Date.now(), viewers: new Set(), egressMode: "server", egressPipe: null, idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
+      entry = { userId, state: "stopped", child: null, port: 0, token: "", pid: null, startedAt: 0, sandbox: null, tabs: [], nav: new Map(), pages: new Map(), agents: 0, agentIds: new Set(), agentProjects: new Map(), lastActivity: Date.now(), viewers: new Set(), egressMode: "server", egressPipe: null, idleTimer: null, ackTimer: null, pendingAcks: new Map(), stopRequested: false, exited: dead.promise, markExited: dead.resolve, start: null };
       this.entries.set(userId, entry);
     }
     return entry;
@@ -354,6 +373,7 @@ export class BrowserService {
             settled = true; clearTimeout(timer);
             this.write(entry, { type: "hello" });
             this.broadcast(entry, { type: "state", state: "running" });
+            for (const [agent, project] of entry.agentProjects) this.write(entry, { type: "agent.project", agent, project });
             this.openViewerPages(entry);
             void this.restoreScopes(entry);
             this.armIdle(entry);
@@ -551,7 +571,8 @@ export class BrowserService {
       entry.pages.delete(nodeId);
       for (const v of entry.viewers) if (v.nodeId === nodeId) { v.targetId = null; v.cast = false; }
       if (tid) entry.nav.delete(tid);
-      if ([...entry.viewers].some((v) => v.nodeId === nodeId)) this.write(entry, { type: "page.open", nodeId });
+      const again = [...entry.viewers].find((v) => v.nodeId === nodeId);
+      if (again) this.write(entry, { type: "page.open", nodeId, project: again.project });
       return;
     }
     const msg = toViewerMessage(raw);
@@ -572,13 +593,16 @@ export class BrowserService {
 
   /** The daemon came up: every attached node asks for its page, and every stored link is re-applied to the daemon. */
   private openViewerPages(entry: Entry): void {
-    const nodes = new Set([...entry.viewers].map((v) => v.nodeId));
-    for (const nodeId of nodes) this.write(entry, { type: "page.open", nodeId });
+    const nodes = new Map([...entry.viewers].map((v) => [v.nodeId, v.project] as const));
+    for (const [nodeId, project] of nodes) this.write(entry, { type: "page.open", nodeId, project });
   }
   private async restoreScopes(entry: Entry): Promise<void> {
     if (!this.links) return;
     try {
-      for (const l of await this.links.forUser(entry.userId)) if (entry.state === "running") this.write(entry, { type: "agent.scope", agent: l.sessionId, nodeId: l.nodeId });
+      for (const l of await this.links.forUser(entry.userId)) if (entry.state === "running") {
+        if (l.projectId !== undefined) this.write(entry, { type: "agent.project", agent: l.sessionId, project: projectKey(l.projectId) });
+        this.write(entry, { type: "agent.scope", agent: l.sessionId, nodeId: l.nodeId });
+      }
     } catch (error) { log.warn("browser.scope_restore_failed", { userId: entry.userId, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" }); }
   }
 
@@ -652,8 +676,15 @@ export class BrowserService {
     const state = await this.state(userId);
     const send0 = (msg: ViewerMessage) => { try { sink.send(JSON.stringify(msg)); } catch { /* closing */ } };
     if (!NODE_ID.test(nodeId)) { send0({ type: "error", code: "bad_node" }); return { onMessage: () => undefined, close: () => undefined }; }
-    const viewer: Viewer = { sink, input: new RateWindow(), nodeId, targetId: null, cast: false };
     const send = send0;
+    // Pages are per project: the node's owner decides which pages this socket may ever show. An unclaimed node shows nothing.
+    let project = "none";
+    if (this.links?.nodeOwner) {
+      const owner = await this.links.nodeOwner(userId, nodeId).catch(() => undefined);
+      if (owner === undefined) { send0({ type: "error", code: "node_unclaimed" }); return { onMessage: () => undefined, close: () => undefined }; }
+      project = projectKey(owner);
+    }
+    const viewer: Viewer = { sink, input: new RateWindow(), nodeId, project, targetId: null, cast: false };
     if (state === "disabled" || state === "unavailable") {
       send({ type: "state", state });
       return { onMessage: () => undefined, close: () => undefined };
@@ -670,7 +701,7 @@ export class BrowserService {
       send({ type: "clients", agents: current.agents });
       const tid = current.pages.get(nodeId);
       if (tid) { viewer.targetId = tid; send({ type: "page", targetId: tid, created: false }); const nav = current.nav.get(tid); if (nav) send(nav); }
-      else this.write(current, { type: "page.open", nodeId });
+      else this.write(current, { type: "page.open", nodeId, project });
     } else if (current.state === "stopped") {
       // Opening the node starts the browser; failures are reported as an error message and the stopped state.
       void this.ensure(userId, { wake: true }).catch((error) => {

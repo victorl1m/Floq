@@ -27,6 +27,7 @@ class MockSocket {
 (window as unknown as { WebSocket: unknown }).WebSocket = MockSocket;
 
 const client = {
+  claimBrowserNode: async () => undefined, // the runtime registers each node to its project before a card connects
   browserStreamUrl: (nodeId: string) => `ws://mock/v1/browser/stream?node=${nodeId}`, browserStatus: async () => ({ state: "running", agents: 0 }),
   browserLinks: async () => readSrv(),
   linkBrowser: async (nodeId: string, sessionId: string) => { w.__calls.push(["link", nodeId, sessionId]); const rest = readSrv().filter((l) => l.sessionId !== sessionId); writeSrv([...rest, { nodeId, sessionId, projectId: "p1" }]); return { link: { nodeId, sessionId, projectId: "p1" }, replacedNode: null }; },

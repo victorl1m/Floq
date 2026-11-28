@@ -543,6 +543,31 @@ test("one page per node: each node's socket gets only its own page, frames and a
   await service.shutdown();
 });
 
+test("pages are per project: page.open carries the node owner's project, an unclaimed node opens no page, ensure tells the daemon the agent's project", async () => {
+  const { service, state } = harness();
+  const owners = { na: "proj-a", nb: "proj-b", nn: null as string | null };
+  service.links = {
+    forUser: async () => [{ sessionId: "11111111-1111-1111-1111-111111111111", nodeId: "na", projectId: "proj-a" }], removeNode: async () => [],
+    nodeOwner: async (_u, n) => (n in owners ? (owners as Record<string, string | null>)[n] : undefined),
+    sessionProject: async (_u, s) => (s.startsWith("1111") ? "proj-a" : "proj-b"),
+  };
+  await service.ensure("alice", { agentId: "22222222-2222-2222-2222-222222222222" });
+  const d = state.children[0];
+  const a = sink(), b = sink(), n = sink(), none = sink();
+  await service.attachViewer("alice", a, "na");
+  await service.attachViewer("alice", b, "nb");
+  await service.attachViewer("alice", n, "nn");
+  await service.attachViewer("alice", none, "ghost");
+  await bound(a); await bound(b); await bound(n);
+  const opens = d.received.filter((m) => m.type === "page.open");
+  assert.deepEqual(opens.map((m) => [m.nodeId, m.project]), [["na", "proj-a"], ["nb", "proj-b"], ["nn", "none"]]);
+  assert.deepEqual(none.msgs("error").map((m) => m.code), ["node_unclaimed"], "a node nobody registered shows nothing");
+  assert.ok(!d.received.some((m) => m.type === "page.open" && m.nodeId === "ghost"));
+  assert.deepEqual(d.received.find((m) => m.type === "agent.project" && m.agent.startsWith("2222")), { type: "agent.project", agent: "22222222-2222-2222-2222-222222222222", project: "proj-b" });
+  assert.deepEqual(d.received.find((m) => m.type === "agent.project" && m.agent.startsWith("1111")), { type: "agent.project", agent: "11111111-1111-1111-1111-111111111111", project: "proj-a" }, "stored links restore their project too");
+  await service.shutdown();
+});
+
 test("closing a node destroys its page and drops its links; a page that vanishes is re-opened for a live viewer", async () => {
   const removed = [];
   const { service, state } = harness();

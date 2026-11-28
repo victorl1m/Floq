@@ -170,8 +170,8 @@ async function startDaemon(t: test.TestContext, opts: { exe?: string; env?: Reco
 
 type Cdp = { ws: WebSocket; call(method: string, params?: unknown, sessionId?: string): Promise<any>; events: any[]; waitEvent(method: string, ms?: number): Promise<any>; close(): void };
 
-async function connect(d: Daemon, t: test.TestContext, headers: Record<string, string> = {}): Promise<Cdp> {
-  const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser`, { headers: { Authorization: "Bearer " + d.ready.token, ...headers } });
+async function connect(d: Daemon, t: test.TestContext, headers: Record<string, string> = {}, agent?: string): Promise<Cdp> {
+  const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser${agent ? "?agent=" + agent : ""}`, { headers: { Authorization: "Bearer " + (agent ? agentToken(d.ready.token, agent) : d.ready.token), ...headers } });
   await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); ws.once("unexpected-response", (_r, res) => reject(new Error("HTTP " + res.statusCode))); });
   let id = 0;
   const pending = new Map<number, (m: any) => void>();
@@ -270,11 +270,17 @@ test("daemon: removes a stale SingletonLock whose pid is dead", async (t) => {
 
 test("daemon: two agents share one browser with their own sessions and cannot use each other's", async (t) => {
   const d = await startDaemon(t);
-  const a = await connect(d, t), b = await connect(d, t);
+  // Two agents of the same project share that project's pages (the browser's initial tab belongs to nobody, so neither sees it).
+  const A1 = "aaaaaaaa-0000-0000-0000-000000000001", A2 = "aaaaaaaa-0000-0000-0000-000000000002";
+  d.send({ type: "agent.project", agent: A1, project: "px" }); d.send({ type: "agent.project", agent: A2, project: "px" });
+  const a = await connect(d, t, {}, A1), b = await connect(d, t, {}, A2);
   await d.waitFor((m) => m.type === "clients" && m.agents === 2);
   for (const c of [a, b]) {
     assert.deepEqual((await c.call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true })).result, {});
   }
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(a.events.filter((e) => e.method === "Target.attachedToTarget").length, 0, "the initial tab belongs to nobody");
+  await a.call("Target.createTarget", { url: "about:blank" });
   const sa = (await a.waitEvent("Target.attachedToTarget")).params.sessionId, sb = (await b.waitEvent("Target.attachedToTarget")).params.sessionId;
   assert.notEqual(sa, sb);
   assert.equal((await a.call("Runtime.evaluate", { expression: "1" }, sa)).result.result.value, "url=about:blank");
@@ -288,7 +294,7 @@ test("daemon: two agents share one browser with their own sessions and cannot us
   // A client that opens a tab gets a session for it; the other sees the target; the tab is attributed to the agent.
   const created = await b.call("Target.createTarget", { url: "https://new.example/" });
   const tabs = await d.waitFor((m) => m.type === "tabs" && m.tabs.some((x: any) => x.targetId === created.result.targetId && x.opener === "agent"));
-  assert.equal(tabs.tabs.find((x: any) => x.opener === "user").url, "https://a.example/");
+  assert.equal(tabs.tabs.find((x: any) => x.opener === "agent" && x.url === "https://a.example/")?.opener, "agent");
   // Browser.close and friends are not available to agents.
   assert.match((await a.call("Browser.close")).error.message, /not allowed/);
   assert.equal(d.child.exitCode, null);
@@ -418,8 +424,10 @@ test("daemon: a linked agent sees exactly its node's page; unlinked agents never
     t.after(() => ws.close());
     return { events, call: (method: string, params: any = {}, sessionId?: string) => new Promise<any>((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); }) };
   };
+  const FREE = "33333333-3333-3333-3333-333333333333";
+  d.send({ type: "agent.project", agent: AGENT, project: "px" }); d.send({ type: "agent.project", agent: FREE, project: "px" });
   const linked = await connectAs(AGENT);
-  const free = await connectAs();
+  const free = await connectAs(FREE);
   const wait = (ms = 80) => new Promise((r) => setTimeout(r, ms));
   const pagesOf = async (c: any) => (await c.call("Target.getTargets")).result.targetInfos.filter((x: any) => x.type === "page").map((x: any) => x.targetId).sort();
   assert.deepEqual(await pagesOf(linked), [p2.targetId], "a linked agent sees only its node's page");
@@ -464,6 +472,56 @@ test("daemon: a linked agent sees exactly its node's page; unlinked agents never
   assert.ok(sess);
   await second.call("Target.closeTarget", { targetId: p1.targetId });
   await d.waitFor((m) => m.type === "pageGone" && m.nodeId === "n1");
+});
+
+test("daemon: pages are per project: an agent only sees its own project's pages, a popup stays in its project, a node never adopts another project's page", async (t) => {
+  const d = await startDaemon(t);
+  const A1 = "aaaaaaaa-1111-0000-0000-000000000001", A2 = "aaaaaaaa-1111-0000-0000-000000000002", B1 = "bbbbbbbb-1111-0000-0000-000000000001";
+  d.send({ type: "agent.project", agent: A1, project: "proj-a" }); d.send({ type: "agent.project", agent: A2, project: "proj-a" }); d.send({ type: "agent.project", agent: B1, project: "proj-b" });
+  const connectAs = async (agent: string) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${d.ready.port}/devtools/browser?agent=${agent}`, { headers: { Authorization: "Bearer " + agentToken(d.ready.token, agent) } });
+    await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+    let id = 0; const pending = new Map<number, (m: any) => void>(); const events: any[] = [];
+    ws.on("message", (raw) => { const m = JSON.parse(String(raw)); if (m.id !== undefined) pending.get(m.id)?.(m); else events.push(m); });
+    t.after(() => ws.close());
+    return { events, call: (method: string, params: any = {}, sessionId?: string) => new Promise<any>((resolve) => { const n = ++id; pending.set(n, resolve); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); }) };
+  };
+  const a1 = await connectAs(A1), a2 = await connectAs(A2), b1 = await connectAs(B1);
+  const wait = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+  const pagesOf = async (c: any) => (await c.call("Target.getTargets")).result.targetInfos.filter((x: any) => x.type === "page").map((x: any) => x.targetId).sort();
+  for (const c of [a1, a2, b1]) { await c.call("Target.setDiscoverTargets", { discover: true }); await c.call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }); }
+  // A node of each project, and an agent page of each.
+  d.send({ type: "page.open", nodeId: "na", url: "https://a-node.example/", project: "proj-a" });
+  const pa = await d.waitFor((m) => m.type === "page" && m.nodeId === "na");
+  d.send({ type: "page.open", nodeId: "nb", url: "https://b-node.example/", project: "proj-b" });
+  const pb = await d.waitFor((m) => m.type === "page" && m.nodeId === "nb");
+  assert.notEqual(pa.targetId, pb.targetId, "project B's node got a page of its own, not project A's");
+  const ta = (await a1.call("Target.createTarget", { url: "https://a-agent.example/" })).result.targetId;
+  const tb = (await b1.call("Target.createTarget", { url: "https://b-agent.example/" })).result.targetId;
+  await wait();
+  assert.deepEqual(await pagesOf(a1), [ta], "agent of A sees its project's page only");
+  assert.deepEqual(await pagesOf(a2), [ta], "another agent of A sees it too");
+  assert.deepEqual(await pagesOf(b1), [tb], "agent of B never sees A's agent page nor any node page");
+  assert.ok(!a1.events.some((e) => e.method === "Target.attachedToTarget" && e.params.targetInfo.targetId === tb), "A is never attached to B's page");
+  assert.ok(!b1.events.some((e) => (e.method === "Target.targetCreated" && e.params.targetInfo.targetId === ta) || (e.method === "Target.attachedToTarget" && e.params.targetInfo.targetId === ta)), "B never hears about A's page");
+  assert.match((await b1.call("Target.attachToTarget", { targetId: ta, flatten: true })).error.message, /No target/);
+  assert.match((await b1.call("Target.closeTarget", { targetId: ta })).error.message, /No target/);
+  // A popup of A's page stays in A.
+  const popup = (await a1.call("Fake.openPopup", { openerId: ta, url: "https://popup.example/" })).result.targetId;
+  await wait();
+  assert.deepEqual(await pagesOf(a1), [ta, popup].sort(), "A sees its popup");
+  assert.deepEqual(await pagesOf(b1), [tb], "B does not see A's popup");
+  // Project B asking for A's node id never gets A's page (a node belongs to one project), and a free page owned by a project is never adopted.
+  d.send({ type: "page.open", nodeId: "na", project: "proj-b" });
+  await d.waitFor((m) => m.type === "error" && m.code === "browser_node_other_project");
+  d.send({ type: "page.open", nodeId: "nb2", project: "proj-b" });
+  const pb2 = await d.waitFor((m) => m.type === "page" && m.nodeId === "nb2");
+  assert.ok(![pa.targetId, ta, popup].includes(pb2.targetId), "B's second node did not adopt any of A's pages");
+  // The browser's initial tab belongs to nobody: no agent sees it; the first node adopts it.
+  assert.ok(!(await pagesOf(a1)).concat(await pagesOf(b1)).some((id: string) => ![ta, popup, tb].includes(id)));
+  // An agent with no project only sees pages it opened itself.
+  const lone = await connectAs("cccccccc-1111-0000-0000-000000000001");
+  assert.deepEqual(await pagesOf(lone), []);
 });
 
 test("daemon: caps open tabs at 20, closing the oldest agent-opened background tab first", async (t) => {

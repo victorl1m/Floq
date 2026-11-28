@@ -1412,7 +1412,7 @@ export function createRuntimeServer({ config, setupToken: setupTokenDep, manager
     if (url.pathname === "/v1/browser/nodes" && browserLinks) {
       const projectOf = async (value: unknown): Promise<string | null> => {
         if (value === null || value === "none") return null;
-        if (typeof value !== "string" || !(await manager.listProjects(userId, await activeOrg())).some((p) => p.id === value)) throw notFound("Project not found");
+        if (typeof value !== "string" || !(await manager.project(userId, value))) throw notFound("Project not found"); // any project of the user, not only the active org's
         return value;
       };
       if (method === "GET") return send(res, 200, { nodes: await browserLinks.nodes(userId, await projectOf(url.searchParams.get("project") ?? "none")) });

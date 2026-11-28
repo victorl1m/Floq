@@ -28,7 +28,8 @@ const SIDES = [
   { id: "bottom", position: Position.Bottom }, { id: "left", position: Position.Left },
 ] as const;
 
-export type BrowserNode = Node<{ projectId: string; nodeId: string }, "browser">;
+/** `claimed`: the runtime has registered this node to its project. A card connects only then: a node never shows a page before its owner is known. */
+export type BrowserNode = Node<{ projectId: string; nodeId: string; claimed: boolean }, "browser">;
 export interface BrowserLinkedAgent { sessionId: string; title: string }
 /** `url`: page to load in the new node; `near`: node id (with prefix) to place the new one beside (Duplicate). */
 export interface NewBrowserOptions { url?: string; near?: string }
@@ -59,10 +60,10 @@ export const BrowserProvider = BrowserCtx.Provider;
  *   react-flow's own Space+drag pan takes the drag. Space typed into a focused page still goes to the page.
  * - Keyboard: only the focused textarea feeds the page, and it stops propagation so canvas shortcuts (L, N, F, Delete...) never fire.
  */
-const BrowserCard = memo(function BrowserCard({ id, selected }: NodeProps<BrowserNode>) {
+const BrowserCard = memo(function BrowserCard({ id, selected, data }: NodeProps<BrowserNode>) {
   const { client, openSettings, close, linkedAgents, newBrowser, unlink } = useContext(BrowserCtx);
   const nodeId = id.startsWith(BROWSER_PREFIX) ? id.slice(BROWSER_PREFIX.length) : id;
-  const stream = useBrowserStream(client, true, nodeId);
+  const stream = useBrowserStream(client, data.claimed, nodeId);
   const { state, frame, targetId, nav: info, activity, control, cursor, send, reconnect, dialog, clipboard, download, egress } = stream;
   // Ctrl/Cmd+C in the page: the daemon reports the selected text and it lands on the user's own clipboard.
   useEffect(() => { if (clipboard) void navigator.clipboard?.writeText(clipboard.text).catch(() => {}); }, [clipboard]);
@@ -420,6 +421,8 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
   const stored = state.projectId === projectId ? state.stored : (projectId ? read(projectId, anchor) : { nodes: [] });
   const storedRef = useRef(stored); storedRef.current = stored;
   const claimed = useRef(new Set<string>());
+  const [retry, setRetry] = useState(0);
+  const [okIds, setOkIds] = useState<ReadonlySet<string>>(EMPTY_IDS); // "projectId:nodeId" the runtime confirmed as this project's
   const projectRef = useRef(projectId); projectRef.current = projectId;
   useEffect(() => { setState({ projectId, stored: projectId ? read(projectId, anchorRef.current) : { nodes: [] } }); }, [projectId]);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -435,12 +438,19 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
     const ids = state.stored.nodes.map((n) => n.id).filter((id) => !claimed.current.has(projectId + ":" + id));
     if (!ids.length) return;
     for (const id of ids) claimed.current.add(projectId + ":" + id);
-    void Promise.allSettled(ids.map((id) => Promise.resolve().then(() => client.claimBrowserNode(id, projectId)).then(() => null, (e: unknown) => ((e as { status?: number }).status === 409 ? id : null)))).then((r) => {
-      const clash = new Set(r.map((x) => (x.status === "fulfilled" ? x.value : null)).filter((x): x is string => !!x));
-      if (!clash.size || projectRef.current !== projectId) return;
-      update((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (clash.has(n.id) ? { ...n, id: newId() } : n)) }));
+    void Promise.allSettled(ids.map((id) => Promise.resolve().then(() => client.claimBrowserNode(id, projectId)).then(() => ({ id, ok: true, clash: false }), (e: unknown) => ({ id, ok: false, clash: (e as { status?: number }).status === 409 })))).then((r) => {
+      const res = r.map((x) => (x.status === "fulfilled" ? x.value : null)).filter((x): x is { id: string; ok: boolean; clash: boolean } => !!x);
+      const clash = new Set(res.filter((x) => x.clash).map((x) => x.id));
+      // Any other failure (offline, 404): the node stays unconnected and is claimed again on the next pass; it never shows a page unclaimed.
+      const failed = res.filter((x) => !x.ok && !x.clash);
+      for (const x of failed) claimed.current.delete(projectId + ":" + x.id);
+      if (failed.length) setTimeout(() => setRetry((n) => n + 1), 3000);
+      if (projectRef.current !== projectId) return;
+      const good = res.filter((x) => x.ok).map((x) => projectId + ":" + x.id);
+      if (good.length) setOkIds((prev) => new Set([...prev, ...good]));
+      if (clash.size) update((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (clash.has(n.id) ? { ...n, id: newId() } : n)) }));
     });
-  }, [client, projectId, state, update]);
+  }, [client, projectId, state, update, retry]);
 
 
   const open = useCallback((at?: { x: number; y: number }): string => {
@@ -458,8 +468,8 @@ export function useCanvasBrowsers(client: RuntimeClient | null, projectId: strin
 
   const nodes = useMemo<BrowserNode[]>(() => (!projectId ? [] : stored.nodes.map((n) => ({
     id: BROWSER_PREFIX + n.id, type: "browser" as const, dragHandle: ".browser-drag", selected: selected.has(BROWSER_PREFIX + n.id),
-    position: { x: n.x, y: n.y }, width: n.width, height: n.height, data: { projectId, nodeId: n.id },
-  }))), [projectId, stored, selected]);
+    position: { x: n.x, y: n.y }, width: n.width, height: n.height, data: { projectId, nodeId: n.id, claimed: okIds.has(projectId + ":" + n.id) },
+  }))), [projectId, stored, selected, okIds]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
     const patches = new Map<string, Partial<StoredNode>>();

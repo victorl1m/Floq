@@ -25,6 +25,16 @@ export class BrowserLinks {
     const r = await this.pool.query("SELECT node_id FROM browser_nodes WHERE user_id = $1 AND project_id IS NOT DISTINCT FROM $2 ORDER BY created_at", [userId, projectId]);
     return r.rows.map((x: { node_id: string }) => x.node_id);
   }
+  /** Who owns a node: undefined = nobody has claimed it yet, null = no project, else the project id. */
+  async nodeOwner(userId: string, nodeId: string): Promise<string | null | undefined> {
+    const r = await this.pool.query("SELECT project_id FROM browser_nodes WHERE user_id = $1 AND node_id = $2", [userId, nodeId]);
+    return r.rows[0] ? ((r.rows[0].project_id as string | null) ?? null) : undefined;
+  }
+  /** The project an agent session belongs to (null = none). */
+  async sessionProject(userId: string, sessionId: string): Promise<string | null> {
+    const r = await this.pool.query("SELECT project_id FROM agent_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+    return (r.rows[0]?.project_id as string | null | undefined) ?? null;
+  }
   /** Registers a node on a project. Idempotent; a node already owned by another project is refused (409), never moved. */
   async claim(userId: string, nodeId: unknown, projectId: string | null): Promise<void> {
     if (typeof nodeId !== "string" || !NODE_ID.test(nodeId)) throw badRequest("nodeId required", "invalid_node");

@@ -53,9 +53,11 @@ export type Control =
   /** The user takes control of the page (held) or hands it back. The daemon is the single source of truth (ControlLock). */
   | { type: "control.set"; targetId?: string; held: boolean }
   /** One page per Browser node: idempotent open (adopts an unclaimed user tab first), close, and agent scoping by link. */
-  | { type: "page.open"; nodeId: string; url?: string }
+  | { type: "page.open"; nodeId: string; url?: string; project?: string }
   | { type: "page.close"; nodeId: string }
   | { type: "agent.scope"; agent: string; nodeId: string | null }
+  /** The project an agent session belongs to: an unlinked agent sees only that project's pages (pages are per project, the profile is shared). */
+  | { type: "agent.project"; agent: string; project: string | null }
   | { type: "shutdown" };
 
 export type Validated = { ok: true; msg: Control } | { ok: false; code: string };
@@ -63,6 +65,7 @@ export type Validated = { ok: true; msg: Control } | { ok: false; code: string }
 const TARGET_ID = /^[A-Za-z0-9]{8,64}$/;
 export const NODE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 export const AGENT_ID = /^[A-Za-z0-9-]{8,64}$/;
+export const PROJECT_ID = /^[A-Za-z0-9-]{1,64}$/;
 const CODE_NAME = /^[A-Za-z0-9]{1,32}$/;
 const NAMED_KEYS = new Set([
   "Enter", "Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown",
@@ -102,15 +105,22 @@ export function validateControl(input: unknown, viewport: { w: number; h: number
     }
     case "page.open": {
       if (typeof m.nodeId !== "string" || !NODE_ID.test(m.nodeId)) return bad();
-      if (m.url === undefined) return { ok: true, msg: { type: "page.open", nodeId: m.nodeId } };
+      if (m.project !== undefined && (typeof m.project !== "string" || !PROJECT_ID.test(m.project))) return bad();
+      const project = typeof m.project === "string" ? { project: m.project } : {};
+      if (m.url === undefined) return { ok: true, msg: { type: "page.open", nodeId: m.nodeId, ...project } };
       const url = normalizeNavUrl(m.url);
-      return url ? { ok: true, msg: { type: "page.open", nodeId: m.nodeId, url } } : bad("bad_url");
+      return url ? { ok: true, msg: { type: "page.open", nodeId: m.nodeId, url, ...project } } : bad("bad_url");
     }
     case "page.close": return typeof m.nodeId === "string" && NODE_ID.test(m.nodeId) ? { ok: true, msg: { type: "page.close", nodeId: m.nodeId } } : bad();
     case "agent.scope": {
       if (typeof m.agent !== "string" || !AGENT_ID.test(m.agent)) return bad();
       if (m.nodeId !== null && (typeof m.nodeId !== "string" || !NODE_ID.test(m.nodeId))) return bad();
       return { ok: true, msg: { type: "agent.scope", agent: m.agent, nodeId: m.nodeId as string | null } };
+    }
+    case "agent.project": {
+      if (typeof m.agent !== "string" || !AGENT_ID.test(m.agent)) return bad();
+      if (m.project !== null && (typeof m.project !== "string" || !PROJECT_ID.test(m.project))) return bad();
+      return { ok: true, msg: { type: "agent.project", agent: m.agent, project: m.project as string | null } };
     }
     case "screencast.start": {
       if (typeof m.targetId !== "string" || !TARGET_ID.test(m.targetId) || !isInt(m.maxW, 1, 1600) || !isInt(m.maxH, 1, 1200) || !isInt(m.quality, 1, 100)) return bad();
@@ -440,6 +450,13 @@ export class CdpMux {
   /** While true, the next page Chromium announces is the daemon's own node page: claimed at once. */
   reserve = false;
   reserved: string[] = [];
+  /** The project a reserved (node) page is born in. */
+  reserveProject: string | undefined;
+  /** Page targetId -> the project it belongs to. A page without an entry belongs to nobody and is shown to no unscoped agent. */
+  readonly pageProject = new Map<string, string>();
+  /** Client id -> the project of the agent behind it. A client without one lives in a private bucket: it sees only pages it created itself. */
+  private clientProject = new Map<number, string>();
+  projectOf(clientId: number): string { return this.clientProject.get(clientId) ?? "client:" + clientId; }
   /** client id -> the one targetId it is linked to (null = linked but the page is not up yet). Absent = unscoped. */
   private scopes = new Map<number, string | null>();
 
@@ -451,7 +468,7 @@ export class CdpMux {
     const t = this.targets.get(targetId);
     if (t && t.type !== "page") return true; // non-page targets (workers etc.) follow their page through sessions
     if (this.scopes.has(clientId)) return this.scopes.get(clientId) === targetId;
-    return !this.claimed.has(targetId);
+    return !this.claimed.has(targetId) && this.pageProject.get(targetId) === this.projectOf(clientId);
   }
   isScoped(clientId: number): boolean { return this.scopes.has(clientId); }
 
@@ -464,6 +481,27 @@ export class CdpMux {
     const after = this.visiblePages(clientId);
     for (const id of before) if (!after.has(id)) this.hideFrom(client, id);
     for (const id of after) if (!before.has(id)) this.showTo(client, id);
+  }
+  /** Runs a change to ownership and tells every connected client what appeared and disappeared for it. */
+  private rediff(change: () => void): void {
+    const before = new Map([...this.clients.keys()].map((id) => [id, this.visiblePages(id)] as const));
+    change();
+    for (const [cid, was] of before) {
+      const client = this.clients.get(cid); if (!client) continue;
+      const now = this.visiblePages(cid);
+      for (const id of was) if (!now.has(id)) this.hideFrom(client, id);
+      for (const id of now) if (!was.has(id)) this.showTo(client, id);
+    }
+  }
+  /** Assigns a page to a project (undefined = to nobody). */
+  assign(targetId: string, project: string | undefined): void {
+    if (this.pageProject.get(targetId) === project) return;
+    this.rediff(() => { if (project === undefined) this.pageProject.delete(targetId); else this.pageProject.set(targetId, project); });
+  }
+  /** Sets (or clears) the project of the agent behind a connected client. */
+  setClientProject(clientId: number, project: string | undefined): void {
+    if (this.clientProject.get(clientId) === project) return;
+    this.rediff(() => { if (project === undefined) this.clientProject.delete(clientId); else this.clientProject.set(clientId, project); });
   }
   /** Claims/unclaims pages for nodes and refreshes every connected client's view. */
   setClaimed(next: Set<string>): void {
@@ -532,6 +570,7 @@ export class CdpMux {
     this.autoAttach.delete(clientId);
     this.discover.delete(clientId);
     this.scopes.delete(clientId);
+    this.clientProject.delete(clientId);
     for (const [sid, owner] of this.owners) {
       if (owner === clientId) {
         this.owners.delete(sid);
@@ -660,7 +699,10 @@ export class CdpMux {
       if (r && p.method === "Target.attachToTarget" && typeof r.sessionId === "string") this.owners.set(r.sessionId, p.client.id);
       let afterAttach: Promise<void> | undefined;
       if (r && p.method === "Target.createTarget" && typeof r.targetId === "string") {
-        this.agentOpened.add(r.targetId); this.onTargetsChanged();
+        this.agentOpened.add(r.targetId);
+        // The page belongs to the creator's project; assigned before the creator is attached, so it is shown to that project's agents only.
+        this.assign(r.targetId, this.projectOf(p.client.id));
+        this.onTargetsChanged();
         // Chromium sends attachedToTarget BEFORE the createTarget response, and Playwright relies on that order: attach this client first.
         if (this.autoAttach.has(p.client.id)) {
           const info = this.targets.get(r.targetId) ?? { targetId: r.targetId, type: "page", title: "", url: "about:blank" };
@@ -734,7 +776,10 @@ export class CdpMux {
         const info = p.targetInfo as TargetInfo;
         this.targets.set(info.targetId, info);
         // A page the daemon is creating for a Browser node is claimed before anyone can see it.
-        if (this.reserve && info.type === "page") { this.claimed.add(info.targetId); this.reserved.push(info.targetId); }
+        if (this.reserve && info.type === "page") { this.claimed.add(info.targetId); this.reserved.push(info.targetId); if (this.reserveProject !== undefined) this.pageProject.set(info.targetId, this.reserveProject); }
+        // A tab or popup opened by a page stays in that page's project.
+        const openerProject = info.type === "page" && info.openerId ? this.pageProject.get(info.openerId) : undefined;
+        if (openerProject !== undefined && !this.pageProject.has(info.targetId)) this.pageProject.set(info.targetId, openerProject);
         this.broadcastDiscovery(msg);
         if (info.type === "page") for (const cid of this.autoAttach) { const c = this.clients.get(cid); if (c && this.visible(cid, info.targetId)) void this.attachForClient(c, info); }
         this.onTargetsChanged();
@@ -751,6 +796,7 @@ export class CdpMux {
         const id = String(p.targetId ?? "");
         this.targets.delete(id);
         this.agentOpened.delete(id);
+        this.pageProject.delete(id);
         this.daemonSessionByTarget.delete(id);
         this.broadcastDiscovery(msg);
         this.onTargetsChanged();
