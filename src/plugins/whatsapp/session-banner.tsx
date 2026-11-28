@@ -13,7 +13,7 @@ import { progressText, useHistory } from "./history";
 import { IconBin, IconEdit, IconShield, IconUserPlus } from "./icons-people";
 import { IconAlertCircle, IconCamera, IconDownload, IconLogout, IconPlugOff, IconServerOff, IconStop } from "./icons-session";
 import { WEBHOOK_CSS, WebhookDialog, WebhookMenuItem, healthOf } from "./webhook-health";
-import { NotifyMenuItem } from "./notify";
+import { NotifyMenuItem, ReceiptsMenuItem } from "./notify";
 import { useSessionInfo, type SessionStatus } from "./session-screen";
 import { SESSION_CSS } from "./styles-session";
 import { ExportDialog } from "./export-dialog";
@@ -129,6 +129,7 @@ export function AccountMenu({ onContacts }: { onContacts?: () => void } = {}) {
           {features.screenshot && status === "WORKING" && <DropdownMenuItem onSelect={() => void screenshot()}><IconCamera />Screenshot</DropdownMenuItem>}
           <WebhookMenuItem health={webhook} onOpen={() => setDialog("webhook")} />
           <NotifyMenuItem api={api} />
+          <ReceiptsMenuItem api={api} />
           {current && <DropdownMenuItem onSelect={() => setRenaming(current)}><IconEdit />Rename</DropdownMenuItem>}
           {current && !current.primary && <DropdownMenuItem onSelect={() => void makeDefault()}><IconShield />Make default for the AI</DropdownMenuItem>}
           <DropdownMenuSeparator />

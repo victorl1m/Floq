@@ -121,13 +121,12 @@ export function registerNotify({ core, identity, store, inbox }: { core: Core; i
     const scope = await core.scope(core.split(userId).owner, typeof data.session === "string" ? data.session : "");
     const chatId = core.chatId(data.chatId);
     if (o.actionId === "reply") {
-      const sent = await inbox.sendText(scope, chatId, core.text(o.input));
-      seen(scope, chatId);
+      const sent = await inbox.sendText(scope, chatId, core.text(o.input)); // sending reads the chat first
       return { ok: true, id: sent.id };
     }
     if (o.actionId === "read") {
       await store.markRead(scope, chatId);
-      seen(scope, chatId);
+      await inbox.sendSeen(scope, chatId); // the island's "Mark read" is an explicit receipt
       core.publish(scope, "chats", {});
       return { ok: true };
     }
@@ -159,9 +158,6 @@ export function registerNotify({ core, identity, store, inbox }: { core: Core; i
       }
     }
   });
-  /** Blue ticks for the other side, like opening the chat on the phone. Best effort. */
-  const seen = (scope: string, chatId: string) => core.bg(store.route(scope, chatId).then(([target]) => core.tryWaha(scope, "POST", "/api/sendSeen", { body: { chatId: target } })));
-
   R.post("/notify/focus", async ({ userId, body }) => {
     const raw = core.obj(body).chatId;
     const chatId = raw === null || raw === undefined || raw === "" ? null : await identity.canonical(userId, core.chatId(raw));

@@ -5,7 +5,7 @@ import { Avatar } from "./avatar";
 import { Composer, type Attachment, type ComposerHandle } from "./composer";
 import { useAckRefresh } from "./ack-refresh";
 import { useWa } from "./context";
-import { IconAlert, IconArrowLeft, IconLock, IconSearch, Spinner } from "./icons";
+import { IconAlert, IconArrowLeft, IconChecks, IconLock, IconSearch, Spinner } from "./icons";
 import { IconPlus } from "./icons-composer";
 import { MessageLog } from "./message-log";
 import { countRender } from "./render-probe";
@@ -38,12 +38,14 @@ export interface ConversationHandlers {
 interface Props {
   chat: Chat; messages: Message[] | null; hasMore: boolean; error: string; now: Date; draft: string; sending: boolean; focusToken: string; reply: Quote | null;
   editing: { id: string; body: string } | null; handlers: ConversationHandlers;
+  /** Incoming messages the other side was not told were read: the "Mark as read" button shows while there are any. */
+  receiptPending?: number; onMarkRead?: () => void;
   /** Header pieces owned by the inbox: opening the info panel, the chat menu, a line under the name (presence). */
   onInfo?: () => void; menu?: ReactNode; presence?: ReactNode;
 }
 
 /** Header, message log (or its loading / error / empty state) and composer for one chat, plus the dialogs and panels that belong to it. */
-export function Conversation({ chat, messages, hasMore, error, now, draft, sending, focusToken, reply, editing, handlers: h, onInfo, menu, presence }: Props) {
+export function Conversation({ chat, messages, hasMore, error, now, draft, sending, focusToken, reply, editing, handlers: h, receiptPending = 0, onMarkRead, onInfo, menu, presence }: Props) {
   const { features } = useWa();
   countRender("conversation");
   useAckRefresh(chat.chatId, messages);
@@ -92,6 +94,12 @@ export function Conversation({ chat, messages, hasMore, error, now, draft, sendi
           <div className="wa-who" title={name}><b>{name}</b>{presence ?? (sub && sub !== name && <span>{sub}</span>)}</div>
         </button>
         <div className="wa-head-actions">
+          {receiptPending > 0 && onMarkRead && (
+            <Tooltip>
+              <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="wa-iconbtn wa-markread" aria-label="Mark as read" onClick={onMarkRead}><IconChecks /></Button></TooltipTrigger>
+              <TooltipContent>Send read receipt</TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="wa-iconbtn" aria-label="Search in this chat" aria-pressed={searching} onClick={() => setSearching((v) => !v)}><IconSearch /></Button></TooltipTrigger>
             <TooltipContent>Search</TooltipContent>

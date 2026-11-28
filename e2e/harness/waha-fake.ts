@@ -146,6 +146,8 @@ function createOne(opts: Opts, profile: Profile) {
   const state_ = new Map(base.map((c) => [c.chatId, { unread: c.unread, archived: c.archived === true, pinned: c.pinned === true, muted: c.muted === true, markedUnread: false, hidden: false }]));
   const extra = new Map(base.filter((c) => c.last).map((c) => [c.chatId, [c.last!]]));
   const log = (id: string) => (messages[id] ??= extra.get(id) ?? []);
+  /** Incoming messages per chat that no read receipt covered yet (the runtime's receiptPending). */
+  const rp = new Map<string, number>();
   const find = (id: string) => { for (const [chatId, list] of Object.entries(messages)) { const m = list.find((x) => x.id === id); if (m) return { chatId, m, list }; } for (const [chatId, list] of extra) { const m = list.find((x) => x.id === id); if (m) return { chatId, m, list: log(chatId) }; } return null; };
   const row = (c: Row) => {
     const l = log(c.chatId), last = l[l.length - 1], s = state_.get(c.chatId)!;
@@ -190,7 +192,7 @@ function createOne(opts: Opts, profile: Profile) {
     participants: [{ id: "me", name: "You", phone: "5534988880000", role: "admin", isMe: true }, { id: RAFAEL, name: "Rafael Souza", phone: "5511911112222", role: "superadmin", isMe: false }, { id: BIA, name: "Bia Nogueira", phone: "5511933334444", role: "admin", isMe: false }, { id: "5511955556666@c.us", name: "", phone: "5511955556666", role: "member", isMe: false }, { id: "5511977778888@c.us", name: "", phone: "5511977778888", role: "member", isMe: false }] };
 
   // Island notifications of this account (account menu switch) and Floq's webhook in WAHA (repaired by one call).
-  let notifyOn = true, hookFixed = false;
+  let notifyOn = true, hookFixed = false, auto = false;
   const hookHealth = () => (state === "webhook" && !hookFixed
     ? { state: "missing-events", missingEvents: ["message.ack", "message.reaction"], reason: "The webhook does not send 2 events Floq uses.", lastEnsuredAt: null, address: "https://floq.example.com/v1/plugins/waha/hooks/events/…" }
     : { state: "ok", missingEvents: [], lastEnsuredAt: null, address: "https://floq.example.com/v1/plugins/waha/hooks/events/…" });
@@ -208,6 +210,7 @@ function createOne(opts: Opts, profile: Profile) {
       case "/session/start": case "/session/restart": session = "SCAN_QR_CODE"; emit("session", { status: session }); return { status: session };
       case "/session/stop": session = "STOPPED"; emit("session", { status: session }); return { status: session };
       case "/session/logout": session = "SCAN_QR_CODE"; emit("session", { status: session }); return { status: session };
+      case "/receipts/settings": if (method === "POST") auto = body.auto === true; return { auto };
       case "/phone": return { phone: "+5534988880000", formatted: "+55 (34) 98888-0000" };
       case "/chats": {
         if (state === "loading") await new Promise(() => undefined);
@@ -219,12 +222,13 @@ function createOne(opts: Opts, profile: Profile) {
         const id = query.get("chatId") ?? "", q = (query.get("q") ?? "").toLowerCase(), before = query.get("before"), limit = Number(query.get("limit") ?? 50);
         let list = log(id).filter((m) => (!q || m.body.toLowerCase().includes(q)) && (!before || m.sentAt < before));
         const more = list.length > limit; list = list.slice(-limit);
-        return { messages: list.map((m) => ({ ...m })), more };
+        return { messages: list.map((m) => ({ ...m })), more, receiptPending: rp.get(id) ?? 0 };
       }
-      case "/read": { const s = state_.get(body.chatId); if (s) { s.unread = 0; s.markedUnread = false; } return ok; }
+      case "/read": { const s = state_.get(body.chatId); if (s) { s.unread = 0; s.markedUnread = false; } if (body.local !== true) rp.delete(body.chatId); return ok; }
       case "/send": {
         await sleep(250);
         const id = body.chatId ?? "";
+        rp.delete(id); // sending reads the chat first
         const original = body.replyTo ? log(id).find((x) => x.id === body.replyTo) : undefined;
         if (body.replyTo && !original) throw fail(400, "invalid_reply", "replyTo is not a message of this chat");
         if (String(body.text).includes("#fail")) throw fail(502, "waha_unavailable", "WAHA could not do that.");
@@ -344,7 +348,14 @@ function createOne(opts: Opts, profile: Profile) {
     incoming(chatId: string, body: string, sender = chatId, senderName = "", extra: Partial<Msg> = {}) {
       log(chatId).push(msg(false, body, new Date().toISOString(), { sender, senderName, ...extra }));
       const s = state_.get(chatId); if (s) s.unread++;
+      rp.set(chatId, (rp.get(chatId) ?? 0) + 1);
       emit("message", { chatId, fromMe: false });
+    },
+    /** A message of `chatId` announced under another address (the runtime's canonical id) with every alias in `ids`; or with `event: "chats"` only the chat list is told. */
+    incomingVia(chatId: string, body: string, announce: { chatId?: string; ids?: string[]; event?: "message" | "chats" }) {
+      log(chatId).push(msg(false, body, new Date().toISOString(), { sender: chatId }));
+      rp.set(chatId, (rp.get(chatId) ?? 0) + 1);
+      if (announce.event === "chats") emit("chats", {}); else emit("message", { chatId: announce.chatId ?? chatId, ...(announce.ids ? { ids: announce.ids } : {}), fromMe: false });
     },
     emit, importTick,
     history: () => ({ state: hist.state, chatsDone: hist.chatsDone, chatsTotal: hist.chatsTotal }),
@@ -425,6 +436,7 @@ export function createFake(opts: Opts) {
   return {
     fetch, calls,
     incoming: (...a: Parameters<ReturnType<typeof createOne>["incoming"]>) => first().incoming(...a),
+    incomingVia: (...a: Parameters<ReturnType<typeof createOne>["incomingVia"]>) => first().incomingVia(...a),
     emit: opts.emit,
     setSession: (status: string) => first().setSession(status),
     call: (video = false) => first().call(video),

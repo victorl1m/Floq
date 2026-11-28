@@ -160,6 +160,8 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
   const [hints, setHints] = useState<Record<string, Partial<Chat>>>({});
   const [pane, setPane] = useState<"list" | "chat">("list");
   const [messages, setMessages] = useState<Message[] | null>(null);
+  /** Incoming messages WhatsApp was not told were read (drives the "Mark as read" button). */
+  const [receiptPending, setReceiptPending] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [messagesError, setMessagesError] = useState("");
   // Drafts are not state: the composer owns its text, so typing renders nothing here. This only remembers each chat's text for when it is opened again.
@@ -211,9 +213,10 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
 
   const loadMessages = useCallback(async (chatId: string) => {
     try {
-      const res = await api<{ messages: Message[]; more?: boolean }>(`/messages?chatId=${encodeURIComponent(chatId)}&limit=${PAGE}`);
+      const res = await api<{ messages: Message[]; more?: boolean; receiptPending?: number }>(`/messages?chatId=${encodeURIComponent(chatId)}&limit=${PAGE}`);
       if (selectedRef.current !== chatId) return;
       setMessagesError("");
+      setReceiptPending(res.receiptPending ?? 0);
       // Older pages already loaded stay; the newest page replaces its part.
       setMessages((old) => {
         const fresh = res.messages ?? [];
@@ -242,15 +245,23 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
 
   const markRead = useCallback(async (chatId: string) => {
     setChats((cs) => cs && cs.map((c) => (c.chatId === chatId && c.unread ? { ...c, unread: 0, markedUnread: false } : c)));
-    try { await api("/read", { method: "POST", body: { chatId } }); } catch { /* the pill returns with the next refresh */ }
+    // Only Floq's own badge: WhatsApp is told by the "Mark as read" button, by sending, or by the account's automatic-receipts setting.
+    try { await api("/read", { method: "POST", body: { chatId, local: true } }); } catch { /* the pill returns with the next refresh */ }
   }, [api]);
+  const sendReceipt = useCallback(async () => {
+    const chatId = selectedRef.current;
+    if (!chatId) return;
+    setReceiptPending(0);
+    try { await api("/read", { method: "POST", body: { chatId } }); toast.success("Read receipt sent"); void loadChats(); }
+    catch (e) { toast.error("Could not send the read receipt", { description: explain(e) }); void loadMessages(chatId); }
+  }, [api, loadChats, loadMessages]);
 
   // The shell's status was read for the default account: this account's engine and features come from its own.
   useEffect(() => { if (first.session !== session) void loadStatus(); else if (first.me) setMe(first.me); }, [loadStatus]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (phase.kind === "ready" && phase.status.configured) void loadChats(); }, [phase, loadChats]);
   useEffect(() => {
     if (!selected) return;
-    setMessages(null); setMessagesError(""); setHasMore(false); setEditing(null);
+    setMessages(null); setMessagesError(""); setHasMore(false); setEditing(null); setReceiptPending(0);
     aliases.current.clear(); // the log is mounted anew for another chat: no row to keep
     void loadMessages(selected);
     void markRead(selected);
@@ -265,14 +276,19 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [markRead]);
 
-  useWaEventHere<{ chatId?: string; fromMe?: boolean; sync?: boolean }>(plugin.id, session, "message", (data) => {
-    if (data?.chatId && data.chatId === selectedRef.current) {
-      void loadMessages(data.chatId);
-      if (visible() && data.fromMe === false) { void markRead(data.chatId).then(() => loadChats()); return; }
+  useWaEventHere<{ chatId?: string; ids?: string[]; fromMe?: boolean; sync?: boolean }>(plugin.id, session, "message", (data) => {
+    const open = selectedRef.current;
+    // The event names the canonical id; the open chat may be held under another address of the same chat (an @lid, the other spelling of a
+    // number) until the list is read again. Then any message of this account may be for it, and re-reading the log is cheap.
+    const ours = Boolean(open) && (!data?.chatId || data.chatId === open || data.ids?.includes(open) || !chatsRef.current?.some((c) => c.chatId === open));
+    if (ours && open) {
+      void loadMessages(open);
+      if (visible() && data?.fromMe === false) { void markRead(open).then(() => loadChats()); return; }
     }
     void loadChats();
   });
-  useWaEventHere(plugin.id, session, "chats", () => { void loadChats(); });
+  // A message that reached Floq without a webhook (the chat list sync) only brings "chats": the open log still has to show it.
+  useWaEventHere(plugin.id, session, "chats", () => { const open = selectedRef.current; if (open) void loadMessages(open); void loadChats(); });
 
   const openChat = useCallback((chatId: string, hint?: Partial<Chat>) => {
     if (hint) setHints((h) => ({ ...h, [chatId]: { ...h[chatId], ...hint } }));
@@ -293,6 +309,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
    * When it fails the bubble stays, marked "Not sent" with Retry (keepFailed) or goes away (a dialog that stays open to try again). Returns false when it failed.
    */
   async function deliver(chatId: string, optimistic: Omit<Message, "id" | "fromMe" | "sender" | "sentAt" | "pending">, run: () => Promise<unknown>, failTitle: string, keepFailed = true, id = `pending-${++seq.current}`): Promise<boolean> {
+    setReceiptPending(0); // sending reads the chat first (the runtime sends the receipt)
     const message: Message = { ...optimistic, id, localId: id, fromMe: true, sender: "", sentAt: new Date().toISOString(), pending: true };
     const entry: Pending = { chatId, message, known: new Set((selectedRef.current === chatId ? messagesRef.current ?? [] : []).map((m) => m.id)), retry: () => void deliver(chatId, optimistic, run, failTitle, keepFailed, id) };
     const patch = (fn: (p: Pending) => Pending | null) => setPending((list) => list.flatMap((x) => { if (x.message.id !== id) return [x]; const next = fn(x); return next ? [next] : []; }));
@@ -455,7 +472,7 @@ function AccountInbox({ plugin, api, session, status: first, account, many, want
             </>)} />
           {chat ? (
             <Conversation chat={chat} messages={shown} hasMore={hasMore} error={messagesError} now={now} draft={drafts.current[selected] ?? ""} sending={sendingId === selected} focusToken={selected}
-              reply={replies[selected] ?? null} editing={editing} handlers={handlers}
+              reply={replies[selected] ?? null} editing={editing} handlers={handlers} receiptPending={receiptPending} onMarkRead={sendReceipt}
               onInfo={() => setInfo((v) => !v)} menu={<>{many && account && <span className="wa-chip-acct" title={`This chat belongs to ${accountName(account)}. Replies go out from that account.`} aria-label={`Account: ${accountName(account)}`}><i style={{ "--wa-h": accountHue(account) } as CSSProperties} aria-hidden="true" /><span>{accountName(account)}</span></span>}{features.labels && chat.kind !== "group" && <LabelPicker chat={chat} />}<ChatMenu chat={chat} onInfo={() => setInfo(true)} onGone={closeChat} /></>}
               presence={features.presence && !chat.isSelf ? <PresenceLine chat={chat} fallback={subtitle(chat)} /> : undefined} />
           ) : <EmptyConversation session={session} account={many && account ? accountName(account) : ""} />}

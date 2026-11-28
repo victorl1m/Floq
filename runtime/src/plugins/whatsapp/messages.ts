@@ -25,6 +25,9 @@ export interface Store {
   listChats(userId: string, opts?: { archived?: boolean }): Promise<{ chats: Record<string, unknown>[]; archivedCount: number }>;
   listMessages(userId: string, chatId: string, opts?: { limit?: unknown; before?: unknown; q?: unknown; sync?: boolean }): Promise<{ messages: Record<string, unknown>[]; more: boolean }>;
   markRead(userId: string, chatId: string): Promise<void>;
+  /** Marks the chat as told to WhatsApp (after a sendSeen) and how many incoming messages that receipt has not covered yet. */
+  markReceipt(userId: string, chatId: string): Promise<void>;
+  receiptPending(userId: string, chatId: string): Promise<number>;
   /** The stored row of a message id (any alias of its chat), or a 404. */
   row(userId: string, msgId: unknown): Promise<Record<string, unknown>>;
   /** Address to write to: where the contact last wrote from, then the canonical id, then the other aliases. */
@@ -279,6 +282,19 @@ export function createStore(core: Core, identity: Identity): Store {
       await q(`UPDATE {{p}}chat_state SET marked_unread = FALSE WHERE user_id = $1 AND session = $S AND chat_id = $2 AND marked_unread`, [userId, ids[0]]);
     },
 
+    async markReceipt(userId, chatId) {
+      for (const id of await identity.aliases(userId, chatId)) {
+        await q(`INSERT INTO {{p}}chat_reads (user_id, session, chat_id, read_at, receipt_at) VALUES ($1,$S,$2,now(),now()) ON CONFLICT (user_id, session, chat_id) DO UPDATE SET receipt_at = now()`, [userId, id]);
+      }
+    },
+
+    async receiptPending(userId, chatId) {
+      const ids = await identity.aliases(userId, chatId);
+      const r = await q(`SELECT COUNT(*)::int AS n FROM {{p}}messages m LEFT JOIN {{p}}chat_reads r ON r.user_id = $1 AND r.session = $S AND r.chat_id = $3
+        WHERE m.user_id = $1 AND m.session = $S AND m.chat_id = ANY($2::text[]) AND m.from_me = FALSE AND m.deleted_at IS NULL AND (r.receipt_at IS NULL OR m.created_at > r.receipt_at)`, [userId, ids, ids[0]]);
+      return Number(r.rows[0]?.n ?? 0);
+    },
+
     async row(userId, msgId) {
       if (typeof msgId !== "string" || !msgId || msgId.length > 200) throw ctx.httpError(400, "invalid_message", "messageId is invalid");
       const x = (await q(`SELECT * FROM {{p}}messages WHERE user_id = $1 AND session = $S AND msg_id = $2 LIMIT 1`, [userId, msgId])).rows[0];
@@ -357,6 +373,7 @@ export function createStore(core: Core, identity: Identity): Store {
         if (!Array.isArray(list)) list = await core.tryWaha<unknown[]>(userId, "GET", "/api/{session}/chats", { query: { limit: 60, offset: 0, sortBy: "conversationTimestamp", sortOrder: "desc" } });
         if (!Array.isArray(list)) return false;
         let changed = false, pictures = 0;
+        const fresh = new Set<string>();
         for (const item of list) {
           const o = rec(item), id = normId(o.id);
           if (!id || id === "status@broadcast" || id.endsWith("@newsletter") || id.endsWith("@broadcast")) continue;
@@ -366,7 +383,7 @@ export function createStore(core: Core, identity: Identity): Store {
           const last = rec(o.lastMessage);
           if (Object.keys(last).length) {
             const m = parseMessage({ ...last, from: last.from ?? (last.fromMe ? undefined : id), to: last.to ?? (last.fromMe ? id : undefined) }, c.session, await identity.me(userId));
-            if (m && (m.chatId === id || isGroup(id) === isGroup(m.chatId))) { if ((await store.save(userId, { ...m, chatId: isGroup(id) ? id : m.chatId })) === "new") changed = true; }
+            if (m && (m.chatId === id || isGroup(id) === isGroup(m.chatId))) { if ((await store.save(userId, { ...m, chatId: isGroup(id) ? id : m.chatId })) === "new") { changed = true; fresh.add(isGroup(id) ? id : m.chatId); } }
           }
           if (typeof o.picture === "string" && o.picture && pictures < 12) {
             const k = (await q(`SELECT picture_at FROM {{p}}contacts WHERE user_id = $1 AND session = $S AND chat_id = $2`, [userId, id])).rows[0];
@@ -375,6 +392,8 @@ export function createStore(core: Core, identity: Identity): Store {
           const st = rec(o._chat);
           if (typeof st.archived === "boolean" || typeof st.archive === "boolean") await store.setState(userId, await identity.canonical(userId, id), { archived: st.archived === true || st.archive === true });
         }
+        // A message found here never came as a webhook: an open conversation still has to show it.
+        for (const id of fresh) core.publish(userId, "message", { chatId: await identity.canonical(userId, id), sync: true });
         return changed;
       } catch { return false; }
     },
@@ -539,7 +558,7 @@ export function createStore(core: Core, identity: Identity): Store {
     const x = (await q(`SELECT chat_id FROM {{p}}messages WHERE user_id = $1 AND session = $S AND stanza = $2 LIMIT 1`, [userId, stanza])).rows[0];
     return x ? identity.canonical(userId, String(x.chat_id)) : null;
   };
-  const touched = async (userId: string, stanza: string, what: string) => { const chatId = await chatOfStanza(userId, stanza); if (chatId) core.publish(userId, "message", { chatId, [what]: true }); };
+  const touched = async (userId: string, stanza: string, what: string) => { const chatId = await chatOfStanza(userId, stanza); if (chatId) core.publish(userId, "message", { chatId, ids: await identity.aliases(userId, chatId), [what]: true }); };
 
   // ---- WAHA events ----
   for (const name of MESSAGE_EVENTS) core.on(name, async (userId, e: WebhookEvent) => {
@@ -547,11 +566,13 @@ export function createStore(core: Core, identity: Identity): Store {
     if (!m || m.chatId === "status@broadcast" || m.chatId.endsWith("@newsletter") || m.chatId.endsWith("@broadcast")) return;
     const res = await store.save(userId, m);
     const chatId = await identity.canonical(userId, m.chatId);
-    if (res === "skipped") { if (!m.protocol) core.publish(userId, "message", { chatId, reaction: true }); return; }
+    // `ids`: every address of the chat, so a conversation open under an @lid (or the other spelling of a number) still knows the event is its own.
+    const ids = await identity.aliases(userId, chatId);
+    if (res === "skipped") { if (!m.protocol) core.publish(userId, "message", { chatId, ids, reaction: true }); return; }
     if (res !== "new") return;
-    if (m.fromMe || m.revoked) { core.publish(userId, "message", { chatId, fromMe: true }); return; }
+    if (m.fromMe || m.revoked) { core.publish(userId, "message", { chatId, ids, fromMe: true }); return; }
     if (m.type === "system") return;
-    core.publish(userId, "message", { chatId, fromMe: false, preview: m.body.slice(0, 120) });
+    core.publish(userId, "message", { chatId, ids, fromMe: false, preview: m.body.slice(0, 120) });
     const st = (await q(`SELECT muted_until, archived FROM {{p}}chat_state WHERE user_id = $1 AND session = $S AND chat_id = $2`, [userId, chatId])).rows[0];
     if (st?.muted_until && new Date(st.muted_until as string).getTime() > Date.now()) return;
     // The name the user saved for the contact comes first, then the name the person set on WhatsApp, then the number.

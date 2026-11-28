@@ -5,6 +5,7 @@ import * as hostSdk from "@/plugins/sdk";
 import { DropdownMenuItem, toast } from "@/plugins/kit";
 import { errorText, type Api } from "./context";
 import { IconBell, IconBellOff } from "./icons-session";
+import { IconChecks } from "./icons";
 
 /** Repeated while a chat stays on screen; the runtime forgets a report after 45 s. */
 const FOCUS_EVERY_MS = 20_000;
@@ -57,4 +58,23 @@ export function NotifyMenuItem({ api }: { api: Api }) {
     catch (e) { if (alive.current) setState(state); toast.error("Could not change notifications", { description: errorText(e) }); }
   };
   return <DropdownMenuItem onSelect={() => void toggle()}>{state.enabled ? <IconBell /> : <IconBellOff />}{state.enabled ? "Notifications: On" : "Notifications: Off"}</DropdownMenuItem>;
+}
+
+/** Account menu: whether opening a chat tells WhatsApp it was read. Off by default: the "Mark as read" button and sending do it. */
+export function ReceiptsMenuItem({ api }: { api: Api }) {
+  const [auto, setAuto] = useState<boolean | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    void api<{ auto: boolean }>("/receipts/settings").then((s) => { if (alive.current) setAuto(s.auto === true); }).catch(() => undefined);
+    return () => { alive.current = false; };
+  }, [api]);
+  if (auto === null) return null;
+  const toggle = async () => {
+    const next = !auto;
+    setAuto(next);
+    try { await api("/receipts/settings", { method: "POST", body: { auto: next } }); toast.success(next ? "Read receipts are sent when you open a chat" : "Read receipts are sent only when you ask"); }
+    catch (e) { if (alive.current) setAuto(!next); toast.error("Could not change read receipts", { description: errorText(e) }); }
+  };
+  return <DropdownMenuItem onSelect={() => void toggle()}><IconChecks />{auto ? "Send read receipts automatically: On" : "Send read receipts automatically: Off"}</DropdownMenuItem>;
 }

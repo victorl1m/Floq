@@ -22,6 +22,8 @@ export interface Inbox {
   deliver(userId: string, chatId: string, out: Outgoing, replyTo: unknown, call: (target: string, replyId: string | undefined) => Promise<unknown>): Promise<{ status: "sent"; id: string }>;
   sendText(userId: string, chatId: string, text: string, replyTo?: unknown, mentions?: unknown): Promise<{ status: "sent"; id: string }>;
   sendMedia(userId: string, chatId: string, body: Record<string, unknown>): Promise<{ status: "sent"; id: string }>;
+  /** An explicit read receipt (sendSeen) for the chat, remembered so the UI stops offering it. */
+  sendSeen(userId: string, chatId: string): Promise<void>;
   react(userId: string, messageId: unknown, emoji: unknown): Promise<{ ok: true }>;
 }
 
@@ -42,9 +44,21 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     return { msgId: replyTo, ref: { id: stanzaOf(replyTo), body: String(x.body ?? "").slice(0, 400), sender: x.from_me === true ? "me" : String(x.sender ?? ""), hasMedia: x.has_media === true } };
   }
 
+  /** The "Send read receipts automatically when I open a chat" setting of this account. Off unless the user turned it on. */
+  const autoReceipts = async (userId: string) => (await ctx.kv.get(userId, "autoReceipts")) === true;
+  /** Tells WhatsApp the chat was read (blue ticks) and remembers it. Best effort: a failure here never blocks what the user asked for. */
+  const sendSeen = async (userId: string, chatId: string) => {
+    await store.markReceipt(userId, chatId);
+    const [target] = await store.route(userId, chatId);
+    await core.tryWaha(userId, "POST", "/api/sendSeen", { body: { chatId: target } });
+  };
+  /** Sending anything reads the chat first, like WhatsApp: only when there is something the other side was not told about. */
+  const seenFirst = async (userId: string, chatId: string) => { if (await store.receiptPending(userId, chatId).catch(() => 0)) await sendSeen(userId, chatId).catch(() => undefined); };
+
   const inbox: Inbox = {
     async deliver(userId, chatId, out, replyTo, call) {
       const c = await core.ready(userId);
+      await seenFirst(userId, chatId);
       const ids = await identity.aliases(userId, chatId);
       const reply = await quoted(userId, ids, replyTo);
       const order = await store.route(userId, chatId);
@@ -68,6 +82,8 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
       core.publish(userId, "message", { chatId: await identity.canonical(userId, ids[0]), fromMe: true });
       return { status: "sent" as const, id: msgId };
     },
+
+    sendSeen,
 
     sendText(userId, chatId, text, replyTo, mentions) {
       const list = (Array.isArray(mentions) ? mentions : []).map((m) => pnOf(normId(m)) ?? (m === "all" ? "all" : "")).filter(Boolean).slice(0, 50);
@@ -98,6 +114,7 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
 
     async react(userId, messageId, emoji) {
       const x = await store.row(userId, messageId);
+      await seenFirst(userId, String(x.chat_id));
       const e = typeof emoji === "string" ? emoji.slice(0, 16) : "";
       if (String(x.msg_id).startsWith("out-")) throw ctx.httpError(400, "invalid_message", "This message cannot be reacted to yet.");
       await core.guard(() => core.waha(userId, "PUT", "/api/reaction", { body: { messageId: x.msg_id, reaction: e } }), "reaction");
@@ -127,15 +144,28 @@ export function createInbox(core: Core, identity: Identity, store: Store): Inbox
     const me = await identity.me(userId);
     return { ...out, me: me ? { name: me.name, phone: digitsOf(me.id) } : null };
   });
-  R.get("/messages", async ({ userId, query }) => { await core.owner(userId); return store.listMessages(userId, core.chatId(query.chatId), { limit: query.limit, before: query.before, q: query.q }); });
+  R.get("/messages", async ({ userId, query }) => {
+    await core.owner(userId);
+    const chatId = core.chatId(query.chatId);
+    const [res, receiptPending] = await Promise.all([store.listMessages(userId, chatId, { limit: query.limit, before: query.before, q: query.q }), store.receiptPending(userId, chatId)]);
+    return { ...res, receiptPending };
+  });
+  R.get("/receipts/settings", async ({ userId }) => ({ auto: await autoReceipts(userId) }));
+  R.post("/receipts/settings", async ({ userId, body }) => {
+    await core.owner(userId);
+    const on = b(body).auto;
+    if (typeof on !== "boolean") throw ctx.httpError(400, "invalid_auto", "auto must be true or false");
+    await ctx.kv.set(userId, "autoReceipts", on);
+    return { auto: on };
+  });
   R.post("/read", async ({ userId, body }) => {
     await core.owner(userId);
     const chatId = core.chatId(b(body).chatId);
     await store.markRead(userId, chatId);
     notifierOf(core, identity).read(userId, await identity.canonical(userId, chatId));
-    // Blue ticks for the other side, like opening the chat on the phone. Best effort.
-    const [target] = await store.route(userId, chatId);
-    core.bg(core.tryWaha(userId, "POST", "/api/sendSeen", { body: { chatId: target } }));
+    // `local` is Floq clearing its own unread badge for what is on screen (opening a chat, a message arriving in it): WhatsApp is told only when
+    // this account turned on automatic receipts. Without it the call is the user's own "Mark as read": blue ticks for the other side. Best effort.
+    if (b(body).local !== true || await autoReceipts(userId)) await sendSeen(userId, chatId).catch(() => undefined);
     return { ok: true };
   });
   R.post("/send", async ({ userId, body }) => { await core.owner(userId); const o = b(body); return inbox.sendText(userId, core.chatId(o.chatId), core.text(o.text), o.replyTo, o.mentions); });

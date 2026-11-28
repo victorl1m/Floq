@@ -213,7 +213,7 @@ export function createHistory(core: Core, identity: Identity, store: Store): His
     return { total: Number((await q(`SELECT COUNT(*)::int AS n FROM {{p}}history_chats WHERE user_id = $1 AND session = $S`, [userId])).rows[0]?.n ?? 0), added };
   }
   /** History is not news: what was sent before the import began counts as read, unless the chat already has a read mark. */
-  const seenUntil = (userId: string, chatId: string, at: string) => q(`INSERT INTO {{p}}chat_reads (user_id, session, chat_id, read_at) VALUES ($1,$S,$2,$3) ON CONFLICT (user_id, session, chat_id) DO NOTHING`, [userId, chatId, at]);
+  const seenUntil = (userId: string, chatId: string, at: string) => q(`INSERT INTO {{p}}chat_reads (user_id, session, chat_id, read_at, receipt_at) VALUES ($1,$S,$2,$3,$3) ON CONFLICT (user_id, session, chat_id) DO NOTHING`, [userId, chatId, at]);
 
   /** Pages one chat back from its newest message. Resolves what was read and what was new; "stopped" when the work was interrupted. */
   async function importChat(userId: string, row: Obj, ctl: { cancel: boolean }, o: { session: string; startedAt: string; perChat: number; room: number; quick: boolean; onPage?: (seen: number, added: number) => Promise<void> }): Promise<{ seen: number; added: number; stopped: boolean; failed: boolean }> {

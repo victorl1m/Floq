@@ -184,4 +184,13 @@ export const migrations: PluginMigration[] = [
       DELETE FROM {{p}}messages WHERE type = 'system' AND body = '' AND has_media = FALSE;
     `,
   },
+  {
+    // Read receipts are manual: receipt_at is when WhatsApp was last told (sendSeen) this chat was read; read_at is only Floq's own unread badge.
+    // What was read before this version counts as told.
+    id: "009_read_receipts",
+    sql: `
+      ALTER TABLE {{p}}chat_reads ADD COLUMN receipt_at TIMESTAMPTZ;
+      UPDATE {{p}}chat_reads SET receipt_at = read_at;
+    `,
+  },
 ];
