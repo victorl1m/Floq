@@ -147,6 +147,13 @@ export function useIslandBridge() {
     void listen<IslandIntent>('island:intent', event => intentRef.current(event.payload)).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(() => setReady(false));
     return () => { disposed = true; unlisten?.(); setReady(false); };
   }, []);
+  // A failed publish (no monitor during sleep/RDP/lid close, window briefly unavailable) must not leave the bridge "not ready" for good:
+  // that would send approvals to main-window dialogs while the island stays on screen with a stale, busy snapshot. Keep retrying.
+  useEffect(() => {
+    if (ready || !isTauri() || !latest.current) return;
+    const timer = setInterval(() => { void publishRef.current().then(() => setReady(true)).catch(() => undefined); }, 1500);
+    return () => clearInterval(timer);
+  }, [ready]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const update = () => {

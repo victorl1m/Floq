@@ -20,7 +20,7 @@ async function boot(page: Page, query = '') {
       async invoke(cmd: string, args: any) {
         if (cmd === 'plugin:event|listen') { (listeners[args.event] ??= []).push(args.handler); return id++; }
         if (cmd === 'plugin:event|unlisten') return;
-        if (cmd === 'island_publish') { w.__published.push(args.snapshot); return; }
+        if (cmd === 'island_publish') { if (w.__failPublish) throw new Error('Island window is unavailable'); w.__published.push(args.snapshot); return; }
         if (cmd === 'get_desktop_preferences') return { islandEnabled: true };
       },
     };
@@ -104,4 +104,18 @@ test('open intent goes to the plugin view; a message leaves on its own after 12 
   await page.waitForTimeout(8000);
   expect((await items(page)).sort()).toEqual(['m2', 'm3']); // longer than an info line (6 s)
   await expect.poll(() => items(page), { timeout: 9000 }).toEqual(['m2']);
+});
+
+test('a failed publish (no monitor, window busy) recovers: the bridge keeps retrying and the island gets the latest snapshot', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { (window as any).__failPublish = true; });
+  await frame(page, message('m1'));
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => (window as any).__published.length)).toBeGreaterThanOrEqual(0);
+  await page.evaluate(() => { (window as any).__failPublish = false; });
+  await expect.poll(() => items(page), { timeout: 6000 }).toEqual(['m1']);
+  // the island's resync ('ready') still republishes after recovery
+  const n = await page.evaluate(() => (window as any).__published.length);
+  await intent(page, { type: 'ready' });
+  await expect.poll(() => page.evaluate(() => (window as any).__published.length)).toBeGreaterThan(n);
 });

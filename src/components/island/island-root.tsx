@@ -108,7 +108,10 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
     let disposed = false; let retry: ReturnType<typeof setInterval> | undefined; const unlisteners: (() => void)[] = [];
     const onError = (e: ErrorEvent) => islandLog('window error: ' + String(e.message).slice(0, 200));
     const onRejection = (e: PromiseRejectionEvent) => islandLog('unhandled rejection: ' + String(e.reason).slice(0, 200));
-    const onVisibility = () => islandLog('visibility ' + document.visibilityState);
+    // Re-sync when the window comes back (focus, visible): the main window republishes its latest snapshot on 'ready'.
+    const resync = () => { if (document.visibilityState === 'visible') void send({type:'ready'}).catch(() => undefined); };
+    const onVisibility = () => { islandLog('visibility ' + document.visibilityState); resync(); };
+    window.addEventListener('focus', resync);
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onRejection);
     document.addEventListener('visibilitychange', onVisibility);
@@ -151,7 +154,7 @@ export default function IslandRoot({ initialSnapshot = null, initialExpanded = f
         retry = setInterval(() => { if (!previous.current) void send({type:'ready'}).catch(() => undefined); }, 1000);
       } catch (e) { if (!disposed) setLocalError(String(e)); }
     })();
-    return () => { window.removeEventListener('error', onError); window.removeEventListener('unhandledrejection', onRejection); document.removeEventListener('visibilitychange', onVisibility); disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
+    return () => { window.removeEventListener('error', onError); window.removeEventListener('unhandledrejection', onRejection); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('focus', resync); disposed = true; clearInterval(retry); unlisteners.forEach(fn => fn()); clearTimeout(motionTimer.current); };
   }, []);
   const items = (displaySnapshot?.items ?? []).filter(i => !answeredIds.current.has(i.id));
   const lastCurrent = useRef<AttentionItem | undefined>(undefined);
