@@ -55,7 +55,7 @@ export function Conversation({ chat, messages, hasMore, error, now, draft, sendi
   const onEdit = useCallback((m: Message) => live.current.onEdit(m), []);
   const onAction = useCallback((action: MessageAction, m: Message, arg?: unknown) => {
     if (action === "forward") { setForward(m); return; }
-    if (action === "info") { setInfoOf(m); return; }
+    if (action === "info") { setInfoOf({ m, focus: arg === "edits" ? "edits" : undefined }); return; }
     return live.current.onAction(action, m, arg);
   }, []);
   const name = chatTitle(chat), sub = subtitle(chat);
@@ -63,7 +63,7 @@ export function Conversation({ chat, messages, hasMore, error, now, draft, sendi
   const log = useRef<{ jumpTo(id: string): boolean }>(null);
   const [dialog, setDialog] = useState<"" | "poll" | "location" | "contact">("");
   const [forward, setForward] = useState<Message | null>(null);
-  const [infoOf, setInfoOf] = useState<Message | null>(null);
+  const [infoOf, setInfoOf] = useState<{ m: Message; focus?: "edits" } | null>(null);
   const [searching, setSearching] = useState(false);
   useEffect(() => { setSearching(false); setDialog(""); setForward(null); setInfoOf(null); }, [chat.chatId]);
   const [dragging, setDragging] = useState(false);
@@ -117,7 +117,7 @@ export function Conversation({ chat, messages, hasMore, error, now, draft, sendi
       <LocationDialog open={dialog === "location"} onOpenChange={(o) => !o && setDialog("")} onSend={async (p) => { if (await h.onExtraSend("location", { ...p })) setDialog(""); }} />
       <ContactDialog open={dialog === "contact"} onOpenChange={(o) => !o && setDialog("")} onSend={async (contacts) => { if (await h.onExtraSend("contact", { contacts })) setDialog(""); }} />
       {forward && <ForwardDialog message={forward} open onOpenChange={(o) => !o && setForward(null)} onForward={async (to) => { await h.onAction("forward", forward, to); setForward(null); }} />}
-      {infoOf && <MessageInfoDialog message={infoOf} open onOpenChange={(o) => !o && setInfoOf(null)} />}
+      {infoOf && <MessageInfoDialog message={infoOf.m} focus={infoOf.focus} open onOpenChange={(o) => !o && setInfoOf(null)} />}
     </section>
   );
 }

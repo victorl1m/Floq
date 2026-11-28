@@ -90,8 +90,13 @@ export const BUBBLES_CSS = `
 @media (prefers-reduced-motion:no-preference){.wa-skel{animation:wa-shim 1.4s linear infinite}.wa-in{animation:wa-fade .2s ease-out}}
 @keyframes wa-shim{to{background-position:-200% 0}}
 @keyframes wa-fade{from{opacity:0}to{opacity:1}}
-.wa-sticker{background:none;border-radius:0}
-.wa-sticker img{object-fit:contain}
+.wa-sticker{background:none;border-radius:0;overflow:visible}
+.wa-sticker img{object-fit:contain;filter:drop-shadow(0 1px 1.5px color-mix(in srgb,var(--wa-text) 22%,transparent))}
+.wa-sticker .wa-img-btn{cursor:zoom-in}
+.wa-sticker .wa-skel{border-radius:14px;background-color:color-mix(in srgb,var(--wa-text) 6%,transparent)}
+.wa-sticker-still{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border-radius:18px;border:1.5px dashed color-mix(in srgb,var(--wa-text) 22%,transparent);color:var(--wa-meta);font-size:12.5px;background:color-mix(in srgb,var(--wa-text) 4%,transparent)}
+.wa-sticker-still svg{width:44px;height:44px;stroke-width:1.4}
+.wa-k-sticker .wa-stamp-over{background:color-mix(in srgb,var(--wa-bg,#000) 55%,rgba(0,0,0,.45))}
 .wa-nobg{padding:0;background:transparent!important;box-shadow:none}
 .wa-nobg::before{display:none!important}
 .wa-nobg .wa-stamp-over{bottom:4px}
@@ -296,4 +301,36 @@ a.wa-lp:hover{background:color-mix(in srgb,var(--wa-text) 11%,transparent)}
 .wa-who-react span{font-size:18px}
 .wa-who-react i{margin-left:auto;font-style:normal;font-size:12px;color:var(--wa-sub)}
 @media (forced-colors:active){.wa-react,.wa-qbar,.wa-stamp-over{border:1px solid CanvasText}}
+/* edited: the label opens the edit history */
+.wa-edited-btn{padding:0 2px;margin:0 -2px;border:0;border-radius:3px;background:none;color:inherit;font:inherit;font-style:italic;cursor:pointer}
+.wa-edited-btn:hover{text-decoration:underline}
+.wa-edited-btn:focus-visible{outline:2px solid var(--wa-accent);outline-offset:1px}
+.wa-stamp-over .wa-edited-btn{color:#fff}
+
+/* deleted: the original Floq kept, on request */
+.wa-orig-row{display:flex;align-items:center;margin-top:1px}
+.wa-orig-tg{padding:0;border:0;background:none;color:var(--wa-link);font-size:12.5px;font-weight:500;line-height:18px;cursor:pointer}
+.wa-orig-tg:hover{text-decoration:underline}
+.wa-orig-tg:focus-visible{outline:2px solid var(--wa-accent);outline-offset:2px;border-radius:3px}
+.wa-orig{display:flex;flex-direction:column;gap:5px;margin:6px 0 2px;padding:7px 9px 8px;border-radius:8px;border:1px dashed color-mix(in srgb,var(--wa-text) 28%,transparent);background:color-mix(in srgb,var(--wa-text) 5%,transparent);min-width:min(240px,100%)}
+.wa-orig-h{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:var(--wa-meta)}
+.wa-orig-h svg{width:13px;height:13px;flex:none}
+.wa-orig-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.wa-orig-body .wa-text{opacity:.92}
+.wa-orig-body .wa-quote{cursor:default}
+.wa-orig-none{font-size:13px;font-style:italic;color:var(--wa-meta)}
+.wa-orig-gone{flex-direction:row;align-items:center}
+.wa-orig-gone svg{width:15px;height:15px;flex:none}
+.wa-orig-poll ul{margin:3px 0 0;padding-left:18px;list-style:disc}
+
+/* edit history */
+.wa-vers{display:flex;flex-direction:column;gap:8px;margin:0 0 12px;padding:0;list-style:none}
+.wa-minfo .wa-vers{margin:0}
+.wa-vers li{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--wa-text) 5%,transparent)}
+.wa-vers-now{box-shadow:inset 3px 0 0 var(--wa-accent)}
+.wa-vers-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:12px;color:var(--wa-sub)}
+.wa-vers-h b{font-weight:600;color:var(--wa-text)}
+.wa-vers-t{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.wa-vers-none{margin:0 0 12px;font-size:13.5px;color:var(--wa-sub)}
+
 `;

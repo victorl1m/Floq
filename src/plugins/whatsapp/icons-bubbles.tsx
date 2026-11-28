@@ -47,3 +47,5 @@ export const IconTickClock = (p: P) => <Svg {...p}><circle cx="12" cy="12" r="7.
 export const IconTick1 = (p: P) => <Svg {...p}><path d="m5.500 12.500 4.500 4.500 8.500-9.500" /></Svg>;
 export const IconTick2 = (p: P) => <Svg {...p}><path d="m2.500 12.500 4.500 4.500 8-9" /><path d="m10.500 15.500 1.500 1.500 9-9.500" /></Svg>;
 export const IconTickFail = (p: P) => <Svg {...p}><circle cx="12" cy="12" r="8" fill="currentColor" stroke="none" /><path d="M12 7.800v5" stroke="#fff" /><path d="M12 16.100v.1" stroke="#fff" /></Svg>;
+export const IconSticker = (p: P) => <Svg {...p}><path d="M20 12.500V8a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v8a4 4 0 0 0 4 4h4.500" /><path d="M20 12.500 12.500 20" /><path d="M12.500 20v-3.500a4 4 0 0 1 4-4H20" /><path d="M9 9.800v.1M14 9.800v.1" /><path d="M8.800 14c.6.700 1.300 1.100 2.200 1.200" /></Svg>;
+export const IconHistory = (p: P) => <Svg {...p}><path d="M4 12a8 8 0 1 0 2.400-5.700L4 8.500" /><path d="M4 4.500v4h4" /><path d="M12 8v4.500l3 1.800" /></Svg>;

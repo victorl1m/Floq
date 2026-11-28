@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Switch, cn, toast } from "@/plugins/kit";
 import { chatTitle, dayLabel, displayName, fullDate, matchesQuery, timeOf, type Chat, type Message } from "@whatsapp-shared/chat";
-import { ACK_LABEL, ackState, cleanPhone, mapsUrl, parseCoords, splitHighlight } from "@whatsapp-shared/format";
+import { ACK_LABEL, ackState, cleanPhone, deletedText, mapsUrl, parseCoords, splitHighlight } from "@whatsapp-shared/format";
 import { formatPhoneDisplay } from "@whatsapp-shared/phone";
 import { Avatar } from "./avatar";
 import { errorCode, errorStatus, errorText, useWa } from "./context";
@@ -299,8 +299,26 @@ export function ContactDialog({ open, onOpenChange, onSend }: Open & { onSend: (
 }
 
 // ---- message info ----
-interface Info { sentAt: string; ack: number; edited?: boolean; starred?: boolean; pinned?: boolean; reactions?: { emoji: string; fromMe: boolean; name: string; phone: string; at: string }[] }
-export function MessageInfoDialog({ message, open, onOpenChange }: Open & { message: Message | null }) {
+interface Info {
+  sentAt: string; ack: number; edited?: boolean; starred?: boolean; pinned?: boolean; reactions?: { emoji: string; fromMe: boolean; name: string; phone: string; at: string }[];
+  editedAt?: string | null; versions?: { body: string; at: string }[];
+  deleted?: boolean; deletedAt?: string | null; deletedBy?: "me" | "sender" | "admin" | null; lost?: boolean;
+}
+/** Every text a message had, oldest first: the original, each edit, the current one marked. */
+function Versions({ list }: { list: { body: string; at: string }[] }) {
+  return (
+    <ol className="wa-vers" aria-label="Edit history">
+      {list.map((v, i) => (
+        <li key={i} className={cn(i === list.length - 1 && "wa-vers-now")}>
+          <span className="wa-vers-h"><b>{i === 0 ? "Original" : i === list.length - 1 ? "Current" : "Edit " + i}</b><time dateTime={v.at}>{fullDate(v.at)}</time></span>
+          <span className="wa-vers-t">{v.body || <i>No text</i>}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+/** Message info. focus "edits": opened from a bubble's "Edited": titled "Edit history", the versions first. */
+export function MessageInfoDialog({ message, open, onOpenChange, focus }: Open & { message: Message | null; focus?: "edits" }) {
   const { api } = useWa();
   const [info, setInfo] = useState<Info | null>(null);
   const [err, setErr] = useState("");
@@ -315,12 +333,17 @@ export function MessageInfoDialog({ message, open, onOpenChange }: Open & { mess
   const state = info ? ackState({ ack: info.ack }) : null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <Shell title="Message info" description={message?.body ? message.body.slice(0, 100) : undefined}>
+      <Shell title={focus === "edits" ? "Edit history" : "Message info"} description={message?.deleted ? deletedText(message) : message?.body ? message.body.slice(0, 100) : undefined}>
         {err ? <p className="wa-err" role="alert"><IconAlertCircle />{err}</p> : !info ? <div className="wa-bdlg-none"><Spinner /></div> : (
+          <>
+          {focus === "edits" && (info.versions?.length ? <Versions list={info.versions} /> : <p className="wa-vers-none">{info.editedAt ? "Edited " + fullDate(info.editedAt) + ". " : ""}Floq did not see the earlier versions of this message.</p>)}
           <dl className="wa-minfo">
             <dt>Sent</dt><dd>{fullDate(info.sentAt)}</dd>
             {message?.fromMe && state && <><dt>Delivery</dt><dd>{state === "read" ? (info.ack === 4 ? "Read and played" : "Read") : ACK_LABEL[state]}</dd></>}
-            {info.edited && <><dt>Edited</dt><dd>Yes</dd></>}
+            {info.deleted && <><dt>Deleted</dt><dd>{info.deletedAt ? fullDate(info.deletedAt) : "Yes"}{info.deletedBy === "me" ? ", by you" : info.deletedBy === "admin" ? ", by an admin" : info.deletedBy === "sender" ? ", by the sender" : ""}</dd></>}
+            {info.deleted && <><dt>Original</dt><dd>{info.lost ? "Floq did not receive it before it was deleted." : "Kept in Floq only. Use “Show original” on the message to see it."}</dd></>}
+            {info.edited && <><dt>Edited</dt><dd>{info.editedAt ? fullDate(info.editedAt) : "Yes"}</dd></>}
+            {focus !== "edits" && Boolean(info.versions?.length) && <><dt>Versions</dt><dd><Versions list={info.versions!} /></dd></>}
             {info.starred && <><dt>Starred</dt><dd>Yes</dd></>}
             {info.pinned && <><dt>Pinned</dt><dd>Yes</dd></>}
             {Boolean(info.reactions?.length) && (
@@ -330,6 +353,7 @@ export function MessageInfoDialog({ message, open, onOpenChange }: Open & { mess
               </>
             )}
           </dl>
+          </>
         )}
       </Shell>
     </Dialog>

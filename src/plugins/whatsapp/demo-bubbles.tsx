@@ -29,6 +29,16 @@ const canvasPng = (w: number, h: number, hue: number, label: string): string => 
   g.fillStyle = "#fff"; g.font = "bold " + Math.round(h / 9) + "px sans-serif"; g.fillText(label, 16, h - 18);
   return c.toDataURL("image/png").split(",")[1];
 };
+/** A sticker: transparent background, a round face with an outline, like a real one. */
+const stickerPng = (seed: number): string => {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 256;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#fff"; g.beginPath(); g.arc(128, 128, 112, 0, 7); g.fill();
+  g.fillStyle = "hsl(" + (seed * 67) % 360 + " 85% 60%)"; g.beginPath(); g.arc(128, 128, 100, 0, 7); g.fill();
+  g.font = "120px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(["😀", "🎉", "🐱", "👍"][seed % 4], 128, 136);
+  return c.toDataURL("image/png").split(",")[1];
+};
 const wavB64 = (sec: number): string => {
   const rate = 8000, n = rate * sec, buf = new Uint8Array(44 + n * 2), v = new DataView(buf.buffer);
   const s = (o: number, t: string) => { for (let i = 0; i < t.length; i++) buf[o + i] = t.charCodeAt(i); };
@@ -73,11 +83,22 @@ const build = (): Message[] => {
   const vcall = msg({ min: 178, type: "call", call: { video: true, status: "ended" } });
   const del = msg({ min: 170, type: "deleted", deleted: true });
   const delMine = mine({ min: 168, type: "deleted", deleted: true });
+  // Deletes Floq can recover (Show original), one it never received, an admin's, and edits with a history.
+  const delPhoto = msg({ min: 167, type: "deleted", deleted: true, deletedAt: ago(150), deletedBy: "sender", replyTo: { id: text.id, body: text.body, fromMe: false, sender: text.sender, senderName: text.senderName },
+    original: { type: "image", body: "Preço especial só hoje: 40 canecas por R$ 900", hasMedia: true, media: media("image/png", "promo.png", { width: 800, height: 520 }) } });
+  const delLost = msg({ min: 166, type: "deleted", deleted: true, deletedAt: null, deletedBy: "sender", original: null });
+  const delAdmin = msg({ min: 165, type: "deleted", deleted: true, deletedAt: ago(140), deletedBy: GROUP ? "admin" : "sender", deletedByName: GROUP ? "Bia Nogueira" : undefined, original: { type: "chat", body: "Link de grupo de ofertas: chat.whatsapp.com/xyz", hasMedia: false, media: null } });
+  const delMine2 = mine({ min: 164, type: "deleted", deleted: true, deletedAt: ago(160), deletedBy: "me", original: { type: "chat", body: "Mandei o endereço errado, desculpa", hasMedia: false, media: null } });
+  const edited = msg({ min: 163, body: "Chegamos às *15h30* na loja", edited: true, editedAt: ago(158) });
+  const editedMine = mine({ min: 162, body: "Pedido 2231 confirmado para quinta", edited: true, editedAt: ago(161) });
+  const stickerAnim = msg({ min: 161, type: "sticker", hasMedia: true, media: media("image/webp", "", { width: 512, height: 512, animated: true }) });
+  const stickerMine = mine({ min: 160, type: "sticker", hasMedia: true, media: media("image/webp", "", { width: 512, height: 512 }) });
+  const stickerLottie = msg({ min: 159, type: "sticker", hasMedia: true, media: media("application/was", "", { width: 512, height: 512, animated: true, lottie: true }) });
   const state = (min: number, ack: number, extra: Partial<Message> = {}) => mine({ min, ack, body: "Estado do envio: " + (ack < 0 ? "falhou" : ["relógio", "enviada", "entregue", "lida", "reproduzida"][ack]), ...extra });
   const star = msg({ min: 20, body: "Mensagem fixada e favorita", starred: true, pinned: true, edited: true });
   const react = mine({ min: 15, body: "Obrigado pelo apoio de vocês! Reações abaixo", reactions: [{ emoji: "👍", count: 3, mine: true, senders: [] }, { emoji: "❤️", count: 1, mine: false, senders: [] }, { emoji: "😂", count: 1, mine: false, senders: [] }] });
   const last = mine({ min: 1, ack: 3, body: "Pode confirmar o endereço de entrega?" });
-  return [first, text, long, fwd, quote, emoji, mention, preview, photo, photoMine, wide, sticker, video, ptt, pttMine, audio, doc, docGone, imgGone, loc, contact, poll, poll2, call, vcall, del, delMine,
+  return [first, text, long, fwd, quote, emoji, mention, preview, photo, photoMine, wide, sticker, video, ptt, pttMine, audio, doc, docGone, imgGone, loc, contact, poll, poll2, call, vcall, del, delMine, delPhoto, delLost, delAdmin, delMine2, edited, editedMine, stickerAnim, stickerMine, stickerLottie,
     state(60, 0, { pending: true }), state(59, 1), state(58, 2), state(57, 3), state(56, 4), state(55, -1, { failed: true }), star, react, last];
 };
 
@@ -94,6 +115,7 @@ const mediaTries = new Map<string, number>();
 export default function BubblesDemo() {
   const [messages, setMessages] = useState<Message[]>(build);
   const [dlg, setDlg] = useState<"" | "forward" | "poll" | "location" | "contact" | "info">("");
+  const [infoOf, setInfoOf] = useState<{ m: Message; focus?: "edits" } | null>(null);
   const [search, setSearch] = useState(false);
   const [term, setTerm] = useState("");
   const log = useRef<MessageLogHandle>(null);
@@ -107,8 +129,10 @@ export default function BubblesDemo() {
     await new Promise((r) => setTimeout(r, 40));
     sent.current.push({ path, method: init?.method ?? "GET", body: init?.body });
     if (url.pathname === "/media") {
-      const m = messages.find((x) => x.id === url.searchParams.get("id"));
-      if (!m || m.media?.available === false || m.type === "video") throw Object.assign(new Error("This file is no longer available."), { status: 404, code: "media_unavailable" });
+      const found = messages.find((x) => x.id === url.searchParams.get("id"));
+      // A deleted message's file is the copy Floq kept.
+      const m = found && found.deleted && found.original?.media ? { ...found, type: found.original.type, media: found.original.media } : found;
+      if (!m || !m.media || m.media?.available === false || m.type === "video") throw Object.assign(new Error("This file is no longer available."), { status: 404, code: "media_unavailable" });
       // ?flaky=N: the first N tries of every file fail the way a busy WhatsApp server does (the UI tries again by itself).
       const flaky = Number(q.get("flaky")) || 0, tries = (mediaTries.get(m.id) ?? 0) + 1;
       mediaTries.set(m.id, tries);
@@ -116,8 +140,15 @@ export default function BubblesDemo() {
       if (q.get("slow")) await new Promise((r) => setTimeout(r, Number(q.get("slow")) || 0));
       const kind = m.media?.mime ?? "";
       if (kind.startsWith("audio/")) return { mime: "audio/wav", filename: m.media!.filename, size: 96000, data: wavB64(6) };
-      if (kind.startsWith("image/")) return { mime: "image/png", filename: m.media!.filename, size: 5000, data: canvasPng(m.media?.width ?? 400, m.media?.height ?? 300, (m.id.length * 47 + Number(m.id.slice(1)) * 29) % 360, m.type === "sticker" ? "😀" : "Ateliê Zoe") };
+      if (m.type === "sticker") return { mime: "image/png", filename: "sticker.png", size: 5000, data: stickerPng(Number(m.id.slice(1)) || 0) };
+      if (kind.startsWith("image/")) return { mime: "image/png", filename: m.media!.filename, size: 5000, data: canvasPng(m.media?.width ?? 400, m.media?.height ?? 300, (m.id.length * 47 + Number(m.id.slice(1)) * 29) % 360, "Ateliê Zoe") };
       return { mime: kind, filename: m.media?.filename ?? "file", size: 4, data: btoa("demo") };
+    }
+    if (url.pathname === "/message-info") {
+      const m = messages.find((x) => x.id === url.searchParams.get("id"));
+      if (m?.edited) return { id: m.id, fromMe: m.fromMe, sentAt: m.sentAt, ack: 3, edited: true, editedAt: m.editedAt, starred: false, pinned: false, type: "chat", reactions: [],
+        versions: [{ body: m.fromMe ? "Pedido 2231 confirmado para quarta" : "Chegamos às 15h na loja", at: m.sentAt }, ...(m.fromMe ? [] : [{ body: "Chegamos às 15h30 na loja", at: new Date(Date.parse(m.sentAt) + 2 * MIN).toISOString() }]), { body: m.body, at: m.editedAt! }] };
+      if (m?.deleted) return { id: m.id, fromMe: m.fromMe, sentAt: m.sentAt, ack: 3, edited: false, starred: false, pinned: false, type: "chat", reactions: [], versions: [], deleted: true, deletedAt: m.deletedAt ?? null, deletedBy: m.deletedBy ?? null, lost: m.original === null };
     }
     if (url.pathname === "/message-info") return { id: "x", fromMe: true, sentAt: ago(15), ack: 3, edited: false, starred: false, pinned: false, type: "chat", reactions: [{ emoji: "👍", fromMe: true, name: "", phone: "", at: ago(14) }, { emoji: "❤️", fromMe: false, name: "Marina Costa", phone: "5511987654321", at: ago(13) }, { emoji: "😂", fromMe: false, name: "", phone: "5511933334444", at: ago(12) }] };
     if (url.pathname === "/contacts") {
@@ -144,7 +175,7 @@ export default function BubblesDemo() {
     else if (a === "react") patch(m.id, (x) => ({ ...x, reactions: (() => { const rs = (x.reactions ?? []).map((r) => ({ ...r })); const mine = rs.find((r) => r.mine); if (mine) mine.count--, (mine.mine = false); if (arg) { const h = rs.find((r) => r.emoji === arg); if (h) h.count++, (h.mine = true); else rs.push({ emoji: String(arg), count: 1, mine: true, senders: [] }); } return rs.filter((r) => r.count > 0); })() }));
     else if (a === "delete") { if ((arg as { forEveryone?: boolean })?.forEveryone) patch(m.id, (x) => ({ ...x, deleted: true, type: "deleted" })); else setMessages((ms) => ms.filter((x) => x.id !== m.id)); }
     else if (a === "forward") setDlg("forward");
-    else if (a === "info") setDlg("info");
+    else if (a === "info") { setInfoOf({ m, focus: arg === "edits" ? "edits" : undefined }); setDlg("info"); }
     else if (a === "vote") patch(m.id, (x) => (x.poll ? { ...x, poll: { ...x.poll, options: x.poll.options.map((o) => ({ ...o, voted: (arg as string[]).includes(o.name) })) } } : x));
   };
 
@@ -171,7 +202,7 @@ export default function BubblesDemo() {
         <PollDialog open={dlg === "poll"} onOpenChange={(v) => setDlg(v ? "poll" : "")} onCreate={async (p) => { await api("/send-poll", { method: "POST", body: p }); }} />
         <LocationDialog open={dlg === "location"} onOpenChange={(v) => setDlg(v ? "location" : "")} onSend={async (l) => { await api("/send-location", { method: "POST", body: l }); }} />
         <ContactDialog open={dlg === "contact"} onOpenChange={(v) => setDlg(v ? "contact" : "")} onSend={async (c) => { await api("/send-contact", { method: "POST", body: { contacts: c } }); }} />
-        <MessageInfoDialog message={last} open={dlg === "info"} onOpenChange={(v) => setDlg(v ? "info" : "")} />
+        <MessageInfoDialog message={infoOf?.m ?? last} focus={infoOf?.focus} open={dlg === "info"} onOpenChange={(v) => { setDlg(v ? "info" : ""); if (!v) setInfoOf(null); }} />
       </div>
     </WaContext.Provider>
   );

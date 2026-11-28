@@ -173,14 +173,14 @@ for (const theme of ['light', 'dark']) {
       const lb = page.getByRole('dialog', { name: 'Photo viewer' });
       await expect(lb).toBeVisible();
       await expect(lb.locator('img')).toBeVisible();
-      await expect(lb.locator('.wa-lb-count')).toHaveText('1 of 3');
+      await expect(lb.locator('.wa-lb-count')).toHaveText('1 of 6');
       await page.waitForTimeout(400);
       await shot(page, theme, 'lightbox');
       await lb.getByRole('button', { name: 'Zoom in' }).click();
       await lb.getByRole('button', { name: 'Zoom in' }).click();
       await shot(page, theme, 'lightbox-zoom');
       await page.keyboard.press('ArrowRight');
-      await expect(lb.locator('.wa-lb-count')).toHaveText('2 of 3');
+      await expect(lb.locator('.wa-lb-count')).toHaveText('2 of 6');
       await page.keyboard.press('Escape');
       await expect(lb).toHaveCount(0);
     });

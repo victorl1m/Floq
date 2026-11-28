@@ -338,7 +338,8 @@ export interface MenuFeatures { react: boolean; edit: boolean; deleteForEveryone
 export function menuPlan(m: Message, f: MenuFeatures, now: number, hasReply = true): MenuKey[] {
   if (m.pending || m.failed || m.id.startsWith("out-") || m.id.startsWith("pending-")) return m.body ? ["copy"] : [];
   const out: MenuKey[] = [];
-  if (m.deleted || m.type === "deleted") return ["delete"];
+  // A deleted message: its info (when, by whom, what it was) and removing it from this inbox.
+  if (m.deleted || m.type === "deleted") return ["info", "delete"];
   if (m.type === "system" || m.type === "call") return [];
   if (hasReply) out.push("reply");
   if (f.react) out.push("react");
@@ -363,6 +364,7 @@ export function messageKind(m: Pick<Message, "type" | "media" | "hasMedia" | "de
   if (m.media) {
     const mime = m.media.mime ?? "";
     if (mime.startsWith("image/")) return mime === "image/webp" && !m.media.width ? "sticker" : "image";
+    if (mime === "application/was" || m.media.lottie) return "sticker";
     if (mime.startsWith("video/")) return "video";
     if (mime.startsWith("audio/")) return "audio";
     return "document";
@@ -372,4 +374,12 @@ export function messageKind(m: Pick<Message, "type" | "media" | "hasMedia" | "de
   if (m.poll) return "poll";
   if (m.call) return "call";
   return m.hasMedia ? "media" : "text";
+}
+
+/** The line a deleted bubble shows, WhatsApp's wording. */
+export function deletedText(m: Pick<Message, "fromMe" | "deletedBy" | "deletedByName">): string {
+  if (m.fromMe) return "You deleted this message";
+  if (m.deletedBy === "me") return "You deleted this message as admin";
+  if (m.deletedBy === "admin") return m.deletedByName ? "This message was deleted by admin " + m.deletedByName : "This message was deleted by an admin";
+  return "This message was deleted";
 }

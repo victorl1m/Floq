@@ -5,7 +5,7 @@ import { docKind, fakePeaks, fitBox, Lru } from "@whatsapp-shared/format";
 import { formatBytes, formatDuration } from "./composer-utils";
 import { useWa, errorStatus, errorCode, type Api } from "./context";
 import { Avatar } from "./avatar";
-import { IconBan, IconDownload, IconFileText, IconImage, IconPlay, IconRefresh, IconVideo } from "./icons-bubbles";
+import { IconBan, IconDownload, IconFileText, IconImage, IconPlay, IconRefresh, IconSticker, IconVideo } from "./icons-bubbles";
 import { Spinner } from "./icons";
 
 /** A loaded file: bytes as a Blob plus an object URL. Entries in use (refs > 0) are never evicted. */
@@ -130,21 +130,41 @@ export function MediaGone({ onRetry, busy, compact, failed }: { onRetry: () => v
 }
 
 const box = (m: Message, sticker?: boolean): CSSProperties => {
-  const b = sticker ? fitBox(m.media?.width, m.media?.height, 170, 170) : fitBox(m.media?.width, m.media?.height);
+  const b = sticker ? stickerBox(m.media?.width, m.media?.height) : fitBox(m.media?.width, m.media?.height);
   return { width: b.width, aspectRatio: b.width + " / " + b.height, maxWidth: "100%" };
 };
 
-/** Image or sticker: reserves its box from the file's size, loads when scrolled into view, click opens the lightbox. */
+/** WhatsApp shows stickers at about 160px whatever their file size (512x512 usually), never stretched. */
+export const STICKER_PX = 160;
+const stickerBox = (w?: number | null, h?: number | null) => {
+  if (!w || !h || w <= 0 || h <= 0) return { width: STICKER_PX, height: STICKER_PX };
+  const k = STICKER_PX / Math.max(w, h);
+  return { width: Math.max(48, Math.round(w * k)), height: Math.max(48, Math.round(h * k)) };
+};
+/** A sticker the inbox cannot draw (a lottie animation, a file the browser cannot decode): a still in its place. */
+export function StickerStill({ m, label = "Sticker" }: { m: Message; label?: string }) {
+  return (
+    <div className="wa-img wa-sticker wa-sticker-still" style={box(m, true)} role="img" aria-label={m.media?.lottie ? "Animated sticker (shown as a still)" : label} title={m.media?.lottie ? "Animated sticker. Open WhatsApp on your phone to see it move." : undefined}>
+      <IconSticker /><span>{label}</span>
+    </div>
+  );
+}
+
+/** Image or sticker: reserves its box from the file's size, loads when scrolled into view (and is kept: the file is cached as it arrives), click opens the lightbox. */
 export function ImageMedia({ m, sticker, onOpen }: { m: Message; sticker?: boolean; onOpen?: (id: string) => void }) {
   const [ref, seen] = useInView<HTMLDivElement>();
-  const { status, url, retry } = useMedia(m, true, seen);
+  const still = Boolean(sticker && (m.media?.lottie || (m.media?.mime && !m.media.mime.startsWith("image/"))));
+  const { status, url, retry, entry } = useMedia(m, !still, seen);
   const [decoded, setDecoded] = useState(false);
-  const alt = sticker ? "Sticker" : m.body ? "Photo: " + m.body : "Photo";
+  const [broken, setBroken] = useState(false);
+  const alt = sticker ? (m.media?.animated ? "Animated sticker" : "Sticker") : m.body ? "Photo: " + m.body : "Photo";
+  // A lottie sticker, or one whose file turned out not to be an image: a still, like WhatsApp Web shows for what it cannot play.
+  if (still || (sticker && (broken || (entry && entry.mime && !entry.mime.startsWith("image/"))))) return <StickerStill m={m} />;
   return (
     <div ref={ref} className={cn("wa-img", sticker && "wa-sticker")} style={box(m, sticker)}>
       {url ? (
-        <button type="button" className="wa-img-btn" aria-label={"Open " + alt.toLowerCase()} onClick={() => onOpen?.(m.id)} disabled={sticker}>
-          <img src={url} alt={alt} decoding="async" draggable={false} className={cn(decoded && "wa-in")} onLoad={() => setDecoded(true)} />
+        <button type="button" className="wa-img-btn" aria-label={"Open " + alt.toLowerCase()} onClick={() => onOpen?.(m.id)} disabled={!onOpen}>
+          <img src={url} alt={alt} decoding="async" draggable={false} className={cn(decoded && "wa-in")} onLoad={() => setDecoded(true)} onError={() => { if (sticker) setBroken(true); }} />
         </button>
       ) : status === "unavailable" || status === "error" ? (
         <MediaGone onRetry={retry} compact failed={status === "error"} />

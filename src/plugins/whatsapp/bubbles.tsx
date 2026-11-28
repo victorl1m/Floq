@@ -1,13 +1,13 @@
 import { Fragment, createContext, memo, useContext, useRef, useState, type CSSProperties } from "react";
 import { cn } from "@/plugins/kit";
-import { fullDate, hueOf, quoteAuthor, quoteText, timeOf, chatKind, type Chat, type Message } from "@whatsapp-shared/chat";
-import { ACK_LABEL, ackState, callLabel, emojiOnly, mapsUrl, menuPlan, messageKind, parseFormat, safeHref, splitHighlight, type Block, type Inline, type MenuKey } from "@whatsapp-shared/format";
+import { fullDate, hueOf, quoteAuthor, quoteText, timeOf, chatKind, type Chat, type Message, type Original } from "@whatsapp-shared/chat";
+import { ACK_LABEL, ackState, callLabel, deletedText, emojiOnly, mapsUrl, menuPlan, messageKind, parseFormat, safeHref, splitHighlight, type Block, type Inline, type MenuKey } from "@whatsapp-shared/format";
 import { formatPhoneDisplay } from "@whatsapp-shared/phone";
 import { Avatar } from "./avatar";
 import { useWa } from "./context";
 import { IconBan, IconCallMissed, IconCheckCircle, IconExternal, IconForward, IconMapPin, IconPhone, IconPin, IconSmile, IconStarFilled, IconTick1, IconTick2, IconTickClock, IconTickFail, IconVideo } from "./icons-bubbles";
 import { IconFile, IconReply } from "./icons";
-import { AudioPlayer, DocumentMedia, ImageMedia, VideoMedia } from "./media";
+import { AudioPlayer, DocumentMedia, ImageMedia, VideoMedia, StickerStill } from "./media";
 import { MessageMenu } from "./message-menu";
 import { countRender } from "./render-probe";
 
@@ -87,13 +87,16 @@ export function Ticks({ m }: { m: Pick<Message, "ack" | "pending" | "failed"> })
   if (s === "sent") return <IconTick1 className="wa-tick" {...common} />;
   return <IconTick2 className={cn("wa-tick", s === "read" && "wa-tick-read")} {...common} />;
 }
-function Stamp({ m, mode }: { m: Message; mode: "inline" | "flow" | "over" }) {
+function Stamp({ m, mode, onEdited }: { m: Message; mode: "inline" | "flow" | "over"; onEdited?: () => void }) {
   const failed = ackState(m) === "failed";
+  const edited = m.edited && !m.deleted;
   return (
     <span className={cn("wa-stamp", "wa-stamp-" + mode)} title={failed ? "Not sent. Check your connection and try again." : undefined}>
       {m.pinned && <IconPin className="wa-st-ico" aria-label="Pinned" role="img" />}
       {m.starred && <IconStarFilled className="wa-st-ico" aria-label="Starred" role="img" />}
-      {m.edited && !m.deleted && <span className="wa-edited">Edited</span>}
+      {edited && (onEdited
+        ? <button type="button" className="wa-edited wa-edited-btn" title={(m.editedAt ? "Edited " + fullDate(m.editedAt) + ". " : "") + "Click to see the edit history"} aria-label="Edited, show the edit history" onClick={(e) => { e.stopPropagation(); onEdited(); }} onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>Edited</button>
+        : <span className="wa-edited">Edited</span>)}
       <time dateTime={m.pending ? undefined : m.sentAt} title={m.pending || failed ? undefined : fullDate(m.sentAt)}>{timeOf(m.sentAt)}</time>
       {m.fromMe && <Ticks m={m} />}
     </span>
@@ -199,6 +202,59 @@ function PollCard({ m }: { m: Message }) {
 }
 type Poll = NonNullable<Message["poll"]>;
 
+// ---- deleted ----
+/** The original of a deleted message, as Floq kept it: quote, file (only the copy Floq kept), cards and text. Never fetched from WhatsApp. */
+function OriginalBody({ m, o }: { m: Message; o: Original }) {
+  const log = useLog();
+  const om: Message = { ...m, deleted: false, type: o.type, body: o.body, hasMedia: o.hasMedia, media: o.media, location: o.location, vcards: o.vcards, poll: undefined, preview: o.preview, mentions: o.mentions, reactions: [], edited: o.edited, starred: false, pinned: false };
+  const kind = messageKind(om);
+  const blocks = o.body ? parseFormat(o.body, { mentions: o.mentions }) : [];
+  const q = m.replyTo;
+  const file = o.media && !o.media.available
+    ? <div className="wa-gone wa-orig-gone" role="status"><IconBan /><span>{"Floq did not keep this " + (kind === "image" ? "photo" : kind === "sticker" ? "sticker" : kind === "video" ? "video" : kind === "ptt" ? "voice message" : kind === "audio" ? "audio" : "file") + (o.media.filename ? " (" + o.media.filename + ")" : "") + "."}</span></div>
+    : kind === "image" ? <ImageMedia m={om} /> : kind === "sticker" ? (om.media?.lottie ? <StickerStill m={om} /> : <ImageMedia m={om} sticker />) : kind === "video" ? <VideoMedia m={om} />
+    : kind === "ptt" ? <AudioPlayer m={om} ptt /> : kind === "audio" ? <AudioPlayer m={om} /> : kind === "document" ? <DocumentMedia m={om} /> : null;
+  return (
+    <div className="wa-orig-body">
+      {o.forwarded && <span className="wa-fwd"><IconForward />Forwarded</span>}
+      {q && <div className={cn("wa-quote", q.fromMe && "wa-quote-me")} style={quoteStyle(q, log.chat)}><b>{quoteAuthor(q, log.chat)}</b><span>{q.hasMedia && <IconFile />}{quoteText(q)}</span></div>}
+      {file}
+      {kind === "location" && <LocationCard m={om} />}
+      {kind === "vcard" && <ContactCards m={om} />}
+      {o.poll && <div className="wa-orig-poll"><b>{o.poll.name}</b><ul>{o.poll.options.map((x) => <li key={x.name}>{x.name}</li>)}</ul></div>}
+      {blocks.length > 0 && <div className="wa-text"><Blocks blocks={blocks} term="" name={log.mentionName} pad={0} /></div>}
+      {!blocks.length && !file && kind === "text" && !o.poll && <span className="wa-unsupported">No text</span>}
+    </div>
+  );
+}
+
+/** "This message was deleted" in place, and the original Floq kept on request: marked as deleted, with when it was deleted. */
+function Deleted({ m }: { m: Message }) {
+  const [open, setOpen] = useState(false);
+  const o = m.original;
+  // Old rows and messages deleted from here before this version know nothing more: no toggle for them.
+  const known = o !== undefined;
+  return (
+    <>
+      <div className="wa-p wa-del"><IconBan />{deletedText(m)}{!known && <span className="wa-pad" style={{ width: stampWidth(m) }} aria-hidden="true" />}</div>
+      {open && (
+        <div className="wa-orig" role="group" aria-label="Original of the deleted message">
+          <span className="wa-orig-h"><IconBan />{m.deletedAt ? "Deleted " + fullDate(m.deletedAt) : "Deleted"}</span>
+          {o ? <OriginalBody m={m} o={o} /> : <span className="wa-orig-none">Floq did not receive this message before it was deleted, so there is nothing to show.</span>}
+        </div>
+      )}
+      {known && (
+        <div className="wa-p wa-orig-row">
+          <button type="button" className="wa-orig-tg" aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }} onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+            {open ? "Hide original" : o ? "Show original" : "Original not received"}
+          </button>
+          <span className="wa-pad" style={{ width: stampWidth(m) }} aria-hidden="true" />
+        </div>
+      )}
+    </>
+  );
+}
+
 // ---- the row ----
 const REACT_CHIP_MAX = 6;
 function Reactions({ m }: { m: Message }) {
@@ -274,7 +330,7 @@ function Row({ m, chat, first, last, sender }: RowProps) {
   const q = m.replyTo;
   const noBg = kind === "sticker";
   const stamp: "inline" | "flow" | "over" = mediaOnly ? "over" : endsInPara ? "inline" : "flow";
-  const media = kind === "image" ? <ImageMedia m={m} onOpen={log.openImage} /> : kind === "sticker" ? <ImageMedia m={m} sticker /> : kind === "video" ? <VideoMedia m={m} />
+  const media = kind === "image" ? <ImageMedia m={m} onOpen={log.openImage} /> : kind === "sticker" ? <ImageMedia m={m} sticker onOpen={log.openImage} /> : kind === "video" ? <VideoMedia m={m} />
     : kind === "ptt" ? <AudioPlayer m={m} ptt /> : kind === "audio" ? <AudioPlayer m={m} /> : kind === "document" ? <DocumentMedia m={m} />
     : kind === "media" ? <div className="wa-media"><span className="wa-media-ico"><IconFile /></span><span><b>Photo or file</b><span>Open WhatsApp to view it</span></span></div> : null;
 
@@ -311,7 +367,7 @@ function Row({ m, chat, first, last, sender }: RowProps) {
           </button>
         )}
         {kind === "deleted" ? (
-          <div className="wa-p wa-del"><IconBan />{mine ? "You deleted this message" : "This message was deleted"}{<span className="wa-pad" style={{ width: stampWidth(m) }} aria-hidden="true" />}</div>
+          <Deleted m={m} />
         ) : (
           <>
             {kind === "text" && <Preview m={m} />}
@@ -325,7 +381,7 @@ function Row({ m, chat, first, last, sender }: RowProps) {
             {!text && kind === "text" && !m.preview && <span className="wa-unsupported">Unsupported message</span>}
           </>
         )}
-        <Stamp m={m} mode={kind === "deleted" ? "inline" : stamp} />
+        <Stamp m={m} mode={kind === "deleted" ? "inline" : stamp} onEdited={real ? () => void log.act("info", m, "edits") : undefined} />
         {plan.length > 0 && (
           <MessageMenu m={m} plan={plan} open={menu} onOpenChange={setMenu} onRun={run} mine={mine} />
         )}

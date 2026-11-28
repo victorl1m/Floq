@@ -90,7 +90,17 @@ test("menuPlan: media gets Download only when available", () => {
 test("menuPlan: pending, deleted, system and call messages", () => {
   assert.deepEqual(f.menuPlan(msg({ pending: true }), ALL, NOW), ["copy"]);
   assert.deepEqual(f.menuPlan(msg({ id: "pending-1", body: "" }), ALL, NOW), []);
-  assert.deepEqual(f.menuPlan(msg({ deleted: true }), ALL, NOW), ["delete"]);
+  assert.deepEqual(f.menuPlan(msg({ deleted: true }), ALL, NOW), ["info", "delete"]);
   assert.deepEqual(f.menuPlan(msg({ type: "system" }), ALL, NOW), []);
   assert.deepEqual(f.menuPlan(msg({ type: "call" }), ALL, NOW), []);
+});
+
+test("deletedText: WhatsApp's wording for every case; lottie and was stickers are stickers", () => {
+  assert.equal(f.deletedText({ fromMe: true, deletedBy: "me" }), "You deleted this message");
+  assert.equal(f.deletedText({ fromMe: false, deletedBy: "sender" }), "This message was deleted");
+  assert.equal(f.deletedText({ fromMe: false, deletedBy: null }), "This message was deleted");
+  assert.equal(f.deletedText({ fromMe: false, deletedBy: "me" }), "You deleted this message as admin");
+  assert.equal(f.deletedText({ fromMe: false, deletedBy: "admin", deletedByName: "Bia" }), "This message was deleted by admin Bia");
+  assert.equal(f.deletedText({ fromMe: false, deletedBy: "admin" }), "This message was deleted by an admin");
+  assert.equal(f.messageKind({ hasMedia: true, media: { mime: "application/was", filename: "", size: null, duration: null, width: 512, height: 512, available: true, lottie: true } }), "sticker");
 });

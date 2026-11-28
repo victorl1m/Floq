@@ -14,7 +14,14 @@ export interface Chat {
 }
 export type MessageType = "chat" | "image" | "video" | "audio" | "ptt" | "document" | "sticker" | "location" | "vcard" | "poll" | "call" | "system" | "deleted" | "unknown";
 /** A file of a message. The bytes come from GET /media?id=<message id> -> { mime, filename, size, data (base64) }. */
-export interface Media { mime: string; filename: string; size: number | null; duration: number | null; width: number | null; height: number | null; gif?: boolean; available: boolean }
+export interface Media { mime: string; filename: string; size: number | null; duration: number | null; width: number | null; height: number | null; gif?: boolean; available: boolean;
+  /** Stickers: an animated webp, or a lottie animation (application/was) that is shown as a still. */
+  animated?: boolean; lottie?: boolean }
+/** What a deleted message was, as Floq kept it (shown on request). For a deleted message the file is only the copy Floq kept (media.available). */
+export interface Original {
+  type: MessageType; body: string; hasMedia: boolean; media: Media | null;
+  location?: Message["location"]; vcards?: Message["vcards"]; poll?: Poll; preview?: Message["preview"]; mentions?: string[]; forwarded?: boolean; edited?: boolean;
+}
 export interface Reaction { emoji: string; count: number; mine: boolean; senders: string[] }
 export interface Poll { name: string; multiple: boolean; voters: number; options: { name: string; votes: number; voted: boolean }[] }
 /** The message a reply quotes. `id` is the quoted message's id when it is loaded in this conversation, else "". */
@@ -26,6 +33,10 @@ export interface Message {
   type?: MessageType; media?: Media | null;
   /** 0 pending, 1 sent, 2 delivered, 3 read, 4 played, -1 failed. */
   ack?: number; edited?: boolean; deleted?: boolean; starred?: boolean; pinned?: boolean; forwarded?: boolean;
+  /** When the newest text was written (an edited message). */
+  editedAt?: string | null;
+  /** A deleted message: when it was deleted (null when unknown), by whom, and what it was (null: Floq never received its content). */
+  deletedAt?: string | null; deletedBy?: "me" | "sender" | "admin" | null; deletedByName?: string; original?: Original | null;
   location?: { lat: number; lng: number; name: string; address: string; live?: boolean };
   vcards?: { name: string; phones: string[]; formatted: string[] }[];
   poll?: Poll; preview?: { title: string; description: string; url: string }; mentions?: string[]; call?: { video: boolean; status: string };

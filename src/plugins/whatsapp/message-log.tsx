@@ -62,7 +62,8 @@ export const MessageLog = memo(forwardRef<MessageLogHandle, MessageLogProps>(fun
     return o && o.base === JSON.stringify(m.reactions ?? []) ? { ...m, reactions: withMyReaction(m.reactions, o.emoji) } : m;
   }), [messages, opt]);
   const rows = useMemo(() => groupMessages(shown, now), [shown, now]);
-  const images = useMemo(() => shown.filter((m) => messageKind(m) === "image" && m.media?.available !== false), [shown]);
+  // Photos and stickers open full size (a lottie sticker is a still: nothing more to see).
+  const images = useMemo(() => shown.filter((m) => { const k = messageKind(m); return (k === "image" || (k === "sticker" && !m.media?.lottie)) && m.media?.available !== false; }), [shown]);
   const pinned = useMemo(() => shown.filter((m) => m.pinned && !m.deleted), [shown]);
 
   const latest = useRef({ messages, onAction, onReply, onEdit, onLoadMore, hasMore });
